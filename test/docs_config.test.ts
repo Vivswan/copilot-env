@@ -13,17 +13,17 @@ import { formatConfigValue } from "../src/copilot_api/env_config.ts";
 import { PROJECT_ROOT } from "../src/utils/root.ts";
 import { expect, test } from "./helpers/testing.ts";
 
-/** Rows whose Default cell is prose instead of a value, with the reason. Allowed ONLY for a key
- *  with no built-in default: the registry has nothing to render there, and the page says what
- *  unset means. A key that gains a default leaves this list and gets the value in its cell. */
-const PROSE_DEFAULT_CELLS: Readonly<Record<string, string>> = {
-  "cost.credits-target": "unset paces against the plan's entitlement alone",
-  "daemon.version": "unset floats the proxy to the latest release",
-  "probe.claude-model": "unset runs the haiku alias, then the newest catalog model",
-  "probe.codex-model": "unset prefers a reduced GPT tier, else the first codex-servable model",
-  "proxy.claude-auto-model": "unset disables the security-monitor model override",
-  "update.cooldown": "unset is no cooldown by hand and 7 days for update.auto",
-};
+/** Keys whose Default cell is prose instead of a value. Allowed ONLY for a key with no built-in
+ *  default: the registry has nothing to render there, and the page says what unset means. A key
+ *  that gains a default leaves this list and gets the value in its cell. */
+const PROSE_DEFAULT_KEYS: readonly string[] = [
+  "cost.credits-target",
+  "daemon.version",
+  "probe.claude-model",
+  "probe.codex-model",
+  "proxy.claude-auto-model",
+  "update.cooldown",
+];
 
 interface DocsRow {
   key: string;
@@ -76,7 +76,7 @@ test("every Default cell is the registry's default as `agent config` renders it"
   );
   const unsetKeys = [...defaults].filter(([, value]) => value === undefined).map(([key]) => key);
   // Prose is allowed exactly where the registry has no value to render.
-  expect(Object.keys(PROSE_DEFAULT_CELLS).sort()).toEqual(unsetKeys.sort());
+  expect([...PROSE_DEFAULT_KEYS].sort()).toEqual(unsetKeys.sort());
 
   const drift: string[] = [];
   for (const { key, defaultCell } of docsRows) {

@@ -347,9 +347,10 @@ export function describeMismatch(actual: unknown, expected: unknown): string | n
   return null;
 }
 
-/** The key the current implementation reserves for run metadata the old one never emitted;
- *  parseCostPayload drops it. */
-const RUNTIME_KEY = "runtime";
+/** The keys a golden never compares: `runtime` is run metadata the old implementation never
+ *  emitted, and `note` is the command's explanatory prose, which a rewording may change while
+ *  every number stays. parseCostPayload drops both from either side. */
+const UNCOMPARED_KEYS = ["runtime", "note"] as const;
 
 export function parseCostPayload(stdout: string, what: string): Record<string, unknown> {
   let parsed: unknown;
@@ -362,7 +363,7 @@ export function parseCostPayload(stdout: string, what: string): Record<string, u
     throw new Error(`${what} printed a JSON payload that is not an object`);
   }
   const payload = parsed as Record<string, unknown>;
-  delete payload[RUNTIME_KEY];
+  for (const key of UNCOMPARED_KEYS) delete payload[key];
   return payload;
 }
 

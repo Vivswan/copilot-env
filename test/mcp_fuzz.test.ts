@@ -89,14 +89,16 @@ function classifierCorpus(): string[] {
   ];
 }
 
+/** The server still answers after the corpus: the handshake succeeds, the tool list is intact,
+ *  and a call reaches the tool's own error arm. The handshake's contents are mcp_server's to pin. */
 async function expectFullRecovery(client: McpClient): Promise<void> {
   const init = await client.request(1001, "initialize", {
     "protocolVersion": "2024-11-05",
     "capabilities": {},
     "clientInfo": { "name": "copilot-env-fuzz", "version": "0.0.0" },
   });
-  const serverInfo = (init.result as { serverInfo?: { name?: string } }).serverInfo;
-  expect(serverInfo?.name).toBe("copilot-env");
+  // request() resolves an error response too, so a refused handshake must fail here by name.
+  expect(init.error, "initialize after the corpus").toBeUndefined();
   client.notify("notifications/initialized");
 
   const list = await client.request(1002, "tools/list");

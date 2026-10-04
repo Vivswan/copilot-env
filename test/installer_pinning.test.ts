@@ -642,14 +642,6 @@ describe("the install task spawns what it is allowed to run", () => {
       expect(denoJson.tasks.install).toContain(flag);
     }
   });
-
-  test("install.sh is invoked under the shell its shebang declares", () => {
-    // /bin/sh is dash on Debian/Ubuntu and install.sh uses bash arrays: the
-    // spawn must match the script's own declaration, not a lowest common sh.
-    const shebang = installSh.split("\n", 1)[0] ?? "";
-    expect(shebang).toContain("bash");
-    expect(installLocal).toContain('run("bash", [join(ROOT, "install.sh")');
-  });
 });
 
 // POSIX only: the stand-ins are shell scripts found through PATH, which Windows' spawn does not
@@ -709,24 +701,30 @@ describe("the install task's arguments", () => {
     }
   });
 
-  skipWin("the installer flags reach install.sh's argv after the compile, --dir absolute", () => {
-    // A relative --dir is resolved against the task's cwd: --force and the installer would
-    // otherwise name it from different rules (realpath here, install.sh's "." refusal there).
-    const stubs = standIns();
-    try {
-      const res = runScript(task, ["--dir", "./local-install", "--yes"], { env: stubs.env });
-      expect(res.exitCode, res.stderr).toBe(0);
-      expect(stubs.argvOf("deno")?.slice(0, 2), res.stderr).toEqual(["task", "compile"]);
-      expect(stubs.argvOf("bash"), res.stderr).toEqual([
-        join(ROOT, "install.sh"),
-        "--dir",
-        join(ROOT, "local-install"),
-        "--yes",
-      ]);
-    } finally {
-      stubs.remove();
-    }
-  });
+  skipWin(
+    "the installer flags reach install.sh's argv after the compile, --dir absolute, under the shell its shebang declares",
+    () => {
+      // A relative --dir is resolved against the task's cwd: --force and the installer would
+      // otherwise name it from different rules (realpath here, install.sh's "." refusal there).
+      const stubs = standIns();
+      try {
+        const res = runScript(task, ["--dir", "./local-install", "--yes"], { env: stubs.env });
+        expect(res.exitCode, res.stderr).toBe(0);
+        expect(stubs.argvOf("deno")?.slice(0, 2), res.stderr).toEqual(["task", "compile"]);
+        expect(stubs.argvOf("bash"), res.stderr).toEqual([
+          join(ROOT, "install.sh"),
+          "--dir",
+          join(ROOT, "local-install"),
+          "--yes",
+        ]);
+        // /bin/sh is dash on Debian/Ubuntu and install.sh uses bash arrays: the task spawned
+        // `bash` above, so the script's own declaration must agree, not a lowest common sh.
+        expect(installSh.split("\n", 1)[0] ?? "").toContain("bash");
+      } finally {
+        stubs.remove();
+      }
+    },
+  );
 });
 
 describe("compiled-health smoke invariants fail closed", () => {

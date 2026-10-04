@@ -2,11 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { canonicalPricingUrl } from "../src/copilot_api/config_registry.ts";
-import {
-  BUILT_IN_RATE_CARD,
-  type GitHubRateCard,
-  type RateCardSource,
-} from "../src/usage/github_rate_card.ts";
+import type { GitHubRateCard, RateCardSource } from "../src/usage/github_rate_card.ts";
 import {
   canonicalModelName,
   estimateCost,
@@ -304,20 +300,30 @@ const ONE_MILLION_EACH: UsageTokens = {
 /** The built-in card, as the run applies it when no card was ever fetched. */
 const BUILT_IN: RateCardSource = { source: "built-in" };
 
+/** A card carrying only what the test hands it, so a reprice of the shipped seed moves nothing here. */
+function cardOf(parts: Partial<GitHubRateCard>): GitHubRateCard {
+  return { rates: new Map(), longContext: new Map(), unmapped: [], ...parts };
+}
+
 test("withGitHubRates prices gpt-5.6-sol at GitHub's card, leaves the list and every other model as they are, and names it", () => {
   const list = new Map<string, PricingTier>([
     ["openai/gpt-5.6-sol", { input: 2, output: 10, cacheRead: 0.2, cacheCreation: 2.5 }],
     ["anthropic/claude-fable-5.1", { input: 10, output: 50, cacheRead: 0.25, cacheCreation: 12.5 }],
   ]);
+  // The card's Sol row, per million: input, output, cache read, cache write.
+  const card = cardOf({
+    rates: new Map([["openai/gpt-5.6-sol", {
+      input: 4,
+      output: 20,
+      cacheRead: 0.4,
+      cacheCreation: 5,
+    }]]),
+  });
   const usage = new Map([["gpt-5.6-sol", ONE_MILLION_EACH], [
     "claude-fable-5.1",
     ONE_MILLION_EACH,
   ]]);
-  const estimate = estimateCost(
-    { byModel: usage },
-    withGitHubRates(list, BUILT_IN_RATE_CARD, BUILT_IN),
-  );
-  // GitHub's card for Sol: 4 / 20 / 0.40 / 5 per million (input, output, cache read, cache write).
+  const estimate = estimateCost({ byModel: usage }, withGitHubRates(list, card, BUILT_IN));
   expect(estimate.perModel["gpt-5.6-sol"]).toEqual({
     pricingReference: "openai/gpt-5.6-sol",
     inputCostUsd: 4,
@@ -335,15 +341,13 @@ test("withGitHubRates prices gpt-5.6-sol at GitHub's card, leaves the list and e
   expect(list.get("openai/gpt-5.6-sol")?.input).toBe(2);
   // The card stands on its own: a list without the model still prices it.
   expect(
-    estimateCost({ byModel: usage }, withGitHubRates(new Map(), BUILT_IN_RATE_CARD, BUILT_IN))
-      .unpriced,
+    estimateCost({ byModel: usage }, withGitHubRates(new Map(), card, BUILT_IN)).unpriced,
   ).toEqual(["claude-fable-5.1"]);
   // A card that agrees with the list changes no price, so it names no model: the footer is about
   // prices the card moved.
-  const agreeing = {
-    ...BUILT_IN_RATE_CARD,
+  const agreeing = cardOf({
     rates: new Map([["anthropic/claude-fable-5.1", list.get("anthropic/claude-fable-5.1")!]]),
-  };
+  });
   expect(estimateCost({ byModel: usage }, withGitHubRates(list, agreeing, BUILT_IN)).githubRated)
     .toEqual([]);
 });
@@ -367,13 +371,12 @@ test("withGitHubRates merges a card tier bucket by bucket and reads a float-ulp 
   ]);
   // The card prices gemini without a cache-write rate ("Not applicable") and luna at the same
   // numbers the list carries, spelled exactly.
-  const card: GitHubRateCard = {
-    ...BUILT_IN_RATE_CARD,
+  const card = cardOf({
     rates: new Map([
       ["google/gemini-3.6-flash", { input: 0.75, output: 3.75, cacheRead: 0.075 }],
       ["openai/gpt-5.6-luna", { input: 0.2, output: 1.2, cacheRead: 0.02, cacheCreation: 0.25 }],
     ]),
-  };
+  });
   const usage = new Map([["gemini-3.6-flash", ONE_MILLION_EACH], [
     "gpt-5.6-luna",
     ONE_MILLION_EACH,
@@ -388,6 +391,13 @@ test("withGitHubRates merges a card tier bucket by bucket and reads a float-ulp 
 });
 
 test("estimateCost bills an OpenAI long-context share at its tier and an Anthropic one flat", () => {
+  // The card tiers astra's prompts past 272K at 20 / 75 / 2 / 25 per million and knows no fable tier.
+  const card = cardOf({
+    longContext: new Map([["openai/gpt-6-astra", {
+      promptTokens: 272_000,
+      tier: { input: 20, output: 75, cacheRead: 2, cacheCreation: 25 },
+    }]]),
+  });
   const pricing = withGitHubRates(
     new Map<string, PricingTier>([
       ["openai/gpt-6-astra", { input: 10, output: 50, cacheRead: 1, cacheCreation: 12.5 }],
@@ -398,7 +408,7 @@ test("estimateCost bills an OpenAI long-context share at its tier and an Anthrop
         cacheCreation: 12.5,
       }],
     ]),
-    BUILT_IN_RATE_CARD,
+    card,
     BUILT_IN,
   );
   const total = { input: 1_000_000, output: 100_000, cacheRead: 2_000_000, cacheCreation: 0 };

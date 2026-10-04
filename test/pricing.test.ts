@@ -310,7 +310,6 @@ test("withGitHubRates prices gpt-5.6-sol at GitHub's card, leaves the list and e
     ["openai/gpt-5.6-sol", { input: 2, output: 10, cacheRead: 0.2, cacheCreation: 2.5 }],
     ["anthropic/claude-fable-5.1", { input: 10, output: 50, cacheRead: 0.25, cacheCreation: 12.5 }],
   ]);
-  // The card's Sol row, per million: input, output, cache read, cache write.
   const card = cardOf({
     rates: new Map([["openai/gpt-5.6-sol", {
       input: 4,
@@ -391,7 +390,6 @@ test("withGitHubRates merges a card tier bucket by bucket and reads a float-ulp 
 });
 
 test("estimateCost bills an OpenAI long-context share at its tier and an Anthropic one flat", () => {
-  // The card tiers astra's prompts past 272K at 20 / 75 / 2 / 25 per million and knows no fable tier.
   const card = cardOf({
     longContext: new Map([["openai/gpt-6-astra", {
       promptTokens: 272_000,

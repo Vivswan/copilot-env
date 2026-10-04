@@ -6,6 +6,7 @@ import { SIDECAR_DENO_ENV } from "../copilot_api/sidecar.ts";
 import { agentAuthCommand, agentStartCommand, agentStopCommand } from "../copilot_api/profile.ts";
 import { PROXY_PACKAGE_NAME, type ProxyVersionStatus } from "../copilot_api/version.ts";
 import { lastActivityMs } from "../copilot_api/idle_watchdog.ts";
+import { assertNever } from "../utils/assert.ts";
 import type { CommandLook } from "../utils/command.ts";
 import { versionLessThan } from "../utils/semver.ts";
 import { formatDuration, SECONDS_PER_DAY } from "../utils/time.ts";
@@ -673,21 +674,29 @@ export function checkLook(
   look: CommandLook,
   value: Record<string, unknown> = {},
 ): CheckResult {
-  const base = {
-    ...identity,
-    profile: null,
-    value: { ...value, resolved: look.path, ...(look.launchFailed ? { lookFailed: true } : {}) },
-  };
-  if (look.path !== null) return { ...base, status: "ok", detail: look.path };
-  if (look.launchFailed) {
-    return {
-      ...base,
-      status: "warn",
-      detail: "could not check (the command probe failed to run)",
-      fix: "agent shell --clis",
-    };
+  const base = { ...identity, profile: null };
+  switch (look.kind) {
+    case "found":
+      return { ...base, value: { ...value, resolved: look.path }, status: "ok", detail: look.path };
+    case "unproven":
+      return {
+        ...base,
+        value: { ...value, resolved: null, lookFailed: true },
+        status: "warn",
+        detail: "could not check (the command probe failed to run)",
+        fix: "agent shell --clis",
+      };
+    case "absent":
+      return {
+        ...base,
+        value: { ...value, resolved: null },
+        status: "warn",
+        detail: "not installed (optional)",
+        fix: "agent shell --clis",
+      };
+    default:
+      return assertNever(look);
   }
-  return { ...base, status: "warn", detail: "not installed (optional)", fix: "agent shell --clis" };
 }
 
 /** The one check family whose id is minted outside the descriptor table: the CLI list is runtime

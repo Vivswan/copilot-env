@@ -53,7 +53,7 @@ function pinSlot(state: CopilotEnvState, profile: Profile, login: string): void 
  *  serve a token -- the login of an env-only GH_TOKEN fails it). */
 export function pinSoleGhAccount(
   look: () => GhAccountsLook = ghAccountsLook,
-  resolves: (login: string) => boolean = (login) => ghAuthTokenLook(login).token !== null,
+  resolves: (login: string) => boolean = (login) => ghAuthTokenLook(login).kind === "found",
 ): void {
   const state = new CopilotEnvState();
   const data = state.read();

@@ -125,8 +125,9 @@ export async function main(): Promise<void> {
   try {
     for (const cli of ["claude", "codex"]) {
       const look = findCommand(cli);
-      if (look.launchFailed) failures.push(`could not look for ${cli} (the resolver did not run)`);
-      else if (look.path === null) failures.push(`${cli} is not on PATH`);
+      if (look.kind === "unproven") {
+        failures.push(`could not look for ${cli} (the resolver did not run)`);
+      } else if (look.kind === "absent") failures.push(`${cli} is not on PATH`);
     }
     if (args.real) log("--real: turns run against the CLIs' real credentials and SPEND TOKENS");
     const work = join(home, "work");

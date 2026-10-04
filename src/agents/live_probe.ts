@@ -26,6 +26,7 @@ import { dirname, join, resolve } from "node:path";
 import { settingsPathFor } from "../claude/paths.ts";
 import type { DirectSmoke } from "../copilot_api/endpoint_smoke.ts";
 import type { ProbeFetch } from "../copilot_api/integration_identity.ts";
+import { assertNever } from "../utils/assert.ts";
 import { childEnvWithPath, cliSpawn, type CommandLook, findCommand } from "../utils/command.ts";
 import { errMessage } from "../utils/error.ts";
 import { isRecord, parseJsonRecord } from "../utils/json.ts";
@@ -160,6 +161,29 @@ function refuseTooOldCli(descriptor: ProbeDescriptor, detail: string | undefined
 export interface ProbeOutcome {
   ok: boolean;
   detail?: string;
+}
+
+/** The miss line and the install advice that follows it when no smoke runs: a failed look gets
+ *  no advice, since "install it" is wrong when the look itself failed. */
+function cliMissWording(
+  cli: string,
+  look: Exclude<CommandLook, { kind: "found" }>,
+): { look: string; advice: string } {
+  switch (look.kind) {
+    case "unproven":
+      return {
+        look: `could not check for the ${cli} CLI (the command probe failed to run)`,
+        advice: "",
+      };
+    case "absent":
+      return {
+        look: `${cli} CLI not found`,
+        advice:
+          " (install it with `agent shell --clis` and re-run to auto-detect Direct, or pass --direct)",
+      };
+    default:
+      return assertNever(look);
+  }
 }
 
 /** Injectable I/O so unit tests decide the probe outcome without real model calls. */
@@ -352,14 +376,9 @@ export async function probeDirectWorks(
   // helper (this CLI, as a silent dry run) reads the credential the store already holds, since a
   // dry run never lands one it does not have.
   const cliLook = find(descriptor.cli);
-  if (cliLook.path === null) {
-    const look = cliLook.launchFailed
-      ? `could not check for the ${descriptor.cli} CLI (the command probe failed to run)`
-      : `${descriptor.cli} CLI not found`;
+  if (cliLook.kind !== "found") {
+    const { look, advice } = cliMissWording(descriptor.cli, cliLook);
     if (smoke === null) {
-      const advice = cliLook.launchFailed
-        ? ""
-        : " (install it with `agent shell --clis` and re-run to auto-detect Direct, or pass --direct)";
       logger.log(`    • ${look} → using the local proxy${advice}`);
       return false;
     }
@@ -388,8 +407,8 @@ export async function probeDirectWorks(
     return false;
   }
   const cliPath = anchorToCallerCwd(cliLook.path);
-  const ghLook = find("gh").path;
-  const ghPath = ghLook === null ? null : anchorToCallerCwd(ghLook);
+  const ghLook = find("gh");
+  const ghPath = ghLook.kind === "found" ? anchorToCallerCwd(ghLook.path) : null;
 
   let tmpHome: ScratchDir | null = null;
   try {

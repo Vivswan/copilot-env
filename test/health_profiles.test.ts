@@ -1155,7 +1155,7 @@ test("--live probes run for the narrowed profile alone, else for the default alo
       codexHome: () => join(home, "no-codex"),
       claudeHome: () => join(home, "no-claude"),
       shellTargets: () => [],
-      commandLook: () => ({ path: null }),
+      commandLook: () => ({ kind: "absent" }),
       codexLive: async (h, profile) => {
         seen.push({ agent: "codex", home: h, profile });
         return { kind: "skipped" };
@@ -1244,7 +1244,7 @@ test("a shell-target discovery failure marks the census UNPROVEN, never 'not wir
         shellTargets: () => {
           throw new Error("powershell exploded");
         },
-        commandLook: () => ({ path: null }),
+        commandLook: () => ({ kind: "absent" }),
         codexHome: () => join(home, "no-codex"),
         claudeHome: () => join(home, "no-claude"),
       }),

@@ -256,7 +256,10 @@ test("`auth --provider <gh-cli|gh-env> --dry-run` resolves what the real command
     {
       name: "gh-cli with a saved login",
       acquisition: choose,
-      seams: { look: () => ({ token: "gho_saved" }), chooseAccount: pinned },
+      seams: {
+        look: () => ({ kind: "found", token: "gho_saved", command: "gh auth token" }),
+        chooseAccount: pinned,
+      },
       outcome: { value: { kind: "gh-cli", ghUser: "octocat" } },
     },
     // An account listed only through an env token has no saved credential to pin; the real command
@@ -265,7 +268,7 @@ test("`auth --provider <gh-cli|gh-env> --dry-run` resolves what the real command
       name: "gh-cli without a saved login",
       acquisition: choose,
       seams: {
-        look: (ghUser) => ({ token: null, detail: `no saved login for ${ghUser}` }),
+        look: (ghUser) => ({ kind: "absent", detail: `no saved login for ${ghUser}` }),
         chooseAccount: pinned,
       },
       outcome: { refusal: /gh cannot serve account 'octocat' by name/ },
@@ -328,7 +331,7 @@ test("a dry run's auto-mode decision is the real one: the CLI smoke runs and its
   };
   const probe = (calls: { n: number }) =>
     probeDirectWorks(descriptor, () => {}, smoke, {
-      findCommand: (c) => ({ path: `/bin/${c}` }),
+      findCommand: (c) => ({ kind: "found", path: `/bin/${c}` }),
       runProbe: () => {
         calls.n++;
         return { ok: false, detail: "auth failed" };

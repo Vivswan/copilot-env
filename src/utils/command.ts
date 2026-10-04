@@ -8,23 +8,24 @@ import * as fs from "./fs_facade.ts";
 
 const POSIX_NVM_SH = '"$' + '{NVM_DIR:-$HOME/.nvm}/nvm.sh"';
 
-/** `path` is the bare name on Windows (Get-Command probes, the spawn recipe stays the name). null
- *  means the probe ran and found nothing; a probe that never completed carries `launchFailed`
- *  instead (the same mark as runCaptured), so a failed look never reads as a proven "command
- *  missing". */
-export interface CommandLook {
-  path: string | null;
-  launchFailed?: true;
-}
+/** `found` carries the path (the bare name on Windows: Get-Command probes, the spawn recipe stays
+ *  the name). `absent` is proven: the probe ran and found nothing. `unproven` is a probe that never
+ *  completed, so a failed look can never read as a proven "command missing": a consumer that
+ *  renders a verdict or mutates on the miss switches on `kind`. */
+export type CommandLook =
+  | { kind: "found"; path: string }
+  | { kind: "absent" }
+  | { kind: "unproven" };
 
 /** Exported for tests. */
 export function commandLookFromSpawn(
   result: { status: number | null; error?: unknown },
   resolvedPath: () => string | null,
 ): CommandLook {
-  if (result.error || result.status === null) return { path: null, launchFailed: true };
-  if (result.status !== 0) return { path: null };
-  return { path: resolvedPath() };
+  if (result.error || result.status === null) return { kind: "unproven" };
+  if (result.status !== 0) return { kind: "absent" };
+  const path = resolvedPath();
+  return path === null ? { kind: "absent" } : { kind: "found", path };
 }
 
 /** `powershell -File` passes argv literally: the one spelling for launching a `.ps1` with the
@@ -89,12 +90,13 @@ export function findCommand(command: string): CommandLook {
  *  non-destructive (an abort, a skip warn, a proxy fallback). Sites that render a "missing" verdict
  *  or would mutate on the miss go through findCommand and honor the mark. */
 export function commandExists(command: string): boolean {
-  return findCommand(command).path !== null;
+  return findCommand(command).kind === "found";
 }
 
 /** The same flatten as commandExists: a failed look reads null. */
 export function resolveCommand(command: string): string | null {
-  return findCommand(command).path;
+  const look = findCommand(command);
+  return look.kind === "found" ? look.path : null;
 }
 
 /** A binary found via the nvm fallback may be a `#!/usr/bin/env node` shim that shells out to
@@ -225,7 +227,7 @@ function pickWindowsExecutable(candidates: string[]): string | null {
  *  renders a verdict. */
 export function resolveExecutablePath(command: string): string | null {
   if (process.platform !== "win32") {
-    const path = findCommand(command).path;
+    const path = resolveCommand(command);
     return path !== null && isAbsolute(path) ? path : null;
   }
   // `$PATH:` scopes where.exe to PATH: a bare pattern searches the current directory first, the

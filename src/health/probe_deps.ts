@@ -8,6 +8,7 @@ import { dirname } from "node:path";
 import { jsonOutputReason, PROBE_TIMEOUT_MS, probeOutputLines } from "../agents/live_probe.ts";
 import { resolveClaudeHome } from "../claude/paths.ts";
 import { effectiveCodexHome } from "../codex/host.ts";
+import { assertNever } from "../utils/assert.ts";
 import {
   ghAccountsLookFromSpawn,
   ghAuthTokenLookAsync,
@@ -85,12 +86,16 @@ function directAuthFromLook(
   ghUser: string | null,
 ): CodexDirectAuthFacts {
   const pinned = ghUser === null ? {} : { ghUser };
-  const why = look.detail === undefined ? {} : { ghDetail: look.detail };
-  if (look.unproven) {
-    return { command, authenticated: false, unproven: true, ...pinned, ...why };
+  switch (look.kind) {
+    case "unproven":
+      return { command, authenticated: false, unproven: true, ...pinned, ghDetail: look.detail };
+    case "absent":
+      return { command, authenticated: false, ...pinned, ghDetail: look.detail };
+    case "found":
+      return { command, authenticated: true, ...pinned, ghCommand: look.command };
+    default:
+      return assertNever(look);
   }
-  const served = look.command === undefined ? {} : { ghCommand: look.command };
-  return { command, authenticated: look.token !== null, ...pinned, ...served, ...why };
 }
 
 /** Null when gh is absent, has no account, or the look never completed: naming only, never a
@@ -99,7 +104,7 @@ function directAuthFromLook(
  *  timeout kill reads as unproven, so a truncated list can never name the wrong account. */
 async function ghActiveLoginProbe(): Promise<string | null> {
   const look = findCommand("gh");
-  if (look.path === null) return null;
+  if (look.kind !== "found") return null;
   const listing = ghAccountsLookFromSpawn(await runGhSpecAsync(ghAuthStatusSpawnSpec(look.path)));
   return listing.unproven ? null : activeGhLogin(listing.accounts);
 }
@@ -108,19 +113,21 @@ async function codexDirectAuth(ghUser: string | null): Promise<CodexDirectAuthFa
   // The failure arm is kept: this fact renders auth VERDICTS ("GitHub CLI not found", "not
   // authenticated"), so a look that never ran must arrive marked, not as a proven absence.
   const look = findCommand("gh");
-  if (look.path === null) {
-    return {
-      command: null,
-      authenticated: false,
-      ...(look.launchFailed ? { unproven: true as const } : {}),
-      ...(ghUser === null ? {} : { ghUser }),
-    };
+  const pinned = ghUser === null ? {} : { ghUser };
+  switch (look.kind) {
+    case "unproven":
+      return { command: null, authenticated: false, unproven: true, ...pinned };
+    case "absent":
+      return { command: null, authenticated: false, ...pinned };
+    case "found":
+      // The SAME recipe `agent auth` and every resolve run (ghAuthTokenSpawnSpec: ONE gh call, the
+      // pinned `--user` form or the active account's), off the event loop so it overlaps the other
+      // probes under gatherFacts' Promise.all. The token is read into memory with the rest of gh's
+      // output and only the verdict and the serving call are kept.
+      return directAuthFromLook(look.path, await ghAuthTokenLookAsync(ghUser, look.path), ghUser);
+    default:
+      return assertNever(look);
   }
-  // The SAME recipe `agent auth` and every resolve run (ghAuthTokenSpawnSpec: ONE gh call, the
-  // pinned `--user` form or the active account's), off the event loop so it overlaps the other
-  // probes under gatherFacts' Promise.all. The token is read into memory with the rest of gh's
-  // output and only the verdict and the serving call are kept.
-  return directAuthFromLook(look.path, await ghAuthTokenLookAsync(ghUser, look.path), ghUser);
 }
 
 /** The CLI's output, line for line, so `agent health --live` shows the complete error: a JSON
@@ -158,10 +165,15 @@ export function runLiveCli(
   // `find` is a test seam; the real look keeps its failure arm (see CommandLook) because the
   // skip renders a "CLI not installed" verdict.
   const look = find(launch.cli);
-  if (look.path === null) {
-    return Promise.resolve(
-      look.launchFailed ? { kind: "skipped", lookFailed: true } : { kind: "skipped" },
-    );
+  switch (look.kind) {
+    case "unproven":
+      return Promise.resolve({ kind: "skipped", lookFailed: true });
+    case "absent":
+      return Promise.resolve({ kind: "skipped" });
+    case "found":
+      break;
+    default:
+      return assertNever(look);
   }
   const resolved = look.path;
   const ghPath = resolveCommand("gh");

@@ -2,8 +2,13 @@
 // projected, against the plan's entitlement and the optional `cost.credits-target`. One live read
 // of GitHub's meter per account; no local log is touched.
 import { Credential } from "../copilot_api/credential.ts";
-import { allProfileNames, DEFAULT_PROFILE_KEY, knownProfile } from "../copilot_api/env_state.ts";
-import { type Profile, profileKey, profileLabel } from "../copilot_api/profile.ts";
+import { allProfileNames, knownProfile } from "../copilot_api/env_state.ts";
+import {
+  DEFAULT_PROFILE_NAME,
+  type Profile,
+  profileKey,
+  profileLabel,
+} from "../copilot_api/profile.ts";
 import {
   type CreditsFetch,
   creditsJson,
@@ -102,7 +107,7 @@ export async function runCreditsEverywhere(
   // (the default, then the names sorted) whatever order the tokens were met in.
   for (const meter of meters) {
     meter.profiles.sort((a, b) =>
-      a === DEFAULT_PROFILE_KEY ? -1 : b === DEFAULT_PROFILE_KEY ? 1 : a.localeCompare(b)
+      a === DEFAULT_PROFILE_NAME ? -1 : b === DEFAULT_PROFILE_NAME ? 1 : a.localeCompare(b)
     );
   }
   if (args.json) {

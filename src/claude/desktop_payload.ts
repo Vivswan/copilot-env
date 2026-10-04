@@ -13,8 +13,7 @@ import {
   type ProfileName,
 } from "../copilot_api/profile.ts";
 import { MCP_SERVER_NAME } from "../mcp/server.ts";
-import { sameStrings } from "../utils/assert.ts";
-import { isRecord } from "../utils/json.ts";
+import { isRecord, sameStrings } from "../utils/json.ts";
 import { agentLauncherCommand } from "../utils/root.ts";
 import { type Doc, readFileOrNull } from "./desktop_library.ts";
 

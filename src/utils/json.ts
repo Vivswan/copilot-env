@@ -2,6 +2,12 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/** `actual` is a parsed document's field, so a non-array is a plain false, never a throw. */
+export function sameStrings(actual: unknown, expected: readonly string[]): boolean {
+  return Array.isArray(actual) && actual.length === expected.length &&
+    expected.every((v, i) => actual[i] === v);
+}
+
 /** `value` with every object's keys sorted at every level, arrays kept in order, so two
  *  payloads with the same content stringify identically. */
 export function sortKeys(value: unknown): unknown {

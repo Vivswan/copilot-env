@@ -53,7 +53,6 @@ import {
   CopilotEnvConfig,
   GLOBAL_SETTING_KEYS,
   PROFILE_SETTING_KEYS,
-  PROFILE_SETTINGS_DEFAULT_KEY,
 } from "../copilot_api/env_config.ts";
 import {
   CopilotEnvState,
@@ -79,6 +78,7 @@ import {
 import { DAEMON_SIGKILL_GRACE_MS } from "../copilot_api/process.ts";
 import { rootStateStore } from "../copilot_api/state_store.ts";
 import {
+  DEFAULT_PROFILE_NAME,
   isReservedProfileWord,
   isValidProfileName,
   parseProfileName,
@@ -87,12 +87,11 @@ import {
   type ProfileName,
 } from "../copilot_api/profile.ts";
 import { shellTargetFiles } from "../shell/integration.ts";
-import { sameStrings } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import { isEnoentOrNotdir } from "../utils/fs.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { getSanitizedHostname } from "../utils/hostname.ts";
-import { isRecord, parseJsonRecord } from "../utils/json.ts";
+import { isRecord, parseJsonRecord, sameStrings } from "../utils/json.ts";
 import {
   agentAuthGetArgs,
   agentLauncherCommand,
@@ -287,7 +286,7 @@ export function regroupPreferences(
     delete out[oldKey];
     moved = true;
     const targets = configScope(key) === "profile"
-      ? [PROFILE_SETTINGS_DEFAULT_KEY, ...namedProfiles].map((name) =>
+      ? [DEFAULT_PROFILE_NAME, ...namedProfiles].map((name) =>
         ensureDict(ensureDict(out, "profiles"), name)
       )
       : [ensureDict(out, "global")];
@@ -307,7 +306,7 @@ function rawProfileSections(): Array<[Profile, Record<string, unknown>]> {
   const out: Array<[Profile, Record<string, unknown>]> = [];
   for (const [name, section] of Object.entries(profiles)) {
     if (!isRecord(section)) continue;
-    if (name === PROFILE_SETTINGS_DEFAULT_KEY) out.push([null, section]);
+    if (name === DEFAULT_PROFILE_NAME) out.push([null, section]);
     else if (isValidProfileName(name)) out.push([parseProfileName(name), section]);
   }
   return out;
@@ -575,7 +574,7 @@ function alreadyFolded(doc: Record<string, unknown>, store: FoldedStore): boolea
 function namedProfilesOf(doc: Record<string, unknown>): string[] {
   return isRecord(doc.profiles)
     ? Object.keys(doc.profiles).filter((name) =>
-      name !== PROFILE_SETTINGS_DEFAULT_KEY && isValidProfileName(name)
+      name !== DEFAULT_PROFILE_NAME && isValidProfileName(name)
     )
     : [];
 }
@@ -1223,7 +1222,7 @@ export async function moveProfilesToVerbTree(): Promise<void> {
   const named = [
     ...new Set([...storeNames.filter(isValidProfileName), ...profileHomeNames()]),
   ]
-    .filter((name) => name !== PROFILE_SETTINGS_DEFAULT_KEY)
+    .filter((name) => name !== DEFAULT_PROFILE_NAME)
     .sort()
     .map((name) => parseProfileName(name));
   const claudeHome = resolveClaudeHome();

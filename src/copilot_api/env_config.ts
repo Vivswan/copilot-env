@@ -26,11 +26,11 @@ import {
   type StaticKeyScope,
 } from "./config_registry.ts";
 import { rootStateStore } from "./state_store.ts";
-import { DEFAULT_PROFILE_NAME, type Profile, profileKey, type ProfileName } from "./profile.ts";
+import { type Profile, profileKey, type ProfileName } from "./profile.ts";
 import { isRecord } from "../utils/json.ts";
 
 /** The store as read: both maps always present. `profiles` is keyed by profile name, the default
- *  profile under PROFILE_SETTINGS_DEFAULT_KEY (profileKey). */
+ *  profile under DEFAULT_PROFILE_NAME (profileKey). */
 export interface CopilotEnvConfigData {
   global: GlobalConfigData;
   profiles: Record<string, ProfileConfigData>;
@@ -39,9 +39,6 @@ export interface CopilotEnvConfigData {
 /** null and undefined both delete the key. */
 export type GlobalPatch = { [K in GlobalMapKey]?: ConfigValueTypes[K] | null };
 export type ProfilePatch = { [K in ProfileMapKey]?: ConfigValueTypes[K] | null };
-
-/** The default profile's map name: one `profiles.default` holds its settings and its credential slot. */
-export const PROFILE_SETTINGS_DEFAULT_KEY = DEFAULT_PROFILE_NAME;
 
 // The preference commands a message may point at, spelled ONCE. The key is typed, so a renamed key
 // cannot leave a stale hint behind, and test/config_key_lint.test.ts refuses a hand-spelled one.

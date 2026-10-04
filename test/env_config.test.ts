@@ -722,8 +722,11 @@ test("codex.home: an absolute path as typed or `auto`; `~` and relative paths ar
     dryRun: false,
   }, "win32");
   expect(new CopilotEnvConfig().codexHomePrefs("win32").explicit).toBe(ABS_CODEX_HOME);
-  expect(v.parse(CONFIG_SCHEMA, { global: { "codex.home": "relative/dir" } }).global["codex.home"])
-    .toBeUndefined();
+  // The surviving sibling proves the fallback is per field, not the whole global map.
+  expect(
+    v.parse(CONFIG_SCHEMA, { global: { "codex.home": "relative/dir", "codex.host": true } }).global,
+  )
+    .toEqual({ "codex.host": true });
 });
 
 test("codex.host: stored else default, POSIX-only set, and Windows always reads off", () => {

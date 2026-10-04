@@ -543,10 +543,12 @@ describe("applyUpdate", () => {
     },
   );
 
-  skipWin("refuses when current already points at the target version", async () => {
+  test("refuses when current already points at the target version, before any download", async () => {
     // Releases only move forward; `current` naming the target while the version
     // check said "behind" means a corrupt layout -- refuse rather than guess.
-    writeRelease(RECORDING_BINARY);
+    // The release dir stays EMPTY: a download would fail on the missing asset first, so the
+    // refusal arriving as the error proves nothing was fetched. No binary runs, so the case
+    // holds on Windows too, where `current` is the junction pointCurrentAt writes.
     seedVersion("v9.9.9", "ALREADY");
     pointCurrentAt(installDir, "v9.9.9");
 

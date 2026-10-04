@@ -2,7 +2,6 @@ import { parseUpdateAction, recheckVerdict } from "../src/commands/update.ts";
 import {
   parseReleasesJson,
   pickAged,
-  pickTag,
   type Release,
   resolveTarget,
 } from "../src/install/resolve-release.ts";
@@ -77,7 +76,7 @@ test("parseUpdateAction maps each flag set to one arm or one rejection", () => {
 });
 
 test("parseReleasesJson keeps published vX.Y.Z releases newest-first and drops the rest", () => {
-  const rows: { name: string; json: string; prereleases?: boolean; releases: Release[] }[] = [
+  const rows: { name: string; json: string; releases: Release[] }[] = [
     {
       name: "sorted newest-first",
       json: JSON.stringify([
@@ -100,37 +99,9 @@ test("parseReleasesJson keeps published vX.Y.Z releases newest-first and drops t
       ]),
       releases: [parsed("v1.0.0", "2026-06-01T00:00:00Z")],
     },
-    // An exact-tag resolve may opt prereleases in ...
+    // A draft's assets are not publicly downloadable, so it is never a target.
     {
-      name: "prereleases excluded by default",
-      json: JSON.stringify([
-        rel("v3.0.0", "2026-06-05T00:00:00Z", { prerelease: true }),
-        rel("v1.9.0", "2026-05-27T00:00:00Z"),
-      ]),
-      releases: [parsed("v1.9.0", "2026-05-27T00:00:00Z")],
-    },
-    {
-      name: "prereleases included on request",
-      json: JSON.stringify([
-        rel("v3.0.0", "2026-06-05T00:00:00Z", { prerelease: true }),
-        rel("v1.9.0", "2026-05-27T00:00:00Z"),
-      ]),
-      prereleases: true,
-      releases: [
-        parsed("v3.0.0", "2026-06-05T00:00:00Z"),
-        parsed("v1.9.0", "2026-05-27T00:00:00Z"),
-      ],
-    },
-    // ... but a draft's assets are not publicly downloadable, so it is never a target however
-    // it was asked for.
-    {
-      name: "a draft is skipped even when prereleases are included",
-      json: JSON.stringify([rel("v3.0.0", "2026-06-05T00:00:00Z", { draft: true })]),
-      prereleases: true,
-      releases: [],
-    },
-    {
-      name: "a draft is skipped by default",
+      name: "a draft alone leaves nothing",
       json: JSON.stringify([rel("v3.0.0", "2026-06-05T00:00:00Z", { draft: true })]),
       releases: [],
     },
@@ -143,12 +114,12 @@ test("parseReleasesJson keeps published vX.Y.Z releases newest-first and drops t
     { name: "an API error object", json: '{"message":"Not Found"}', releases: [] },
     { name: "an empty array", json: "[]", releases: [] },
   ];
-  for (const { name, json, prereleases, releases } of rows) {
-    expect(parseReleasesJson(json, prereleases), name).toEqual(releases);
+  for (const { name, json, releases } of rows) {
+    expect(parseReleasesJson(json), name).toEqual(releases);
   }
 });
 
-test("pickAged and pickTag select one release from the parsed list", () => {
+test("pickAged selects one release from the parsed list", () => {
   const now = secs("2026-06-06T00:00:00Z");
   const releases: Release[] = parseReleasesJson(
     JSON.stringify([
@@ -170,13 +141,6 @@ test("pickAged and pickTag select one release from the parsed list", () => {
       pick: () => pickAged(fresh, now, 7),
       tag: "v4.0.0",
     },
-    { name: "pickTag with the leading v", pick: () => pickTag(releases, "v1.9.0"), tag: "v1.9.0" },
-    {
-      name: "pickTag without the leading v",
-      pick: () => pickTag(releases, "1.9.0"),
-      tag: "v1.9.0",
-    },
-    { name: "pickTag of an unknown tag", pick: () => pickTag(releases, "v9.9.9"), tag: null },
   ];
   for (const { name, pick, tag } of rows) {
     expect(pick()?.tag ?? null, name).toBe(tag);

@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import { consola } from "consola";
 
+import { withPowershellChildEnv } from "../utils/command.ts";
 import { isEnoent } from "../utils/fs.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
 import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
@@ -346,13 +347,6 @@ export function windowsBlock(agentsPs1: string): string {
 function windowsExecutionPolicyCommand(): string {
   return (
     "$ErrorActionPreference='Stop'; " +
-    // When Windows PowerShell 5.1 is spawned as a child of pwsh 7 (the usual case -- the
-    // user runs `agent` from pwsh), it inherits pwsh's PSModulePath, loads pwsh's
-    // Microsoft.PowerShell.Security, and the policy cmdlets fail to autoload. Reset the
-    // Desktop edition to its own machine module path so the cmdlets resolve. Core (pwsh)
-    // resolves them fine, so leave its path alone.
-    "if ($PSVersionTable.PSEdition -eq 'Desktop') { " +
-    "$env:PSModulePath = [Environment]::GetEnvironmentVariable('PSModulePath','Machine') }; " +
     "try { " +
     "Get-Command Get-ExecutionPolicy -ErrorAction Stop | Out-Null; " +
     "Get-Command Set-ExecutionPolicy -ErrorAction Stop | Out-Null " +
@@ -484,7 +478,10 @@ export function windowsProfileTarget(allHosts: boolean): WindowsProfileTarget {
 function psEval(command: string): string {
   const failures: string[] = [];
   for (const exe of PS_EXES) {
-    const result = spawnSync(exe, ["-NoProfile", "-Command", command], { encoding: "utf-8" });
+    const result = withPowershellChildEnv(
+      exe,
+      (env) => spawnSync(exe, ["-NoProfile", "-Command", command], { encoding: "utf-8", env }),
+    );
     if (isEnoent(result.error)) {
       failures.push(`${exe}: not on PATH`);
       continue;
@@ -512,9 +509,14 @@ function relaxWindowsExecutionPolicy(_target: { source: "system" }): void {
     return;
   }
   for (const exe of PS_EXES) {
-    const result = spawnSync(exe, ["-NoProfile", "-Command", command], {
-      stdio: ["ignore", "inherit", "inherit"],
-    });
+    const result = withPowershellChildEnv(
+      exe,
+      (env) =>
+        spawnSync(exe, ["-NoProfile", "-Command", command], {
+          stdio: ["ignore", "inherit", "inherit"],
+          env,
+        }),
+    );
     // Edition not installed (pwsh-only or 5.1-only machine): nothing to relax there.
     if (isEnoent(result.error)) continue;
     if (result.error || result.status !== 0) {

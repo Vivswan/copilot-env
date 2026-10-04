@@ -5,7 +5,13 @@ import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { dirname } from "node:path";
 import { consola } from "consola";
 import { assertNever } from "../utils/assert.ts";
-import { childEnvWithPath, commandExists, findCommand, resolveCommand } from "../utils/command.ts";
+import {
+  childEnvWithPath,
+  commandExists,
+  findCommand,
+  resolveCommand,
+  withPowershellChildEnv,
+} from "../utils/command.ts";
 import { errMessage } from "../utils/error.ts";
 import { dryRunActive } from "../utils/fs_facade.ts";
 import { pickAgedVersion, publishTimesMs, versionLessThan } from "../utils/semver.ts";
@@ -79,17 +85,18 @@ function warnMissing(command: string, name: string): void {
 
 function refreshWindowsPath(): void {
   if (process.platform !== "win32") return;
-  const result = spawnSync(
-    "powershell",
-    [
-      "-NoProfile",
-      "-Command",
-      "$machine=[Environment]::GetEnvironmentVariable('Path','Machine');" +
-      "$user=[Environment]::GetEnvironmentVariable('Path','User');" +
-      "($machine,$user,$env:Path) -join ';'",
-    ],
-    { encoding: "utf8" },
-  );
+  const result = withPowershellChildEnv("powershell", (env) =>
+    spawnSync(
+      "powershell",
+      [
+        "-NoProfile",
+        "-Command",
+        "$machine=[Environment]::GetEnvironmentVariable('Path','Machine');" +
+        "$user=[Environment]::GetEnvironmentVariable('Path','User');" +
+        "($machine,$user,$env:Path) -join ';'",
+      ],
+      { encoding: "utf8", env },
+    ));
   if (result.status !== 0 || !result.stdout.trim()) {
     consola.warn("Could not refresh this process PATH after install.");
     return;
@@ -100,20 +107,21 @@ function refreshWindowsPath(): void {
 
 function addWindowsUserPath(directory: string): void {
   if (process.platform !== "win32") return;
-  const result = spawnSync(
-    "powershell",
-    [
-      "-NoProfile",
-      "-Command",
-      `$dir=${quotePowerShell(directory)};` +
-      "$path=[Environment]::GetEnvironmentVariable('Path','User');" +
-      "$entries=@($path -split ';' | Where-Object { $_ });" +
-      "if ($entries -notcontains $dir) {" +
-      "[Environment]::SetEnvironmentVariable('Path', (($entries + $dir) -join ';'), 'User')" +
-      "}",
-    ],
-    { stdio: "ignore" },
-  );
+  const result = withPowershellChildEnv("powershell", (env) =>
+    spawnSync(
+      "powershell",
+      [
+        "-NoProfile",
+        "-Command",
+        `$dir=${quotePowerShell(directory)};` +
+        "$path=[Environment]::GetEnvironmentVariable('Path','User');" +
+        "$entries=@($path -split ';' | Where-Object { $_ });" +
+        "if ($entries -notcontains $dir) {" +
+        "[Environment]::SetEnvironmentVariable('Path', (($entries + $dir) -join ';'), 'User')" +
+        "}",
+      ],
+      { stdio: "ignore", env },
+    ));
   if (result.status !== 0) consola.warn(`Could not add npm global bin to user PATH: ${directory}`);
   refreshWindowsPath();
 }

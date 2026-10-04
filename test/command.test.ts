@@ -8,7 +8,9 @@ import {
   pickVerbatimWindowsSpawn,
   runCaptured,
   verbatimCliSpawn,
+  withPowershellChildEnv,
 } from "../src/utils/command.ts";
+import { runSync } from "./helpers/run.ts";
 import { afterEach, expect, tempDir, test } from "./helpers/testing.ts";
 
 const SEP = process.platform === "win32" ? ";" : ":";
@@ -16,11 +18,20 @@ const SEP = process.platform === "win32" ? ";" : ":";
 const SAVED_PATH = process.env.PATH;
 const HAD_PATH_CASE = Object.hasOwn(process.env, "Path");
 const SAVED_PATH_CASE = process.env.Path;
+// On Windows the two spellings are one variable, so both saves and both restores agree there.
+const SAVED_PSMODULEPATH = [
+  ["PSModulePath", process.env.PSModulePath],
+  ["psmodulepath", process.env.psmodulepath],
+] as const;
 
 afterEach(() => {
   process.env.PATH = SAVED_PATH;
   if (HAD_PATH_CASE) process.env.Path = SAVED_PATH_CASE;
   else delete process.env.Path;
+  for (const [key, saved] of SAVED_PSMODULEPATH) {
+    if (saved === undefined) delete process.env[key];
+    else process.env[key] = saved;
+  }
   delete process.env.COPILOT_TEST_LEAK;
   delete process.env.Copilot_Mixed_Var;
 });
@@ -84,6 +95,31 @@ test("childPathPrepending dedupes the dirs; childEnvWithPath builds the child en
       keys: row.keys,
     });
   }
+});
+
+// Windows PowerShell 5.1 inherits the parent's PSModulePath, and under pwsh 7 that path breaks its
+// in-box module autoload. A real child spawned from the parent's own environment inside the span is
+// the reading: Deno's spawnSync merges the env map over the parent's, so the map alone proves
+// nothing about what a synchronous child sees.
+test("withPowershellChildEnv: a 5.1 child sees no PSModulePath under any casing, a pwsh child the parent's own, and the parent has it back after", () => {
+  process.env.PSModulePath = "/pwsh/Modules";
+  // One key on Windows, where env names are case-insensitive; a second casing elsewhere.
+  if (process.platform !== "win32") process.env.psmodulepath = "/pwsh/modules";
+  const childSees = () =>
+    runSync(process.execPath, ["eval", 'console.log(Deno.env.get("PSModulePath") ?? "")']).stdout
+      .trim();
+
+  const desktop = withPowershellChildEnv("powershell", (env) => ({
+    keys: Object.keys(env).filter((key) => /^psmodulepath$/i.test(key)),
+    child: childSees(),
+  }));
+  expect(desktop).toEqual({ keys: [], child: "" });
+  const core = withPowershellChildEnv("pwsh", (env) => ({
+    map: env.PSModulePath,
+    child: childSees(),
+  }));
+  expect(core).toEqual({ map: "/pwsh/Modules", child: "/pwsh/Modules" });
+  expect(process.env.PSModulePath).toBe("/pwsh/Modules");
 });
 
 // cmd.exe expands %VAR% even inside double quotes, so the Windows dispatch may fall back to it only

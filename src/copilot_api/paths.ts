@@ -24,9 +24,8 @@ export function resolveHome(): string {
 /** Directory under a daemon home that holds the per-host runtime dirs (`.run/<host>/`). */
 export const RUN_DIR_NAME = ".run";
 
-/** The daemon writes this file too, on a path that floats with its version (the 2.3.14 build renames
- *  atomically, the 2.0.1 floor truncates in place); CopilotApiConfig.read() keys its torn-content
- *  retries on exactly this basename. */
+/** The daemon writes this file too, whole bytes by rename (the floor in copilot-env.config admits
+ *  no older writer). */
 export const PROXY_CONFIG_FILENAME = "config.json";
 
 /** One per host dir (usageDbsUnderHome). */

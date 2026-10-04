@@ -1,13 +1,11 @@
 import { randomBytes } from "node:crypto";
-import { basename } from "node:path";
 import { taggedLogger } from "../utils/logger.ts";
 
 import { BOUNDED_LOCK_POLICY, withRequiredFileLockSync } from "../utils/file_lock.ts";
 import { isEnoentOrNotdir } from "../utils/fs.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { dottedKey, isRecord, stableStringify } from "../utils/json.ts";
-import { sleepSync } from "../utils/time.ts";
-import { CopilotApiPaths, PROXY_CONFIG_FILENAME } from "./paths.ts";
+import { CopilotApiPaths } from "./paths.ts";
 import type { Profile } from "./profile.ts";
 
 const logger = taggedLogger("copilot_api.config");
@@ -51,11 +49,6 @@ function dataOrDegrade(
   }
   return read.data;
 }
-
-// Covers the daemon's truncate-then-write window on config.json (see read()): five attempts with a 4 ms
-// sleep before each retry, so at most four sleeps (16 ms), far longer than the window.
-const LOAD_RETRY_ATTEMPTS = 5;
-const LOAD_RETRY_MS = 4;
 
 /** V8's JSON.parse message quotes the source around the fault, unescaped, and these stores hold
  *  the GitHub token and the daemon keys, so NOTHING of the parser's message is forwarded: even a
@@ -103,53 +96,29 @@ export class CopilotApiConfig {
    */
   private read(): StoreRead {
     // Through the facade: a dry run's earlier landing on this store is the state its later readers
-    // judge (a profile committed, then wired from its slot).
-    // The daemon owns config.json and its write path floats with the version (the 2.3.14 build renames
-    // atomically, the 2.0.1 floor truncates in place), so a read can still land mid-write; accepting that
-    // would let update() WIPE the daemon's keys.
-    //   empty file or a JSON syntax error, config.json only  -> retried; our own stores rename atomically, so junk in one is a fact
-    //   valid JSON whose root is not an object               -> NOT retried; the read completed, so there is nothing torn to wait out
-    //   read error, every store                              -> retried; a transient failure (a Windows sharing violation) is no fact about the file
-    const retryTorn = basename(this.path) === PROXY_CONFIG_FILENAME;
-    for (let attempt = 1;; attempt++) {
-      const last = attempt >= LOAD_RETRY_ATTEMPTS;
-      let raw: string;
-      try {
-        raw = fs.readText(this.path);
-      } catch (e) {
-        // Absence is proven by the facade's lstat-backed look, never by ENOENT alone: a DANGLING
-        // SYMLINK reads ENOENT but the entry exists, and writing "absent" back would replace the
-        // user's link with a plain file.
-        if (isEnoentOrNotdir(e) && fs.readTextResult(this.path).kind === "absent") {
-          return { kind: "doc", data: {} };
-        }
-        if (!last) {
-          sleepSync(LOAD_RETRY_MS);
-          continue;
-        }
-        return { kind: "unreadable", error: String(e) };
+    // judge (a profile committed, then wired from its slot). Every writer of these stores, the
+    // daemon's config.json included, lands whole bytes by rename, so one read is the file's state.
+    let raw: string;
+    try {
+      raw = fs.readText(this.path);
+    } catch (e) {
+      // Absence is proven by the facade's lstat-backed look, never by ENOENT alone: a DANGLING
+      // SYMLINK reads ENOENT but the entry exists, and writing "absent" back would replace the
+      // user's link with a plain file.
+      if (isEnoentOrNotdir(e) && fs.readTextResult(this.path).kind === "absent") {
+        return { kind: "doc", data: {} };
       }
-      if (raw.trim()) {
-        try {
-          const data: unknown = JSON.parse(raw);
-          // A scalar or array root is content the store cannot interpret, so it takes the parse-failure
-          // path: a write-back would discard it.
-          if (isRecord(data)) return { kind: "doc", data };
-          return { kind: "unparseable", error: "the JSON root is not an object" };
-        } catch {
-          if (retryTorn && !last) {
-            sleepSync(LOAD_RETRY_MS);
-            continue;
-          }
-          return { kind: "unparseable", error: JSON_PARSE_DIAGNOSTIC };
-        }
-      }
-      // An empty read may be the daemon's truncate window.
-      if (retryTorn && !last) {
-        sleepSync(LOAD_RETRY_MS);
-        continue;
-      }
-      return { kind: "doc", data: {} };
+      return { kind: "unreadable", error: String(e) };
+    }
+    if (!raw.trim()) return { kind: "doc", data: {} };
+    try {
+      const data: unknown = JSON.parse(raw);
+      // A scalar or array root is content the store cannot interpret, so it takes the parse-failure
+      // path: a write-back would discard it.
+      if (isRecord(data)) return { kind: "doc", data };
+      return { kind: "unparseable", error: "the JSON root is not an object" };
+    } catch {
+      return { kind: "unparseable", error: JSON_PARSE_DIAGNOSTIC };
     }
   }
 
@@ -200,9 +169,8 @@ export class CopilotApiConfig {
       );
     }
     if (read.kind === "unparseable") {
-      // A corrupt-but-readable file is NOT a reset candidate: config.json may still be mid-write past
-      // read()'s retries, and a hand-edited store holds salvageable content. The reset stays an
-      // explicit user act: fix or delete the file.
+      // A corrupt-but-readable file is NOT a reset candidate: a hand-edited store holds salvageable
+      // content. The reset stays an explicit user act: fix or delete the file.
       throw new Error(
         `${this.path} is not valid JSON (${read.error}); refusing to overwrite it ` +
           `(a rewrite would discard whatever it still holds - fix or delete the file to reset it).`,

@@ -6,14 +6,13 @@ import {
   CI_RC_DIR_ENV,
   MARKER_END,
   posixBlock,
-  quotePosix,
-  quotePowerShell,
   rcFiles,
   stripBlocks,
   upsertBlock,
   windowsBlock,
   windowsProfileTarget,
 } from "../src/shell/integration.ts";
+import { quotePosix, quotePowerShell } from "../src/utils/shell_quote.ts";
 import { runCli, runSync } from "./helpers/run.ts";
 import { afterEach, beforeEach, expect, tempDir, test } from "./helpers/testing.ts";
 

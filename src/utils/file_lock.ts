@@ -11,7 +11,7 @@
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { setTimeout as sleepAsync } from "node:timers/promises";
-import { isEnoentOrNotdir } from "./fs.ts";
+import { isEnoentOrNotdir, retryOpenHandleRefusal } from "./fs.ts";
 import * as fs from "./fs_facade.ts";
 import { dryRunActive } from "./fs_facade.ts";
 import { sleepSync } from "./time.ts";
@@ -129,30 +129,12 @@ function writeMarker(lockPath: string, text: string): Acquire {
   }
 }
 
-/** What a delete refused by an open handle surfaces (Windows: a scanner on the just-released
- *  marker); the disk writer's rename loop (fs_disk.ts) keys off the same codes. */
-const OPEN_HANDLE_REFUSAL_CODES: ReadonlySet<string> = new Set(["EPERM", "EBUSY", "EACCES"]);
-const REMOVE_RETRIES = 5;
-const REMOVE_RETRY_MS = 50;
-
-/** A POSIX unlink of an open file always succeeds; Windows refuses it while a handle opened
- *  without delete sharing is on the file. `remove` is the test seam. */
+/** `remove` is the test seam. */
 export function removeMarkerWithRetry(
   path: string,
   remove: (p: string) => void = (p) => rmSync(p, { force: true }),
 ): void {
-  for (let i = 0;; i++) {
-    try {
-      remove(path);
-      return;
-    } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code;
-      if (i >= REMOVE_RETRIES || code === undefined || !OPEN_HANDLE_REFUSAL_CODES.has(code)) {
-        throw err;
-      }
-      sleepSync(REMOVE_RETRY_MS);
-    }
-  }
+  retryOpenHandleRefusal(() => remove(path));
 }
 
 /** A primitive: production code scopes lock lifetimes through withFileLock/withFileLockSync, bar

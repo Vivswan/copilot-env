@@ -4,12 +4,4 @@
 // usage_corpus/cli.ts; the run itself is usage_corpus/main.ts.
 import { main } from "./usage_corpus/main.ts";
 
-export {
-  IdMap,
-  isClaudeUsageLine,
-  isCodexUsageLine,
-  type ScrubbedText,
-  scrubJsonl,
-} from "./usage_corpus/scrub.ts";
-
 if (import.meta.main) await main();

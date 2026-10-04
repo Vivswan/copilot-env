@@ -5,7 +5,7 @@ import { taggedLogger } from "../utils/logger.ts";
 import { BOUNDED_LOCK_POLICY, withRequiredFileLockSync } from "../utils/file_lock.ts";
 import { isEnoentOrNotdir } from "../utils/fs.ts";
 import * as fs from "../utils/fs_facade.ts";
-import { isRecord, stableStringify } from "../utils/json.ts";
+import { dottedKey, isRecord, stableStringify } from "../utils/json.ts";
 import { sleepSync } from "../utils/time.ts";
 import { CopilotApiPaths, PROXY_CONFIG_FILENAME } from "./paths.ts";
 import type { Profile } from "./profile.ts";
@@ -20,11 +20,6 @@ const SECRET_STORE_LEAF =
 /** The bytes save() lands, keys sorted. */
 function storeText(data: Record<string, unknown>): string {
   return `${stableStringify(data)}\n`;
-}
-
-/** A segment carrying a dot or a space is quoted, so a dotted key never reads as two levels. */
-function dottedKey(path: readonly string[]): string {
-  return path.map((s) => (s.includes(".") || s.includes(" ") ? JSON.stringify(s) : s)).join(".");
 }
 
 /** The dotted leaves of `doc` that SECRET_STORE_LEAF names, declared at the write so a dry run

@@ -10,11 +10,9 @@ import {
 import { ATTESTATION_NAME } from "../src/install/attestation.ts";
 import { parseChecksums } from "../src/install/checksums.ts";
 import {
-  CURRENT_LINK,
   pointCurrentAt,
   POSIX_CURRENT_SHIM,
   readCurrentVersionName,
-  VERSIONS_DIR,
 } from "../src/install/installer.ts";
 import {
   currentReleaseTarget,
@@ -22,6 +20,7 @@ import {
   RELEASE_TARGETS,
   releaseAssetName,
 } from "../src/install/targets.ts";
+import { CURRENT_LINK, VERSIONS_DIR } from "../src/utils/root.ts";
 import { afterEach, beforeEach, describe, expect, tempDir, test } from "./helpers/testing.ts";
 
 // The update is prepare-then-commit, so a pre-flip failure leaves the old version fully live:

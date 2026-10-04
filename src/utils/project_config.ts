@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { parse } from "@std/dotenv/parse";
 import * as fs from "./fs_facade.ts";
 import { ASSET_ROOT } from "./root.ts";
 import { type SemverString, toSemverString, versionLessThan } from "./semver.ts";
@@ -48,21 +49,8 @@ function semverValue(key: ProjectConfigKey, value: string, source: string): Semv
 
 export function parseProjectConfig(content: string, source = PROJECT_CONFIG_FILE): ProjectConfig {
   const raw: Partial<Record<ProjectConfigKey, string>> = {};
-
-  for (const [index, line] of content.split(/\r?\n/).entries()) {
-    const trimmed = line.trim();
-    if (trimmed === "" || trimmed.startsWith("#")) continue;
-
-    const equals = trimmed.indexOf("=");
-    if (equals < 0) {
-      throw new Error(`${source}:${index + 1}: expected KEY=value`);
-    }
-
-    const key = trimmed.slice(0, equals).trim();
-    const value = trimmed.slice(equals + 1).trim();
-    if (isProjectConfigKey(key)) {
-      raw[key] = value;
-    }
+  for (const [key, value] of Object.entries(parse(content))) {
+    if (isProjectConfigKey(key)) raw[key] = value;
   }
 
   const proxyMinVersion = semverValue(

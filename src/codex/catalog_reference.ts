@@ -11,9 +11,9 @@ import { errMessage } from "../utils/error.ts";
 import { isEnoent } from "../utils/fs.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { createStderrLogger } from "../utils/logger.ts";
+import type { CatalogSource } from "../copilot_api/catalog.ts";
 import {
   catalogBookkeepingAllowed,
-  type CatalogSource,
   inspectCatalogFile,
   refreshCodexModelCatalogIfStale,
   UNVERIFIED_SUFFIX,

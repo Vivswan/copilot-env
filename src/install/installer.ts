@@ -97,11 +97,7 @@ export const MATERIALIZED_ASSET_FILES = [
  *                          make every install root read as a checkout */
 export const BUNDLED_ONLY_ASSETS = ["copilot-env.config", ".dvmrc", "deno.json"] as const;
 
-// --- The versioned layout vocabulary --------------------------------------------
-
-// The layout NAMES live in src/utils/root.ts (root detection reads the layout, so root.ts owns
-// the vocabulary); re-exported here beside the operations that build the layout.
-export { CURRENT_LINK, VERSIONS_DIR };
+// --- The versioned layout ---------------------------------------------------------
 
 /** root.ts's install-root override (ROOT_OVERRIDE_ENV there, unexported): how a SPAWNED binary
  *  is aimed at the exact root it must manage (`agent update` aims `install --assets-only` inside

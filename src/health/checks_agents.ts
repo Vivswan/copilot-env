@@ -94,6 +94,53 @@ function describeDirectGhAuth(a: CodexDirectAuthFacts): {
   }
 }
 
+/** The `directAuth` row of the health JSON, the shape the report carried before the facts became
+ *  a union: a flat `authenticated` verdict with `unproven` as a marker, and the gh fields only
+ *  when the probe produced them. `kind` never reaches the report. */
+interface DirectAuthJson {
+  command: string | null;
+  authenticated: boolean;
+  unproven?: true;
+  ghUser?: string | null;
+  ghCommand?: string;
+  ghDetail?: string;
+  ghActiveLogin?: string | null;
+}
+
+function directAuthJson(a: CodexDirectAuthFacts): DirectAuthJson {
+  const ghUser = a.ghUser === undefined ? {} : { ghUser: a.ghUser };
+  const ghActiveLogin = a.ghActiveLogin === undefined ? {} : { ghActiveLogin: a.ghActiveLogin };
+  switch (a.kind) {
+    case "found":
+      return {
+        command: a.command,
+        authenticated: true,
+        ...ghUser,
+        ghCommand: a.ghCommand,
+        ...ghActiveLogin,
+      };
+    case "absent":
+      return {
+        command: a.command,
+        authenticated: false,
+        ...ghUser,
+        ...(a.command === null ? {} : { ghDetail: a.ghDetail }),
+        ...ghActiveLogin,
+      };
+    case "unproven":
+      return {
+        command: a.command,
+        authenticated: false,
+        unproven: true,
+        ...ghUser,
+        ...(a.command === null ? {} : { ghDetail: a.ghDetail }),
+        ...ghActiveLogin,
+      };
+    default:
+      return assertNever(a);
+  }
+}
+
 /** The shared direct-mode auth verdict: ok, or warn carrying its fix. */
 type DirectAuthVerdict =
   | { status: "ok"; authLine: string }
@@ -221,7 +268,7 @@ export function checkCodex(f: CodexFacts, profile: Profile): CheckResult {
       envKeyInDotenv: f.envKeyInDotenv,
       envKeyInEnviron: f.envKeyInEnviron,
       tokenAvailable: f.tokenAvailable,
-      directAuth: f.directAuth,
+      directAuth: directAuthJson(f.directAuth),
       // The store-aware "Direct needs no gh" verdict, under the key this JSON report has always
       // used.
       directUsesToken: f.directNeedsNoGh,
@@ -418,7 +465,7 @@ export function checkClaude(f: ClaudeFacts, profile: Profile): CheckResult {
       otherReason: f.otherReason,
       apiKeyHelper: f.helperPath,
       baseUrl: f.baseUrl,
-      directAuth: f.directAuth,
+      directAuth: directAuthJson(f.directAuth),
       directUsesToken: f.directUsesToken,
     },
   };

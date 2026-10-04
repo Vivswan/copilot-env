@@ -13,6 +13,7 @@ import {
 } from "../src/health/checks_agents.ts";
 import type {
   ClaudeFacts,
+  CodexDirectAuthFacts,
   CodexFacts,
   CodexHostFacts,
   LiveProbeFacts,
@@ -271,33 +272,53 @@ test("codex: not configured is ok; each broken part warns with a precise message
   }
 });
 
+// Both agents wired Direct on a gh-cli slot, gh found and authenticated; the direct-auth tests
+// swap in the verdict under test.
+const CODEX_DIRECT = {
+  home: "/c",
+  configExists: true,
+  providerSelected: true,
+  providerMode: "direct",
+  modelProvider: "copilot-env",
+  baseUrl: "https://api.githubcopilot.com",
+  baseUrlMatches: true,
+  envKeyMatches: false,
+  providerWired: true,
+  credential: "command",
+  envFilePresent: false,
+  envKeyInDotenv: false,
+  envKeyInEnviron: false,
+  tokenAvailable: false,
+  otherReason: null,
+  directUsesToken: false,
+  directNeedsNoGh: false,
+  provider: "gh-cli",
+  directAuth: { kind: "found", command: "/bin/gh", ghCommand: "gh auth token" },
+} satisfies CodexFacts;
+const CLAUDE_DIRECT = {
+  home: "/h/.claude",
+  settingsPath: join("/h/.claude", "settings.json"),
+  settingsExists: true,
+  wired: true,
+  credential: "command",
+  helperPath: join("/h/.claude", "copilot-token.sh"),
+  baseUrl: "https://api.githubcopilot.com",
+  baseUrlMatches: false,
+  providerMode: "direct",
+  otherReason: null,
+  directAuth: { kind: "found", command: "/bin/gh", ghCommand: "gh auth token" },
+  directUsesToken: false,
+  provider: "gh-cli",
+} satisfies ClaudeFacts;
+// `gh auth token` spawned but never completed (error / timeout kill).
+const UNPROVEN_TOKEN_CALL = {
+  kind: "unproven",
+  command: "/bin/gh",
+  ghDetail: "`gh auth token` did not complete (ETIMEDOUT)",
+} as const;
+
 test("checkCodex/checkClaude direct: an UNPROVEN gh probe says could-not-check, never a confident verdict", () => {
-  const codexDirect = {
-    home: "/c",
-    configExists: true,
-    providerSelected: true,
-    providerMode: "direct",
-    modelProvider: "copilot-env",
-    baseUrl: "https://api.githubcopilot.com",
-    baseUrlMatches: true,
-    envKeyMatches: false,
-    providerWired: true,
-    credential: "command",
-    envFilePresent: false,
-    envKeyInDotenv: false,
-    envKeyInEnviron: false,
-    tokenAvailable: false,
-    otherReason: null,
-    directUsesToken: false,
-    directNeedsNoGh: false,
-    provider: "gh-cli",
-    directAuth: {
-      kind: "unproven",
-      command: "/bin/gh",
-      ghDetail: "`gh auth token` did not complete (ETIMEDOUT)",
-    },
-  } satisfies CodexFacts;
-  // `gh auth token` spawned but never completed (error / timeout kill).
+  const codexDirect = { ...CODEX_DIRECT, directAuth: UNPROVEN_TOKEN_CALL };
   const codexUnproven = checkCodex(codexDirect, null);
   expect(codexUnproven.status).toBe("warn");
   expect(codexUnproven.detail).toContain(
@@ -310,12 +331,7 @@ test("checkCodex/checkClaude direct: an UNPROVEN gh probe says could-not-check, 
   // account list is a separate probe that may have succeeded.
   const codexUnprovenNamed = checkCodex({
     ...codexDirect,
-    directAuth: {
-      kind: "unproven",
-      command: "/bin/gh",
-      ghDetail: "`gh auth token` did not complete (ETIMEDOUT)",
-      ghActiveLogin: "octocat",
-    },
+    directAuth: { ...UNPROVEN_TOKEN_CALL, ghActiveLogin: "octocat" },
   }, null);
   expect(codexUnprovenNamed.detail).toContain(
     "gh auth: could not check gh authentication " +
@@ -335,25 +351,7 @@ test("checkCodex/checkClaude direct: an UNPROVEN gh probe says could-not-check, 
     "re-run `agent health` (the gh check did not run to completion)",
   );
   // Same shared verdict on the Claude side.
-  const claudeUnproven = checkClaude({
-    home: "/h/.claude",
-    settingsPath: join("/h/.claude", "settings.json"),
-    settingsExists: true,
-    wired: true,
-    credential: "command",
-    helperPath: join("/h/.claude", "copilot-token.sh"),
-    baseUrl: "https://api.githubcopilot.com",
-    baseUrlMatches: false,
-    providerMode: "direct",
-    otherReason: null,
-    directAuth: {
-      kind: "unproven",
-      command: "/bin/gh",
-      ghDetail: "`gh auth token` did not complete (ETIMEDOUT)",
-    },
-    directUsesToken: false,
-    provider: "gh-cli",
-  }, null);
+  const claudeUnproven = checkClaude({ ...CLAUDE_DIRECT, directAuth: UNPROVEN_TOKEN_CALL }, null);
   expect(claudeUnproven.status).toBe("warn");
   expect(claudeUnproven.detail).toContain(
     "gh auth: could not check gh authentication " +
@@ -361,6 +359,75 @@ test("checkCodex/checkClaude direct: an UNPROVEN gh probe says could-not-check, 
   );
   expect(claudeUnproven.detail).not.toContain("is not authenticated");
   expect(claudeUnproven.fix).toBe("re-run `agent health` (the gh check did not run to completion)");
+});
+
+test("health --json: the directAuth row keeps its flat bytes (authenticated, an unproven marker), never kind", () => {
+  // The report is an external contract: the facts union carries `kind`, the JSON never did, and
+  // its key order is part of the bytes.
+  const rows: { directAuth: CodexDirectAuthFacts; json: string }[] = [
+    {
+      directAuth: { kind: "found", command: "/bin/gh", ghCommand: "gh auth token" },
+      json: '{"command":"/bin/gh","authenticated":true,"ghCommand":"gh auth token"}',
+    },
+    {
+      directAuth: {
+        kind: "found",
+        command: "/bin/gh",
+        ghCommand: "gh auth token --user work-bot",
+        ghUser: "work-bot",
+      },
+      json: '{"command":"/bin/gh","authenticated":true,"ghUser":"work-bot",' +
+        '"ghCommand":"gh auth token --user work-bot"}',
+    },
+    {
+      directAuth: { kind: "absent", command: null },
+      json: '{"command":null,"authenticated":false}',
+    },
+    {
+      directAuth: {
+        kind: "absent",
+        command: "/bin/gh",
+        ghDetail: "`gh auth token` printed no token",
+      },
+      json:
+        '{"command":"/bin/gh","authenticated":false,"ghDetail":"`gh auth token` printed no token"}',
+    },
+    {
+      directAuth: {
+        kind: "absent",
+        command: "/bin/gh",
+        ghDetail: "`gh auth token --user work-bot` printed no token",
+        ghUser: "work-bot",
+      },
+      json: '{"command":"/bin/gh","authenticated":false,"ghUser":"work-bot",' +
+        '"ghDetail":"`gh auth token --user work-bot` printed no token"}',
+    },
+    {
+      directAuth: { ...UNPROVEN_TOKEN_CALL, ghActiveLogin: "octocat" },
+      json: '{"command":"/bin/gh","authenticated":false,"unproven":true,' +
+        '"ghDetail":"`gh auth token` did not complete (ETIMEDOUT)","ghActiveLogin":"octocat"}',
+    },
+    {
+      directAuth: {
+        kind: "unproven",
+        command: "/bin/gh",
+        ghDetail: "`gh auth token --user work-bot` did not complete (ETIMEDOUT)",
+        ghUser: "work-bot",
+      },
+      json: '{"command":"/bin/gh","authenticated":false,"unproven":true,"ghUser":"work-bot",' +
+        '"ghDetail":"`gh auth token --user work-bot` did not complete (ETIMEDOUT)"}',
+    },
+    {
+      directAuth: { kind: "unproven", command: null },
+      json: '{"command":null,"authenticated":false,"unproven":true}',
+    },
+  ];
+  for (const row of rows) {
+    const codex = checkCodex({ ...CODEX_DIRECT, directAuth: row.directAuth }, null);
+    const claude = checkClaude({ ...CLAUDE_DIRECT, directAuth: row.directAuth }, null);
+    expect(JSON.stringify(codex.value?.directAuth), row.json).toBe(row.json);
+    expect(JSON.stringify(claude.value?.directAuth), row.json).toBe(row.json);
+  }
 });
 
 // --- claude wiring ----------------------------------------------------------

@@ -399,8 +399,8 @@ export async function gatherFacts(
   const directAuthFor = async (
     credential: "command" | "static" | "none",
   ): Promise<{ directAuth: CodexDirectAuthFacts; noGhNeeded: boolean }> => {
-    // Never rendered: directAuthVerdict (checks_agents.ts) reads directAuth for a gh-cli
-    // provider only, and that shape always probes.
+    // Reported as the unprobed `{"command":null,"authenticated":false}` row. The auth VERDICT never
+    // reads it: directAuthVerdict (checks_agents.ts) judges a gh-cli provider only, which probes.
     const noProbe: CodexDirectAuthFacts = { kind: "absent", command: null };
     if (credential === "static") return { directAuth: noProbe, noGhNeeded: true };
     const managed = credential === "command";

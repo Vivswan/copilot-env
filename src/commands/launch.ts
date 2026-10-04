@@ -7,6 +7,7 @@
 // inherited stdio and its exit code (or 128+signal) passes through.
 import { spawnSync } from "node:child_process";
 import { constants } from "node:os";
+import { assertNever } from "../utils/assert.ts";
 import { wireBothAgents } from "../agents/profile_wiring.ts";
 import { runClaude, runCodex } from "../agents/configure_defaults.ts";
 import { BASE_URL_ENV, managedClaudeBaseUrl } from "../claude/config.ts";
@@ -265,14 +266,21 @@ function spawnAgentCli(plan: LaunchPlan): number {
  *  itself is then the honest test; its own spawn error names the real problem. */
 function rejectMissingCli(cli: LaunchAction["kind"]): void {
   const cliLook = findCommand(cli);
-  if (cliLook.kind === "found") return;
-  if (cliLook.kind === "unproven") {
-    printWrappedToStderr(
-      `could not check whether '${cli}' is installed (the command probe failed to run); launching anyway`,
-    );
-    return;
+  switch (cliLook.kind) {
+    case "found":
+      return;
+    case "unproven":
+      printWrappedToStderr(
+        `could not check whether '${cli}' is installed (the command probe failed to run); launching anyway`,
+      );
+      return;
+    case "absent":
+      throw new Error(
+        `'${cli}' is not installed. Run 'agent shell --clis' to install the agent CLIs.`,
+      );
+    default:
+      return assertNever(cliLook);
   }
-  throw new Error(`'${cli}' is not installed. Run 'agent shell --clis' to install the agent CLIs.`);
 }
 
 /** process.exitCode, never process.exit, so pending stderr writes flush. A dry run prepares the

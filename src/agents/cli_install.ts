@@ -60,15 +60,21 @@ function run(
 
 function warnMissing(command: string, name: string): void {
   const look = findCommand(command);
-  if (look.kind === "found") return;
-  if (look.kind === "unproven") {
-    // A failed look must not hand out "install it yourself" advice: the probe never completed.
-    consola.warn(`Could not check for ${name} ('${command}'): the command probe failed to run.`);
-    return;
+  switch (look.kind) {
+    case "found":
+      return;
+    case "unproven":
+      // A failed look must not hand out "install it yourself" advice: the probe never completed.
+      consola.warn(`Could not check for ${name} ('${command}'): the command probe failed to run.`);
+      return;
+    case "absent":
+      consola.warn(
+        `${name} ('${command}') is not installed; skipping. Install it yourself to use it.`,
+      );
+      return;
+    default:
+      return assertNever(look);
   }
-  consola.warn(
-    `${name} ('${command}') is not installed; skipping. Install it yourself to use it.`,
-  );
 }
 
 function refreshWindowsPath(): void {
@@ -171,13 +177,19 @@ function installNodeWindows(): void {
 /** `planned`: a dry run, which would install Node.js and npm here and stops at saying so. */
 function ensureNpm(options: CliInstall): "present" | "absent" | "planned" {
   const npmLook = findCommand(NPM_COMMAND);
-  if (npmLook.kind === "found") return "present";
-  if (npmLook.kind === "unproven") {
-    // Never install off a failed look: npm may well be there already.
-    consola.warn(
-      "Could not check for npm (the command probe failed to run); skipping the CLI install.",
-    );
-    return "absent";
+  switch (npmLook.kind) {
+    case "found":
+      return "present";
+    case "unproven":
+      // Never install off a failed look: npm may well be there already.
+      consola.warn(
+        "Could not check for npm (the command probe failed to run); skipping the CLI install.",
+      );
+      return "absent";
+    case "absent":
+      break;
+    default:
+      return assertNever(npmLook);
   }
 
   if (process.platform === "win32" && options.noSudo) {
@@ -356,17 +368,24 @@ function installCli(
   npmGlobals: Record<string, string | null>,
 ): void {
   const look = findCommand(cli.command);
-  if (look.kind === "unproven") {
-    // Never install off a failed look: the CLI may well be there already.
-    consola.warn(
-      `Could not check whether ${cli.name} is installed (the command probe failed to run); skipping its install.`,
-    );
-    return;
-  }
-  if (look.kind === "found" && !(cli.packageName in npmGlobals)) {
-    // Only an npm-managed install is ours to move.
-    consola.info(`${cli.name} is installed outside npm; leaving it as it is.`);
-    return;
+  switch (look.kind) {
+    case "unproven":
+      // Never install off a failed look: the CLI may well be there already.
+      consola.warn(
+        `Could not check whether ${cli.name} is installed (the command probe failed to run); skipping its install.`,
+      );
+      return;
+    case "found":
+      if (!(cli.packageName in npmGlobals)) {
+        // Only an npm-managed install is ours to move.
+        consola.info(`${cli.name} is installed outside npm; leaving it as it is.`);
+        return;
+      }
+      break;
+    case "absent":
+      break;
+    default:
+      return assertNever(look);
   }
   // npm's version bounds the install whether or not the command is on PATH (its bin dir may not
   // be).
@@ -410,17 +429,21 @@ function installCli(
   runNpm(["install", "-g", spec]);
   refreshWindowsPath();
   const verify = findCommand(cli.command);
-  if (verify.kind !== "found") {
-    if (verify.kind === "unproven") {
+  switch (verify.kind) {
+    case "found":
+      return;
+    case "unproven":
       // The install itself succeeded; only the verifying look failed.
       consola.warn(
         `Could not verify ${cli.name} after install (the command probe failed to run).`,
       );
       return;
-    }
-    throw new Error(
-      `${cli.name} was installed but '${cli.command}' is still unavailable. Open a new shell and rerun 'agent shell --clis'.`,
-    );
+    case "absent":
+      throw new Error(
+        `${cli.name} was installed but '${cli.command}' is still unavailable. Open a new shell and rerun 'agent shell --clis'.`,
+      );
+    default:
+      return assertNever(verify);
   }
 }
 

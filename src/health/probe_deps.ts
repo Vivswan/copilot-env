@@ -113,19 +113,21 @@ async function codexDirectAuth(ghUser: string | null): Promise<CodexDirectAuthFa
   // The failure arm is kept: this fact renders auth VERDICTS ("GitHub CLI not found", "not
   // authenticated"), so a look that never ran must arrive marked, not as a proven absence.
   const look = findCommand("gh");
-  if (look.kind !== "found") {
-    return {
-      command: null,
-      authenticated: false,
-      ...(look.kind === "unproven" ? { unproven: true as const } : {}),
-      ...(ghUser === null ? {} : { ghUser }),
-    };
+  const pinned = ghUser === null ? {} : { ghUser };
+  switch (look.kind) {
+    case "unproven":
+      return { command: null, authenticated: false, unproven: true, ...pinned };
+    case "absent":
+      return { command: null, authenticated: false, ...pinned };
+    case "found":
+      // The SAME recipe `agent auth` and every resolve run (ghAuthTokenSpawnSpec: ONE gh call, the
+      // pinned `--user` form or the active account's), off the event loop so it overlaps the other
+      // probes under gatherFacts' Promise.all. The token is read into memory with the rest of gh's
+      // output and only the verdict and the serving call are kept.
+      return directAuthFromLook(look.path, await ghAuthTokenLookAsync(ghUser, look.path), ghUser);
+    default:
+      return assertNever(look);
   }
-  // The SAME recipe `agent auth` and every resolve run (ghAuthTokenSpawnSpec: ONE gh call, the
-  // pinned `--user` form or the active account's), off the event loop so it overlaps the other
-  // probes under gatherFacts' Promise.all. The token is read into memory with the rest of gh's
-  // output and only the verdict and the serving call are kept.
-  return directAuthFromLook(look.path, await ghAuthTokenLookAsync(ghUser, look.path), ghUser);
 }
 
 /** The CLI's output, line for line, so `agent health --live` shows the complete error: a JSON
@@ -163,10 +165,15 @@ export function runLiveCli(
   // `find` is a test seam; the real look keeps its failure arm (see CommandLook) because the
   // skip renders a "CLI not installed" verdict.
   const look = find(launch.cli);
-  if (look.kind !== "found") {
-    return Promise.resolve(
-      look.kind === "unproven" ? { kind: "skipped", lookFailed: true } : { kind: "skipped" },
-    );
+  switch (look.kind) {
+    case "unproven":
+      return Promise.resolve({ kind: "skipped", lookFailed: true });
+    case "absent":
+      return Promise.resolve({ kind: "skipped" });
+    case "found":
+      break;
+    default:
+      return assertNever(look);
   }
   const resolved = look.path;
   const ghPath = resolveCommand("gh");

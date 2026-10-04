@@ -3,6 +3,7 @@
 
 $script:AgentsDir = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $script:AgentPs1 = Join-Path $AgentsDir 'bin\agent.ps1'
+$script:AgentHost = (Get-Process -Id $PID).Path
 
 # DENO_INSTALL is the same override scripts/ensure-deno.ps1 honors, so every entry point
 # looks in one place.
@@ -16,7 +17,7 @@ if ((Test-Path $DenoExe) -and (-not (Get-Command deno -ErrorAction SilentlyConti
 # --- low-level helpers -----------------------------------------------------
 
 function Invoke-Agent {
-    & powershell -NoProfile -ExecutionPolicy Bypass -File $script:AgentPs1 @args
+    & $script:AgentHost -NoProfile -ExecutionPolicy Bypass -File $script:AgentPs1 @args
 }
 
 # `agent profile env` stdout carries only shell directives (src/commands/env.ts; the default

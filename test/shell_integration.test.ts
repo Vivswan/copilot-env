@@ -587,9 +587,9 @@ for (const shell of ["bash", "zsh"]) {
   );
 }
 
-// The driver is the host that dot-sources agents.ps1, so a pwsh-only construct in the rc fails
-// under Windows PowerShell 5.1 here, on the Windows runner, instead of in a user's $PROFILE. Off
-// Windows only pwsh exists, and the rc's nested `powershell` resolves to a shim that runs it.
+// The driver is the host that dot-sources agents.ps1 and the host its nested `agent` call
+// re-enters, so a pwsh-only construct in the rc fails under Windows PowerShell 5.1 here, on the
+// Windows runner, instead of in a user's $PROFILE.
 const PS_DRIVERS = [
   { driver: "pwsh", onThisHost: onPath(process.platform === "win32" ? "pwsh.exe" : "pwsh") },
   { driver: "powershell", onThisHost: process.platform === "win32" },
@@ -619,16 +619,8 @@ for (const { driver: ps, onThisHost } of PS_DRIVERS) {
           '"after failed command: $env:COPILOT_FAKE_REFRESHES status=$LASTEXITCODE"',
         ].join("\n"),
       );
-      let path = process.env.PATH ?? "";
-      if (process.platform !== "win32") {
-        const shims = join(staged.root, "shims");
-        mkdirSync(shims);
-        writeFileSync(join(shims, "powershell"), '#!/bin/sh\nexec pwsh "$@"\n');
-        chmodSync(join(shims, "powershell"), 0o755);
-        path = `${shims}${delimiter}${path}`;
-      }
       const proc = runSync(ps, ["-NoProfile", "-NonInteractive", "-File", driver, staged.rc], {
-        env: { ...process.env, HOME: home, PATH: path, COPILOT_FAKE_STALE: "1" },
+        env: { ...process.env, HOME: home, COPILOT_FAKE_STALE: "1" },
       });
       const lf = (text: string) => text.replaceAll("\r\n", "\n");
       expect({ exitCode: proc.exitCode, stdout: lf(proc.stdout), stderr: lf(proc.stderr) }).toEqual(
@@ -654,7 +646,7 @@ for (const { driver: ps, onThisHost } of PS_DRIVERS) {
         "-File",
         failedDriver,
         staged.rc,
-      ], { env: { ...process.env, HOME: home, PATH: path, COPILOT_FAKE_REFRESH_FAILS: "1" } });
+      ], { env: { ...process.env, HOME: home, COPILOT_FAKE_REFRESH_FAILS: "1" } });
       expect({ exitCode: failed.exitCode, stdout: lf(failed.stdout), stderr: lf(failed.stderr) })
         .toEqual({ exitCode: 0, stdout: "after failed source: []\n", stderr: "" });
     },

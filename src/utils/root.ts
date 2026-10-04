@@ -244,23 +244,27 @@ export function proxyTokenArgs(profile: Profile = null): string[] {
   return ["profile", ...(profile === null ? [] : [profile]), "proxy-token", "--yes"];
 }
 
-export function proxyTokenCommand(profile: Profile = null): { command: string; args: string[] } {
+export function proxyTokenCommand(profile: Profile = null): AgentLauncher {
   return agentLauncherCommand(proxyTokenArgs(profile));
 }
 
+/** `kind` is what a spawner switches on to put a 5.1 child inside withPowershellChildEnv, so the
+ *  decision never rests on the spelling of `command`. */
+export type AgentLauncher =
+  | { kind: "powershell"; command: "powershell"; args: string[] }
+  | { kind: "direct"; command: string; args: string[] };
+
 /** For a program (Codex's `auth.command`) spawning `agent` directly, not from a shell: on Windows
  *  the bash launcher is not executable, so it goes through PowerShell and the `.ps1`. */
-export function agentLauncherCommand(subArgs: readonly string[]): {
-  command: string;
-  args: string[];
-} {
+export function agentLauncherCommand(subArgs: readonly string[]): AgentLauncher {
   if (process.platform === "win32") {
     return {
+      kind: "powershell",
       command: "powershell",
       args: powershellFileArgs(AGENT_LAUNCHER_PS1, subArgs),
     };
   }
-  return { command: AGENT_LAUNCHER, args: [...subArgs] };
+  return { kind: "direct", command: AGENT_LAUNCHER, args: [...subArgs] };
 }
 
 // The install root is copilot-env's own: writes inside it are bookkeeping, never reported.

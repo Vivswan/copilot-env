@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, sep } from "node:path";
 import { parse, stringify, TomlDate } from "smol-toml";
 import { directHelperCommand, proxyHelperCommand } from "../src/claude/config.ts";
@@ -20,14 +20,7 @@ import {
   v400CodexWiring,
   v400ShellFence,
 } from "../src/migrations/4.0.0.ts";
-import {
-  moveDesktopHelpers,
-  moveRootStores,
-  pinSoleGhAccount,
-  v402DesktopHelpers,
-  v402GhAccountPin,
-  v402RootLayout,
-} from "../src/migrations/4.0.2.ts";
+import { moveDesktopHelpers, moveRootStores, pinSoleGhAccount } from "../src/migrations/4.0.2.ts";
 import {
   dropCodexIdentityPin,
   dropSlotIdentityCache,
@@ -39,24 +32,21 @@ import {
   rewriteDesktopMcpArgv,
   scopeStaticKeyBoolean,
   stripLaunchersBlocks,
-  v409CodexProfileFiles,
-  v409DesktopMcpArgv,
   v409IdentityCache,
-  v409IntegrationIdPin,
-  v409LaunchersBlock,
   v409ProfileVerbTree,
-  v409RootDaemonHome,
-  v409StateFold,
-  v409StaticKeyScope,
 } from "../src/migrations/4.0.9.ts";
 import { dueMigrations, type Migration, runMigrations } from "../src/migrations/index.ts";
 import { MARKER, MARKER_END } from "../src/shell/integration.ts";
 import { agentAuthGetArgs, agentLauncherCommand, proxyTokenCommand } from "../src/utils/root.ts";
-import { writeDesktopHelperScript } from "../src/claude/desktop_helper_scripts.ts";
+import {
+  desktopHelperPath,
+  writeDesktopHelperScript,
+} from "../src/claude/desktop_helper_scripts.ts";
 import { CLAUDE_DESKTOP_DIR_ENV, META_FILENAME } from "../src/claude/desktop_library.ts";
 import { mcpServeArgs } from "../src/claude/desktop_payload.ts";
 import { claudeJsonPath, inspectMcpRegistration } from "../src/claude/mcp_registration.ts";
 import {
+  DEFAULT_COPILOT_API_BASE,
   resetIntegrationIdentityCache,
   setIntegrationProbeFetch,
 } from "../src/copilot_api/integration_identity.ts";
@@ -64,6 +54,7 @@ import { managedProxyProvider } from "../src/codex/config.ts";
 import { CopilotEnvRunState } from "../src/copilot_api/run_state.ts";
 import { deferWriteReports, flushWriteReports } from "../src/utils/report_write.ts";
 import { renderDryRun } from "../src/utils/dry_run_report.ts";
+import * as fsSeam from "../src/utils/fs_facade.ts";
 import { captureChannels } from "./helpers/output.ts";
 import { runCli } from "./helpers/run.ts";
 import { consola } from "consola";
@@ -117,33 +108,39 @@ test("dueMigrations selects [from, to) in ascending order over the registry", ()
   }
 });
 
-test("the shipped registry holds exactly the named fix-ups in order, layout steps first", () => {
-  // Pinned BY IDENTITY and in order: a count or a list of version strings could stay green while a
-  // same-version fix-up was dropped in a merge. Each position has a reason:
-  //   layout steps first (store rename, the state.json fold, the root daemon home, the Desktop MCP
-  //   argv)                                              -> later steps read stores at the new paths,
-  //                                                         through the new preference shape, and
-  //                                                         the Desktop entries through the new reader
-  //   Desktop helper move, then the Codex profile files  -> each needs the 4.0.0 rewrites done
-  expect(dueMigrations("0.0.1", "999.0.0")).toEqual([
-    v402RootLayout,
-    v409StateFold,
-    v409RootDaemonHome,
-    v409DesktopMcpArgv,
-    v400ShellFence,
-    v400CodexWiring,
-    v400ClaudeWiring,
-    v400AutoupdateFlag,
-    v402GhAccountPin,
-    v402DesktopHelpers,
-    v409CodexProfileFiles,
-    v409IntegrationIdPin,
-    v409StaticKeyScope,
-    v409IdentityCache,
-    v409LaunchersBlock,
-    v409ProfileVerbTree,
+test("dueMigrations hoists every layout step ahead of every other step, whatever its version; each half stays version-ascending", () => {
+  // A layout step relocates the stores the others read, so a later release's layout step runs
+  // before an earlier release's plain step.
+  const layout = (version: SemverString): Migration => ({ ...mig(version), layout: true });
+  // Both halves arrive out of order, so neither comes out ascending by stable sort alone.
+  const registry = [mig("1.5.0"), layout("2.0.0"), mig("1.0.0"), layout("1.2.0")];
+  expect(dueMigrations("0.0.1", "9.0.0", registry).map((m) => m.version)).toEqual([
+    "1.2.0",
+    "2.0.0",
+    "1.0.0",
+    "1.5.0",
   ]);
-  // A 4.0.0 install gets every wiring rewrite on its way to the next release.
+});
+
+test("the registry holds every step a migration file exports, once each, under the file's version; a 4.0.0 install gets the four wiring rewrites", async () => {
+  // A step exported but never registered passes its own tests and never runs; only the registry
+  // would know. The expectation is derived from the files, so nothing here copies the list.
+  const dir = new URL("../src/migrations/", import.meta.url);
+  const isStep = (value: unknown): value is Migration =>
+    typeof value === "object" && value !== null && "version" in value && "run" in value;
+  const due = dueMigrations("0.0.1", "999.0.0");
+  const exported: Migration[] = [];
+  for (const file of readdirSync(dir).filter((f) => /^\d+\.\d+\.\d+\.ts$/.test(f))) {
+    const mod = await import(new URL(file, dir).href) as Record<string, unknown>;
+    for (const [name, step] of Object.entries(mod)) {
+      if (!isStep(step)) continue;
+      // Per export, so a red run names the step that is missing, doubled, or misfiled.
+      expect({ version: step.version, registered: due.filter((m) => m === step).length }, name)
+        .toEqual({ version: file.slice(0, -3), registered: 1 });
+      exported.push(step);
+    }
+  }
+  expect(due.filter((m) => !exported.includes(m)).map((m) => m.description)).toEqual([]);
   expect(dueMigrations("4.0.0", "4.0.1")).toEqual([
     v400ShellFence,
     v400CodexWiring,
@@ -151,6 +148,87 @@ test("the shipped registry holds exactly the named fix-ups in order, layout step
     v400AutoupdateFlag,
   ]);
 });
+
+test(
+  "the shipped sequence rewrites an owned Desktop entry's MCP argv (4.0.9, a layout step) before the 4.0.2 helper move reconciles the library, so the entry survives an update that leaves both releases behind",
+  async () => {
+    // In the other order the helper move's wiring pass meets the old argv through the current
+    // reader, which knows no profile for it: the entry is swept as an orphan and the default gets
+    // a twin under a fresh id. The sequence runs on the dry-run overlay: one shipped step (the
+    // autoupdate throttle rename) reaches the install root, which no temp home redirects.
+    const homes = isolateAgentHomes("copilot-mig-sequence-desktop-", { mkdirs: true });
+    dir = homes.dir;
+    const desktop = join(dir, "desktop");
+    const library = join(desktop, "configLibrary");
+    mkdirSync(library, { recursive: true });
+    process.env[CLAUDE_DESKTOP_DIR_ENV] = desktop;
+    const metaPath = join(library, META_FILENAME);
+    const entryPath = join(library, "e0.json");
+    const looseHelper = join(homes.proxyHome, "claude-desktop-proxy-token.sh");
+    try {
+      writeStore(join(homes.proxyHome, "state.json"), {
+        global: { "daemon.port": 4199 },
+        profiles: {
+          default: { githubToken: "ghp_default", authProvider: "gh-token", mode: "proxy" },
+        },
+        ownership: { claudeDesktopPaths: [entryPath] },
+      });
+      // The loose helper is what makes the 4.0.2 step run its wiring pass at all.
+      writeFileSync(looseHelper, "#!/bin/sh\n");
+      writeFileSync(
+        metaPath,
+        JSON.stringify({
+          appliedId: "e0",
+          entries: [{ id: "e0", name: "copilot-env", pinned: false }],
+        }),
+      );
+      writeFileSync(
+        entryPath,
+        JSON.stringify({
+          inferenceGatewayBaseUrl: "http://127.0.0.1:4199",
+          inferenceCredentialHelper: looseHelper,
+          managedMcpServers: [
+            { name: "copilot-env", args: agentLauncherCommand(["mcp", "--serve"]).args },
+          ],
+        }),
+      );
+      const before = fingerprintTree(dir);
+      let narrated = "";
+      // Read through the seam while the overlay is up: the sequence's end state as the real run
+      // would land it. A planned removal reads as null, so a swept entry fails the assertion below
+      // by its content, not by a throw here.
+      const planned = (path: string): Record<string, unknown> | null => {
+        const read = fsSeam.readTextResult(path);
+        return read.kind === "text" ? JSON.parse(read.text) as Record<string, unknown> : null;
+      };
+      const { result } = await dryRunChanges(async () => {
+        narrated = (await captureChannels(() => runMigrations("4.0.2", "5.0.1"))).all;
+        return {
+          meta: planned(metaPath),
+          entry: planned(entryPath) as {
+            inferenceCredentialHelper: string;
+            managedMcpServers: { name: string; args: string[] }[];
+          } | null,
+          looseHelperKept: fsSeam.exists(looseHelper),
+        };
+      });
+      expect(fingerprintTree(dir)).toEqual(before);
+      expect(narrated).not.toContain("did not complete");
+      expect(result.meta?.entries).toEqual([{ id: "e0", name: "copilot-env", pinned: false }]);
+      expect(result.entry?.managedMcpServers.find((r) => r.name === "copilot-env")?.args).toEqual(
+        agentLauncherCommand(mcpServeArgs(null)).args,
+      );
+      // The helper move finished too: the entry was rewired under helpers/ and the loose copy went.
+      expect(result.entry?.inferenceCredentialHelper).toBe(
+        desktopHelperPath(homes.proxyHome, "proxy", null),
+      );
+      expect(result.looseHelperKept).toBe(false);
+    } finally {
+      delete process.env[CLAUDE_DESKTOP_DIR_ENV];
+    }
+  },
+  120_000,
+);
 
 test("4.0.2 gh pin: sole-account machines pin every pin-less gh-cli slot; anything else is left alone", () => {
   dir = isolateProxyHome("copilot-migrate-pin-");
@@ -953,6 +1031,37 @@ test("4.0.9 identity cache: the four cached keys go from a slot in the old shape
   expect(state.readProfileDirectPair(parseProfileName("work"))).toEqual(pair);
 });
 
+test("the shipped sequence drops the identity cache before the verb-tree re-render stores a Direct pair: the pair write keeps the old shape's validity keys, so a cleanup that ran after it would take the fresh pair with the cache", () => {
+  // Both steps are 4.0.9, so only the registry order separates them; neither step can see the
+  // other. The state half shows what the other order loses, through the write the re-render makes.
+  const home = isolateProxyHome("copilot-mig-identity-order-");
+  dir = home;
+  const store = join(home, "state.json");
+  writeStore(store, {
+    profiles: {
+      work: {
+        githubToken: "ghp_w",
+        authProvider: "gh-token",
+        mode: "direct",
+        copilotHostIdentity: "copilot-developer-cli",
+        copilotHostSource: "auto",
+      },
+    },
+  });
+  const state = new CopilotEnvState(store);
+  const pair = { integrationId: "copilot-developer-cli", host: "https://api.githubcopilot.com" };
+  state.setProfileDirectPair(WORK, pair);
+  expect(state.readProfileDirectPair(WORK)).toEqual(pair);
+  expect(warningsDuring(dropSlotIdentityCache, "info")).toHaveLength(1);
+  expect(state.readProfileDirectPair(WORK), "a pair stored before the cleanup is lost to it")
+    .toEqual({});
+  const due = dueMigrations("0.0.1", "999.0.0");
+  expect(
+    due.indexOf(v409IdentityCache),
+    "the identity-cache cleanup must run before the verb-tree re-render stores the pair",
+  ).toBeLessThan(due.indexOf(v409ProfileVerbTree));
+});
+
 // A credentials.json that fails validation never costs preferences.json a profile's settings.
 test("4.0.9 state fold: a junk credentials.json loses nothing of preferences.json: grouped sections fold whole, a flat store is held until the slots can be read", () => {
   const home = isolateProxyHome("copilot-mig-state-fold-junk-");
@@ -1627,8 +1736,12 @@ test(
       const row = (name: string) => entry.managedMcpServers.find((r) => r.name === name);
       expect(row("copilot-env")?.args).toContain("sync-2");
       expect(row("other-tool")).toEqual({ name: "other-tool", args: ["--profile", "list"] });
-      // The re-render stored the pair it probed for.
-      expect(typeof profiles.work?.integrationIdentity).toBe("string");
+      // The re-render stored the pair it probed for: the stub accepts the first candidate, the
+      // codex identity (read back as a null id), on the generic host.
+      expect(new CopilotEnvState().readProfileDirectPair(WORK)).toEqual({
+        integrationId: null,
+        host: DEFAULT_COPILOT_API_BASE,
+      });
 
       expect(new CopilotEnvState().profileNames()).toEqual([SYNC2, WORK]);
       const list = runCli(["profile"], {

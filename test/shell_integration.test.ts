@@ -1,6 +1,14 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
-import { basename, isAbsolute, join, sep } from "node:path";
+import { basename, delimiter, isAbsolute, join, sep } from "node:path";
 import {
   CI_PS_DOCUMENTS_DIR_ENV,
   CI_RC_DIR_ENV,
@@ -13,7 +21,7 @@ import {
   windowsProfileTarget,
 } from "../src/shell/integration.ts";
 import { quotePosix, quotePowerShell } from "../src/utils/shell_quote.ts";
-import { runCli, runSync } from "./helpers/run.ts";
+import { ROOT, runCli, runSync } from "./helpers/run.ts";
 import { afterEach, beforeEach, expect, tempDir, test } from "./helpers/testing.ts";
 
 // The POSIX path runs the real CLI under a throwaway $HOME so the real rc files are never touched.
@@ -33,12 +41,6 @@ function up(content: string, block: string): string {
  *  as substrings, so substring counting would double-count a fenced block. */
 function markerLines(content: string, marker: string): number {
   return content.split("\n").filter((l) => l.replace(/\r$/, "") === marker).length;
-}
-
-function shellFunctionBody(source: string, name: string): string {
-  const match = source.match(new RegExp(`function ${name} \\{([\\s\\S]*?)\\n\\}`));
-  if (!match) throw new Error(`function ${name} not found`);
-  return match[1] as string;
 }
 
 /** Run `body` with env var `name` set to `value`, or cleared when null, restoring the
@@ -479,45 +481,135 @@ test.skipIf(process.platform !== "win32")(
   },
 );
 
-test("env-refresh stderr parity: eager source is silenced, the agent wrapper's refresh is not (POSIX)", () => {
-  const posix = readFileSync(join(process.cwd(), "shell", "agents.bashrc"), "utf8");
+// The rc files locate `bin/agent` from their own path, so each copy is staged in a scratch
+// `shell/` beside a fake agent. The failing mode's 99 is a count no run of evals reaches, so an
+// eval of a failed refresh's output is unmistakable.
+const FAKE_AGENT_SH = `#!/bin/sh
+echo "fake agent stderr: $*" >&2
+if [ "$1" = profile ] && [ "$2" = env ]; then
+  if [ -n "\${COPILOT_FAKE_REFRESH_FAILS:-}" ]; then
+    echo "export COPILOT_FAKE_REFRESHES=99"
+    exit 7
+  fi
+  echo "export COPILOT_FAKE_REFRESHES=$((\${COPILOT_FAKE_REFRESHES:-0} + 1))"
+  echo "export COPILOT_FAKE_ARGS='$*'"
+  echo "unset COPILOT_FAKE_STALE"
+  echo 'fake_launcher() { echo "fake launcher ran"; }'
+else
+  echo "fake agent stdout: $*"
+fi
+`;
+const FAKE_AGENT_PS1 = `[Console]::Error.WriteLine("fake agent stderr: $($args -join ' ')")
+if ($args.Count -ge 2 -and $args[0] -eq 'profile' -and $args[1] -eq 'env') {
+  if ($env:COPILOT_FAKE_REFRESH_FAILS) {
+    "\`$env:COPILOT_FAKE_REFRESHES = '99'"
+    exit 7
+  }
+  "\`$env:COPILOT_FAKE_REFRESHES = '$([int]$env:COPILOT_FAKE_REFRESHES + 1)'"
+  "\`$env:COPILOT_FAKE_ARGS = '$($args -join ' ')'"
+  "Remove-Item -LiteralPath Env:COPILOT_FAKE_STALE -ErrorAction SilentlyContinue"
+  "function global:fake_launcher { 'fake launcher ran' }"
+} else {
+  "fake agent stdout: $($args -join ' ')"
+}
+`;
 
-  // The eager startup `agent profile env` call silences stderr so bootstrap noise
-  // doesn't break the prompt's instant-prompt guard. It forwards NO arguments
-  // (matching the ps1 twin's eager Import-CopilotEnv -Quiet).
-  expect(posix).toMatch(/bin\/agent" profile env 2>\/dev\/null/);
+function stageRc(rc: string, agent: string, fake: string): { root: string; rc: string } {
+  const root = tempDir("copilot-rc-eval-");
+  mkdirSync(join(root, "shell"));
+  mkdirSync(join(root, "bin"));
+  copyFileSync(join(ROOT, "shell", rc), join(root, "shell", rc));
+  writeFileSync(join(root, "bin", agent), fake);
+  chmodSync(join(root, "bin", agent), 0o755);
+  return { root, rc: join(root, "shell", rc) };
+}
 
-  // The `agent` wrapper's refresh must NOT silence stderr: a genuine failure stays visible.
-  const body = shellFunctionBody(posix, "agent");
-  const refresh = body.split("\n").find((line) => line.includes('bin/agent" profile env)'));
-  expect(refresh).toBeDefined();
-  expect(refresh).toMatch(
-    /_env="\$\("\$\{_COPILOT_AGENTS_DIR\}\/bin\/agent" profile env\)" && eval/,
+const onPath = (exe: string): boolean =>
+  (process.env.PATH ?? "").split(delimiter).some((dir) => dir !== "" && existsSync(join(dir, exe)));
+
+// The rc is sourced from .bashrc and .zshrc alike, so a bash-only construct must fail here under
+// zsh, not on the first macOS login shell that sources it.
+for (const shell of ["bash", "zsh"]) {
+  test.skipIf(process.platform === "win32" || !onPath(shell))(
+    `agents.bashrc under ${shell} evals \`agent profile env\` silently at source time and audibly after every \`agent\` call, and evals nothing from a refresh that failed`,
+    () => {
+      const staged = stageRc("agents.bashrc", "agent", FAKE_AGENT_SH);
+      const proc = runSync(shell, [
+        "-c",
+        [
+          'source "$1"',
+          'echo "after source: $COPILOT_FAKE_REFRESHES $COPILOT_FAKE_ARGS stale=${COPILOT_FAKE_STALE-unset}"',
+          "fake_launcher",
+          "agent hello",
+          'echo "after agent: $COPILOT_FAKE_REFRESHES"',
+          "export COPILOT_FAKE_REFRESH_FAILS=1",
+          "agent again",
+          'echo "after failed refresh: $COPILOT_FAKE_REFRESHES"',
+        ].join("\n"),
+        shell,
+        staged.rc,
+      ], { env: { ...process.env, HOME: home, COPILOT_FAKE_STALE: "1" } });
+      expect({ exitCode: proc.exitCode, stdout: proc.stdout, stderr: proc.stderr }).toEqual({
+        exitCode: 0,
+        stdout: "after source: 1 profile env stale=unset\nfake launcher ran\n" +
+          "fake agent stdout: hello\nafter agent: 2\n" +
+          "fake agent stdout: again\nafter failed refresh: 2\n",
+        stderr: "fake agent stderr: hello\nfake agent stderr: profile env\n" +
+          "fake agent stderr: again\nfake agent stderr: profile env\n",
+      });
+    },
   );
-  expect(refresh).not.toContain("2>/dev/null");
-});
+}
 
-test("the PowerShell twin evals every env line; Import-CopilotEnv takes -Quiet, eager passes it, the agent wrapper omits it", () => {
-  const powershell = readFileSync(join(process.cwd(), "shell", "agents.ps1"), "utf8");
+// The driver is the host that dot-sources agents.ps1, so a pwsh-only construct in the rc fails
+// under Windows PowerShell 5.1 here, on the Windows runner, instead of in a user's $PROFILE. Off
+// Windows only pwsh exists, and the rc's nested `powershell` resolves to a shim that runs it.
+const PS_DRIVERS = [
+  { driver: "pwsh", onThisHost: onPath(process.platform === "win32" ? "pwsh.exe" : "pwsh") },
+  { driver: "powershell", onThisHost: process.platform === "win32" },
+];
 
-  // agents.bashrc evals the whole `agent profile env` output unconditionally; the PS wrapper must do
-  // the same, so a new upstream directive shape is never silently dropped on Windows.
-  expect(powershell).toContain("Invoke-Expression");
-  expect(powershell).not.toContain("$line -match");
-
-  expect(powershell).toMatch(/function Import-CopilotEnv\s*\{\s*param\(\[switch\]\$Quiet\)/);
-  expect(powershell).toMatch(
-    /if \(\$Quiet\) \{ Invoke-Agent profile env --format powershell 2>\$null \}/,
+for (const { driver: ps, onThisHost } of PS_DRIVERS) {
+  test.skipIf(!onThisHost)(
+    `agents.ps1 under ${ps} evals every \`agent profile env\` line, -Quiet at dot-source time and audibly after every \`agent\` call, and evals nothing from a refresh that failed`,
+    () => {
+      const staged = stageRc("agents.ps1", "agent.ps1", FAKE_AGENT_PS1);
+      const driver = join(staged.root, "driver.ps1");
+      writeFileSync(
+        driver,
+        [
+          ". $args[0]",
+          '"after source: $env:COPILOT_FAKE_REFRESHES $env:COPILOT_FAKE_ARGS stale=[$env:COPILOT_FAKE_STALE]"',
+          "fake_launcher",
+          "agent hello",
+          '"after agent: $env:COPILOT_FAKE_REFRESHES"',
+          "$env:COPILOT_FAKE_REFRESH_FAILS = '1'",
+          "agent again",
+          '"after failed refresh: $env:COPILOT_FAKE_REFRESHES"',
+        ].join("\n"),
+      );
+      let path = process.env.PATH ?? "";
+      if (process.platform !== "win32") {
+        const shims = join(staged.root, "shims");
+        mkdirSync(shims);
+        writeFileSync(join(shims, "powershell"), '#!/bin/sh\nexec pwsh "$@"\n');
+        chmodSync(join(shims, "powershell"), 0o755);
+        path = `${shims}${delimiter}${path}`;
+      }
+      const proc = runSync(ps, ["-NoProfile", "-NonInteractive", "-File", driver, staged.rc], {
+        env: { ...process.env, HOME: home, PATH: path, COPILOT_FAKE_STALE: "1" },
+      });
+      const lf = (text: string) => text.replaceAll("\r\n", "\n");
+      expect({ exitCode: proc.exitCode, stdout: lf(proc.stdout), stderr: lf(proc.stderr) }).toEqual(
+        {
+          exitCode: 0,
+          stdout: "after source: 1 profile env --format powershell stale=[]\nfake launcher ran\n" +
+            "fake agent stdout: hello\nafter agent: 2\n" +
+            "fake agent stdout: again\nafter failed refresh: 2\n",
+          stderr: "fake agent stderr: hello\nfake agent stderr: profile env --format powershell\n" +
+            "fake agent stderr: again\nfake agent stderr: profile env --format powershell\n",
+        },
+      );
+    },
   );
-
-  // The eager startup call passes -Quiet to silence bootstrap noise.
-  expect(powershell).toMatch(/Import-CopilotEnv -Quiet/);
-
-  // The `agent` wrapper calls Import-CopilotEnv WITHOUT -Quiet so a real
-  // refresh failure stays visible (mirrors the POSIX unsilenced refresh).
-  const agentBody = shellFunctionBody(powershell, "agent");
-  const refresh = agentBody.split("\n").find((line) => line.includes("Import-CopilotEnv"));
-  expect(refresh).toBeDefined();
-  expect(refresh?.trim()).toBe("Import-CopilotEnv");
-  expect(refresh).not.toContain("-Quiet");
-});
+}

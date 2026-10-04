@@ -531,29 +531,32 @@ const onPath = (exe: string): boolean =>
 // zsh, not on the first macOS login shell that sources it.
 for (const shell of ["bash", "zsh"]) {
   test.skipIf(process.platform === "win32" || !onPath(shell))(
-    `agents.bashrc under ${shell} evals \`agent profile env\` silently at source time and audibly after every \`agent\` call, and evals nothing from a failed resolution, whether it failed at source time or on a refresh`,
+    `agents.bashrc under ${shell} evals \`agent profile env\` silently at source time and audibly after every \`agent\` call, evals nothing from a failed resolution, whether it failed at source time or on a refresh, reports the command's own status after a failed refresh, and leaves the user's own variables alone`,
     () => {
       const staged = stageRc("agents.bashrc", "agent", FAKE_AGENT_SH);
+      // `_env` is a name a user's own rc plausibly holds; the rc's temporaries live in its
+      // reserved `_COPILOT_` namespace, so sourcing must not assign or unset it.
       const proc = runSync(shell, [
         "-c",
         [
+          "_env=keep",
           'source "$1"',
-          'echo "after source: $COPILOT_FAKE_REFRESHES $COPILOT_FAKE_ARGS stale=${COPILOT_FAKE_STALE-unset}"',
+          'echo "after source: $COPILOT_FAKE_REFRESHES $COPILOT_FAKE_ARGS stale=${COPILOT_FAKE_STALE-unset} _env=${_env-unset}"',
           "fake_launcher",
           "agent hello",
           'echo "after agent: $COPILOT_FAKE_REFRESHES"',
           "export COPILOT_FAKE_REFRESH_FAILS=1",
           "agent again",
-          'echo "after failed refresh: $COPILOT_FAKE_REFRESHES"',
+          'echo "after failed refresh: $COPILOT_FAKE_REFRESHES status=$?"',
         ].join("\n"),
         shell,
         staged.rc,
       ], { env: { ...process.env, HOME: home, COPILOT_FAKE_STALE: "1" } });
       expect({ exitCode: proc.exitCode, stdout: proc.stdout, stderr: proc.stderr }).toEqual({
         exitCode: 0,
-        stdout: "after source: 1 profile env stale=unset\nfake launcher ran\n" +
+        stdout: "after source: 1 profile env stale=unset _env=keep\nfake launcher ran\n" +
           "fake agent stdout: hello\nafter agent: 2\n" +
-          "fake agent stdout: again\nafter failed refresh: 2\n",
+          "fake agent stdout: again\nafter failed refresh: 2 status=0\n",
         stderr: "fake agent stderr: hello\nfake agent stderr: profile env\n" +
           "fake agent stderr: again\nfake agent stderr: profile env\n",
       });

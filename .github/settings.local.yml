@@ -9,7 +9,7 @@
 # deleted by the apply; undeclared rulesets are left alone.
 
 repository:
-  description: "Local copilot-api proxy lifecycle + config helper (TypeScript)."
+  description: "Points the Codex and Claude CLIs at GitHub Copilot: a managed copilot-api proxy, or Copilot Direct."
   # Declared even when empty: the apply manages only declared keys, so
   # this keeps it healing out-of-band edits.
   topics: "claude-code,cli,codex,copilot,copilot-api,deno,proxy,typescript"

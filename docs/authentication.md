@@ -20,16 +20,22 @@ This page is about the credential and the profiles that carry one each. The wiri
 | `gh-env`     | copy a token from `$COPILOT_GITHUB_TOKEN` / `$GH_TOKEN` / `$GITHUB_TOKEN`     |
 
 - `copilot` runs GitHub's device flow in copilot-env itself (VS Code Copilot's OAuth app, `read:user`), printing the URL and code on stderr; the token goes straight into the credential store, and no proxy-side token file is written.
-- `gh-cli` pins an account when you run `agent profile auth`: `--gh-user <login>` names it; without the flag, a single saved login or a headless run pins the active account, and a terminal asks when there are several logins or the only one comes from a token env var.
-- Only an `auto` slot (that prompt's last option, or the sole-login fallback below) follows a later `gh auth switch` or `gh auth login`; a pinned account stays until you re-run `agent profile auth`.
-- A single saved login that gh cannot serve by name (a `hosts.yml` written before gh 2.40, with no `users:` map) is recorded as `auto` instead, with a line saying so: it is the same account while it is the only login. On gh 2.40 or newer, `gh auth login` for it rewrites `hosts.yml` so the next `agent profile auth` pins it.
-- A pinned account resolves through `gh auth token --user <login> --hostname github.com` (gh 2.40 or newer), an `auto` slot through `gh auth token --hostname github.com`; neither follows a `GH_HOST` override. A pin gh cannot serve fails with gh's own refusal; it never falls back to another account's token.
-- The pin follows no `gh auth switch`; it fails only when gh cannot serve that account by name (logged out, the pre-2.40 `hosts.yml` layout, or gh older than 2.40). An env token (`$GH_TOKEN`, `$GITHUB_TOKEN`) is never adopted for a pin, and a miss quotes the gh call and its stderr.
+- `gh-cli` pins an account when you run `agent profile auth`, or records `auto`. How each is chosen, resolves, and follows gh is in the table below.
 - `gh-env` in a terminal always shows the var and its GitHub account first: one set asks yes/no, several set get a menu. Headless takes the most specific (servers).
 - Every pasted or copied token is labelled with the account GitHub reports for it (GraphQL `viewer`, no `gh` needed); a lookup miss only changes the label.
 - `--get` / `--del` / `--check` print, clear, or check that a credential resolves.
 - `--dry-run` runs no login: it plans the slot write from `--set` or `--gh-user` (a device flow is named, not run), so it needs `--provider`, `--set <token>`, or `--gh-user <login>` when no credential resolves.
 - `agent profile <name> auth` addresses one [profile](#profiles)'s slot; bare `agent profile` lists every profile with its provider.
+
+| `gh-cli` slot       | Chosen when                                                                                                                                                                                                  | Resolves through                                                        | After a later `gh auth switch` or `gh auth login`  |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------- | -------------------------------------------------- |
+| pinned to `<login>` | `--gh-user <login>` names it. Without the flag, a single saved login or a headless run pins the active account, and a terminal asks when there are several logins or the only one comes from a token env var | `gh auth token --user <login> --hostname github.com` (gh 2.40 or newer) | stays pinned until you re-run `agent profile auth` |
+| `auto`              | that prompt's last option, or the sole-login fallback below                                                                                                                                                  | `gh auth token --hostname github.com`                                   | follows the new active account                     |
+
+Neither call follows a `GH_HOST` override.
+
+- **The sole-login fallback:** a single saved login that gh cannot serve by name (a `hosts.yml` written before gh 2.40, with no `users:` map) is recorded as `auto` instead, with a line saying so. It is the same account while it is the only login. On gh 2.40 or newer, `gh auth login` for it rewrites `hosts.yml` so the next `agent profile auth` pins it.
+- **A pin fails only when gh cannot serve it by name** (logged out, the pre-2.40 `hosts.yml` layout, or gh older than 2.40), with gh's own refusal quoting the gh call and its stderr. It never falls back to another account's token, and an env token (`$GH_TOKEN`, `$GITHUB_TOKEN`) is never adopted for a pin.
 
 ## PAT passthrough
 

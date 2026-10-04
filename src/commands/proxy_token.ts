@@ -19,6 +19,7 @@ import {
   parseProfileFlag,
   type Profile,
 } from "../copilot_api/profile.ts";
+import { withPowershellChildEnv } from "../utils/command.ts";
 import { errMessage } from "../utils/error.ts";
 import { agentLauncherCommand } from "../utils/root.ts";
 import { printWrappedToStderr, terminalWidth, wrapMessage } from "../utils/table.ts";
@@ -71,12 +72,16 @@ export function launchProxy(profile: Profile, output: LaunchOutput): void | Prom
   const { command, args } = agentLauncherCommand(
     profile === null ? ["start"] : ["profile", profile, "start"],
   );
-  spawnSync(command, args, {
-    // `2` is our stderr fd: the visible child's start progress must show without touching our
-    // stdout.
-    stdio: output === "suppressed" ? ["ignore", "ignore", "inherit"] : ["inherit", 2, "inherit"],
-    windowsHide: true,
-  });
+  const spawn = (env?: Record<string, string>) =>
+    spawnSync(command, args, {
+      // `2` is our stderr fd: the visible child's start progress must show without touching our
+      // stdout.
+      stdio: output === "suppressed" ? ["ignore", "ignore", "inherit"] : ["inherit", 2, "inherit"],
+      windowsHide: true,
+      env,
+    });
+  if (command === "powershell") withPowershellChildEnv(command, spawn);
+  else spawn();
 }
 
 /**

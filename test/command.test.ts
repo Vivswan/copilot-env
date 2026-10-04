@@ -97,10 +97,6 @@ test("childPathPrepending dedupes the dirs; childEnvWithPath builds the child en
   }
 });
 
-// Windows PowerShell 5.1 inherits the parent's PSModulePath, and under pwsh 7 that path breaks its
-// in-box module autoload. A real child spawned from the parent's own environment inside the span is
-// the reading: Deno's spawnSync merges the env map over the parent's, so the map alone proves
-// nothing about what a synchronous child sees.
 test("withPowershellChildEnv: a 5.1 child sees no PSModulePath under any casing, a pwsh child the parent's own, and the parent has it back after", () => {
   process.env.PSModulePath = "/pwsh/Modules";
   // One key on Windows, where env names are case-insensitive; a second casing elsewhere.

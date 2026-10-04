@@ -118,7 +118,9 @@ function tmpCodexHome(): string {
 test("parseProfileName accepts kebab names and rejects reserved/invalid ones", () => {
   parseProfileName("work");
   parseProfileName("gh-alt2");
-  for (const bad of ["default", "direct", "proxy", "all"]) {
+  // The last two: valibot's v.record drops `prototype` and `constructor` keys as a
+  // prototype-pollution guard, so a slot written under either name is lost on the next store read.
+  for (const bad of ["default", "direct", "proxy", "all", "prototype", "constructor"]) {
     expect(() => parseProfileName(bad)).toThrow(/reserved/);
   }
   for (const bad of ["", "-x", "Work", "a b", "x".repeat(33)]) {

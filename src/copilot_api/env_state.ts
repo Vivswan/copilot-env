@@ -445,9 +445,7 @@ export class CopilotEnvState {
 
   /** Existence and contents come from ONE read, so they can never disagree under a concurrent write. */
   profileSlotStatus(name: ProfileName): { exists: boolean; slot: ProfileSlot } {
-    const profiles = this.read().profiles;
-    // Own-property check: a name like "constructor" would otherwise resolve up the prototype chain.
-    const slot = Object.hasOwn(profiles, name) ? profiles[name] : undefined;
+    const slot = this.read().profiles[name];
     return { exists: slot !== undefined, slot: parseProfileSlot(slot ?? emptyProfile()) };
   }
 
@@ -472,7 +470,7 @@ export class CopilotEnvState {
     this.store.update((d) => {
       const profiles = isRecord(d.profiles) ? d.profiles : {};
       const key = profileKey(profile);
-      const existing = Object.hasOwn(profiles, key) ? profiles[key] : undefined;
+      const existing = profiles[key];
       let raw: Record<string, unknown>;
       if (isRecord(existing)) {
         raw = existing;
@@ -502,7 +500,7 @@ export class CopilotEnvState {
     this.store.update((d) => {
       const profiles = isRecord(d.profiles) ? d.profiles : {};
       const key = profileKey(profile);
-      const raw = Object.hasOwn(profiles, key) ? profiles[key] : undefined;
+      const raw = profiles[key];
       if (!isRecord(raw)) return;
       had = raw.githubToken !== undefined || raw.authProvider !== undefined;
       delete raw.githubToken;
@@ -526,7 +524,7 @@ export class CopilotEnvState {
     const next = rawCredentialPatch(slot.credential);
     this.store.update((d) => {
       const profiles = isRecord(d.profiles) ? d.profiles : {};
-      const raw = Object.hasOwn(profiles, name) ? profiles[name] : undefined;
+      const raw = profiles[name];
       const committed: Record<string, unknown> = isRecord(raw) ? raw : {};
       const credentialUnchanged = (committed.githubToken ?? null) === next.githubToken &&
         (committed.authProvider ?? null) === next.authProvider &&
@@ -549,7 +547,7 @@ export class CopilotEnvState {
     refuseReservedWord(name);
     this.store.update((d) => {
       const profiles = isRecord(d.profiles) ? d.profiles : {};
-      const raw = Object.hasOwn(profiles, name) ? profiles[name] : undefined;
+      const raw = profiles[name];
       const slot: Record<string, unknown> = isRecord(raw) ? raw : {};
       slot.mode = mode;
       profiles[name] = slot;
@@ -595,7 +593,7 @@ export class CopilotEnvState {
     this.store.update((d) => {
       const profiles = isRecord(d.profiles) ? d.profiles : {};
       const key = profileKey(profile);
-      const existing = Object.hasOwn(profiles, key) ? profiles[key] : undefined;
+      const existing = profiles[key];
       if (!isRecord(existing) && profile !== null) return;
       const raw: Record<string, unknown> = isRecord(existing) ? existing : {};
       if (probed.integrationId !== undefined) {
@@ -616,9 +614,7 @@ export class CopilotEnvState {
   recordDefaultMode(mode: ProfileMode | null): void {
     this.store.update((d) => {
       const profiles = isRecord(d.profiles) ? d.profiles : {};
-      const raw = Object.hasOwn(profiles, DEFAULT_PROFILE_KEY)
-        ? profiles[DEFAULT_PROFILE_KEY]
-        : undefined;
+      const raw = profiles[DEFAULT_PROFILE_KEY];
       if (mode === null) {
         if (!isRecord(raw)) return;
         delete raw.mode;

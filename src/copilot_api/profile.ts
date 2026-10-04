@@ -55,9 +55,18 @@ export function isReservedProfileWord(name: string): boolean {
  *  (paths.ts), and its label. Never a named profile's: the constructor below rejects it. */
 export const DEFAULT_PROFILE_NAME = "default";
 
-// The default is the implicit unnamed profile (give no name instead); the rest collide with the
-// mode-flag and `stop --all` vocabulary.
-const RESERVED_PROFILE_NAMES = [DEFAULT_PROFILE_NAME, "direct", "proxy", "all"] as const;
+// The default is the implicit unnamed profile (give no name instead); direct/proxy/all collide with
+// the mode-flag and `stop --all` vocabulary. `prototype` and `constructor` are keys valibot's
+// v.record drops as a prototype-pollution guard, so a slot under either name would vanish on the
+// next store read (env_state.ts and env_config.ts both read `profiles` through v.record).
+const RESERVED_PROFILE_NAMES = [
+  DEFAULT_PROFILE_NAME,
+  "direct",
+  "proxy",
+  "all",
+  "prototype",
+  "constructor",
+] as const;
 
 /** Windows cannot create a `profiles/<name>` directory under these names (CreateFile treats them
  *  specially even with an extension), and cross-platform is non-negotiable, so they are invalid

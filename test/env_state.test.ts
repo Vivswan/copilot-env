@@ -346,19 +346,3 @@ test("profileNames skips a hand-edited invalid profile key so it can never reach
   });
   expect(new CopilotEnvState().profileNames()).toEqual([WORK]);
 });
-
-test("a profile named 'constructor' reads an empty slot, not Object.prototype's", () => {
-  tmpHome();
-  // The profiles record carries Object.prototype, so without an own-property
-  // check the lookup resolves to the (truthy) inherited function and the
-  // empty-slot fallback never fires - misreading the profile as existing.
-  const name = parseProfileName("constructor");
-  const state = new CopilotEnvState();
-  expect(state.readProfileSlot(name)).toEqual({
-    kind: "partial",
-    credential: { kind: "none", provider: null },
-    mode: null,
-  });
-  expect(state.readCredential(name)).toEqual({ kind: "none", provider: null });
-  expect(state.profileNames()).toEqual([]);
-});

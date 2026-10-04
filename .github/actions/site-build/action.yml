@@ -1,22 +1,32 @@
 # Repo-owned: seeded once by the fleet sync, never overwritten by a later sync.
 
 name: Site Build
-description: |
-  Builds this repository's own website for the fleet's Pages deploy and names the directory to publish.
+description: >-
+  Builds this repository's own website for the fleet's Pages deploy and names
+  the directory to publish.
 
   Today a no-op. It names no directory, so docs/ publishes alone.
 
-  A website build replaces the step below with its toolchain setup and build command. Contract and examples: the fleet's docs/modules/site.md.
+  A website build replaces the step below with its toolchain setup and build
+  command. Contract and examples: the fleet's docs/modules/site.md.
 
-  The caller is the fleet's reusable-site.yml, which the managed ci.yml `site` leg calls on every green main run. It runs this action as a step of the deploy job, from the checkout of the judged commit, and hands `dist` to the fleet's assembly in the same workspace.
+  The caller is the fleet's reusable-site.yml, which the managed ci.yml `site`
+  leg calls on every green main run. It runs this action as a step of the
+  deploy job, from the checkout of the judged commit, and hands `dist` to the
+  fleet's assembly in the same workspace.
 
-  Runs under the deploy job's token: contents read, pages and id-token write, issues write. A composite action declares no permissions of its own, which is why only code from the judged commit may run here.
+  Runs under the deploy job's token: contents read, pages and id-token write,
+  issues write. A composite action declares no permissions of its own, which
+  is why only code from the judged commit may run here.
 
-  The caller owes both inputs, derived from the repository name, and a checkout of the judged commit. Nothing is installed beforehand. A build brings its own setup steps.
+  The caller owes both inputs, derived from the repository name, and a
+  checkout of the judged commit. Nothing is installed beforehand. A build
+  brings its own setup steps.
 
   A `dist` the fleet refuses, turning the leg red with the path named:
     - one that is not slash-joined segments of letters, digits, dots, underscores, and dashes
-    - one with an empty, `.`, or `..` segment, which rules out `./dist`, `dist/`, and an absolute path
+    - one with an empty, `.`, or `..` segment, which rules out `./dist`,
+      `dist/`, and an absolute path
     - a missing directory
     - a symlink resolving outside the repository
     - one without an `index.html`

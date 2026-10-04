@@ -52,11 +52,15 @@ test(".claude-plugin manifests parse and list skills that exist", () => {
   expect(exampleEntry?.args, "the example's argv").toEqual(declared?.args ?? "");
   expect(exampleEntry?.type, "the example's transport").toBe(declared?.type ?? "");
 
+  // The marketplace lists this plugin by a relative source: that source must resolve to the
+  // directory whose plugin.json carries the listed name, or an install from the marketplace
+  // fetches nothing.
   const marketplace = readJson(join(PROJECT_ROOT, ".claude-plugin", "marketplace.json"));
-  expect(marketplace.name).toBe("copilot-env");
-  const plugins = marketplace.plugins as { name: string; source: string }[];
-  expect(plugins).toHaveLength(1);
-  expect(plugins[0]?.source).toBe("./");
+  const listed = marketplace.plugins as { name: string; source: string }[];
+  expect(
+    listed.map((p) => readJson(join(PROJECT_ROOT, p.source, ".claude-plugin", "plugin.json")).name),
+  ).toEqual([plugin.name]);
+  expect(listed.map((p) => p.name)).toEqual([plugin.name]);
 });
 
 test("every skill's SKILL.md frontmatter names the skill after its folder", () => {

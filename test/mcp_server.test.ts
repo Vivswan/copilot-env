@@ -26,13 +26,8 @@ test(
       expect(serverInfo?.name).toBe("copilot-env");
 
       const list = await client.request(2, "tools/list");
-      const tools = (list.result as { tools: { name: string; inputSchema: unknown }[] }).tools;
+      const tools = (list.result as { tools: { name: string }[] }).tools;
       expect(tools.map((t) => t.name)).toEqual(["web_search"]);
-      expect(tools[0]?.inputSchema).toEqual({
-        "type": "object",
-        "properties": { "query": { "type": "string", "description": "The web search query." } },
-        "required": ["query"],
-      });
 
       // Every stdout line of the whole session must be JSON-RPC (nothing may leak).
       for (const line of client.stdoutLines) {

@@ -12,6 +12,7 @@ import {
   GOLDEN_TIME_ZONE,
   type GoldenCase,
   goldenFilesFor,
+  NOTE_KEY,
   parseCostPayload,
   PRE_INDEX_COMMIT,
   type Recording,
@@ -22,9 +23,6 @@ import {
   utcPinnable,
 } from "../test/helpers/usage_goldens.ts";
 import { stableStringify } from "../src/utils/json.ts";
-
-/** The payload's explanatory text, the one key the two implementations may word differently. */
-const NOTE_KEY = "note";
 
 function usage(): string {
   return `Usage: deno task usage:goldens [--out DIR]
@@ -94,8 +92,13 @@ function denoDir(): string {
   return parsed.denoDir;
 }
 
-/** The OLD cli's `cost` payload over the tree at `root`. */
-function runOldCostJson(old: string, root: string, cache: string): Record<string, unknown> {
+/** The OLD cli's `cost` payload over the tree at `root`, plus its own note: parseCostPayload
+ *  swaps the note for its sentinel, and the fixture on disk keeps what the old cli printed. */
+function runOldCostJson(
+  old: string,
+  root: string,
+  cache: string,
+): { payload: Record<string, unknown>; note: unknown } {
   const stdout = run(
     "the old cli",
     Deno.execPath(),
@@ -111,7 +114,10 @@ function runOldCostJson(old: string, root: string, cache: string): Record<string
       },
     },
   );
-  return parseCostPayload(stdout, "the old cli");
+  return {
+    payload: parseCostPayload(stdout, "the old cli"),
+    note: (JSON.parse(stdout) as Record<string, unknown>)[NOTE_KEY],
+  };
 }
 
 interface Recorded {
@@ -138,16 +144,13 @@ async function recordEntry(
     args: [...GOLDEN_COST_ARGS],
     timeZone: GOLDEN_TIME_ZONE,
   };
-  const payload = runOldCostJson(old, root, cache);
+  const { payload, note } = runOldCostJson(old, root, cache);
   const events = sourceEventCounts(payload);
   const silent = Object.entries(events).filter(([, n]) => n === 0).map(([s]) => s);
   if (!Object.keys(events).some((s) => s.startsWith("codex:")) || silent.length > 0) {
     throw new Error(`${entry.name}: the old cli read nothing from ${silent.join(", ") || "codex"}`);
   }
   const { payload: current } = await runCurrentCost(root, { noIndex: true });
-  // The note is the command's explanatory text, not a reading: the golden carries the
-  // current wording so it pins the numbers, and a reworded note never fails the compare.
-  if (typeof current[NOTE_KEY] === "string") payload[NOTE_KEY] = current[NOTE_KEY];
   const mismatch = describeMismatch(current, expectedCurrent(payload, generated));
   if (mismatch !== null) {
     throw new Error(
@@ -156,7 +159,7 @@ async function recordEntry(
       }\n  ${mismatch}`,
     );
   }
-  return { entry, recording, payload, events };
+  return { entry, recording, payload: { ...payload, [NOTE_KEY]: note }, events };
 }
 
 async function main(args: { out: string }): Promise<void> {

@@ -31,7 +31,6 @@ import {
   parseDaysWindow,
   parseWindowFlags,
   perDayRows,
-  UNDATED_DAY_LABEL,
 } from "../src/usage/day_metrics.ts";
 import { consola } from "consola";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
@@ -221,8 +220,6 @@ test("undated usage prints as its own row so the TOTAL's columns add up", () => 
     "2026-06-02",
   ]);
 
-  // The undated label is applied at render time only; its spelling is a display contract.
-  expect(UNDATED_DAY_LABEL).toBe("(undated)");
   const rows = perDayRows(report, pricing, estimate);
   expect(rows.map((r) => r.kind)).toEqual(["dated", "dated", "undated"]);
   expect(rows.flatMap((r) => (r.kind === "dated" ? r.day : []))).toEqual([

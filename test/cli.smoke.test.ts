@@ -27,7 +27,9 @@ function isolatedEnv(extra: Record<string, string> = {}): Record<string, string>
   return { ...process.env, CONSOLA_LEVEL: "5", ...agentHomeEnv(home), ...extra };
 }
 
-function isolatedProxyEnv(extra: Record<string, string> = {}): Record<string, string> {
+function isolatedProxyEnv(
+  extra: Record<string, string> = {},
+): { env: Record<string, string>; codexHome: string } {
   const root = tempDir("copilot-health-proxy-");
   const codexHome = join(root, ".codex");
   // The writer emits 127.0.0.1 (not localhost) so the agent reaches the IPv4 proxy on Windows; the
@@ -37,7 +39,7 @@ function isolatedProxyEnv(extra: Record<string, string> = {}): Record<string, st
     envKey: "OPENAI_API_KEY",
   });
   writeFileSync(join(codexHome, ".env"), "OPENAI_API_KEY=test-key\n");
-  return isolatedEnv({ CODEX_HOME: codexHome, ...extra });
+  return { env: isolatedEnv({ CODEX_HOME: codexHome, ...extra }), codexHome };
 }
 
 // Help screens are read-only and deterministic, and a cold CLI spawn is expensive, so each argv is
@@ -690,7 +692,7 @@ test("--full-help prints the overview plus every subcommand's help, the profile 
 test("health --scope runtime exits 1 naming the failed checks when no proxy is running", () => {
   // Proxy-wired Codex (not both-direct) so a down proxy is a genuine failure;
   // the default port has nothing listening + isolated state => probe always fails.
-  const proc = runCli(["health", "--scope", "runtime"], { env: isolatedProxyEnv({}) });
+  const proc = runCli(["health", "--scope", "runtime"], { env: isolatedProxyEnv().env });
   expect(proc.exitCode).toBe(1);
   // The report must NAME a failed check: a bare exit 1 could come from any
   // crash in the child. The pid verdict is the deterministic one (the isolated
@@ -884,9 +886,10 @@ test("profile health narrows the run to the named profile and excludes account-w
 function runHealthJson(
   scope: string,
   extra: Record<string, string> = {},
-): { exitCode: number | null; json: HealthJson } {
-  const proc = runCli(["health", "--scope", scope, "--json"], { env: isolatedProxyEnv(extra) });
-  return { exitCode: proc.exitCode, json: JSON.parse(proc.stdout) as HealthJson };
+): { exitCode: number | null; json: HealthJson; codexHome: string } {
+  const { env, codexHome } = isolatedProxyEnv(extra);
+  const proc = runCli(["health", "--scope", scope, "--json"], { env });
+  return { exitCode: proc.exitCode, json: JSON.parse(proc.stdout) as HealthJson, codexHome };
 }
 
 interface HealthJson {
@@ -903,7 +906,7 @@ interface HealthJson {
 }
 
 test("health --scope full runs every group end-to-end and fails on a dead proxy", () => {
-  const { exitCode, json } = runHealthJson("full");
+  const { exitCode, json, codexHome } = runHealthJson("full");
   const ids = json.checks.map((c) => c.id);
   expect(json.scope).toBe("full");
   for (
@@ -921,15 +924,18 @@ test("health --scope full runs every group end-to-end and fails on a dead proxy"
   expect(json.exitCode).toBe(1);
   expect(json.ok).toBe(false);
   expect(exitCode).toBe(1);
-  // Every check carries the structured fields the report/JSON rely on.
+  // The HealthJson cast is not a check: child-process JSON is untyped, so a check that lost its
+  // id, status, or detail would still satisfy every assertion above. `--json` consumers key on
+  // the id and switch on the CheckStatus set, so each is pinned here against the live output.
   for (const c of json.checks) {
-    expect(typeof c.id).toBe("string");
-    expect(typeof c.status).toBe("string");
-    expect(typeof c.detail).toBe("string");
+    const why = `check ${JSON.stringify(c.id)} in the child's --json output`;
+    expect(typeof c.id === "string" && c.id !== "", `${why}: id`).toBe(true);
+    expect(["ok", "warn", "fail"], `${why}: status`).toContain(c.status);
+    expect(typeof c.detail, `${why}: detail`).toBe("string");
   }
   const codex = json.checks.find((c) => c.id === "setup.codex");
   expect(codex?.value?.providerMode).toBe("proxy");
-  expect(typeof codex?.value?.configFile).toBe("string");
+  expect(codex?.value?.configFile).toBe(join(codexHome, "config.toml"));
   expect(codex?.detail).toContain("provider: proxy");
   expect(codex?.detail).toContain("config.toml:");
 }, 15_000);
@@ -967,7 +973,6 @@ const SCOPE_ROWS: {
       expect(codexHost?.detail).toBe(expectedHostDetail);
       expect(codexHost?.detail).not.toContain(String(codexHost?.value?.hostHome));
       expect(codexHost?.detail).not.toContain("config.toml:");
-      expect(typeof codexHost?.value?.configFile).toBe("string");
       expect(json.checks.every((c) => c.status !== "fail")).toBe(true);
     },
   },

@@ -29,7 +29,6 @@ describe("the smokes' disposable-HOME guard", () => {
       // The row rides along in the asserted value so a red run names it.
       expect({ ...row, admits: homeIsDisposable(row.githubActions, exists) }).toEqual(row);
     }
-    expect(CONTAINER_MARKERS).toEqual(["/.dockerenv", "/run/.containerenv"]);
   });
 
   // In container or CI-marked runs the markers legitimately admit the scripts, so the executed

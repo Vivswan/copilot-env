@@ -3,7 +3,6 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import {
   CopilotApiPaths,
-  DEFAULT_HOME,
   defaultDaemonHome,
   profileHome,
   resolveHome,
@@ -11,7 +10,7 @@ import {
   SQLITE_DB_FILENAME,
   usageDbsUnderHome,
 } from "../src/copilot_api/paths.ts";
-import { parseProfileName } from "../src/copilot_api/profile.ts";
+import { parseProfileName, type Profile } from "../src/copilot_api/profile.ts";
 import { getSanitizedHostname } from "../src/utils/hostname.ts";
 import { afterEach, expect, tempDir, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateProxyHome } from "./helpers/env.ts";
@@ -23,31 +22,37 @@ afterEach(() => {
   restoreEnv();
 });
 
-test("DEFAULT_HOME is copilot-env's own data dir", () => {
-  expect(DEFAULT_HOME).toBe(join(homedir(), ".local", "share", "copilot-env"));
-});
-
-test("resolveHome prefers COPILOT_API_HOME and falls back to DEFAULT_HOME (empty included)", () => {
+test("resolveHome prefers COPILOT_API_HOME and falls back to the documented ~/.local/share/copilot-env (empty included)", () => {
+  // The fallback is spelled out, not read from DEFAULT_HOME: AGENTS.md documents this path as
+  // the truth root, and a constant moved elsewhere would otherwise carry the test with it.
+  const documented = join(homedir(), ".local", "share", "copilot-env");
   process.env.COPILOT_API_HOME = "/tmp/copilot-env-paths-home";
   expect(resolveHome()).toBe("/tmp/copilot-env-paths-home");
   delete process.env.COPILOT_API_HOME;
-  expect(resolveHome()).toBe(DEFAULT_HOME);
+  expect(resolveHome(), "unset COPILOT_API_HOME").toBe(documented);
   process.env.COPILOT_API_HOME = "";
-  expect(resolveHome()).toBe(DEFAULT_HOME);
+  expect(resolveHome(), "empty COPILOT_API_HOME").toBe(documented);
 });
 
 // --- THE default-home precedence rule (defaultDaemonHome) -------------------------
 
-test("a fresh root resolves the default daemon home to profiles/default", () => {
-  dir = isolateProxyHome("copilot-env-paths-");
-  expect(defaultDaemonHome()).toBe(join(dir, "profiles", "default"));
-});
-
-test("daemon files at the root never redirect the default home: the root is not a daemon home", () => {
-  dir = isolateProxyHome("copilot-env-paths-");
-  mkdirSync(join(dir, ".run"), { recursive: true });
-  writeFileSync(join(dir, "config.json"), "{}\n");
-  expect(defaultDaemonHome()).toBe(join(dir, "profiles", "default"));
+test("the default daemon home is profiles/default whatever the root holds: the root is never a daemon home", () => {
+  const roots: { name: string; seed: (root: string) => void }[] = [
+    { name: "fresh root", seed: () => {} },
+    {
+      name: "daemon files at the root",
+      seed: (root) => {
+        mkdirSync(join(root, ".run"), { recursive: true });
+        writeFileSync(join(root, "config.json"), "{}\n");
+      },
+    },
+  ];
+  for (const { name, seed } of roots) {
+    dir = isolateProxyHome("copilot-env-paths-");
+    seed(dir);
+    expect({ name, home: defaultDaemonHome() })
+      .toEqual({ name, home: join(dir, "profiles", "default") });
+  }
 });
 
 test("inside a daemon (ROOT_HOME_ENV set) the pinned COPILOT_API_HOME IS the home", () => {
@@ -64,30 +69,49 @@ test("inside a daemon (ROOT_HOME_ENV set) the pinned COPILOT_API_HOME IS the hom
 
 // --- CopilotApiPaths composition ---------------------------------------------------
 
-test("CopilotApiPaths composes per-host run files under the daemon home", () => {
-  dir = isolateProxyHome("copilot-env-paths-");
-  const home = join(dir, "profiles", "default"); // fresh root: the uniform shape
-  const paths = new CopilotApiPaths();
-  const runDir = join(home, ".run", getSanitizedHostname());
-
-  expect(paths.home).toBe(home);
-  expect(paths.configFile).toBe(join(home, "config.json"));
-  expect(paths.runDir).toBe(runDir);
-  expect(paths.stateFile).toBe(join(runDir, ".state.json"));
-  expect(paths.logFile).toBe(join(runDir, ".log"));
-  expect(paths.logsDir).toBe(join(home, "logs"));
-  expect(paths.sqliteDb).toBe(join(runDir, "copilot-api.sqlite"));
-});
-
-test("a named profile's home has the identical shape under profiles/<name>", () => {
-  dir = isolateProxyHome("copilot-env-paths-");
+test("CopilotApiPaths composes one per-host layout under profiles/default and profiles/<name> alike", () => {
   const work = parseProfileName("work");
-  const home = join(dir, "profiles", "work");
-  expect(profileHome(work)).toBe(home);
-  const paths = new CopilotApiPaths(work);
-  expect(paths.home).toBe(home);
-  expect(paths.configFile).toBe(join(home, "config.json"));
-  expect(paths.sqliteDb).toBe(join(home, ".run", getSanitizedHostname(), "copilot-api.sqlite"));
+  const rows: { name: string; profile: Profile; segment: string; paths: () => CopilotApiPaths }[] =
+    [
+      {
+        name: "default profile",
+        profile: null,
+        segment: "default",
+        paths: () => new CopilotApiPaths(),
+      },
+      {
+        name: "named profile",
+        profile: work,
+        segment: "work",
+        paths: () => new CopilotApiPaths(work),
+      },
+    ];
+  for (const { name, profile, segment, paths: construct } of rows) {
+    dir = isolateProxyHome("copilot-env-paths-");
+    const home = join(dir, "profiles", segment);
+    const runDir = join(home, ".run", getSanitizedHostname());
+    const paths = construct();
+    expect({
+      name,
+      home: paths.home,
+      configFile: paths.configFile,
+      runDir: paths.runDir,
+      stateFile: paths.stateFile,
+      logFile: paths.logFile,
+      logsDir: paths.logsDir,
+      sqliteDb: paths.sqliteDb,
+    }).toEqual({
+      name,
+      home,
+      configFile: join(home, "config.json"),
+      runDir,
+      stateFile: join(runDir, ".state.json"),
+      logFile: join(runDir, ".log"),
+      logsDir: join(home, "logs"),
+      sqliteDb: join(runDir, "copilot-api.sqlite"),
+    });
+    if (profile !== null) expect(profileHome(profile)).toBe(home);
+  }
 });
 
 test("account-wide files resolve to the ROOT home, never a daemon home or .run/<host>/", () => {

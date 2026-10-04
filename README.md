@@ -48,12 +48,7 @@ Install from a release, not `main`. Why, the flags, a pinned version, and what t
 
 ## Documentation
 
-- [Docs index](docs/README.md) - the pages by task ("I want to...")
-- [Getting started](docs/getting-started.md) - install and its flags, the first `agent profile add` and the two modes, updating, verifying a download, uninstall
-- [Usage](docs/usage.md) - every command, shell integration and the launchers, the managed proxy lifecycle, web search for Claude Code, cost reporting
-- [Configuration](docs/configuration.md) - every `agent config` key with its default, the proxy-side keys, the Codex model catalog, per-host `CODEX_HOME`, Claude Desktop, environment overrides
-- [Authentication](docs/authentication.md) - the credential providers, PAT passthrough, static key, profiles
-- [Development](docs/development.md) - running from a checkout, the tasks, the env init, where the rules live
+The [docs index](docs/README.md) lists every page by task. Start with [Getting started](docs/getting-started.md).
 
 ## Development
 

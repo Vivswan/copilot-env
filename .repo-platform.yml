@@ -9,4 +9,4 @@ modules:
 project:
   name: copilot-env
   slug: copilot-env
-  description: Local copilot-api proxy lifecycle + config helper (TypeScript).
+  description: "Points the Codex and Claude CLIs at GitHub Copilot: a managed copilot-api proxy, or Copilot Direct."

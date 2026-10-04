@@ -2,7 +2,8 @@
 # Rendered by the sync from the fleet settings layers, this repository's module selection (.repo-platform.yml), and .github/settings.local.yml. Edit that file or the registration; the next sync re-renders this one.
 # Applied by Vivswan/repo-platform's settings run.
 repository:
-  description: Local copilot-api proxy lifecycle + config helper (TypeScript).
+  description: "Points the Codex and Claude CLIs at GitHub Copilot: a managed
+    copilot-api proxy, or Copilot Direct."
   private: false
   security_and_analysis:
     secret_scanning:

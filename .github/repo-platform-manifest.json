@@ -11,9 +11,9 @@
     ".github/copilot-instructions.md": {"class": "mirror", "kind": "symlink", "hash": "79909577a70fc4971a7fcfd3cbec6a1af7182ca2dadc87f2979dce5e28f93ca0"},
     ".github/dependabot.yml": {"class": "managed", "hash": "173fbce6b9c382cb0dfd128217a21330f10e95cd7a68fff1237b67861b497fe1"},
     ".github/instructions/review.instructions.md": {"class": "managed", "hash": "89d5c9bc2bea185a076b37a4cefb5ffea25a37f050c4e39512b875b95e2db380"},
-    ".github/repo-platform-manifest.json": {"class": "managed", "hash": null, "commit": "1649a12bc7a09382ed560bd649322ec10bfd2a74"},
+    ".github/repo-platform-manifest.json": {"class": "managed", "hash": null, "commit": "64fcab4a4699bd0594384d7aed6ebb5c24c303c7"},
     ".github/settings.local.yml": {"class": "starter"},
-    ".github/settings.yml": {"class": "managed", "hash": "436aa4cc5887795b1cddc2dea708cbe67ac6f7e4f162add06f471cf5931d1bcb"},
+    ".github/settings.yml": {"class": "managed", "hash": "c8cea84b0ec235f8423e3b23541d07309fdbdf0e7d122674696d8c62ce9680c1"},
     ".github/workflows/auto-assign.yml": {"class": "managed", "hash": "42534cbfecfcc71acbee7f232d2c2b6c03b523e8158fdbac354d25a27aaf6510"},
     ".github/workflows/auto-format.yml": {"class": "starter"},
     ".github/workflows/checks.yml": {"class": "starter"},
@@ -31,7 +31,7 @@
     ".release-please-manifest.json": {"class": "starter"},
     ".typography-allow": {"class": "managed", "hash": "768ce791aa89e0061a7ccce09ee389478c45062d28d0c256e09b9e7160455ac3"},
     ".yamllint": {"class": "managed", "hash": "5a32565bac44b0b6b2bc8741b2962d2b07ff3afcd2c4ea832ec5cab63af5f3ed"},
-    "AGENTS.md": {"class": "split", "grammar": "managed-region", "begin": "<!-- BEGIN REPO-PLATFORM MANAGED -->", "end": "<!-- END REPO-PLATFORM MANAGED -->", "hash": "7c8f070bd9fb662a246919ed9d6a26f761c4dbfec79819ab5b14cbd60257a3cc"},
+    "AGENTS.md": {"class": "split", "grammar": "managed-region", "begin": "<!-- BEGIN REPO-PLATFORM MANAGED -->", "end": "<!-- END REPO-PLATFORM MANAGED -->", "hash": "dd23dd3b1a49d942441c9b3b9a2d1e429721c03b7f1507d1ef40dfed1de2bb6d"},
     "CLAUDE.md": {"class": "mirror", "kind": "symlink", "hash": "a54ff182c7e8acf56acfd6e4b9c3ff41e2c41a31c9b211b2deb9df75d9a478f9"},
     "release-please-config.json": {"class": "starter"}
   }

@@ -68,7 +68,7 @@ A literal `https://` origin skips the probe (a GitHub Enterprise Server serves C
 - the proxy daemon's upstream (a pinned daemon ignores an inherited `COPILOT_API_ENTERPRISE_URL`);
 - every catalog, discovery, smoke, and web-search request.
 
-The probed identity and host are state in the profile slot: a credential landing writes the pair, every re-render reads it, and the agent files are outputs. The [architecture page](architecture.md#identity-and-host-state-in-the-slot-rendered-into-the-agent-files) owns that mechanism. The table below says when each change applies.
+The [architecture page](architecture.md#identity-and-host-state-in-the-slot-rendered-into-the-agent-files) owns how the probed identity and host are stored and rendered. The table below says when each change applies.
 
 | Event                                                                                                                                                                        | What happens                                                                                                                                                        |
 | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

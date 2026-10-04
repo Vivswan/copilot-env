@@ -1,5 +1,6 @@
 export const SECONDS_PER_DAY = 24 * 60 * 60;
 export const MILLISECONDS_PER_DAY = SECONDS_PER_DAY * 1000;
+const MILLISECONDS_PER_HOUR = 60 * 60 * 1000;
 
 /** `ms -> "YYYY-MM-DD"`, bound to one timezone. */
 export type DayKey = (ms: number) => string;
@@ -55,12 +56,13 @@ function intlClock(timeZone: string): ZoneClock {
       Number(parts.find((p) => p.type === type)?.value);
     return Object.fromEntries(WALL_CLOCK_FIELDS.map((f) => [f, read(f)])) as WallClock;
   };
-  /** The zone's wall clock read as UTC minus the instant, to the second the formatter resolves. */
-  const offsetAt = (ms: number): number => {
+  /** The zone's wall-clock reading of `ms`, as the UTC instant with the same digits. */
+  const wallUtc = (ms: number): number => {
     const w = wallClock(ms);
-    return Date.UTC(w.year, w.month - 1, w.day, w.hour, w.minute, w.second) -
-      Math.floor(ms / 1000) * 1000;
+    return Date.UTC(w.year, w.month - 1, w.day, w.hour, w.minute, w.second);
   };
+  /** To the second the formatter resolves. */
+  const offsetAt = (ms: number): number => wallUtc(ms) - Math.floor(ms / 1000) * 1000;
   const dayKey: DayKey = (ms) => {
     const w = wallClock(ms);
     return `${w.year}-${pad(w.month)}-${pad(w.day)}`;
@@ -70,14 +72,17 @@ function intlClock(timeZone: string): ZoneClock {
     startOfDay: (ms, daysBack) => {
       const w = wallClock(ms);
       const midnight = Date.UTC(w.year, w.month - 1, w.day - daysBack);
-      const day = new Date(midnight).toISOString().slice(0, 10);
-      // The target midnight read in each offset in force around it; across a DST change that is
-      // not the offset at `ms`, and a change on midnight itself puts two readings on the day, of
-      // which the earliest is the first instant, as Date's own accessors also pick it.
-      const guess = midnight - offsetAt(ms);
-      const readings = [offsetAt(ms), offsetAt(guess), offsetAt(guess - 1)]
+      // Each offset in force within a day of the target midnight places it at one instant, and
+      // Date takes the earliest that reads at or past it: the first of a repeated midnight, or
+      // where the clock landed when a change skipped it (an hour, or Samoa's whole day). No zone
+      // holds an offset for under an hour, so hourly samples see every offset.
+      const offsets = new Set<number>();
+      for (let t = -MILLISECONDS_PER_DAY; t <= MILLISECONDS_PER_DAY; t += MILLISECONDS_PER_HOUR) {
+        offsets.add(offsetAt(midnight + t));
+      }
+      const readings = [...offsets]
         .map((offset) => midnight - offset)
-        .filter((instant) => dayKey(instant) === day);
+        .filter((instant) => wallUtc(instant) >= midnight);
       return Math.min(...readings);
     },
   };

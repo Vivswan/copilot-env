@@ -543,30 +543,28 @@ describe("applyUpdate", () => {
     },
   );
 
-  skipWin(
-    "refuses when current already points at the target version, before any download",
-    async () => {
-      // Releases only move forward; `current` naming the target while the version
-      // check said "behind" means a corrupt layout -- refuse rather than guess.
-      // The release dir stays EMPTY: a download would fail on the missing asset first, so the
-      // refusal arriving as the error proves nothing was fetched.
-      seedVersion("v9.9.9", "ALREADY");
-      pointCurrentAt(installDir, "v9.9.9");
+  test("refuses when current already points at the target version, before any download", async () => {
+    // Releases only move forward; `current` naming the target while the version
+    // check said "behind" means a corrupt layout -- refuse rather than guess.
+    // The release dir stays EMPTY: a download would fail on the missing asset first, so the
+    // refusal arriving as the error proves nothing was fetched. No binary runs, so the case
+    // holds on Windows too, where `current` is the junction pointCurrentAt writes.
+    seedVersion("v9.9.9", "ALREADY");
+    pointCurrentAt(installDir, "v9.9.9");
 
-      await expect(
-        apply("v9.9.8", { root: installDir, logger: quiet }),
-      ).rejects.toThrow(
-        "already points at v9.9.9; to refresh this version in place, re-run `agent install`",
-      );
-      // The live version dir was NOT clobbered by staging.
-      expect(
-        readFileSync(
-          join(installDir, VERSIONS_DIR, "v9.9.9", "bin", installedBinaryName()),
-          "utf8",
-        ),
-      ).toBe("ALREADY");
-    },
-  );
+    await expect(
+      apply("v9.9.8", { root: installDir, logger: quiet }),
+    ).rejects.toThrow(
+      "already points at v9.9.9; to refresh this version in place, re-run `agent install`",
+    );
+    // The live version dir was NOT clobbered by staging.
+    expect(
+      readFileSync(
+        join(installDir, VERSIONS_DIR, "v9.9.9", "bin", installedBinaryName()),
+        "utf8",
+      ),
+    ).toBe("ALREADY");
+  });
 
   test("fails when the release has no asset for this platform", async () => {
     // A manifest that vouches for other platforms only.

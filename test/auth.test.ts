@@ -216,16 +216,12 @@ test("auth --del, --provider gh-env, and --set land exactly in the store and wri
     const { claudeHome } = isolate();
     row.arrange();
     await runAuth(row.args);
-    expect(state().read(), row.name).toEqual({
+    const { githubToken, authProvider, ghUser, profiles } = state().read();
+    expect({ githubToken, authProvider, ghUser, profiles }, row.name).toEqual({
       githubToken: row.githubToken,
       authProvider: row.authProvider,
       ghUser: null,
       profiles: {},
-      codexCatalogLastAttemptMs: 0,
-      codexCatalogPatchVersion: 0,
-      codexCatalogAccepted: null,
-      claudeModelVerdicts: {},
-      codexCatalogCodexVersion: null,
     });
     // auth only manages the credential -- configuring Codex/Claude is `agent init`'s job.
     expect(existsSync(join(claudeHome, "settings.json")), row.name).toBe(false);

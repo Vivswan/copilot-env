@@ -14,6 +14,7 @@ import {
   type AuthFacts,
   classifyPortState,
   type ClaudeFacts,
+  type CodexFacts,
   type NamedRuntimeTarget,
   type ProfileSlotFacts,
   type RuntimeTarget,
@@ -472,61 +473,43 @@ test("checkAuth (named): the slot and its credential resolution decide status, d
 
 // --- per-agent wiring checks, named ---------------------------------------------
 
+// (config.toml present or absent, nothing selected) -> the warn's wording and the re-add fix. A wrong
+// row tells a profile owner to re-add when the file is fine, or says "not wired" over a present file.
 test("checkCodex(named): missing wiring warns with the profile re-add fix", () => {
-  const unwired = checkCodex(
-    {
-      home: "/c",
-      configExists: false,
-      providerSelected: false,
-      providerMode: "none",
-      modelProvider: null,
-      baseUrl: null,
-      baseUrlMatches: false,
-      envKeyMatches: false,
-      providerWired: false,
-      credential: "none",
-      envFilePresent: false,
-      envKeyInDotenv: false,
-      envKeyInEnviron: false,
-      tokenAvailable: false,
-      directAuth: { command: null, authenticated: false },
-      directUsesToken: false,
-      directNeedsNoGh: false,
-      otherReason: null,
-    },
-    P,
-  );
-  expect(unwired.status).toBe("warn");
-  expect(unwired.profile).toBe(P);
-  expect(unwired.detail).toContain("profile 'p' is not wired into Codex");
-  expect(unwired.fix).toBe("agent profile p add");
-
-  const unselected = checkCodex(
-    {
-      home: "/c",
-      configExists: true,
-      providerSelected: false,
-      providerMode: "none",
-      modelProvider: null,
-      baseUrl: null,
-      baseUrlMatches: false,
-      envKeyMatches: false,
-      providerWired: false,
-      credential: "none",
-      envFilePresent: false,
-      envKeyInDotenv: false,
-      envKeyInEnviron: false,
-      tokenAvailable: false,
-      directAuth: { command: null, authenticated: false },
-      directUsesToken: false,
-      directNeedsNoGh: false,
-      otherReason: null,
-    },
-    P,
-  );
-  expect(unselected.status).toBe("warn");
-  expect(unselected.detail).toContain('not "copilot-env-p"');
-  expect(unselected.fix).toBe("agent profile p add");
+  const unwired = {
+    home: "/c",
+    configExists: false,
+    providerSelected: false,
+    providerMode: "none",
+    modelProvider: null,
+    baseUrl: null,
+    baseUrlMatches: false,
+    envKeyMatches: false,
+    providerWired: false,
+    credential: "none",
+    envFilePresent: false,
+    envKeyInDotenv: false,
+    envKeyInEnviron: false,
+    tokenAvailable: false,
+    directAuth: { command: null, authenticated: false },
+    directUsesToken: false,
+    directNeedsNoGh: false,
+    otherReason: null,
+  } satisfies CodexFacts;
+  const rows: Array<{ override: Partial<Pick<CodexFacts, "configExists">>; detail: string }> = [
+    { override: {}, detail: "profile 'p' is not wired into Codex" },
+    { override: { configExists: true }, detail: 'not "copilot-env-p"' },
+  ];
+  for (const row of rows) {
+    const r = checkCodex({ ...unwired, ...row.override }, P);
+    expect({ override: row.override, status: r.status, profile: r.profile, fix: r.fix }).toEqual({
+      override: row.override,
+      status: "warn",
+      profile: P,
+      fix: "agent profile p add",
+    });
+    expect(r.detail, JSON.stringify(row.override)).toContain(row.detail);
+  }
 });
 
 test("checkClaude(named): missing wiring warns; a stale proxy port points at the profile re-add", () => {
@@ -597,58 +580,53 @@ test("checkClaude(named): missing wiring warns; a stale proxy port points at the
 });
 
 test("named wiring in the OTHER mode than the slot records warns as an interrupted rewire", () => {
-  const codexDirect = checkCodex(
+  // (recorded mode) against a wiring that is direct -> green when they agree, the interrupted-rewire
+  // warn when they do not. A wrong row greens a profile whose two halves disagree.
+  const codexDirect = {
+    home: "/c",
+    configExists: true,
+    providerSelected: true,
+    providerMode: "direct",
+    modelProvider: "copilot-env-p",
+    baseUrl: "https://api.githubcopilot.com",
+    baseUrlMatches: true,
+    envKeyMatches: true,
+    providerWired: true,
+    credential: "command",
+    envFilePresent: false,
+    envKeyInDotenv: false,
+    envKeyInEnviron: false,
+    tokenAvailable: false,
+    directAuth: { command: null, authenticated: false },
+    directUsesToken: true,
+    directNeedsNoGh: true,
+    otherReason: null,
+  } satisfies CodexFacts;
+  const rows: Array<{
+    override: Pick<CodexFacts, "expectedMode">;
+    status: CheckStatus;
+    detail?: string;
+    fix?: string;
+  }> = [
     {
-      home: "/c",
-      configExists: true,
-      providerSelected: true,
-      providerMode: "direct",
-      modelProvider: "copilot-env-p",
-      baseUrl: "https://api.githubcopilot.com",
-      baseUrlMatches: true,
-      envKeyMatches: true,
-      providerWired: true,
-      credential: "command",
-      envFilePresent: false,
-      envKeyInDotenv: false,
-      envKeyInEnviron: false,
-      tokenAvailable: false,
-      directAuth: { command: null, authenticated: false },
-      directUsesToken: true,
-      directNeedsNoGh: true,
-      otherReason: null,
-      expectedMode: "proxy",
+      override: { expectedMode: "proxy" },
+      status: "warn",
+      detail: "recorded mode is proxy",
+      fix: "agent profile p add",
     },
-    P,
-  );
-  expect(codexDirect.status).toBe("warn");
-  expect(codexDirect.detail).toContain("recorded mode is proxy");
-  expect(codexDirect.fix).toBe("agent profile p add");
-  const codexMatch = checkCodex(
-    {
-      home: "/c",
-      configExists: true,
-      providerSelected: true,
-      providerMode: "direct",
-      modelProvider: "copilot-env-p",
-      baseUrl: "https://api.githubcopilot.com",
-      baseUrlMatches: true,
-      envKeyMatches: true,
-      providerWired: true,
-      credential: "command",
-      envFilePresent: false,
-      envKeyInDotenv: false,
-      envKeyInEnviron: false,
-      tokenAvailable: false,
-      directAuth: { command: null, authenticated: false },
-      directUsesToken: true,
-      directNeedsNoGh: true,
-      otherReason: null,
-      expectedMode: "direct",
-    },
-    P,
-  );
-  expect(codexMatch.status).toBe("ok");
+    { override: { expectedMode: "direct" }, status: "ok" },
+  ];
+  for (const row of rows) {
+    const r = checkCodex({ ...codexDirect, ...row.override }, P);
+    expect({ override: row.override, status: r.status, fix: r.fix }).toEqual({
+      override: row.override,
+      status: row.status,
+      fix: row.fix,
+    });
+    if (row.detail !== undefined) {
+      expect(r.detail, String(row.override.expectedMode)).toContain(row.detail);
+    }
+  }
 
   const claudeProxy = checkClaude(
     {

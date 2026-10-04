@@ -335,8 +335,9 @@ test("a static-key write previews its bearer leaf redacted and every other leaf 
   // their whitespace removed, and only the rows under config.toml's own verdict line count.
   const unspaced = (text: string): string => text.replace(/\s+/g, "");
   const flat = unspaced(stdout);
-  const block = flat.slice(flat.indexOf(unspaced(`create ${join(home, "config.toml")}`)));
-  expect(block.length).toBeGreaterThan(0);
+  const verdictAt = flat.indexOf(unspaced(`create ${join(home, "config.toml")}`));
+  expect(verdictAt).not.toBe(-1);
+  const block = flat.slice(verdictAt);
   expect(block).toContain(
     unspaced("model_providers.copilot-env.http_headers.Authorization  (absent) -> <redacted>"),
   );

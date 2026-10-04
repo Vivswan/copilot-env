@@ -167,7 +167,9 @@ test("codex: not configured is ok; each broken part warns with a precise message
   expect(noEnvToken.status).toBe("ok");
   expect(noEnvToken.detail).toContain("proxy-token resolver");
 
-  const direct = checkCodex({
+  // (gh look, recorded provider) -> the direct verdict, its auth line, and the fix it names. A wrong
+  // row hides the account a verdict is about, or offers `gh auth login` for a provider gh cannot serve.
+  const direct = {
     ...wired,
     providerMode: "direct",
     modelProvider: "copilot-env",
@@ -176,100 +178,83 @@ test("codex: not configured is ok; each broken part warns with a precise message
     envKeyInDotenv: false,
     envKeyInEnviron: false,
     tokenAvailable: false,
-  }, null);
-  expect(direct.status).toBe("ok");
-  expect(direct.detail).toContain("provider: direct");
-  // An auto slot whose account list could not name the active login still says
-  // it is on AUTO (never a bare "authenticated" that hides the mode).
-  expect(direct.detail).toContain(
-    "gh auth: authenticated via /bin/gh (AUTO - follows gh's active account)",
-  );
-  expect(direct.detail).toContain(`config.toml: ${join("/c", "config.toml")}`);
-
-  const directMissingGh = checkCodex({
-    ...wired,
-    providerMode: "direct",
-    modelProvider: "copilot-env",
-    baseUrl: "https://api.githubcopilot.com",
-    envKeyMatches: false,
-    envKeyInDotenv: false,
-    envKeyInEnviron: false,
-    tokenAvailable: false,
-    directAuth: { command: null, authenticated: false },
-  }, null);
-  expect(directMissingGh.status).toBe("warn");
-  expect(directMissingGh.detail).toContain("GitHub CLI not found");
-  expect(directMissingGh.fix).toBe("install gh and run gh auth login");
-
-  const directUnauthed = checkCodex({
-    ...wired,
-    providerMode: "direct",
-    modelProvider: "copilot-env",
-    baseUrl: "https://api.githubcopilot.com",
-    envKeyMatches: false,
-    envKeyInDotenv: false,
-    envKeyInEnviron: false,
-    tokenAvailable: false,
-    directAuth: { command: "/bin/gh", authenticated: false },
-  }, null);
-  expect(directUnauthed.status).toBe("warn");
-  expect(directUnauthed.detail).toContain("not authenticated");
-  expect(directUnauthed.fix).toBe("gh auth login");
-
-  // A PINNED slot's verdict names its account: the probe ran `gh auth token
-  // --user work-bot`, so "not authenticated" is about that account, not gh's
-  // active one (which may be fine).
-  const directPinnedUnauthed = checkCodex({
-    ...wired,
-    providerMode: "direct",
-    modelProvider: "copilot-env",
-    baseUrl: "https://api.githubcopilot.com",
-    envKeyMatches: false,
-    envKeyInDotenv: false,
-    envKeyInEnviron: false,
-    tokenAvailable: false,
-    directAuth: { command: "/bin/gh", authenticated: false, ghUser: "work-bot" },
-  }, null);
-  expect(directPinnedUnauthed.status).toBe("warn");
-  expect(directPinnedUnauthed.detail).toContain(
-    "gh auth: /bin/gh is not authenticated as account 'work-bot'",
-  );
-  expect(directPinnedUnauthed.fix).toBe("gh auth login");
-
-  // An AUTO slot's ok line names the account it follows (no hidden information).
-  const directAutoNamed = checkCodex({
-    ...wired,
-    providerMode: "direct",
-    modelProvider: "copilot-env",
-    baseUrl: "https://api.githubcopilot.com",
-    envKeyMatches: false,
-    envKeyInDotenv: false,
-    envKeyInEnviron: false,
-    tokenAvailable: false,
-    directAuth: { command: "/bin/gh", authenticated: true, ghActiveLogin: "octocat" },
-  }, null);
-  expect(directAutoNamed.status).toBe("ok");
-  expect(directAutoNamed.detail).toContain(
-    "gh auth: authenticated via /bin/gh (AUTO - currently account octocat)",
-  );
-
-  // Non-gh-cli provider with no stored token: gh is NOT a fallback, so the warn points at
-  // `agent auth`, never the gh-specific message (the provider-blind false-OK).
-  const directNoCred = checkCodex({
-    ...wired,
-    providerMode: "direct",
-    modelProvider: "copilot-env",
-    baseUrl: "https://api.githubcopilot.com",
-    envKeyMatches: false,
-    tokenAvailable: false,
-    provider: "copilot",
-    directUsesToken: false,
-    directAuth: { command: "/bin/gh", authenticated: true },
-  }, null);
-  expect(directNoCred.status).toBe("warn");
-  expect(directNoCred.detail).toContain("no credential resolves");
-  expect(directNoCred.detail).not.toContain("gh auth:");
-  expect(directNoCred.fix).toBe("agent auth");
+  } satisfies CodexFacts;
+  const directRows: Array<{
+    name: string;
+    directAuth: CodexFacts["directAuth"];
+    provider?: CodexFacts["provider"];
+    status: CheckStatus;
+    detail: string[];
+    notDetail?: string;
+    fix?: string;
+  }> = [
+    {
+      // An auto slot whose account list could not name the active login still says it is on AUTO
+      // (never a bare "authenticated" that hides the mode).
+      name: "auto, authenticated, login unknown",
+      directAuth: { command: "/bin/gh", authenticated: true },
+      status: "ok",
+      detail: [
+        "provider: direct",
+        "gh auth: authenticated via /bin/gh (AUTO - follows gh's active account)",
+        `config.toml: ${join("/c", "config.toml")}`,
+      ],
+    },
+    {
+      name: "gh missing",
+      directAuth: { command: null, authenticated: false },
+      status: "warn",
+      detail: ["GitHub CLI not found"],
+      fix: "install gh and run gh auth login",
+    },
+    {
+      name: "auto, unauthenticated",
+      directAuth: { command: "/bin/gh", authenticated: false },
+      status: "warn",
+      detail: ["not authenticated"],
+      fix: "gh auth login",
+    },
+    {
+      // A PINNED slot's verdict names its account: the probe ran `gh auth token --user work-bot`,
+      // so "not authenticated" is about that account, not gh's active one (which may be fine).
+      name: "pinned, unauthenticated",
+      directAuth: { command: "/bin/gh", authenticated: false, ghUser: "work-bot" },
+      status: "warn",
+      detail: ["gh auth: /bin/gh is not authenticated as account 'work-bot'"],
+      fix: "gh auth login",
+    },
+    {
+      // An AUTO slot's ok line names the account it follows (no hidden information).
+      name: "auto, authenticated, login named",
+      directAuth: { command: "/bin/gh", authenticated: true, ghActiveLogin: "octocat" },
+      status: "ok",
+      detail: ["gh auth: authenticated via /bin/gh (AUTO - currently account octocat)"],
+    },
+    {
+      // Non-gh-cli provider with no stored token: gh is NOT a fallback, so the warn points at
+      // `agent auth`, never the gh-specific message (the provider-blind false-OK).
+      name: "copilot provider, no stored token",
+      directAuth: { command: "/bin/gh", authenticated: true },
+      provider: "copilot",
+      status: "warn",
+      detail: ["no credential resolves"],
+      notDetail: "gh auth:",
+      fix: "agent auth",
+    },
+  ];
+  for (const row of directRows) {
+    const r = checkCodex(
+      { ...direct, directAuth: row.directAuth, provider: row.provider ?? direct.provider },
+      null,
+    );
+    expect({ name: row.name, status: r.status, fix: r.fix }).toEqual({
+      name: row.name,
+      status: row.status,
+      fix: row.fix,
+    });
+    for (const needle of row.detail) expect(r.detail, row.name).toContain(needle);
+    if (row.notDetail !== undefined) expect(r.detail, row.name).not.toContain(row.notDetail);
+  }
 });
 
 test("checkCodex/checkClaude direct: an UNPROVEN gh probe says could-not-check, never a confident verdict", () => {

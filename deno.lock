@@ -32,6 +32,7 @@
     "npm:smol-toml@^1.8.0": "1.8.0",
     "npm:string-width@^8.2.2": "8.2.2",
     "npm:undici@^7.29.1": "7.29.1",
+    "npm:undici@^8.11.2": "8.11.2",
     "npm:valibot@^1.5.0": "1.5.0",
     "npm:wrap-ansi@^10.0.1": "10.0.1"
   },
@@ -121,7 +122,7 @@
         "proxy-from-env",
         "srvx",
         "tiny-invariant",
-        "undici",
+        "undici@7.29.1",
         "winreg",
         "zod"
       ],
@@ -1178,6 +1179,9 @@
     "undici@7.29.1": {
       "integrity": "sha512-RYONW2MeafgYlkVOKYKkA/Ag7BmXqgIWCa8t1m0JcxrQg9pI9lEqRhAOruOBCbAohOa/gkCF+iPi9hrgvTzu6Q=="
     },
+    "undici@8.11.2": {
+      "integrity": "sha512-u4UB2/IrKdU6lFxumHmmo1a3fCQO5tzQllRorfoRS63txhrB7xTpSn1PftwC4qEHkOaqP95fCWW4lJzwErwzhQ=="
+    },
     "unicorn-magic@0.3.0": {
       "integrity": "sha512-+QBBXBCvifc56fsbuxZQ6Sic3wqqc3WWaqxs58gvJrcOuN83HGTCwz3oS5phzU9LthRNE9VrJCFCLUgHeeFnfA=="
     },
@@ -1255,6 +1259,7 @@
       "npm:smol-toml@^1.8.0",
       "npm:string-width@^8.2.2",
       "npm:undici@^7.29.1",
+      "npm:undici@^8.11.2",
       "npm:valibot@^1.5.0",
       "npm:wrap-ansi@^10.0.1"
     ]

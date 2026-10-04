@@ -155,10 +155,26 @@ function Resolve-Target {
 function Resolve-ReleaseTag {
     if ($Version) { return $Version }
     if ($InstallRef -ne 'latest') { return $InstallRef }
-    $release = Invoke-WithRetry 'Resolve latest release' {
-        Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" -Headers $AuthHeaders -UserAgent $UserAgent
+    if ($AuthToken) {
+        # A token raises the API rate limit and sees private repos, so resolve `latest` through
+        # the API when one is available.
+        $release = Invoke-WithRetry 'Resolve latest release' {
+            Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" -Headers $AuthHeaders -UserAgent $UserAgent
+        }
+        $tag = [string]$release.tag_name
+    } else {
+        # Tokenless: follow the /releases/latest redirect to the tag page instead of burning the
+        # 60/hour unauthenticated API quota. The URL the redirects ended on sits on each edition's
+        # own response type:
+        #   Windows PowerShell 5.1  -> HttpWebResponse.ResponseUri
+        #   pwsh                    -> HttpResponseMessage.RequestMessage.RequestUri
+        $response = Invoke-WithRetry 'Resolve latest release' {
+            Invoke-WebRequest -Uri "https://github.com/$Repo/releases/latest" -UseBasicParsing -UserAgent $UserAgent
+        }
+        $final = $response.BaseResponse.ResponseUri
+        if (-not $final) { $final = $response.BaseResponse.RequestMessage.RequestUri }
+        $tag = ([string]$final).Split('/')[-1]
     }
-    $tag = [string]$release.tag_name
     if ($tag -notmatch '^v[0-9]') { throw "Could not resolve a release tag (got '$tag')." }
     return $tag
 }

@@ -54,14 +54,24 @@ function Install-Deno {
     }
 
     [Console]::Error.WriteLine('==> Installing the latest deno (one-time; none found on PATH) ...')
+    # The release zip is fetched and unpacked here instead of running deno's install.ps1: that
+    # installer appends $denoBin to the User PATH in the registry with no opt-out (the POSIX
+    # installer's rc-file edits turn off under CI=1), and PATH is bin/agent.ps1's and
+    # shell/agents.ps1's job. The URLs and tar.exe are the installer's own.
     # A random scratch name, and New-Item without -Force: a fixed name under the shared temp
-    # root could be pre-created by another local user, who would then own the script run next.
+    # root could be pre-created by another local user, who would then own the zip unpacked next.
     $scratch = Join-Path ([IO.Path]::GetTempPath()) ([IO.Path]::GetRandomFileName())
     New-Item $scratch -ItemType Directory | Out-Null
+    # 5.1's Invoke-WebRequest redraws its progress bar per buffer, slowing the download by
+    # orders of magnitude; function scope, so the caller's preference is untouched.
+    $ProgressPreference = 'SilentlyContinue'
     try {
-        $installer = Join-Path $scratch 'deno-install.ps1'
-        Invoke-RestMethod https://deno.land/install.ps1 -OutFile $installer
-        & $installer | ForEach-Object { [Console]::Error.WriteLine($_) }
+        $version = ([string](Invoke-RestMethod https://dl.deno.land/release-latest.txt)).Trim()
+        $zip = Join-Path $scratch 'deno.zip'
+        Invoke-WebRequest "https://dl.deno.land/release/$version/deno-x86_64-pc-windows-msvc.zip" -OutFile $zip -UseBasicParsing
+        New-Item $denoBin -ItemType Directory -Force | Out-Null
+        & tar.exe xf $zip -C $denoBin
+        if ($LASTEXITCODE -ne 0) { throw "could not unpack the deno $version zip into $denoBin." }
     } finally {
         Remove-Item $scratch -Recurse -Force -ErrorAction SilentlyContinue
     }
@@ -69,5 +79,6 @@ function Install-Deno {
     if (-not (Get-CopilotEnvDenoVersion $installed)) {
         throw "the deno install did not produce a runnable $installed."
     }
+    [Console]::Error.WriteLine("Deno $version was installed to $installed")
     $env:Path = "$denoBin;$env:Path"
 }

@@ -113,14 +113,19 @@ function addWindowsUserPath(directory: string): void {
       [
         "-NoProfile",
         "-Command",
+        // Stop, so a refused registry write exits non-zero before the report line can print.
+        "$ErrorActionPreference='Stop';" +
         `$dir=${quotePowerShell(directory)};` +
         "$path=[Environment]::GetEnvironmentVariable('Path','User');" +
         "$entries=@($path -split ';' | Where-Object { $_ });" +
         "if ($entries -notcontains $dir) {" +
-        "[Environment]::SetEnvironmentVariable('Path', (($entries + $dir) -join ';'), 'User')" +
+        "[Environment]::SetEnvironmentVariable('Path', (($entries + $dir) -join ';'), 'User');" +
+        // A write outside copilot-env's homes: name it, as the execution-policy change does
+        // (src/shell/integration.ts), and only when it happened.
+        'Write-Host "Added $dir to the User PATH so new shells find npm\'s global bin."' +
         "}",
       ],
-      { stdio: "ignore", env },
+      { stdio: ["ignore", "inherit", "inherit"], env },
     ));
   if (result.status !== 0) consola.warn(`Could not add npm global bin to user PATH: ${directory}`);
   refreshWindowsPath();

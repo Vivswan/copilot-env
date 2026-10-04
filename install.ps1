@@ -59,17 +59,8 @@ $ErrorActionPreference = 'Stop'
 if ($Yes -and $No) { throw '-Yes and -No conflict; pass one.' }
 $PSNativeCommandUseErrorActionPreference = $false
 
-# Windows PowerShell 5.1 inherits .NET Framework's protocol default, which can exclude the
-# TLS 1.2 GitHub requires; -bor keeps anything newer. pwsh's HttpClient ignores this property.
-if ($PSVersionTable.PSVersion.Major -lt 6) {
-    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-}
-# 5.1's Invoke-WebRequest redraws its progress bar per buffer, slowing large
-# downloads by orders of magnitude; the installer has no other progress UI.
-$ProgressPreference = 'SilentlyContinue'
-
 # 5.1 spawned from pwsh inherits pwsh's PSModulePath, whose PowerShell 7 directories shadow
-# its own: Invoke-WebRequest and Get-FileHash then autoload Core modules 5.1 cannot load.
+# its own: Get-FileHash and ConvertFrom-Json then autoload Core modules 5.1 cannot load.
 # The same defense as src/shell/integration.ts's execution-policy command.
 if ($PSVersionTable.PSVersion.Major -lt 6) {
     $MachineModulePath = [Environment]::GetEnvironmentVariable('PSModulePath', 'Machine')
@@ -84,33 +75,33 @@ $InstallRef = if ($env:COPILOT_ENV_INSTALL_REF) { $env:COPILOT_ENV_INSTALL_REF }
 $Repo = 'Vivswan/copilot-env'
 $BinaryName = 'copilot-env.exe'
 # The Authorization header goes only to api.github.com (tag resolution);
-# release-asset downloads ride the public URL anonymously. User-Agent rides
-# every call's dedicated -UserAgent parameter: Windows PowerShell 5.1's
-# -Headers cannot carry it (a restricted header on .NET Framework).
-$UserAgent = 'copilot-env'
-$AuthHeaders = @{ 'Accept' = 'application/vnd.github+json' }
+# release-asset downloads ride the public URL anonymously.
+$AuthCurlArgs = @('-H', 'User-Agent: copilot-env', '-H', 'Accept: application/vnd.github+json')
+$PublicCurlArgs = @('-H', 'User-Agent: copilot-env')
 $AuthToken = if ($env:GH_TOKEN) { $env:GH_TOKEN } else { $env:GITHUB_TOKEN }
-if ($AuthToken) {
-    $AuthHeaders['Authorization'] = "Bearer $AuthToken"
-}
 if (-not $InstallDir) {
     $InstallDir = if ($env:COPILOT_ENV_DIR) { $env:COPILOT_ENV_DIR } else { Join-Path $env:USERPROFILE '.copilot-env' }
 }
 
-function Invoke-WithRetry {
+# install.sh's retry() over curl.exe: there a launch failure and a non-zero exit both spend a
+# try, so the catch retries too.
+function Invoke-Curl {
     param(
         [Parameter(Mandatory)][string]$Label,
-        [Parameter(Mandatory)][scriptblock]$Script
+        [Parameter(Mandatory)][string[]]$CurlArgs
     )
 
     for ($try = 1; $try -le 3; $try++) {
         try {
-            return & $Script
+            $out = & curl.exe @CurlArgs
+            if ($LASTEXITCODE -eq 0) { return $out }
+            $failure = "curl.exe exited $LASTEXITCODE."
         } catch {
-            if ($try -ge 3) { throw }
-            Write-Warning "$Label failed; retrying ($try/3): $($_.Exception.Message)"
-            Start-Sleep -Seconds ($try * 2)
+            $failure = $_.Exception.Message
         }
+        if ($try -ge 3) { throw $failure }
+        Write-Warning "$Label failed; retrying ($try/3): $failure"
+        Start-Sleep -Seconds ($try * 2)
     }
 }
 
@@ -155,15 +146,36 @@ function Resolve-Target {
 function Resolve-ReleaseTag {
     if ($Version) { return $Version }
     if ($InstallRef -ne 'latest') { return $InstallRef }
-    $release = Invoke-WithRetry 'Resolve latest release' {
-        Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" -Headers $AuthHeaders -UserAgent $UserAgent
+    # Either lookup, once its retries run out, dies with install.sh's message, not the raw curl
+    # exit.
+    if ($AuthToken) {
+        # A token raises the API rate limit and sees private repos, so resolve `latest` through
+        # the API when one is available. The token rides a header file, not curl.exe's argv,
+        # which the process list shows while it runs.
+        $hdr = Join-Path ([System.IO.Path]::GetTempPath()) ([System.IO.Path]::GetRandomFileName())
+        [System.IO.File]::WriteAllText($hdr, "Authorization: Bearer $AuthToken")
+        try {
+            $json = Invoke-Curl 'Resolve latest release' (
+                @('-fsSL') + $AuthCurlArgs + @('-H', "@$hdr", "https://api.github.com/repos/$Repo/releases/latest"))
+        } catch {
+            throw 'Could not resolve the latest copilot-env release.'
+        } finally {
+            Remove-Item -LiteralPath $hdr -Force -ErrorAction SilentlyContinue
+        }
+        $tag = [string](ConvertFrom-Json ($json -join "`n")).tag_name
+    } else {
+        # Tokenless: follow the /releases/latest redirect to the tag page instead of burning the
+        # 60/hour unauthenticated API quota.
+        try {
+            $url = Invoke-Curl 'Resolve latest release' (
+                @('-fsSL', '-o', 'NUL', '-w', '%{url_effective}') + $PublicCurlArgs + "https://github.com/$Repo/releases/latest")
+        } catch { throw 'Could not resolve the latest copilot-env release.' }
+        $tag = ([string]$url).Split('/')[-1]
     }
-    $tag = [string]$release.tag_name
     if ($tag -notmatch '^v[0-9]') { throw "Could not resolve a release tag (got '$tag')." }
     return $tag
 }
 
-# Directory mode exists because pwsh's Invoke-WebRequest cannot fetch file:// URIs.
 function Get-ReleaseFile {
     param(
         [Parameter(Mandatory)][string]$Name,
@@ -173,9 +185,8 @@ function Get-ReleaseFile {
     if ($DownloadDir) {
         Copy-Item -LiteralPath (Join-Path $DownloadDir $Name) -Destination $Destination -Force
     } else {
-        Invoke-WithRetry "Download $Name" {
-            Invoke-WebRequest -Uri "$DownloadUrlBase/$Name" -OutFile $Destination -UseBasicParsing -UserAgent $UserAgent
-        } | Out-Null
+        Invoke-Curl "Download $Name" (
+            @('-fsSL') + $PublicCurlArgs + @("$DownloadUrlBase/$Name", '-o', $Destination)) | Out-Null
     }
 }
 
@@ -209,6 +220,9 @@ if (Test-Path -LiteralPath (Join-Path $InstallDir '.git')) {
 
 $Target = Resolve-Target
 $AssetName = "copilot-env-$Target.exe"
+if (-not (Get-Command curl.exe -ErrorAction SilentlyContinue)) {
+    throw 'curl.exe is required to download copilot-env and was not found on PATH.'
+}
 
 $DownloadDir = ''
 $DownloadUrlBase = ''

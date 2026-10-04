@@ -54,20 +54,33 @@ function Install-Deno {
     }
 
     [Console]::Error.WriteLine('==> Installing the latest deno (one-time; none found on PATH) ...')
-    # A random scratch name, and New-Item without -Force: a fixed name under the shared temp
-    # root could be pre-created by another local user, who would then own the script run next.
+    # Not deno's own install.ps1: it appends $denoBin to the User PATH in the registry with no
+    # opt-out, and PATH is bin/agent.ps1's and shell/agents.ps1's job. The URLs are that installer's own.
+    foreach ($tool in 'curl.exe', 'tar.exe') {
+        if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) {
+            throw "$tool is required to install deno and was not found on PATH."
+        }
+    }
     $scratch = Join-Path ([IO.Path]::GetTempPath()) ([IO.Path]::GetRandomFileName())
     New-Item $scratch -ItemType Directory | Out-Null
     try {
-        $installer = Join-Path $scratch 'deno-install.ps1'
-        Invoke-RestMethod https://deno.land/install.ps1 -OutFile $installer
-        & $installer | ForEach-Object { [Console]::Error.WriteLine($_) }
+        $version = ((& curl.exe -fsSL https://dl.deno.land/release-latest.txt) -join '').Trim()
+        if ($LASTEXITCODE -ne 0 -or -not $version) { throw 'could not resolve the latest deno release.' }
+        $zip = Join-Path $scratch 'deno.zip'
+        & curl.exe -fsSL -o $zip "https://dl.deno.land/release/$version/deno-x86_64-pc-windows-msvc.zip"
+        if ($LASTEXITCODE -ne 0) { throw "could not download the deno $version zip." }
+        & tar.exe xf $zip -C $scratch
+        if ($LASTEXITCODE -ne 0) { throw "could not unpack the deno $version zip into $scratch." }
+        # The unpacked file must itself run before it is published: a botched unpack installs nothing.
+        $unpacked = Join-Path $scratch 'deno.exe'
+        if (-not (Get-CopilotEnvDenoVersion $unpacked)) {
+            throw "the deno install did not produce a runnable $unpacked."
+        }
+        New-Item $denoBin -ItemType Directory -Force | Out-Null
+        Move-Item $unpacked $installed -Force
     } finally {
         Remove-Item $scratch -Recurse -Force -ErrorAction SilentlyContinue
     }
-    # The installed file must itself run: a botched install fails loudly here.
-    if (-not (Get-CopilotEnvDenoVersion $installed)) {
-        throw "the deno install did not produce a runnable $installed."
-    }
+    [Console]::Error.WriteLine("Deno $version was installed to $installed")
     $env:Path = "$denoBin;$env:Path"
 }

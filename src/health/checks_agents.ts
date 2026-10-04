@@ -94,9 +94,8 @@ function describeDirectGhAuth(a: CodexDirectAuthFacts): {
   }
 }
 
-/** The `directAuth` row of the health JSON, the shape the report carried before the facts became
- *  a union: a flat `authenticated` verdict with `unproven` as a marker, and the gh fields only
- *  when the probe produced them. `kind` never reaches the report. */
+/** The `directAuth` row of the health JSON. Its field presence and key order are the report's
+ *  contract, so the row is projected here rather than serialized from the facts union. */
 interface DirectAuthJson {
   command: string | null;
   authenticated: boolean;

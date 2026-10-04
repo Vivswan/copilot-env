@@ -20,9 +20,15 @@
 // preload stays import-free so it drags no CLI module into the daemon.
 const CLIENT_HEADERS_ENV = "COPILOT_ENV_DAEMON_CLIENT_HEADERS";
 const COPILOT_HOST_ENV = "COPILOT_ENV_DAEMON_COPILOT_HOST";
-// undici's lib/global.js: the Dispatcher API version rides in the key, and a data property that is
-// writable, so an assignment replaces the instance every undici copy in the process reads.
-const UNDICI_GLOBAL_DISPATCHER = Symbol.for("undici.globalDispatcher.1");
+// undici's lib/global.js publishes its dispatcher on globalThis as a writable data property, one
+// Symbol.for key per Dispatcher API version, so an assignment replaces the instance it reads:
+//   undici 7  writes the Agent under .2 and .1, reads .1
+//   undici 8  writes the Agent under .2 and a v1 wrapper under .1, reads .2
+// The floated proxy brings either version, hence both keys.
+const UNDICI_GLOBAL_DISPATCHERS = [
+  Symbol.for("undici.globalDispatcher.2"),
+  Symbol.for("undici.globalDispatcher.1"),
+];
 
 /** The launcher's JSON: header name -> value to set, or null to delete. */
 type ClientHeaderSet = Record<string, string | null>;
@@ -118,30 +124,35 @@ function dispatchHeaders(headers: DispatchHeaders | undefined): Headers {
   return out;
 }
 
-/** Composes the proxy's undici dispatcher with the header rewrite for the Copilot API hosts.
- *  Throws when undici has not published its dispatcher: this runs after the proxy's module graph
- *  is evaluated (undici installs it at load), so its absence means the proxy no longer uses undici
+/** Throws when undici has published no dispatcher: this runs after the proxy's module graph is
+ *  evaluated (undici installs it at load), so its absence means the proxy no longer uses undici
  *  this way and its WebSocket transport would run under the proxy's own identity unnoticed. */
 function composeUndiciDispatcher(set: ClientHeaderSet, configuredHost: string | null): void {
   const scope = globalThis as unknown as Record<symbol, GlobalDispatcher | undefined>;
-  const dispatcher = scope[UNDICI_GLOBAL_DISPATCHER];
-  if (dispatcher === undefined || typeof dispatcher.compose !== "function") {
+  const published = UNDICI_GLOBAL_DISPATCHERS.flatMap((key) => {
+    const dispatcher = scope[key];
+    return typeof dispatcher?.compose === "function" ? [[key, dispatcher] as const] : [];
+  });
+  if (published.length === 0) {
     throw new Error(
       `client_headers_preload: the proxy at ${Deno.mainModule} publishes no undici global ` +
-        `dispatcher under ${UNDICI_GLOBAL_DISPATCHER.description}, so its WebSocket transport ` +
+        `dispatcher under ${
+          UNDICI_GLOBAL_DISPATCHERS.map((key) => key.description).join(" or ")
+        }, so its WebSocket transport ` +
         "cannot carry the client identity; refusing to run under the proxy's own. Update this " +
         "preload for the floated proxy version (never the package); until then the `daemon.version` " +
         "config key pins the previous version.",
     );
   }
-  scope[UNDICI_GLOBAL_DISPATCHER] = dispatcher.compose((dispatch) => (opts, handler) => {
+  const rewrite = (dispatch: Dispatch): Dispatch => (opts, handler) => {
     const origin = typeof opts.origin === "string" ? opts.origin : opts.origin?.href;
     if (origin === undefined || !isCopilotApiHost(origin, configuredHost)) {
       return dispatch(opts, handler);
     }
     const headers = applyClientHeaders(dispatchHeaders(opts.headers), set);
     return dispatch({ ...opts, headers: Object.fromEntries(headers) }, handler);
-  });
+  };
+  for (const [key, dispatcher] of published) scope[key] = dispatcher.compose(rewrite);
 }
 
 const rawSet = process.env[CLIENT_HEADERS_ENV]?.trim() || null;

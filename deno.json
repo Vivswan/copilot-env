@@ -42,7 +42,8 @@
     "memfs": "npm:memfs@4.75.0",
     "semver": "jsr:@std/semver@^1.0.8",
     "smol-toml": "npm:smol-toml@^1.8.0",
-    "undici": "npm:undici@^7.29.1",
+    "undici": "npm:undici@^8.11.2",
+    "undici7": "npm:undici@^7.29.1",
     "string-width": "npm:string-width@^8.2.2",
     "valibot": "npm:valibot@^1.5.0",
     "wrap-ansi": "npm:wrap-ansi@^10.0.1"

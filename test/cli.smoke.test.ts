@@ -924,6 +924,15 @@ test("health --scope full runs every group end-to-end and fails on a dead proxy"
   expect(json.exitCode).toBe(1);
   expect(json.ok).toBe(false);
   expect(exitCode).toBe(1);
+  // The HealthJson cast is not a check: child-process JSON is untyped, so a check that lost its
+  // id, status, or detail would still satisfy every assertion above. `--json` consumers key on
+  // the id and switch on the CheckStatus set, so each is pinned here against the live output.
+  for (const c of json.checks) {
+    const why = `check ${JSON.stringify(c.id)} in the child's --json output`;
+    expect(typeof c.id === "string" && c.id !== "", `${why}: id`).toBe(true);
+    expect(["ok", "warn", "fail"], `${why}: status`).toContain(c.status);
+    expect(typeof c.detail, `${why}: detail`).toBe("string");
+  }
   const codex = json.checks.find((c) => c.id === "setup.codex");
   expect(codex?.value?.providerMode).toBe("proxy");
   expect(codex?.value?.configFile).toBe(join(codexHome, "config.toml"));

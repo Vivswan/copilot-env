@@ -1,8 +1,8 @@
 import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import {
   CopilotApiPaths,
-  DEFAULT_HOME,
   defaultDaemonHome,
   profileHome,
   resolveHome,
@@ -22,13 +22,16 @@ afterEach(() => {
   restoreEnv();
 });
 
-test("resolveHome prefers COPILOT_API_HOME and falls back to DEFAULT_HOME (empty included)", () => {
+test("resolveHome prefers COPILOT_API_HOME and falls back to the documented ~/.local/share/copilot-env (empty included)", () => {
+  // The fallback is spelled out, not read from DEFAULT_HOME: AGENTS.md documents this path as
+  // the truth root, and a constant moved elsewhere would otherwise carry the test with it.
+  const documented = join(homedir(), ".local", "share", "copilot-env");
   process.env.COPILOT_API_HOME = "/tmp/copilot-env-paths-home";
   expect(resolveHome()).toBe("/tmp/copilot-env-paths-home");
   delete process.env.COPILOT_API_HOME;
-  expect(resolveHome()).toBe(DEFAULT_HOME);
+  expect(resolveHome(), "unset COPILOT_API_HOME").toBe(documented);
   process.env.COPILOT_API_HOME = "";
-  expect(resolveHome()).toBe(DEFAULT_HOME);
+  expect(resolveHome(), "empty COPILOT_API_HOME").toBe(documented);
 });
 
 // --- THE default-home precedence rule (defaultDaemonHome) -------------------------

@@ -347,10 +347,16 @@ export function describeMismatch(actual: unknown, expected: unknown): string | n
   return null;
 }
 
-/** The keys a golden never compares: `runtime` is run metadata the old implementation never
- *  emitted, and `note` is the command's explanatory prose, which a rewording may change while
- *  every number stays. parseCostPayload drops both from either side. */
-const UNCOMPARED_KEYS = ["runtime", "note"] as const;
+/** The key the current implementation reserves for run metadata the old one never emitted;
+ *  parseCostPayload drops it. */
+const RUNTIME_KEY = "runtime";
+
+/** The payload's explanatory prose, a public key of `agent cost --json` whose wording the two
+ *  implementations may differ on. parseCostPayload requires it and swaps the text for
+ *  NOTE_SENTINEL on every side of a compare, so a rewording never fails a golden while a missing
+ *  or renamed key does. */
+export const NOTE_KEY = "note";
+export const NOTE_SENTINEL = "<note: wording not compared>";
 
 export function parseCostPayload(stdout: string, what: string): Record<string, unknown> {
   let parsed: unknown;
@@ -363,7 +369,11 @@ export function parseCostPayload(stdout: string, what: string): Record<string, u
     throw new Error(`${what} printed a JSON payload that is not an object`);
   }
   const payload = parsed as Record<string, unknown>;
-  for (const key of UNCOMPARED_KEYS) delete payload[key];
+  delete payload[RUNTIME_KEY];
+  if (typeof payload[NOTE_KEY] !== "string") {
+    throw new Error(`${what} printed a JSON payload without a string ${JSON.stringify(NOTE_KEY)}`);
+  }
+  payload[NOTE_KEY] = NOTE_SENTINEL;
   return payload;
 }
 

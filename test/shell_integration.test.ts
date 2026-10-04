@@ -524,79 +524,92 @@ function stageRc(rc: string, agent: string, fake: string): { root: string; rc: s
   return { root, rc: join(root, "shell", rc) };
 }
 
-skipWin(
-  "agents.bashrc evals `agent profile env` silently at source time and audibly after every `agent` call, and evals nothing from a refresh that failed",
-  () => {
-    const staged = stageRc("agents.bashrc", "agent", FAKE_AGENT_SH);
-    const proc = runSync("bash", [
-      "-c",
-      [
-        'source "$1"',
-        'echo "after source: $COPILOT_FAKE_REFRESHES $COPILOT_FAKE_ARGS stale=${COPILOT_FAKE_STALE-unset}"',
-        "fake_launcher",
-        "agent hello",
-        'echo "after agent: $COPILOT_FAKE_REFRESHES"',
-        "export COPILOT_FAKE_REFRESH_FAILS=1",
-        "agent again",
-        'echo "after failed refresh: $COPILOT_FAKE_REFRESHES"',
-      ].join("\n"),
-      "bash",
-      staged.rc,
-    ], { env: { ...process.env, HOME: home, COPILOT_FAKE_STALE: "1" } });
-    expect({ exitCode: proc.exitCode, stdout: proc.stdout, stderr: proc.stderr }).toEqual({
-      exitCode: 0,
-      stdout: "after source: 1 profile env stale=unset\nfake launcher ran\n" +
-        "fake agent stdout: hello\nafter agent: 2\n" +
-        "fake agent stdout: again\nafter failed refresh: 2\n",
-      stderr: "fake agent stderr: hello\nfake agent stderr: profile env\n" +
-        "fake agent stderr: again\nfake agent stderr: profile env\n",
-    });
-  },
-);
+const onPath = (exe: string): boolean =>
+  (process.env.PATH ?? "").split(delimiter).some((dir) => dir !== "" && existsSync(join(dir, exe)));
 
-// Off Windows the rc's `powershell` resolves to a shim that runs pwsh, so the twin is exercised
-// wherever pwsh is on PATH.
-const pwshOnPath = (process.env.PATH ?? "").split(delimiter).some((dir) =>
-  dir !== "" && existsSync(join(dir, process.platform === "win32" ? "pwsh.exe" : "pwsh"))
-);
+// The rc is sourced from .bashrc and .zshrc alike, so a bash-only construct must fail here under
+// zsh, not on the first macOS login shell that sources it.
+for (const shell of ["bash", "zsh"]) {
+  test.skipIf(process.platform === "win32" || !onPath(shell))(
+    `agents.bashrc under ${shell} evals \`agent profile env\` silently at source time and audibly after every \`agent\` call, and evals nothing from a refresh that failed`,
+    () => {
+      const staged = stageRc("agents.bashrc", "agent", FAKE_AGENT_SH);
+      const proc = runSync(shell, [
+        "-c",
+        [
+          'source "$1"',
+          'echo "after source: $COPILOT_FAKE_REFRESHES $COPILOT_FAKE_ARGS stale=${COPILOT_FAKE_STALE-unset}"',
+          "fake_launcher",
+          "agent hello",
+          'echo "after agent: $COPILOT_FAKE_REFRESHES"',
+          "export COPILOT_FAKE_REFRESH_FAILS=1",
+          "agent again",
+          'echo "after failed refresh: $COPILOT_FAKE_REFRESHES"',
+        ].join("\n"),
+        shell,
+        staged.rc,
+      ], { env: { ...process.env, HOME: home, COPILOT_FAKE_STALE: "1" } });
+      expect({ exitCode: proc.exitCode, stdout: proc.stdout, stderr: proc.stderr }).toEqual({
+        exitCode: 0,
+        stdout: "after source: 1 profile env stale=unset\nfake launcher ran\n" +
+          "fake agent stdout: hello\nafter agent: 2\n" +
+          "fake agent stdout: again\nafter failed refresh: 2\n",
+        stderr: "fake agent stderr: hello\nfake agent stderr: profile env\n" +
+          "fake agent stderr: again\nfake agent stderr: profile env\n",
+      });
+    },
+  );
+}
 
-test.skipIf(!pwshOnPath)(
-  "agents.ps1 evals every `agent profile env` line, -Quiet at dot-source time and audibly after every `agent` call, and evals nothing from a refresh that failed",
-  () => {
-    const staged = stageRc("agents.ps1", "agent.ps1", FAKE_AGENT_PS1);
-    const driver = join(staged.root, "driver.ps1");
-    writeFileSync(
-      driver,
-      [
-        ". $args[0]",
-        '"after source: $env:COPILOT_FAKE_REFRESHES $env:COPILOT_FAKE_ARGS stale=[$env:COPILOT_FAKE_STALE]"',
-        "fake_launcher",
-        "agent hello",
-        '"after agent: $env:COPILOT_FAKE_REFRESHES"',
-        "$env:COPILOT_FAKE_REFRESH_FAILS = '1'",
-        "agent again",
-        '"after failed refresh: $env:COPILOT_FAKE_REFRESHES"',
-      ].join("\n"),
-    );
-    let path = process.env.PATH ?? "";
-    if (process.platform !== "win32") {
-      const shims = join(staged.root, "shims");
-      mkdirSync(shims);
-      writeFileSync(join(shims, "powershell"), '#!/bin/sh\nexec pwsh "$@"\n');
-      chmodSync(join(shims, "powershell"), 0o755);
-      path = `${shims}${delimiter}${path}`;
-    }
-    const proc = runSync("pwsh", ["-NoProfile", "-NonInteractive", "-File", driver, staged.rc], {
-      env: { ...process.env, HOME: home, PATH: path, COPILOT_FAKE_STALE: "1" },
-    });
-    const lf = (text: string) => text.replaceAll("\r\n", "\n");
-    expect({ exitCode: proc.exitCode, stdout: lf(proc.stdout), stderr: lf(proc.stderr) }).toEqual({
-      exitCode: 0,
-      stdout: "after source: 1 profile env --format powershell stale=[]\nfake launcher ran\n" +
-        "fake agent stdout: hello\nafter agent: 2\n" +
-        "fake agent stdout: again\nafter failed refresh: 2\n",
-      stderr: "fake agent stderr: hello\nfake agent stderr: profile env --format powershell\n" +
-        "fake agent stderr: again\nfake agent stderr: profile env --format powershell\n",
-    });
-  },
-);
+// The driver is the host that dot-sources agents.ps1, so a pwsh-only construct in the rc fails
+// under Windows PowerShell 5.1 here, on the Windows runner, instead of in a user's $PROFILE. Off
+// Windows only pwsh exists, and the rc's nested `powershell` resolves to a shim that runs it.
+const PS_DRIVERS = [
+  { driver: "pwsh", onThisHost: onPath(process.platform === "win32" ? "pwsh.exe" : "pwsh") },
+  { driver: "powershell", onThisHost: process.platform === "win32" },
+];
+
+for (const { driver: ps, onThisHost } of PS_DRIVERS) {
+  test.skipIf(!onThisHost)(
+    `agents.ps1 under ${ps} evals every \`agent profile env\` line, -Quiet at dot-source time and audibly after every \`agent\` call, and evals nothing from a refresh that failed`,
+    () => {
+      const staged = stageRc("agents.ps1", "agent.ps1", FAKE_AGENT_PS1);
+      const driver = join(staged.root, "driver.ps1");
+      writeFileSync(
+        driver,
+        [
+          ". $args[0]",
+          '"after source: $env:COPILOT_FAKE_REFRESHES $env:COPILOT_FAKE_ARGS stale=[$env:COPILOT_FAKE_STALE]"',
+          "fake_launcher",
+          "agent hello",
+          '"after agent: $env:COPILOT_FAKE_REFRESHES"',
+          "$env:COPILOT_FAKE_REFRESH_FAILS = '1'",
+          "agent again",
+          '"after failed refresh: $env:COPILOT_FAKE_REFRESHES"',
+        ].join("\n"),
+      );
+      let path = process.env.PATH ?? "";
+      if (process.platform !== "win32") {
+        const shims = join(staged.root, "shims");
+        mkdirSync(shims);
+        writeFileSync(join(shims, "powershell"), '#!/bin/sh\nexec pwsh "$@"\n');
+        chmodSync(join(shims, "powershell"), 0o755);
+        path = `${shims}${delimiter}${path}`;
+      }
+      const proc = runSync(ps, ["-NoProfile", "-NonInteractive", "-File", driver, staged.rc], {
+        env: { ...process.env, HOME: home, PATH: path, COPILOT_FAKE_STALE: "1" },
+      });
+      const lf = (text: string) => text.replaceAll("\r\n", "\n");
+      expect({ exitCode: proc.exitCode, stdout: lf(proc.stdout), stderr: lf(proc.stderr) }).toEqual(
+        {
+          exitCode: 0,
+          stdout: "after source: 1 profile env --format powershell stale=[]\nfake launcher ran\n" +
+            "fake agent stdout: hello\nafter agent: 2\n" +
+            "fake agent stdout: again\nafter failed refresh: 2\n",
+          stderr: "fake agent stderr: hello\nfake agent stderr: profile env --format powershell\n" +
+            "fake agent stderr: again\nfake agent stderr: profile env --format powershell\n",
+        },
+      );
+    },
+  );
+}

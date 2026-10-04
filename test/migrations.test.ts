@@ -32,6 +32,8 @@ import {
   rewriteDesktopMcpArgv,
   scopeStaticKeyBoolean,
   stripLaunchersBlocks,
+  v409IdentityCache,
+  v409ProfileVerbTree,
 } from "../src/migrations/4.0.9.ts";
 import { dueMigrations, type Migration, runMigrations } from "../src/migrations/index.ts";
 import { MARKER, MARKER_END } from "../src/shell/integration.ts";
@@ -1027,6 +1029,37 @@ test("4.0.9 identity cache: the four cached keys go from a slot in the old shape
   expect(warningsDuring(dropSlotIdentityCache, "info")).toHaveLength(0);
   expect(readFileSync(store, "utf8")).toBe(bytes);
   expect(state.readProfileDirectPair(parseProfileName("work"))).toEqual(pair);
+});
+
+test("the shipped sequence drops the identity cache before the verb-tree re-render stores a Direct pair: the pair write keeps the old shape's validity keys, so a cleanup that ran after it would take the fresh pair with the cache", () => {
+  // Both steps are 4.0.9, so only the registry order separates them; neither step can see the
+  // other. The state half shows what the other order loses, through the write the re-render makes.
+  const home = isolateProxyHome("copilot-mig-identity-order-");
+  dir = home;
+  const store = join(home, "state.json");
+  writeStore(store, {
+    profiles: {
+      work: {
+        githubToken: "ghp_w",
+        authProvider: "gh-token",
+        mode: "direct",
+        copilotHostIdentity: "copilot-developer-cli",
+        copilotHostSource: "auto",
+      },
+    },
+  });
+  const state = new CopilotEnvState(store);
+  const pair = { integrationId: "copilot-developer-cli", host: "https://api.githubcopilot.com" };
+  state.setProfileDirectPair(WORK, pair);
+  expect(state.readProfileDirectPair(WORK)).toEqual(pair);
+  expect(warningsDuring(dropSlotIdentityCache, "info")).toHaveLength(1);
+  expect(state.readProfileDirectPair(WORK), "a pair stored before the cleanup is lost to it")
+    .toEqual({});
+  const due = dueMigrations("0.0.1", "999.0.0");
+  expect(
+    due.indexOf(v409IdentityCache),
+    "the identity-cache cleanup must run before the verb-tree re-render stores the pair",
+  ).toBeLessThan(due.indexOf(v409ProfileVerbTree));
 });
 
 // A credentials.json that fails validation never costs preferences.json a profile's settings.

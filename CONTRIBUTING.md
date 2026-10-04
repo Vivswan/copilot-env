@@ -26,4 +26,4 @@ deno task test
 deno task typecheck
 ```
 
-The full task list is in `deno.json`; `.githooks/pre-commit` runs `lint:staged`, `typecheck`, `test`, `lint`, `lint:sh`, and `lint:ps`.
+The full task list is in `deno.json`; `.githooks/pre-commit` runs `typecheck`, `test`, `lint`, `lint:sh`, and `lint:ps`.

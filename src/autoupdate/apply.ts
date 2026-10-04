@@ -96,7 +96,7 @@ const defaultVerifier: ProvenanceVerifier = async (tag, bundleJson, required) =>
 
 // What each stage hands the next; applyUpdate nests the calls, so the order is fixed there:
 //   download -> Downloaded -> verify -> Verified -> attest -> Attested
-//   -> stage -> Staged -> provision -> Provisioned -> commit -> Committed -> (migrate, GC)
+//   -> stage -> Staged -> provision -> Provisioned -> commit -> (migrate, GC)
 
 interface Downloaded {
   /** The downloaded binary, still in the temp directory. */
@@ -136,13 +136,8 @@ interface Staged {
   readonly previous: string | null;
 }
 
+/** What outlives the flip: the commit changes none of it, so the post-flip steps read it as is. */
 interface Provisioned {
-  readonly binary: string;
-  readonly versionName: string;
-  readonly previous: string | null;
-}
-
-interface Committed {
   readonly binary: string;
   readonly versionName: string;
   readonly previous: string | null;
@@ -345,14 +340,9 @@ function provision(staged: Staged, stdio: StdioOptions): Provisioned {
  *   shim text already identical  -> no-op on a healthy install, a repair after a crashed commit
  *   checkout-shaped root         -> keeps its own bin/agent; that file is source
  */
-function commit(provisioned: Provisioned, top: string, logger: Logger): Committed {
+function commit(provisioned: Provisioned, top: string, logger: Logger): void {
   pointCurrentAt(top, provisioned.versionName);
   if (!isCheckoutShapedRoot(top)) writeTopLevelShims(top, logger);
-  return {
-    binary: provisioned.binary,
-    versionName: provisioned.versionName,
-    previous: provisioned.previous,
-  };
 }
 
 /**
@@ -450,17 +440,17 @@ export async function applyUpdate(
     fs.removeScratchDir(staging);
   }
 
-  const committed = commit(provisioned, top, logger);
+  commit(provisioned, top, logger);
 
   // Everything after the flip is best-effort: `current` has moved forward, so a later `agent
   // update` would see "up to date" and never retry; failing here would strand the install.
-  runPostFlipMigrations(top, committed.binary, current, target.tag, stdio, logger);
+  runPostFlipMigrations(top, provisioned.binary, current, target.tag, stdio, logger);
 
   // GC keeps the new version plus ONE previous (the rollback candidate).
   const keep = new Set(
-    committed.previous === null
-      ? [committed.versionName]
-      : [committed.versionName, committed.previous],
+    provisioned.previous === null
+      ? [provisioned.versionName]
+      : [provisioned.versionName, provisioned.previous],
   );
   removeVersionDirsExcept(top, keep);
   // The bootstrap binary a Windows install could not unlink while it was the running image.

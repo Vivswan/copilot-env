@@ -27,7 +27,8 @@ import {
   codexHomePrefsFor,
   CONFIG_REGISTRY,
   configDefaultBoolean,
-  configKeyDef,
+  type ConfigKeyDef,
+  type ConfigValue,
   type GlobalConfigData,
   type GlobalMapKey,
   type ProfileConfigData,
@@ -35,8 +36,6 @@ import {
 import {
   CopilotEnvConfig,
   type CopilotEnvConfigData,
-  GLOBAL_CONFIG_SCHEMA,
-  PROFILE_CONFIG_SCHEMA,
   PROFILE_SETTINGS_DEFAULT_KEY,
 } from "../copilot_api/env_config.ts";
 import {
@@ -176,264 +175,232 @@ function bundleIsEmpty(bundle: SettingsBundle): boolean {
 // the stores' lenient read schemas would, because a full-replace import would then quietly
 // reset a preference or wipe a credential. Error messages carry only text this parser owns
 // (section paths, expected shapes, validated profile names); no bundle value or unknown KEY is
-// echoed, since either could be a pasted token.
+// echoed, since either could be a pasted token: every node below names its own wording
+// (valibot's defaults echo the received value) and bundleError prefixes the dotted path.
 
-function bundleError(detail: string): Error {
-  return new Error(`invalid settings bundle: ${detail}`);
+const JSON_OBJECT = "must be a JSON object";
+const NON_EMPTY_OR_NULL = "must be a non-empty string or null";
+
+/** valibot takes any object, an array included, where a bundle section is a JSON object. */
+const jsonObject = v.custom<Record<string, unknown>>(isRecord, JSON_OBJECT);
+
+/** An absent key reads as null (unambiguously "none"); anything present must be null or a
+ *  non-blank string. */
+const NULLABLE_STRING = v.nullish(
+  v.pipe(v.string(NON_EMPTY_OR_NULL), v.trim(), v.minLength(1, NON_EMPTY_OR_NULL)),
+  null,
+);
+
+function nullableEnum<const TOptions extends v.PicklistOptions>(allowed: TOptions) {
+  return v.nullish(v.picklist(allowed, `must be one of ${allowed.join("|")}, or null`), null);
 }
 
-function requireRecord(value: unknown, path: string): Record<string, unknown> {
-  if (!isRecord(value)) throw bundleError(`${path} must be a JSON object`);
-  return value;
-}
-
-function rejectUnknownKeys(
-  doc: Record<string, unknown>,
-  allowed: readonly string[],
-  parent: string,
-): void {
-  for (const key of Object.keys(doc)) {
-    if (!allowed.includes(key)) throw bundleError(`unknown key under ${parent}`);
-  }
-}
-
-/** An absent key reads as null (unambiguously "none"); anything present must be
- *  null or a non-blank string. */
-function parseNullableString(value: unknown, path: string): string | null {
-  if (value === undefined || value === null) return null;
-  if (typeof value !== "string" || value.trim() === "") {
-    throw bundleError(`${path} must be a non-empty string or null`);
-  }
-  return value.trim();
-}
-
-function parseNullableEnum<T extends string>(
-  value: unknown,
-  allowed: readonly T[],
-  path: string,
-): T | null {
-  if (value === undefined || value === null) return null;
-  const hit = allowed.find((a) => a === value);
-  if (hit === undefined) {
-    throw bundleError(`${path} must be one of ${allowed.join("|")}, or null`);
-  }
-  return hit;
-}
+const CREDENTIAL_ENTRIES = {
+  githubToken: NULLABLE_STRING,
+  authProvider: nullableEnum(AUTH_PROVIDERS),
+  // Same login-shape gate as the store's write choke point: the pin becomes a
+  // `gh auth token --user` argv token, so a shell metacharacter never travels.
+  ghUser: v.nullish(
+    v.pipe(
+      v.string(NON_EMPTY_OR_NULL),
+      v.trim(),
+      v.minLength(1, NON_EMPTY_OR_NULL),
+      v.regex(GH_LOGIN_RE, "must be a GitHub login (1-39 letters, digits, dashes, or underscores)"),
+    ),
+    null,
+  ),
+};
 
 /** Three contradictions the store would otherwise carry dead or dangerous:
  *    token, no provider     -> could never resolve (resolution keys off authProvider)
  *    token + gh-cli         -> sits ignored until a --with-credentials export exposes it
  *    ghUser + non-gh-cli    -> a dead account pin */
-function parseCredentialFields(doc: Record<string, unknown>, path: string): ProfileCredentialData {
-  const githubToken = parseNullableString(doc.githubToken, `${path}.githubToken`);
-  const authProvider = parseNullableEnum(doc.authProvider, AUTH_PROVIDERS, `${path}.authProvider`);
-  const ghUser = parseNullableString(doc.ghUser, `${path}.ghUser`);
-  if (githubToken !== null && authProvider === null) {
-    throw bundleError(
-      `${path} carries a token without an authProvider (credentials are provider-driven)`,
-    );
-  }
-  if (githubToken !== null && authProvider === "gh-cli") {
-    throw bundleError(
-      `${path} pairs a token with the gh-cli provider (gh-cli stores no token; the local gh login resolves it)`,
-    );
-  }
-  if (ghUser !== null && authProvider !== "gh-cli") {
-    throw bundleError(
-      `${path} pairs a ghUser account pin with a non-gh-cli provider (only gh-cli resolves via a gh account)`,
-    );
-  }
-  // Same login-shape gate as the store's write choke point: the pin becomes a
-  // `gh auth token --user` argv token, so a shell metacharacter never travels.
-  if (ghUser !== null && !GH_LOGIN_RE.test(ghUser)) {
-    throw bundleError(
-      `${path}.ghUser must be a GitHub login (1-39 letters, digits, dashes, or underscores)`,
-    );
-  }
-  return { githubToken, authProvider, ghUser };
+function withoutContradictions<TSlot extends ProfileCredentialData>(
+  slot: v.GenericSchema<unknown, TSlot>,
+) {
+  return v.pipe(
+    slot,
+    v.check(
+      (s: TSlot) => s.githubToken === null || s.authProvider !== null,
+      "carries a token without an authProvider (credentials are provider-driven)",
+    ),
+    v.check(
+      (s: TSlot) => s.githubToken === null || s.authProvider !== "gh-cli",
+      "pairs a token with the gh-cli provider (gh-cli stores no token; the local gh login resolves it)",
+    ),
+    v.check(
+      (s: TSlot) => s.ghUser === null || s.authProvider === "gh-cli",
+      "pairs a ghUser account pin with a non-gh-cli provider (only gh-cli resolves via a gh account)",
+    ),
+  );
 }
 
-const CREDENTIAL_KEYS = ["githubToken", "authProvider", "ghUser"] as const;
-const PROFILE_SLOT_KEYS = [...CREDENTIAL_KEYS, "mode"] as const;
+const CREDENTIAL = withoutContradictions(v.pipe(jsonObject, v.strictObject(CREDENTIAL_ENTRIES)));
+const PROFILE_SLOT = withoutContradictions(
+  v.pipe(jsonObject, v.strictObject({ ...CREDENTIAL_ENTRIES, mode: nullableEnum(PROFILE_MODES) })),
+);
+
+/** Every name is judged before the section it names (an invalid one is untrusted input and not
+ *  echoed), and before valibot walks the map: its record and rest walks skip `__proto__`,
+ *  `prototype`, and `constructor` as a pollution guard, so a section by one of those names would
+ *  vanish silently. The stores' own reads skip them the same way, so no profile can carry one. */
+function namedSections(isName: (name: string) => boolean, message: string) {
+  const skipped = new Set(["__proto__", "prototype", "constructor"]);
+  return v.check(
+    (map: Record<string, unknown>) =>
+      Object.keys(map).every((name) => isName(name) && !skipped.has(name)),
+    message,
+  );
+}
+
+const PROFILE_SLOTS = v.pipe(
+  jsonObject,
+  namedSections(
+    isValidProfileName,
+    "carries an invalid profile name (want 1-32 chars of [a-z0-9-], non-reserved)",
+  ),
+  v.record(v.string(), PROFILE_SLOT),
+);
+
+const MODE_MESSAGE = `must be one of ${AGENT_PROVIDER_MODES.join("|")}`;
+const MODES = v.pipe(
+  jsonObject,
+  // A missing entry is the object's own issue in valibot, so the entries' wording is its message.
+  v.strictObject(
+    {
+      codex: v.picklist(AGENT_PROVIDER_MODES, MODE_MESSAGE),
+      claude: v.picklist(AGENT_PROVIDER_MODES, MODE_MESSAGE),
+    },
+    MODE_MESSAGE,
+  ),
+  // The default is a profile: one mode for both agents. Two managed modes cannot land, so a bundle
+  // carrying them is refused before any store or file is written (the single-agent writes would
+  // refuse the second anyway, after the first landed).
+  v.check(
+    ({ codex, claude }) => {
+      const managed = [codex, claude].filter((m) => m === "direct" || m === "proxy");
+      return managed.length < 2 || managed[0] === managed[1];
+    },
+    (issue) =>
+      `names ${issue.input.codex} for Codex and ${issue.input.claude} for Claude; the default ` +
+      "profile is one mode for both agents",
+  ),
+);
+
+const GLOBAL_DEFS = CONFIG_REGISTRY.filter((def) => def.scope !== "profile");
+const PROFILE_DEFS = CONFIG_REGISTRY.filter((def) => def.scope !== "global");
+/** The default profile's proxy knobs are the global map (what `--set` writes without `--profile`),
+ *  so its section admits the profile keys alone: an override there could be removed by no command. */
+const DEFAULT_SECTION_DEFS = CONFIG_REGISTRY.filter((def) => def.scope === "profile");
+const GLOBAL_MAP_KEYS = GLOBAL_DEFS.map((def) => def.key);
+
+/** One map of the preference store, each value judged by its registry domain (env_config owns the
+ *  shapes, so a new key is admitted here automatically) and refused where the store's own read
+ *  would fall back to unset.
+ *
+ *    the domain's message  -> can echo the value, so the key's describe is the wording
+ *    REDACTED_TOKEN        -> admitted on the credential-bearing keys alone (the domain refuses it)
+ *    the cast              -> the fromEntries fold erases the per-key types `satisfies` checked */
+function strictMap<T>(defs: readonly ConfigKeyDef[]): v.GenericSchema<unknown, T> {
+  const entries = defs.map((def): [string, v.GenericSchema<unknown, ConfigValue | undefined>] => {
+    const redactable = CREDENTIAL_BEARING_PREFS.some((key) => key === def.key);
+    const judged = v.rawTransform(({ dataset, addIssue, NEVER }) => {
+      if (redactable && dataset.value === REDACTED_TOKEN) return REDACTED_TOKEN;
+      const parsed = v.safeParse(def.schema, dataset.value);
+      if (parsed.success) return parsed.output;
+      addIssue({ message: `is invalid (expected: ${def.describe})` });
+      return NEVER;
+    });
+    return [def.key, v.optional(v.pipe(v.unknown(), judged))];
+  });
+  const map = v.pipe(jsonObject, v.strictObject(Object.fromEntries(entries)));
+  return map as unknown as v.GenericSchema<unknown, T>;
+}
+
+const GLOBAL_MAP = strictMap<GlobalConfigData>(GLOBAL_DEFS);
+
+const PROFILE_SECTIONS = v.pipe(
+  jsonObject,
+  namedSections(
+    (name) => name === PROFILE_SETTINGS_DEFAULT_KEY || isValidProfileName(name),
+    "carries an invalid profile name (want `default` or 1-32 chars of [a-z0-9-], non-reserved)",
+  ),
+  v.objectWithRest(
+    {
+      [PROFILE_SETTINGS_DEFAULT_KEY]: v.optional(
+        strictMap<ProfileConfigData>(DEFAULT_SECTION_DEFS),
+      ),
+    },
+    strictMap<ProfileConfigData>(PROFILE_DEFS),
+  ),
+);
+
+const BUNDLE_SCHEMA = v.pipe(
+  jsonObject,
+  v.strictObject(
+    {
+      formatVersion: v.literal(SETTINGS_BUNDLE_FORMAT_VERSION),
+      config: v.pipe(
+        jsonObject,
+        v.strictObject({ global: GLOBAL_MAP, profiles: PROFILE_SECTIONS }, JSON_OBJECT),
+      ),
+      credential: CREDENTIAL,
+      profiles: PROFILE_SLOTS,
+      modes: MODES,
+    },
+    JSON_OBJECT,
+  ),
+);
 
 /** A bundle travels between OS families, and `codex.home` is the one preference whose value is a
  *  machine path: an absolute path of the OTHER family (a Linux export read on Windows, or the
  *  reverse) is left out with a warning instead of failing the whole import. Anything else the
- *  domain rejects (a relative path, `~`) is still a rejection. */
-function codexHomeFromOtherOs(value: unknown): value is string {
-  if (typeof value !== "string") return false;
-  return process.platform === "win32"
-    ? posix.isAbsolute(value)
-    : win32.isAbsolute(value) && win32.parse(value).root.length > 1;
-}
-
-const GLOBAL_MAP_KEYS = CONFIG_REGISTRY.filter((def) => def.scope !== "profile").map((d) => d.key);
-const PROFILE_MAP_KEYS = CONFIG_REGISTRY.filter((def) => def.scope !== "global").map((d) => d.key);
-/** The default profile's proxy knobs are the global map (what `--set` writes without `--profile`),
- *  so its section admits the profile keys alone: an override there could be removed by no command. */
-const DEFAULT_SECTION_KEYS = CONFIG_REGISTRY.filter((def) => def.scope === "profile").map((d) =>
-  d.key
-);
-
-/** A present key the lenient schema turned into undefined is a rejection here. */
-function rejectInvalidValues(
-  values: Record<string, unknown>,
-  parsed: Record<string, unknown>,
-  path: string,
-): void {
-  for (const key of Object.keys(values)) {
-    if (values[key] !== undefined && parsed[key] === undefined) {
-      const def = configKeyDef(key);
-      throw bundleError(
-        `${path}.${key} is invalid (expected: ${def?.describe ?? "a valid value"})`,
-      );
-    }
-  }
-}
-
-/** Values are validated by the store's own schemas (env_config owns every value shape, so new keys
- *  are accepted here automatically); their lenient fallback is made strict by rejecting any
- *  present key a schema turned into undefined. */
-function parseGlobalSection(raw: unknown): { global: GlobalConfigData; skipped: string[] } {
-  const doc = requireRecord(raw, "config.global");
-  rejectUnknownKeys(doc, GLOBAL_MAP_KEYS, "config.global");
-  // The redaction marker is admitted ONLY on the credential-bearing keys, and kept
-  // aside: the store's domain would (rightly) reject it as a value.
-  const redacted: GlobalConfigData = {};
-  const values = { ...doc };
-  for (const key of CREDENTIAL_BEARING_PREFS) {
-    if (values[key] === REDACTED_TOKEN) {
-      redacted[key] = REDACTED_TOKEN;
-      delete values[key];
-    }
-  }
-  const skipped: string[] = [];
-  let parsed = v.parse(GLOBAL_CONFIG_SCHEMA, values);
-  if (parsed["codex.home"] === undefined && codexHomeFromOtherOs(values["codex.home"])) {
-    skipped.push(
-      `codex.home "${
-        values["codex.home"]
-      }" is not a path on this OS; skipped, set it here with agent config`,
-    );
-    delete values["codex.home"];
-    parsed = v.parse(GLOBAL_CONFIG_SCHEMA, values);
-  }
-  rejectInvalidValues(values, parsed, "config.global");
-  return { global: { ...parsed, ...redacted }, skipped };
-}
-
-/** Section names are the default's own key or a valid profile name; the name itself is untrusted
- *  input, so an invalid one is not echoed. */
-function parseProfileSettingsSection(raw: unknown): Record<string, ProfileConfigData> {
-  const doc = requireRecord(raw, "config.profiles");
-  const out: Record<string, ProfileConfigData> = {};
-  for (const [name, sectionRaw] of Object.entries(doc)) {
-    if (name !== PROFILE_SETTINGS_DEFAULT_KEY && !isValidProfileName(name)) {
-      throw bundleError(
-        "config.profiles carries an invalid profile name (want `default` or 1-32 chars of [a-z0-9-], non-reserved)",
-      );
-    }
-    const path = `config.profiles.${name}`;
-    const section = requireRecord(sectionRaw, path);
-    rejectUnknownKeys(
-      section,
-      name === PROFILE_SETTINGS_DEFAULT_KEY ? DEFAULT_SECTION_KEYS : PROFILE_MAP_KEYS,
-      path,
-    );
-    const parsed = v.parse(PROFILE_CONFIG_SCHEMA, section);
-    rejectInvalidValues(section, parsed, path);
-    out[name] = parsed;
-  }
-  return out;
-}
-
-function parseConfigSection(
-  raw: unknown,
-): { config: CopilotEnvConfigData; skipped: string[] } {
-  const doc = requireRecord(raw, "config");
-  rejectUnknownKeys(doc, ["global", "profiles"], "config");
-  const { global, skipped } = parseGlobalSection(doc.global);
-  return { config: { global, profiles: parseProfileSettingsSection(doc.profiles) }, skipped };
-}
-
-function parseCredentialSection(raw: unknown): ProfileCredentialData {
-  const doc = requireRecord(raw, "credential");
-  rejectUnknownKeys(doc, CREDENTIAL_KEYS, "credential");
-  return parseCredentialFields(doc, "credential");
-}
-
-function parseProfilesSection(raw: unknown): Record<string, ProfileSlotData> {
-  const doc = requireRecord(raw, "profiles");
-  const out: Record<string, ProfileSlotData> = {};
-  for (const [name, slotRaw] of Object.entries(doc)) {
-    if (!isValidProfileName(name)) {
-      // The name itself is untrusted input, so it is not echoed either.
-      throw bundleError(
-        "profiles carries an invalid profile name (want 1-32 chars of [a-z0-9-], non-reserved)",
-      );
-    }
-    const path = `profiles.${name}`;
-    const slot = requireRecord(slotRaw, path);
-    rejectUnknownKeys(slot, PROFILE_SLOT_KEYS, path);
-    out[name] = {
-      ...parseCredentialFields(slot, path),
-      mode: parseNullableEnum(slot.mode, PROFILE_MODES, `${path}.mode`),
-    };
-  }
-  return out;
-}
-
-function parseModesSection(raw: unknown): { codex: AgentProviderMode; claude: AgentProviderMode } {
-  const doc = requireRecord(raw, "modes");
-  rejectUnknownKeys(doc, ["codex", "claude"], "modes");
-  const parseMode = (value: unknown, path: string): AgentProviderMode => {
-    const hit = AGENT_PROVIDER_MODES.find((m) => m === value);
-    if (hit === undefined) {
-      throw bundleError(`${path} must be one of ${AGENT_PROVIDER_MODES.join("|")}`);
-    }
-    return hit;
+ *  domain rejects (a relative path, `~`) is still a rejection, and the domain's own verdict comes
+ *  first because `//server/share` is absolute on both families. */
+function liftForeignCodexHome(raw: unknown): { input: unknown; skipped: string[] } {
+  const kept = { input: raw, skipped: [] };
+  if (!isRecord(raw) || !isRecord(raw.config) || !isRecord(raw.config.global)) return kept;
+  const { "codex.home": home, ...global } = raw.config.global;
+  if (typeof home !== "string" || v.is(GLOBAL_MAP, { "codex.home": home })) return kept;
+  const foreign = process.platform === "win32"
+    ? posix.isAbsolute(home)
+    : win32.isAbsolute(home) && win32.parse(home).root.length > 1;
+  if (!foreign) return kept;
+  return {
+    input: { ...raw, config: { ...raw.config, global } },
+    skipped: [
+      `codex.home "${home}" is not a path on this OS; skipped, set it here with agent config`,
+    ],
   };
-  const modes = {
-    codex: parseMode(doc.codex, "modes.codex"),
-    claude: parseMode(doc.claude, "modes.claude"),
-  };
-  // The default is a profile: one mode for both agents. Two managed modes cannot land, so a bundle
-  // carrying them is refused before any store or file is written (the single-agent writes would
-  // refuse the second anyway, after the first landed).
-  const managed = [modes.codex, modes.claude].filter((m) => m === "direct" || m === "proxy");
-  if (managed.length === 2 && managed[0] !== managed[1]) {
-    throw bundleError(
-      `modes names ${modes.codex} for Codex and ${modes.claude} for Claude; the default profile ` +
-        "is one mode for both agents",
-    );
-  }
-  return modes;
 }
 
-const BUNDLE_KEYS = ["formatVersion", "config", "credential", "profiles", "modes"] as const;
-
-/** An unknown `formatVersion` is rejected with its own message: the one deliberate
- *  compatibility gate. */
-export function parseSettingsBundle(raw: unknown): SettingsBundle {
-  if (!isRecord(raw)) {
-    throw new Error("not a settings bundle (expected a JSON object)");
-  }
-  if (raw.formatVersion !== SETTINGS_BUNDLE_FORMAT_VERSION) {
-    throw new Error(
+/** The node's wording behind the dotted path, which valibot completes only after the parse. A
+ *  strict object reports an unknown entry as `expected: "never"` at the key's own path, and the
+ *  parent is named, never the key. */
+function bundleError(issue: v.BaseIssue<unknown>): Error {
+  const path = issue.path ?? [];
+  if (path.length === 0) return new Error("not a settings bundle (expected a JSON object)");
+  const dotted = (items: readonly v.IssuePathItem[]) =>
+    items.map((item) => String(item.key)).join(".");
+  if (dotted(path) === "formatVersion") {
+    return new Error(
       "unsupported settings bundle formatVersion - this copilot-env reads " +
         `version ${SETTINGS_BUNDLE_FORMAT_VERSION}`,
     );
   }
-  rejectUnknownKeys(raw, BUNDLE_KEYS, "the bundle root");
-  const config = parseConfigSection(raw.config);
-  return {
-    formatVersion: SETTINGS_BUNDLE_FORMAT_VERSION,
-    config: config.config,
-    credential: parseCredentialSection(raw.credential),
-    profiles: parseProfilesSection(raw.profiles),
-    modes: parseModesSection(raw.modes),
-    skippedConfig: config.skipped,
-  };
+  const detail = issue.expected === "never"
+    ? `unknown key under ${dotted(path.slice(0, -1)) || "the bundle root"}`
+    : `${dotted(path)} ${issue.message}`;
+  return new Error(`invalid settings bundle: ${detail}`);
+}
+
+/** An unknown `formatVersion` is rejected with its own message: the one deliberate
+ *  compatibility gate. */
+export function parseSettingsBundle(raw: unknown): SettingsBundle {
+  const { input, skipped } = liftForeignCodexHome(raw);
+  const result = v.safeParse(BUNDLE_SCHEMA, input, { abortEarly: true });
+  if (!result.success) throw bundleError(result.issues[0]);
+  return { ...result.output, skippedConfig: skipped };
 }
 
 // --- import planning --------------------------------------------------------
@@ -673,8 +640,6 @@ function planWrites(
   return lines;
 }
 
-/** Compute the whole import plan against the CURRENT stores (one gh probe per
- *  pinned account, memoized, shared by every gh-cli slot and reused by the apply). */
 /** How far an import reaches. The whole store lands the default's credential and wiring and
  *  reconciles every Desktop entry; one named profile's bundle (`agent profile <name> settings
  *  --import`) never touches the default, so the default's rebake rules below stay off for it and
@@ -684,6 +649,8 @@ export interface ImportScope {
   defaultWiring: boolean;
 }
 
+/** Compute the whole import plan against the CURRENT stores (one gh probe per
+ *  pinned account, memoized, shared by every gh-cli slot and reused by the apply). */
 export function planImport(
   bundle: SettingsBundle,
   deps: ImportDeps = {},

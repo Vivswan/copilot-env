@@ -90,10 +90,9 @@ function unjudged(enabled: boolean, reason: string): ClaudeDesktopStatus {
  *  leftover entry prints from here and nowhere else; the default write's own key-off stays
  *  silent (syncClaudeDesktopWiring in src/claude/desktop.ts).
  *
- *    quiet (the launcher hot path) -> cleanup only: no upsert, identity probe, discovery, or notice */
-/** `only` scopes the pass to one named profile's entry (a named import's reach): that target is
- *  synced and nothing else is judged, swept, or reported; the default's entry and every other
- *  profile's stay as they are. */
+ *    quiet (the launcher hot path) -> cleanup only: no upsert, identity probe, discovery, or notice
+ *    only <name>                   -> that profile's entry synced; nothing else judged, swept, or
+ *                                     reported (a named import's reach) */
 export async function reconcileClaudeDesktopWiring(
   opts: { quiet?: boolean; only?: ProfileName } = {},
 ): Promise<void> {

@@ -27,6 +27,7 @@ import {
   readFileOrNull,
   resolveDesktopLibraryDir,
   saveJsonIfChanged,
+  writeDesktopMeta,
 } from "../claude/desktop_library.ts";
 import {
   entryProfileAt,
@@ -86,6 +87,7 @@ import {
   type ProfileName,
 } from "../copilot_api/profile.ts";
 import { shellTargetFiles } from "../shell/integration.ts";
+import { sameStrings } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import { isEnoentOrNotdir } from "../utils/fs.ts";
 import * as fs from "../utils/fs_facade.ts";
@@ -881,11 +883,6 @@ function legacyMcpServeArgs(profile: Profile): string[] {
   return ["mcp", "--serve", ...(profile === null ? [] : ["--profile", profile])];
 }
 
-function sameArgs(args: unknown, expected: readonly string[]): boolean {
-  return Array.isArray(args) && args.length === expected.length &&
-    args.every((a, i) => a === expected[i]);
-}
-
 /** `from === to` is a retarget with no rename; the default (null) is only ever retargeted. */
 interface ProfileMove {
   from: Profile;
@@ -967,17 +964,17 @@ function retargetCodex(codexHome: string, { from, to }: ProfileMove): boolean {
         const legacyProxy = agentLauncherCommand(legacyProxyTokenArgs(from));
         const proxy = proxyTokenCommand(from);
         if (
-          legacy !== null && auth.command === legacy.command && sameArgs(auth.args, legacy.args)
+          legacy !== null && auth.command === legacy.command && sameStrings(auth.args, legacy.args)
         ) {
           auth.args = agentLauncherCommand(agentAuthGetArgs(to)).args;
           tableChanged = true;
         } else if (
-          auth.command === legacyProxy.command && sameArgs(auth.args, legacyProxy.args)
+          auth.command === legacyProxy.command && sameStrings(auth.args, legacyProxy.args)
         ) {
           auth.args = proxyTokenCommand(to).args;
           tableChanged = true;
         } else if (
-          from !== to && auth.command === proxy.command && sameArgs(auth.args, proxy.args)
+          from !== to && auth.command === proxy.command && sameStrings(auth.args, proxy.args)
         ) {
           auth.args = proxyTokenCommand(to).args;
           tableChanged = true;
@@ -1020,11 +1017,11 @@ function legacyEntryProfileAt(doc: Record<string, unknown>): Profile | undefined
   const ours = ownMcpRow(doc);
   if (ours === undefined) return undefined;
   const sub = launcherSubcommandArgs(ours.args);
-  if (sameArgs(sub, legacyMcpServeArgs(null))) return null;
+  if (sameStrings(sub, legacyMcpServeArgs(null))) return null;
   const name = sub[sub.indexOf("--profile") + 1];
   if (typeof name !== "string" || !isValidProfileName(name)) return undefined;
   const profile = parseProfileName(name);
-  return sameArgs(sub, legacyMcpServeArgs(profile)) ? profile : undefined;
+  return sameStrings(sub, legacyMcpServeArgs(profile)) ? profile : undefined;
 }
 
 /** Every owned Desktop entry's MCP row in the old shape gets the verb spelling under the same
@@ -1092,16 +1089,7 @@ function retargetDesktopEntry(from: ProfileName, to: ProfileName): void {
     if (entry.name === desktopEntryName(from)) entry.name = desktopEntryName(to);
     changed = true;
   }
-  if (!changed) return;
-  saveJsonIfChanged(
-    metaPath,
-    {
-      ...meta.extra,
-      ...(meta.appliedId === null ? {} : { appliedId: meta.appliedId }),
-      entries: meta.entries.map((e) => ({ ...e.extra, id: e.id, name: e.name })),
-    },
-    "Claude Desktop config-library index",
-  );
+  if (changed) writeDesktopMeta(dir, raw, meta);
 }
 
 /** The store slot moves whole (credential, mode, pair, and the profile's settings section). */
@@ -1117,11 +1105,10 @@ function renameStoreSlot(from: ProfileName, to: ProfileName): boolean {
   return moved;
 }
 
-/** From the slot (`stored`): no login. A Direct slot whose pair is not stored (the identity-cache
- *  step of the same run took the old cache) probes once for it and stores it, as any re-render
- *  does; on a real 4.0.9 store that is every Direct profile, so the re-render is not skipped. */
-/** The default re-renders as `agent profile sync` does (each agent's own write, then the Desktop
- *  reconcile); a named profile as `agent profile <name> sync` does. */
+/** Mirrors `agent profile [<name>] sync` from the slot (`stored`), so no login. A Direct slot
+ *  whose pair is not stored (the identity-cache step of the same run took the old cache) probes
+ *  once for it and stores it, as any re-render does; on a real 4.0.9 store that is every Direct
+ *  profile, so the re-render is not skipped. */
 async function rerender(profile: Profile): Promise<void> {
   const slot = new CopilotEnvState().readProfileSlot(profile);
   if (slot.kind !== "complete") {

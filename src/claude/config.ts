@@ -26,6 +26,7 @@ import {
 import { directWiringFor } from "../codex/config.ts";
 import { codexUserAgent } from "../codex/user_agent.ts";
 import { Credential } from "../copilot_api/credential.ts";
+import { staticKeyDetail } from "../copilot_api/credential_detail.ts";
 import { CopilotEnvState } from "../copilot_api/env_state.ts";
 import { directSmoke, type EndpointSmoke } from "../copilot_api/endpoint_smoke.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
@@ -47,12 +48,7 @@ import {
   parseLoopbackProxyUrl,
   proxyLoopbackOrigin,
 } from "../copilot_api/port.ts";
-import {
-  agentStartCommand,
-  type Profile,
-  profileLabel,
-  type ProfileName,
-} from "../copilot_api/profile.ts";
+import { type Profile, profileLabel, type ProfileName } from "../copilot_api/profile.ts";
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import { isEnoentOrNotdir, WIN } from "../utils/fs.ts";
@@ -413,17 +409,14 @@ function applyManagedCredential(
   envTable(doc)[AUTH_TOKEN_ENV] = credential.token;
 }
 
-/** The write-report clause that says how the credential rides; the proxy static case also says
- *  what the resolver command used to do for the user. */
+/** The write-report clause that says how the credential rides. */
 function credentialDetail(
   credential: CredentialWiring,
   mode: ManagedAgentMode,
   profile: Profile,
 ): string {
   if (credential.kind === "command") return "";
-  return mode === "direct"
-    ? "; static key"
-    : `; static key, start the proxy yourself (${agentStartCommand(profile)}, or the cl launcher)`;
+  return `; ${staticKeyDetail(mode, profile, "cl")}`;
 }
 
 /** The builtin tool denied on Direct (Copilot's host 400s it; the MCP tool replaces it). */

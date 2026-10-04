@@ -531,7 +531,10 @@ const onPath = (exe: string): boolean =>
 // zsh, not on the first macOS login shell that sources it.
 for (const shell of ["bash", "zsh"]) {
   test.skipIf(process.platform === "win32" || !onPath(shell))(
-    `agents.bashrc under ${shell} evals \`agent profile env\` silently at source time and audibly after every \`agent\` call, evals nothing from a failed resolution, whether it failed at source time or on a refresh, reports the command's own status after a failed refresh, and leaves the user's own variables alone`,
+    `agents.bashrc under ${shell} evals \`agent profile env\` silently at source time and audibly ` +
+      "after every `agent` call, evals nothing from a failed resolution, whether it failed at " +
+      "source time or on a refresh, reports the command's own status after a failed refresh, " +
+      "and leaves the user's own variables alone",
     () => {
       const staged = stageRc("agents.bashrc", "agent", FAKE_AGENT_SH);
       // `_env` is a name a user's own rc plausibly holds; the rc's temporaries live in its
@@ -587,7 +590,9 @@ const PS_DRIVERS = [
 
 for (const { driver: ps, onThisHost } of PS_DRIVERS) {
   test.skipIf(!onThisHost)(
-    `agents.ps1 under ${ps} evals every \`agent profile env\` line, -Quiet at dot-source time and audibly after every \`agent\` call, and evals nothing from a failed resolution, whether it failed at dot-source time or on a refresh`,
+    `agents.ps1 under ${ps} evals every \`agent profile env\` line, -Quiet at dot-source time and ` +
+      "audibly after every `agent` call, and evals nothing from a failed resolution, whether it " +
+      "failed at dot-source time or on a refresh",
     () => {
       const staged = stageRc("agents.ps1", "agent.ps1", FAKE_AGENT_PS1);
       const driver = join(staged.root, "driver.ps1");

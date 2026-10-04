@@ -13,6 +13,8 @@ import {
 import { join } from "node:path";
 import { CopilotApiConfig } from "../src/copilot_api/config.ts";
 import { renameWithRetry } from "../src/utils/fs_disk.ts";
+import { readProjectConfig } from "../src/utils/project_config.ts";
+import { versionLessThan } from "../src/utils/semver.ts";
 import { afterEach, expect, tempDir, test } from "./helpers/testing.ts";
 
 let dir = "";
@@ -170,8 +172,7 @@ test("renameWithRetry retries the transient EBUSY/EPERM codes until the rename l
 });
 
 // update() is a read-modify-WRITE: a failed read taken as `{}` would persist the emptiness and wipe
-// the daemon's api key, admin key and providers. The proxy writes config.json non-atomically, which
-// is the wipe the retry loop exists for.
+// the daemon's api key, admin key and providers.
 //
 //   unreadable file (0000), writable dir  -> the read fails, the rename would succeed: the wipe
 //   a directory at the path               -> the rename fails on its own, proves nothing
@@ -292,11 +293,10 @@ test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
 );
 
 test("update REFUSES a store that is present but not valid JSON, preserving its bytes", () => {
-  // A parse failure is refused like a read error: config.json's torn-write window can outlast
-  // the retries, and for our own atomic stores the junk is outside corruption whose
-  // salvageable content a reset would discard. A parsed NON-OBJECT root (an array, a scalar) is
-  // the same class. The stray-token case is one whose raw V8 diagnostic quotes the source
-  // (`Unexpected token 'x', "x"secret-key"" is not valid JSON`).
+  // A parse failure is refused like a read error: every store lands whole bytes by rename, so junk
+  // in one is outside corruption whose salvageable content a reset would discard. A parsed
+  // NON-OBJECT root (an array, a scalar) is the same class. The stray-token case is one whose raw
+  // V8 diagnostic quotes the source (`Unexpected token 'x', "x"secret-key"" is not valid JSON`).
   const cases = [
     '{ "auth": { "apiKeys": ["secret-key"] }, half-written',
     '[42, "secret-key"]',
@@ -321,7 +321,7 @@ test("update REFUSES a store that is present but not valid JSON, preserving its 
     expect(threw).toContain("refusing to overwrite it");
     // V8 quotes the source around the fault, unescaped; the store holds keys, so none survives.
     expect(threw).not.toContain("secret-key");
-    // THE outcome: the corrupt bytes (a torn write's salvageable half included)
+    // THE outcome: the corrupt bytes (a half-written document included)
     // are still on disk, byte for byte -- never reset to the mutation alone.
     expect(readFileSync(path, "utf8")).toBe(content);
     // Junk CONTENT is a proven fact about the file: both read-only readers degrade.
@@ -330,4 +330,13 @@ test("update REFUSES a store that is present but not valid JSON, preserving its 
     rmSync(dir, { recursive: true, force: true });
     dir = "";
   }
+});
+
+// External fact: copilot-api 2.2.2 is the first release whose config.json writer stages a temp file
+// and renames it into place (2.2.1 still truncates and rewrites in place, so a reader could see a
+// half-written document). read() takes one read as the file's state, so the float must never run
+// an older proxy.
+test("the proxy floor admits only versions whose config.json writer renames whole bytes into place", () => {
+  const FIRST_ATOMIC_WRITER = "2.2.2";
+  expect(versionLessThan(readProjectConfig().proxyMinVersion, FIRST_ATOMIC_WRITER)).toBe(false);
 });

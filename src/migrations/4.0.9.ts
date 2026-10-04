@@ -703,8 +703,8 @@ export function foldRootStores(rootHome: string = resolveRootHome()): void {
 }
 
 /** The autoupdate throttle file takes the name of what it holds; "state.json" is the account-wide
- *  store's. Exported for the migration test; `autoupdateHome` isolates. */
-export function renameAutoupdateThrottle(autoupdateHome: string = autoupdateDir()): void {
+ *  store's. */
+export function renameAutoupdateThrottle(autoupdateHome: string): void {
   const oldAutoupdate = join(autoupdateHome, "state.json");
   const newAutoupdate = join(autoupdateHome, AUTOUPDATE_FILENAME);
   if (!fs.exists(oldAutoupdate)) return;
@@ -728,9 +728,9 @@ export const v409StateFold: Migration = {
   layout: true,
   description:
     "fold credentials.json, preferences.json, and ownership.json into state.json (one store, one lock)",
-  run: () => {
+  run: (installRoot) => {
     foldRootStores();
-    renameAutoupdateThrottle();
+    renameAutoupdateThrottle(autoupdateDir(installRoot));
   },
 };
 

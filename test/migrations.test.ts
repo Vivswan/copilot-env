@@ -44,6 +44,7 @@ import {
 } from "../src/claude/desktop_helper_scripts.ts";
 import { CLAUDE_DESKTOP_DIR_ENV, META_FILENAME } from "../src/claude/desktop_library.ts";
 import { mcpServeArgs } from "../src/claude/desktop_payload.ts";
+import { AUTOUPDATE_FILENAME, autoupdateDir } from "../src/autoupdate/state.ts";
 import { claudeJsonPath, inspectMcpRegistration } from "../src/claude/mcp_registration.ts";
 import {
   DEFAULT_COPILOT_API_BASE,
@@ -54,7 +55,6 @@ import { managedProxyProvider } from "../src/codex/config.ts";
 import { CopilotEnvRunState } from "../src/copilot_api/run_state.ts";
 import { deferWriteReports, flushWriteReports } from "../src/utils/report_write.ts";
 import { renderDryRun } from "../src/utils/dry_run_report.ts";
-import * as fsSeam from "../src/utils/fs_facade.ts";
 import { captureChannels } from "./helpers/output.ts";
 import { runCli } from "./helpers/run.ts";
 import { consola } from "consola";
@@ -154,8 +154,7 @@ test(
   async () => {
     // In the other order the helper move's wiring pass meets the old argv through the current
     // reader, which knows no profile for it: the entry is swept as an orphan and the default gets
-    // a twin under a fresh id. The sequence runs on the dry-run overlay: one shipped step (the
-    // autoupdate throttle rename) reaches the install root, which no temp home redirects.
+    // a twin under a fresh id.
     const homes = isolateAgentHomes("copilot-mig-sequence-desktop-", { mkdirs: true });
     dir = homes.dir;
     const desktop = join(dir, "desktop");
@@ -165,6 +164,9 @@ test(
     const metaPath = join(library, META_FILENAME);
     const entryPath = join(library, "e0.json");
     const looseHelper = join(homes.proxyHome, "claude-desktop-proxy-token.sh");
+    const installRoot = join(dir, "install");
+    const autoupdateHome = autoupdateDir(installRoot);
+    mkdirSync(autoupdateHome, { recursive: true });
     try {
       writeStore(join(homes.proxyHome, "state.json"), {
         global: { "daemon.port": 4199 },
@@ -175,6 +177,7 @@ test(
       });
       // The loose helper is what makes the 4.0.2 step run its wiring pass at all.
       writeFileSync(looseHelper, "#!/bin/sh\n");
+      writeFileSync(join(autoupdateHome, "state.json"), "{}\n");
       writeFileSync(
         metaPath,
         JSON.stringify({
@@ -192,37 +195,29 @@ test(
           ],
         }),
       );
-      const before = fingerprintTree(dir);
-      let narrated = "";
-      // Read through the seam while the overlay is up: the sequence's end state as the real run
-      // would land it. A planned removal reads as null, so a swept entry fails the assertion below
-      // by its content, not by a throw here.
-      const planned = (path: string): Record<string, unknown> | null => {
-        const read = fsSeam.readTextResult(path);
-        return read.kind === "text" ? JSON.parse(read.text) as Record<string, unknown> : null;
-      };
-      const { result } = await dryRunChanges(async () => {
-        narrated = (await captureChannels(() => runMigrations("4.0.2", "5.0.1"))).all;
-        return {
-          meta: planned(metaPath),
-          entry: planned(entryPath) as {
-            inferenceCredentialHelper: string;
-            managedMcpServers: { name: string; args: string[] }[];
-          } | null,
-          looseHelperKept: fsSeam.exists(looseHelper),
-        };
-      });
-      expect(fingerprintTree(dir)).toEqual(before);
+      const narrated = (await captureChannels(() =>
+        runMigrations("4.0.2", "5.0.1", undefined, installRoot)
+      )).all;
       expect(narrated).not.toContain("did not complete");
-      expect(result.meta?.entries).toEqual([{ id: "e0", name: "copilot-env", pinned: false }]);
-      expect(result.entry?.managedMcpServers.find((r) => r.name === "copilot-env")?.args).toEqual(
+      expect(readStore(metaPath).entries).toEqual([{
+        id: "e0",
+        name: "copilot-env",
+        pinned: false,
+      }]);
+      const entry = readStore(entryPath) as {
+        inferenceCredentialHelper: string;
+        managedMcpServers: { name: string; args: string[] }[];
+      };
+      expect(entry.managedMcpServers.find((r) => r.name === "copilot-env")?.args).toEqual(
         agentLauncherCommand(mcpServeArgs(null)).args,
       );
       // The helper move finished too: the entry was rewired under helpers/ and the loose copy went.
-      expect(result.entry?.inferenceCredentialHelper).toBe(
+      expect(entry.inferenceCredentialHelper).toBe(
         desktopHelperPath(homes.proxyHome, "proxy", null),
       );
-      expect(result.looseHelperKept).toBe(false);
+      expect(existsSync(looseHelper)).toBe(false);
+      // The one step that writes machine state wrote it under the injected root.
+      expect(readdirSync(autoupdateHome)).toEqual([AUTOUPDATE_FILENAME]);
     } finally {
       delete process.env[CLAUDE_DESKTOP_DIR_ENV];
     }

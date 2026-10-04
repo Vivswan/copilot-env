@@ -54,21 +54,21 @@ function Install-Deno {
     }
 
     [Console]::Error.WriteLine('==> Installing the latest deno (one-time; none found on PATH) ...')
-    # The release zip is fetched and unpacked here instead of running deno's install.ps1: that
-    # installer appends $denoBin to the User PATH in the registry with no opt-out (the POSIX
-    # installer's rc-file edits turn off under CI=1), and PATH is bin/agent.ps1's and
-    # shell/agents.ps1's job. The URLs and tar.exe are the installer's own.
-    # A random scratch name, and New-Item without -Force: a fixed name under the shared temp
-    # root could be pre-created by another local user, who would then own the zip unpacked next.
+    # Not deno's own install.ps1: it appends $denoBin to the User PATH in the registry with no
+    # opt-out, and PATH is bin/agent.ps1's and shell/agents.ps1's job. The URLs are that installer's own.
+    foreach ($tool in 'curl.exe', 'tar.exe') {
+        if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) {
+            throw "$tool is required to install deno and was not found on PATH."
+        }
+    }
     $scratch = Join-Path ([IO.Path]::GetTempPath()) ([IO.Path]::GetRandomFileName())
     New-Item $scratch -ItemType Directory | Out-Null
-    # 5.1's Invoke-WebRequest redraws its progress bar per buffer, slowing the download by
-    # orders of magnitude; function scope, so the caller's preference is untouched.
-    $ProgressPreference = 'SilentlyContinue'
     try {
-        $version = ([string](Invoke-RestMethod https://dl.deno.land/release-latest.txt)).Trim()
+        $version = ((& curl.exe -fsSL https://dl.deno.land/release-latest.txt) -join '').Trim()
+        if ($LASTEXITCODE -ne 0 -or -not $version) { throw 'could not resolve the latest deno release.' }
         $zip = Join-Path $scratch 'deno.zip'
-        Invoke-WebRequest "https://dl.deno.land/release/$version/deno-x86_64-pc-windows-msvc.zip" -OutFile $zip -UseBasicParsing
+        & curl.exe -fsSL -o $zip "https://dl.deno.land/release/$version/deno-x86_64-pc-windows-msvc.zip"
+        if ($LASTEXITCODE -ne 0) { throw "could not download the deno $version zip." }
         & tar.exe xf $zip -C $scratch
         if ($LASTEXITCODE -ne 0) { throw "could not unpack the deno $version zip into $scratch." }
         # The unpacked file must itself run before it is published: a botched unpack installs nothing.

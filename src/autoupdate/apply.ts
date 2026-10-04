@@ -131,16 +131,12 @@ interface Staged {
   readonly binary: string;
   readonly versionName: string;
   readonly versionRoot: string;
-  /** The version-dir name `current` pointed at before this update -- the
-   *  rollback candidate the GC keeps -- or null (first versioned update). */
-  readonly previous: string | null;
 }
 
 /** What outlives the flip: the commit changes none of it, so the post-flip steps read it as is. */
 interface Provisioned {
   readonly binary: string;
   readonly versionName: string;
-  readonly previous: string | null;
 }
 
 /** Where to fetch a release file from: a local directory or a URL prefix. */
@@ -268,7 +264,7 @@ async function attest(
 }
 
 /** `current` already at the target (a checkout updated with --force, then asked again from its old
- *  embedded version): the stage's refusal, and the plan's. */
+ *  embedded version): the update's refusal, and the plan's. */
 function refuseAlreadyCurrent(top: string, versionName: string): void {
   if (readCurrentVersionName(top) !== versionName) return;
   throw new Error(
@@ -281,8 +277,6 @@ function refuseAlreadyCurrent(top: string, versionName: string): void {
  *  files are never touched, so there is no running-image problem on any platform; a stale dir
  *  from a crashed attempt is removed first (it is never `current`). */
 function stage(attested: Attested, top: string, versionName: string): Staged {
-  const previous = readCurrentVersionName(top);
-  refuseAlreadyCurrent(top, versionName);
   const versionRoot = versionRootPath(top, versionName);
   fs.rm(versionRoot, { recursive: true, force: true });
   const binDir = join(versionRoot, "bin");
@@ -290,7 +284,7 @@ function stage(attested: Attested, top: string, versionName: string): Staged {
   const binary = join(binDir, installedBinaryName());
   if (process.platform !== "win32") fs.chmod(attested.path, 0o755);
   fs.rename(attested.path, binary);
-  return { binary, versionName, versionRoot, previous };
+  return { binary, versionName, versionRoot };
 }
 
 /**
@@ -326,11 +320,7 @@ function provision(staged: Staged, stdio: StdioOptions): Provisioned {
         `${staged.versionName} release being applied; the current version is untouched`,
     );
   }
-  return {
-    binary: staged.binary,
-    versionName: staged.versionName,
-    previous: staged.previous,
-  };
+  return { binary: staged.binary, versionName: staged.versionName };
 }
 
 /**
@@ -408,6 +398,10 @@ export async function applyUpdate(
 
   const top = installStateRoot(root);
   const versionName = versionDirName(target.tag);
+  refuseAlreadyCurrent(top, versionName);
+  // The version-dir name `current` points at now -- the rollback candidate the GC keeps -- or
+  // null (first versioned update).
+  const previous = readCurrentVersionName(top);
   const versionRoot = versionRootPath(top, versionName);
 
   // Stage the download inside the install root, not the system temp dir: the
@@ -430,11 +424,8 @@ export async function applyUpdate(
     );
   } catch (error) {
     // Pre-commit failure: the old version is live; remove the half-prepared version dir so a
-    // retry starts clean. stage() also throws when `current` ALREADY names the target, and that
-    // dir is then the live install: the guard is what keeps this from deleting it.
-    if (readCurrentVersionName(top) !== versionName) {
-      fs.rm(versionRoot, { recursive: true, force: true });
-    }
+    // retry starts clean.
+    fs.rm(versionRoot, { recursive: true, force: true });
     throw error;
   } finally {
     fs.removeScratchDir(staging);
@@ -447,11 +438,7 @@ export async function applyUpdate(
   runPostFlipMigrations(top, provisioned.binary, current, target.tag, stdio, logger);
 
   // GC keeps the new version plus ONE previous (the rollback candidate).
-  const keep = new Set(
-    provisioned.previous === null
-      ? [provisioned.versionName]
-      : [provisioned.versionName, provisioned.previous],
-  );
+  const keep = new Set(previous === null ? [versionName] : [versionName, previous]);
   removeVersionDirsExcept(top, keep);
   // The bootstrap binary a Windows install could not unlink while it was the running image.
   removeBootstrapBinary(bootstrapBinaryPaths(top));

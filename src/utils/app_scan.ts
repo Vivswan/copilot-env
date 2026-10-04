@@ -3,7 +3,7 @@
 // emitted its verdict); "unproven" is a look that FAILED (pgrep/PowerShell erroring or missing, or
 // the spawn itself failing) and never reads as a confident absence, as in classifyPidFromScan
 // (src/copilot_api/process.ts).
-import { runCaptured, scratchPowershellProfile } from "./command.ts";
+import { runCaptured, scratchPowershellProfile, withPowershellChildEnv } from "./command.ts";
 
 export type AppScan = "present" | "absent" | "unproven";
 
@@ -23,9 +23,13 @@ export async function runPowershell(
 ): Promise<{ exitCode: number; stdout: string; launchFailed?: true }> {
   const profile = scratchPowershellProfile();
   try {
-    return await exec("powershell", ["-NoProfile", "-NonInteractive", "-Command", script], {
-      env: profile.env,
-    });
+    return await withPowershellChildEnv(
+      "powershell",
+      (env) =>
+        exec("powershell", ["-NoProfile", "-NonInteractive", "-Command", script], {
+          env: { ...env, ...profile.env },
+        }),
+    );
   } finally {
     profile.dispose();
   }

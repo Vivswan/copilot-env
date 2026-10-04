@@ -34,18 +34,46 @@ export function powershellFileArgs(ps1: string, args: readonly string[]): string
   return ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ps1, ...args];
 }
 
+export type PowershellExe = "powershell" | "pwsh";
+
+/** Windows PowerShell 5.1 spawned from pwsh 7 inherits pwsh's PSModulePath and its in-box cmdlets
+ *  fail to autoload, so a `powershell` child gets the variable under no casing and `pwsh` keeps
+ *  its own. Deno's spawnSync merges `env` over the parent's, so the key leaves process.env for the
+ *  span. */
+export function withPowershellChildEnv<T>(
+  exe: PowershellExe,
+  spawn: (env: Record<string, string>) => T,
+): T {
+  const env: Record<string, string> = {};
+  const parentKeys: [string, string][] = [];
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value === undefined) continue;
+    if (exe === "powershell" && key.toUpperCase() === "PSMODULEPATH") {
+      parentKeys.push([key, value]);
+      delete process.env[key];
+      continue;
+    }
+    env[key] = value;
+  }
+  try {
+    return spawn(env);
+  } finally {
+    for (const [key, value] of parentKeys) process.env[key] = value;
+  }
+}
+
 /** A PowerShell process writes its profile scaffolding (AppData\\Roaming, the PSReadLine history)
- *  under the profile directories it inherits, so every PowerShell spawn of ours that launches
+ *  under the profile directories it inherits, so every `powershell` spawn of ours that launches
  *  nothing for the user runs under a scratch profile: the user's HOME (or a test's fingerprinted
- *  one) sees none of it. `dispose` removes the profile once the spawn has returned. */
+ *  one) sees none of it. `env` is the override to spread over withPowershellChildEnv's; `dispose`
+ *  removes the profile once the spawn has returned. */
 export function scratchPowershellProfile(): {
-  env: Record<string, string | undefined>;
+  env: Record<string, string>;
   dispose(): void;
 } {
   const profile = fs.scratchDir(join(tmpdir(), "copilot-env-ps-"));
   return {
     env: {
-      ...process.env,
       USERPROFILE: profile,
       APPDATA: join(profile, "AppData", "Roaming"),
       LOCALAPPDATA: join(profile, "AppData", "Local"),
@@ -58,15 +86,16 @@ export function findCommand(command: string): CommandLook {
   if (process.platform === "win32") {
     const profile = scratchPowershellProfile();
     try {
-      const result = spawnSync(
-        "powershell",
-        [
-          "-NoProfile",
-          "-Command",
-          `if (Get-Command ${command} -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }`,
-        ],
-        { stdio: "ignore", env: profile.env },
-      );
+      const result = withPowershellChildEnv("powershell", (env) =>
+        spawnSync(
+          "powershell",
+          [
+            "-NoProfile",
+            "-Command",
+            `if (Get-Command ${command} -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }`,
+          ],
+          { stdio: "ignore", env: { ...env, ...profile.env } },
+        ));
       return commandLookFromSpawn(result, () => command);
     } finally {
       profile.dispose();

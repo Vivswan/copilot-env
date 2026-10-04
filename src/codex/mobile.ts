@@ -11,7 +11,7 @@ import {
   processScanScript,
   runPowershell,
 } from "../utils/app_scan.ts";
-import { runCaptured } from "../utils/command.ts";
+import { runCaptured, withPowershellChildEnv } from "../utils/command.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { isRecord } from "../utils/json.ts";
 import { createStderrLogger, prompt } from "../utils/logger.ts";
@@ -163,13 +163,14 @@ export function runningState(): Promise<AppScan> {
  *  scratch one. */
 async function openApp(): Promise<void> {
   if (process.platform === "win32") {
-    const r = await runCaptured("powershell", [
-      "-NoProfile",
-      "-NonInteractive",
-      "-Command",
-      `$a = Get-StartApps | Where-Object { $_.Name -like '${APP_NAME}*' } | Select-Object -First 1;` +
-      `if ($a) { Start-Process ('shell:AppsFolder\\' + $a.AppID) } else { Start-Process '${APP_NAME}' }`,
-    ]);
+    const r = await withPowershellChildEnv("powershell", (env) =>
+      runCaptured("powershell", [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        `$a = Get-StartApps | Where-Object { $_.Name -like '${APP_NAME}*' } | Select-Object -First 1;` +
+        `if ($a) { Start-Process ('shell:AppsFolder\\' + $a.AppID) } else { Start-Process '${APP_NAME}' }`,
+      ], { env }));
     if (r.exitCode !== 0) {
       await prompt(`Open the ${APP_NAME} app, then press Enter.`, { type: "text" });
     }

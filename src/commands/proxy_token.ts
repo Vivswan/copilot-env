@@ -19,6 +19,8 @@ import {
   parseProfileFlag,
   type Profile,
 } from "../copilot_api/profile.ts";
+import { assertNever } from "../utils/assert.ts";
+import { withPowershellChildEnv } from "../utils/command.ts";
 import { errMessage } from "../utils/error.ts";
 import { agentLauncherCommand } from "../utils/root.ts";
 import { printWrappedToStderr, terminalWidth, wrapMessage } from "../utils/table.ts";
@@ -68,15 +70,27 @@ export function launchProxy(profile: Profile, output: LaunchOutput): void | Prom
   if (dryRunActive()) {
     return runStart({ kind: "launch", dryRun: true, force: false, port: undefined, profile });
   }
-  const { command, args } = agentLauncherCommand(
+  const launcher = agentLauncherCommand(
     profile === null ? ["start"] : ["profile", profile, "start"],
   );
-  spawnSync(command, args, {
-    // `2` is our stderr fd: the visible child's start progress must show without touching our
-    // stdout.
-    stdio: output === "suppressed" ? ["ignore", "ignore", "inherit"] : ["inherit", 2, "inherit"],
-    windowsHide: true,
-  });
+  const spawn = (env?: Record<string, string>) =>
+    spawnSync(launcher.command, launcher.args, {
+      // `2` is our stderr fd: the visible child's start progress must show without touching our
+      // stdout.
+      stdio: output === "suppressed" ? ["ignore", "ignore", "inherit"] : ["inherit", 2, "inherit"],
+      windowsHide: true,
+      env,
+    });
+  switch (launcher.kind) {
+    case "powershell":
+      withPowershellChildEnv(launcher.command, spawn);
+      break;
+    case "direct":
+      spawn();
+      break;
+    default:
+      assertNever(launcher);
+  }
 }
 
 /**

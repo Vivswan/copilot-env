@@ -221,9 +221,11 @@ test("the proxy credential resolver Codex is wired to run is `agent profile [<na
         model_providers?: Record<string, { auth?: { command?: string; args?: string[] } }>;
       };
       const auth = doc.model_providers?.[codexProviderId(profile)]?.auth;
-      expect({ command: auth?.command, args: auth?.args }, codexProviderId(profile)).toEqual(
-        agentLauncherCommand(args),
-      );
+      const launcher = agentLauncherCommand(args);
+      expect({ command: auth?.command, args: auth?.args }, codexProviderId(profile)).toEqual({
+        command: launcher.command,
+        args: launcher.args,
+      });
     }
   } finally {
     restoreEnv();

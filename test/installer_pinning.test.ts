@@ -24,6 +24,7 @@ import {
   releaseAssetName,
 } from "../src/install/targets.ts";
 import { readDvmrcPin } from "../src/copilot_api/sidecar.ts";
+import { withPowershellChildEnv } from "../src/utils/command.ts";
 import { writeDaemonConfig } from "../src/proxy_float.ts";
 import { readProjectConfig } from "../src/utils/project_config.ts";
 import { ROOT, runScript, runSync } from "./helpers/run.ts";
@@ -317,32 +318,24 @@ describe("installer checkout guard refuses before mutating, proceeds on legacy r
     extraEnv: Record<string, string> = {},
     extraArgs: string[] = [],
   ): ReturnType<typeof runSync> {
-    const env: Record<string, string | undefined> = {
-      ...process.env,
-      "COPILOT_ENV_DOWNLOAD_BASE": downloadDir,
-      "CI": "1",
-    };
-    // GitHub's windows runner hands this process pwsh's PSModulePath, which breaks 5.1's module
-    // autoload; drop it under any key spelling (Windows env keys are case-insensitive) so the
-    // spawn models a stock powershell.exe session.
-    for (const key of Object.keys(env)) {
-      if (key.toLowerCase() === "psmodulepath") delete env[key];
-    }
-    Object.assign(env, extraEnv);
+    const extra = { "COPILOT_ENV_DOWNLOAD_BASE": downloadDir, "CI": "1", ...extraEnv };
     if (Deno.build.os === "windows") {
-      return runSync("powershell", [
-        "-NoProfile",
-        "-NonInteractive",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-        join(ROOT, "install.ps1"),
-        "-InstallDir",
-        root,
-        ...extraArgs,
-      ], { env });
+      return withPowershellChildEnv("powershell", (env) =>
+        runSync("powershell", [
+          "-NoProfile",
+          "-NonInteractive",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-File",
+          join(ROOT, "install.ps1"),
+          "-InstallDir",
+          root,
+          ...extraArgs,
+        ], { env: { ...env, ...extra } }));
     }
-    return runSync("bash", [join(ROOT, "install.sh"), "--dir", root, ...extraArgs], { env });
+    return runSync("bash", [join(ROOT, "install.sh"), "--dir", root, ...extraArgs], {
+      env: { ...process.env, ...extra },
+    });
   }
 
   /** install.sh on a pseudo-terminal (`script`), CI unset, so the shell-reload offer at the end

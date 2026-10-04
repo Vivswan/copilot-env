@@ -6,8 +6,8 @@ $ErrorActionPreference = 'Stop'
 Set-Location (Join-Path $PSScriptRoot '..')
 
 . (Join-Path $PSScriptRoot 'ensure-deno.ps1')
-# Looked up BEFORE Install-Deno, which prepends its bin dir to this process's PATH: the note at
-# the end is for the CALLER's shells, which never saw that prepend.
+# Looked up BEFORE Install-Deno prepends its bin dir to this process's PATH: that prepend lives
+# only as long as this session, so the note at the end tells the user what FUTURE shells need.
 $callerHasDeno = [bool](Get-Command deno -ErrorAction SilentlyContinue)
 Install-Deno -Root $PWD
 

@@ -155,12 +155,16 @@ function Resolve-Target {
 function Resolve-ReleaseTag {
     if ($Version) { return $Version }
     if ($InstallRef -ne 'latest') { return $InstallRef }
+    # Either lookup, once its retries run out, dies with install.sh's message, not the raw web
+    # exception.
     if ($AuthToken) {
         # A token raises the API rate limit and sees private repos, so resolve `latest` through
         # the API when one is available.
-        $release = Invoke-WithRetry 'Resolve latest release' {
-            Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" -Headers $AuthHeaders -UserAgent $UserAgent
-        }
+        try {
+            $release = Invoke-WithRetry 'Resolve latest release' {
+                Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" -Headers $AuthHeaders -UserAgent $UserAgent
+            }
+        } catch { throw 'Could not resolve the latest copilot-env release.' }
         $tag = [string]$release.tag_name
     } else {
         # Tokenless: follow the /releases/latest redirect to the tag page instead of burning the
@@ -168,9 +172,11 @@ function Resolve-ReleaseTag {
         # own response type:
         #   Windows PowerShell 5.1  -> HttpWebResponse.ResponseUri
         #   pwsh                    -> HttpResponseMessage.RequestMessage.RequestUri
-        $response = Invoke-WithRetry 'Resolve latest release' {
-            Invoke-WebRequest -Uri "https://github.com/$Repo/releases/latest" -UseBasicParsing -UserAgent $UserAgent
-        }
+        try {
+            $response = Invoke-WithRetry 'Resolve latest release' {
+                Invoke-WebRequest -Uri "https://github.com/$Repo/releases/latest" -UseBasicParsing -UserAgent $UserAgent
+            }
+        } catch { throw 'Could not resolve the latest copilot-env release.' }
         $final = $response.BaseResponse.ResponseUri
         if (-not $final) { $final = $response.BaseResponse.RequestMessage.RequestUri }
         $tag = ([string]$final).Split('/')[-1]

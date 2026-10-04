@@ -35,21 +35,11 @@ jobs:
       - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
         with:
           deno-version-file: .dvmrc
-      # Every tracked lockfile, nested ones included; the two flags are the fleet's audit policy.
-      #   '*/deno.lock'   -> a git pathspec whose '*' crosses '/'
-      #   --frozen        -> a lockfile out of date with its manifest fails loudly
-      #   --level high    -> a low or moderate advisory is a Dependabot bump, not a red run
+      # The lockfile must be committed (red with git's own message when it is not); the two flags
+      # are the fleet's audit policy:
+      #   --frozen      -> a lockfile out of date with its manifest fails loudly
+      #   --level high  -> a low or moderate advisory is a Dependabot bump, not a red run
       - name: Audit dependencies (deno)
-        shell: bash
         run: |
-          # Listing into a file: a git failure aborts the step under -e with
-          # its own error, not read as "no lockfiles".
-          git ls-files -z -- 'deno.lock' '*/deno.lock' > "$RUNNER_TEMP/deno-locks"
-          if [ ! -s "$RUNNER_TEMP/deno-locks" ]; then
-            echo "::error::no deno.lock tracked, so nothing was audited; commit the lockfile"
-            exit 1
-          fi
-          while IFS= read -r -d '' lock; do
-            echo "auditing $lock"
-            (cd "$(dirname -- "$lock")" && deno audit --frozen --level high)
-          done < "$RUNNER_TEMP/deno-locks"
+          git ls-files --error-unmatch deno.lock
+          deno audit --frozen --level high

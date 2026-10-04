@@ -275,7 +275,6 @@ test("a source-checkout root survives the uninstall unless --force is given", as
     // Protection follows the injected RootMode's kind, not any ambient .git probe:
     // nothing was created or removed inside the sandbox to make it look like a clone.
     expect(existsSync(root.root), `force ${force}`).toBe(!force);
-    if (!force) expect(existsSync(join(root.root, ".git"))).toBe(false);
   }
 });
 

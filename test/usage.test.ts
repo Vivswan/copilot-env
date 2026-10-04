@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
@@ -13,7 +13,7 @@ import {
   usageReport,
 } from "../src/usage/usage.ts";
 import { dayKeyIn, localDayKey } from "../src/utils/time.ts";
-import { afterEach, expect, tempDir, test } from "./helpers/testing.ts";
+import { afterEach, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
 
 // Day keys are LOCAL calendar days, so expectations derive from the reader's own helper.
 // Timestamps meant to share a day are written at the SAME instant; distinct days sit a full
@@ -30,16 +30,7 @@ function readProxy(dbPaths: string[], sinceMs?: number, timeZone?: string) {
 let dir = "";
 
 afterEach(() => {
-  if (dir) {
-    // sqlite can briefly hold the DB file on Windows after close() (EBUSY),
-    // so retry the cleanup; never let a temp-dir cleanup fail a passing test.
-    try {
-      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
-    } catch {
-      // leaked temp dir is harmless on CI runners
-    }
-    dir = "";
-  }
+  dir = removeDir(dir);
 });
 
 // The ONE token-count sanitization rule both session readers apply.

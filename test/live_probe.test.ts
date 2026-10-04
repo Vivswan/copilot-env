@@ -12,6 +12,7 @@ import {
 import type { CommandLook } from "../src/utils/command.ts";
 import type { DirectSmoke, SmokeModelOutcome } from "../src/copilot_api/endpoint_smoke.ts";
 import { ghAuthVerdict, ghTokenFromEnv } from "../src/copilot_api/gh_cli.ts";
+import { envSnapshot } from "./helpers/env.ts";
 import { captureAllWrites } from "./helpers/output.ts";
 import { expect, test } from "./helpers/testing.ts";
 
@@ -534,6 +535,7 @@ test("the real probe child never sees a provider variable the parent shell expor
 });
 
 test("probeDirectWorks strips provider/CLI env families but keeps gh auth", async () => {
+  const restoreEnv = envSnapshot(["CODEX_API_KEY", "CLAUDE_CODE_FOO", "openai_org"]);
   process.env.ANTHROPIC_AUTH_TOKEN = "leaked-token";
   process.env.OPENAI_BASE_URL = "http://proxy.local";
   process.env.CODEX_API_KEY = "leaked-codex";
@@ -565,12 +567,6 @@ test("probeDirectWorks strips provider/CLI env families but keeps gh auth", asyn
     expect(env.CLAUDE_CONFIG_DIR).not.toBe("leaked-home");
     expect(env.PATH).toBeTruthy();
   } finally {
-    delete process.env.ANTHROPIC_AUTH_TOKEN;
-    delete process.env.OPENAI_BASE_URL;
-    delete process.env.CODEX_API_KEY;
-    delete process.env.CLAUDE_CODE_FOO;
-    delete process.env.openai_org;
-    delete process.env.CLAUDE_CONFIG_DIR;
-    delete process.env.GH_TOKEN;
+    restoreEnv();
   }
 });

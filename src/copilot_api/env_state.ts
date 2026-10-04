@@ -445,9 +445,7 @@ export class CopilotEnvState {
 
   /** Existence and contents come from ONE read, so they can never disagree under a concurrent write. */
   profileSlotStatus(name: ProfileName): { exists: boolean; slot: ProfileSlot } {
-    const profiles = this.read().profiles;
-    // Own-property check: a name like "constructor" would otherwise resolve up the prototype chain.
-    const slot = Object.hasOwn(profiles, name) ? profiles[name] : undefined;
+    const slot = this.read().profiles[name];
     return { exists: slot !== undefined, slot: parseProfileSlot(slot ?? emptyProfile()) };
   }
 

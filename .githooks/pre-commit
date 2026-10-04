@@ -5,7 +5,6 @@ set -e
 # The one-time deno install dir is only a FALLBACK: a deno already on PATH wins.
 PATH="$PATH:${DENO_INSTALL:-$HOME/.deno}/bin"
 export PATH
-deno task lint:staged
 deno task typecheck
 deno task test
 deno task lint

@@ -54,7 +54,6 @@
     "lint": "deno lint && deno fmt --check",
     "lint:sh": "deno run --allow-read=. --allow-run=shellcheck scripts/lint_shell.ts sh",
     "lint:ps": "deno run --allow-read=. --allow-run=pwsh scripts/lint_shell.ts ps",
-    "lint:staged": "deno run --allow-run=deno,git scripts/lint_staged.ts",
     "check": "deno lint --fix && deno fmt",
     "docs:arch": "deno run --allow-read --allow-write=docs scripts/docs_arch.ts",
     "compile": "deno run --allow-read --allow-write --allow-run=deno scripts/compile.ts",

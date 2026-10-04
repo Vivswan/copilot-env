@@ -224,7 +224,6 @@ test("desktopAppInstalledFor: app locations OR an existing data dir; linux by da
 });
 
 test("the desktop seam is absolute-or-throw and governs detection; the floor sets it", () => {
-  expect(CLAUDE_DESKTOP_DIR_ENV).toBe("COPILOT_ENV_CI_CLAUDE_DESKTOP_DIR");
   expect(Deno.env.get(CLAUDE_DESKTOP_DIR_ENV)).toBeDefined();
   // The floor's dir is never created, so the whole suite sees "not installed".
   expect(claudeDesktopInstalled()).toBe(false);

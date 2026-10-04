@@ -166,8 +166,6 @@ function groupTotals(
   return m;
 }
 
-/** The per-day table's label for the undated row (cost.ts renders it); the spelling is a display
- *  contract. */
 export const UNDATED_DAY_LABEL = "(undated)";
 
 /** Without this row the per-day table's columns could not sum to the TOTAL line, which always

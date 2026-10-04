@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, sep } from "node:path";
 import { parse, stringify, TomlDate } from "smol-toml";
 import { directHelperCommand, proxyHelperCommand } from "../src/claude/config.ts";
@@ -20,14 +20,7 @@ import {
   v400CodexWiring,
   v400ShellFence,
 } from "../src/migrations/4.0.0.ts";
-import {
-  moveDesktopHelpers,
-  moveRootStores,
-  pinSoleGhAccount,
-  v402DesktopHelpers,
-  v402GhAccountPin,
-  v402RootLayout,
-} from "../src/migrations/4.0.2.ts";
+import { moveDesktopHelpers, moveRootStores, pinSoleGhAccount } from "../src/migrations/4.0.2.ts";
 import {
   dropCodexIdentityPin,
   dropSlotIdentityCache,
@@ -39,15 +32,6 @@ import {
   rewriteDesktopMcpArgv,
   scopeStaticKeyBoolean,
   stripLaunchersBlocks,
-  v409CodexProfileFiles,
-  v409DesktopMcpArgv,
-  v409IdentityCache,
-  v409IntegrationIdPin,
-  v409LaunchersBlock,
-  v409ProfileVerbTree,
-  v409RootDaemonHome,
-  v409StateFold,
-  v409StaticKeyScope,
 } from "../src/migrations/4.0.9.ts";
 import { dueMigrations, type Migration, runMigrations } from "../src/migrations/index.ts";
 import { MARKER, MARKER_END } from "../src/shell/integration.ts";
@@ -57,6 +41,7 @@ import { CLAUDE_DESKTOP_DIR_ENV, META_FILENAME } from "../src/claude/desktop_lib
 import { mcpServeArgs } from "../src/claude/desktop_payload.ts";
 import { claudeJsonPath, inspectMcpRegistration } from "../src/claude/mcp_registration.ts";
 import {
+  DEFAULT_COPILOT_API_BASE,
   resetIntegrationIdentityCache,
   setIntegrationProbeFetch,
 } from "../src/copilot_api/integration_identity.ts";
@@ -117,33 +102,37 @@ test("dueMigrations selects [from, to) in ascending order over the registry", ()
   }
 });
 
-test("the shipped registry holds exactly the named fix-ups in order, layout steps first", () => {
-  // Pinned BY IDENTITY and in order: a count or a list of version strings could stay green while a
-  // same-version fix-up was dropped in a merge. Each position has a reason:
-  //   layout steps first (store rename, the state.json fold, the root daemon home, the Desktop MCP
-  //   argv)                                              -> later steps read stores at the new paths,
-  //                                                         through the new preference shape, and
-  //                                                         the Desktop entries through the new reader
-  //   Desktop helper move, then the Codex profile files  -> each needs the 4.0.0 rewrites done
-  expect(dueMigrations("0.0.1", "999.0.0")).toEqual([
-    v402RootLayout,
-    v409StateFold,
-    v409RootDaemonHome,
-    v409DesktopMcpArgv,
-    v400ShellFence,
-    v400CodexWiring,
-    v400ClaudeWiring,
-    v400AutoupdateFlag,
-    v402GhAccountPin,
-    v402DesktopHelpers,
-    v409CodexProfileFiles,
-    v409IntegrationIdPin,
-    v409StaticKeyScope,
-    v409IdentityCache,
-    v409LaunchersBlock,
-    v409ProfileVerbTree,
+test("dueMigrations hoists every layout step ahead of every other step, whatever its version; each half stays version-ascending", () => {
+  // A layout step relocates the stores the others read, so a later release's layout step runs
+  // before an earlier release's plain step.
+  const layout = (version: SemverString): Migration => ({ ...mig(version), layout: true });
+  const registry = [mig("1.0.0"), layout("2.0.0"), mig("1.5.0"), layout("1.2.0")];
+  expect(dueMigrations("0.0.1", "9.0.0", registry).map((m) => m.version)).toEqual([
+    "1.2.0",
+    "2.0.0",
+    "1.0.0",
+    "1.5.0",
   ]);
-  // A 4.0.0 install gets every wiring rewrite on its way to the next release.
+});
+
+test("the registry holds every step a migration file exports, once each, under the file's version; a 4.0.0 install gets the four wiring rewrites", async () => {
+  // A step exported but never registered passes its own tests and never runs; only the registry
+  // would know. The expectation is derived from the files, so nothing here copies the list.
+  const dir = new URL("../src/migrations/", import.meta.url);
+  const isStep = (value: unknown): value is Migration =>
+    typeof value === "object" && value !== null && "version" in value && "run" in value;
+  const exported: Migration[] = [];
+  for (const file of readdirSync(dir).filter((f) => /^\d+\.\d+\.\d+\.ts$/.test(f))) {
+    const mod = await import(new URL(file, dir).href) as Record<string, unknown>;
+    for (const step of Object.values(mod).filter(isStep)) {
+      expect({ file, version: step.version }).toEqual({ file, version: file.slice(0, -3) });
+      exported.push(step);
+    }
+  }
+  const due = dueMigrations("0.0.1", "999.0.0");
+  expect(exported.filter((m) => !due.includes(m)).map((m) => m.description)).toEqual([]);
+  expect(due.filter((m) => !exported.includes(m)).map((m) => m.description)).toEqual([]);
+  expect(due).toHaveLength(exported.length);
   expect(dueMigrations("4.0.0", "4.0.1")).toEqual([
     v400ShellFence,
     v400CodexWiring,
@@ -1627,8 +1616,12 @@ test(
       const row = (name: string) => entry.managedMcpServers.find((r) => r.name === name);
       expect(row("copilot-env")?.args).toContain("sync-2");
       expect(row("other-tool")).toEqual({ name: "other-tool", args: ["--profile", "list"] });
-      // The re-render stored the pair it probed for.
-      expect(typeof profiles.work?.integrationIdentity).toBe("string");
+      // The re-render stored the pair it probed for: the stub accepts the first candidate, the
+      // codex identity (read back as a null id), on the generic host.
+      expect(new CopilotEnvState().readProfileDirectPair(WORK)).toEqual({
+        integrationId: null,
+        host: DEFAULT_COPILOT_API_BASE,
+      });
 
       expect(new CopilotEnvState().profileNames()).toEqual([SYNC2, WORK]);
       const list = runCli(["profile"], {

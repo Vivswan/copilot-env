@@ -58,7 +58,7 @@ import {
   writeRollout,
   writeTranscript,
 } from "./helpers/session_fixtures.ts";
-import { expect, tempDir, test, TZ_PINNABLE } from "./helpers/testing.ts";
+import { expect, tempDir, test } from "./helpers/testing.ts";
 import { indexDbFile, storedIndexPaths } from "./helpers/usage_index.ts";
 
 function usage(partial: Partial<ModelUsage>): ModelUsage {
@@ -378,66 +378,48 @@ test("daysCutoffMs: a calendar window starts at the local midnight N-1 days back
   expect(localDayKey(daysCutoffMs({ kind: "calendar", days: 1 }, now))).toBe(localDayKey(now));
 });
 
-// Pinned to America/New_York (2026: springs forward Mar 8, falls back Nov 1), so the
-// 23- and 25-hour days are known instants. Save/restore by explicit zone name, never
-// delete (TZ assignments are ignored after a delete; see test/time.test.ts). Deno honours
-// the TZ env var on unix only, so the case is skipped where the zone cannot be pinned.
-test.skipIf(!TZ_PINNABLE)(
-  "daysCutoffMs: a calendar window's midnight is a real local midnight across DST, month, and year rollovers",
-  () => {
-    const savedTz = process.env.TZ ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
-    try {
-      process.env.TZ = "America/New_York";
-      const cal = (days: number, nowIso: string): string =>
-        new Date(daysCutoffMs({ kind: "calendar", days }, Date.parse(nowIso))).toISOString();
-      // Spring forward: Mar 8 is 23 hours long. Today's midnight is EST (05:00Z); the
-      // day after starts in EDT (04:00Z), 23h later, not 24.
-      expect(cal(1, "2026-03-08T17:00:00Z")).toBe("2026-03-08T05:00:00.000Z");
-      expect(cal(2, "2026-03-09T17:00:00Z")).toBe("2026-03-08T05:00:00.000Z");
-      expect(cal(1, "2026-03-09T17:00:00Z")).toBe("2026-03-09T04:00:00.000Z");
-      // Fall back: Nov 1 is 25 hours long. Late on Nov 1 (23:30 EST = 04:30Z Nov 2),
-      // "today" still starts at Nov 1's EDT midnight (04:00Z), 24.5h earlier.
-      expect(cal(1, "2026-11-02T04:30:00Z")).toBe("2026-11-01T04:00:00.000Z");
-      expect(cal(2, "2026-11-02T17:00:00Z")).toBe("2026-11-01T04:00:00.000Z");
-      // Month rollover: 23:00 EDT on Jun 30 is already Jul 1 in UTC; the window is local.
-      expect(cal(1, "2026-07-01T03:00:00Z")).toBe("2026-06-30T04:00:00.000Z");
-      expect(cal(2, "2026-07-01T03:00:00Z")).toBe("2026-06-29T04:00:00.000Z");
-      // Year rollover: 23:30 EST on Dec 31 2025 (04:30Z Jan 1 2026).
-      expect(cal(1, "2026-01-01T04:30:00Z")).toBe("2025-12-31T05:00:00.000Z");
-      expect(cal(3, "2026-01-01T04:30:00Z")).toBe("2025-12-29T05:00:00.000Z");
-    } finally {
-      process.env.TZ = savedTz;
-    }
-  },
-);
+// America/New_York in 2026 springs forward Mar 8 and falls back Nov 1, so the 23- and 25-hour
+// days are known instants in the NAMED zone, whatever zone the runner sits in.
+test("daysCutoffMs: a calendar window's midnight is a real local midnight across DST, month, and year rollovers", () => {
+  const cal = (days: number, nowIso: string): string =>
+    new Date(daysCutoffMs({ kind: "calendar", days }, Date.parse(nowIso), "America/New_York"))
+      .toISOString();
+  // Spring forward: Mar 8 is 23 hours long. Today's midnight is EST (05:00Z); the
+  // day after starts in EDT (04:00Z), 23h later, not 24.
+  expect(cal(1, "2026-03-08T17:00:00Z")).toBe("2026-03-08T05:00:00.000Z");
+  expect(cal(2, "2026-03-09T17:00:00Z")).toBe("2026-03-08T05:00:00.000Z");
+  expect(cal(1, "2026-03-09T17:00:00Z")).toBe("2026-03-09T04:00:00.000Z");
+  // Fall back: Nov 1 is 25 hours long. Late on Nov 1 (23:30 EST = 04:30Z Nov 2),
+  // "today" still starts at Nov 1's EDT midnight (04:00Z), 24.5h earlier.
+  expect(cal(1, "2026-11-02T04:30:00Z")).toBe("2026-11-01T04:00:00.000Z");
+  expect(cal(2, "2026-11-02T17:00:00Z")).toBe("2026-11-01T04:00:00.000Z");
+  // Month rollover: 23:00 EDT on Jun 30 is already Jul 1 in UTC; the window is local.
+  expect(cal(1, "2026-07-01T03:00:00Z")).toBe("2026-06-30T04:00:00.000Z");
+  expect(cal(2, "2026-07-01T03:00:00Z")).toBe("2026-06-29T04:00:00.000Z");
+  // Year rollover: 23:30 EST on Dec 31 2025 (04:30Z Jan 1 2026).
+  expect(cal(1, "2026-01-01T04:30:00Z")).toBe("2025-12-31T05:00:00.000Z");
+  expect(cal(3, "2026-01-01T04:30:00Z")).toBe("2025-12-29T05:00:00.000Z");
+});
 
 // The month is GitHub's own period (agent credits reports the same one): it starts at 00:00 UTC
 // on the 1st in every zone, where a calendar day starts at the LOCAL midnight.
-test.skipIf(!TZ_PINNABLE)(
-  "the month window starts at 00:00 UTC on the 1st, not at the local midnight a calendar day uses",
-  () => {
-    const savedTz = process.env.TZ ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
-    try {
-      // UTC+14: local Sep 1 begins at Aug 31 10:00Z, fourteen hours before GitHub's month.
-      process.env.TZ = "Pacific/Kiritimati";
-      const now = Date.parse("2026-09-01T02:00:00Z");
-      const monthStart = daysCutoffMs({ kind: "month" }, now);
-      const todayStart = daysCutoffMs({ kind: "calendar", days: 1 }, now);
-      expect(new Date(monthStart).toISOString()).toBe("2026-09-01T00:00:00.000Z");
-      expect(new Date(todayStart).toISOString()).toBe("2026-08-31T10:00:00.000Z");
-      // A request late on Aug 31 UTC is inside "today" locally and outside the month GitHub bills.
-      const lateAugust = Date.parse("2026-08-31T23:30:00Z");
-      expect(lateAugust >= todayStart).toBe(true);
-      expect(lateAugust >= monthStart).toBe(false);
-    } finally {
-      process.env.TZ = savedTz;
-    }
-    expect(parseWindowFlags(undefined, true)).toEqual({ kind: "month" });
-    expect(parseWindowFlags("7", false)).toEqual({ kind: "calendar", days: 7 });
-    expect(() => parseWindowFlags("7", true)).toThrow("--month and --days");
-    expect(describeDaysWindow({ kind: "month" })).toBe("this month (UTC)");
-  },
-);
+test("the month window starts at 00:00 UTC on the 1st, not at the local midnight a calendar day uses", () => {
+  // UTC+14: local Sep 1 begins at Aug 31 10:00Z, fourteen hours before GitHub's month.
+  const zone = "Pacific/Kiritimati";
+  const now = Date.parse("2026-09-01T02:00:00Z");
+  const monthStart = daysCutoffMs({ kind: "month" }, now, zone);
+  const todayStart = daysCutoffMs({ kind: "calendar", days: 1 }, now, zone);
+  expect(new Date(monthStart).toISOString()).toBe("2026-09-01T00:00:00.000Z");
+  expect(new Date(todayStart).toISOString()).toBe("2026-08-31T10:00:00.000Z");
+  // A request late on Aug 31 UTC is inside "today" locally and outside the month GitHub bills.
+  const lateAugust = Date.parse("2026-08-31T23:30:00Z");
+  expect(lateAugust >= todayStart).toBe(true);
+  expect(lateAugust >= monthStart).toBe(false);
+  expect(parseWindowFlags(undefined, true)).toEqual({ kind: "month" });
+  expect(parseWindowFlags("7", false)).toEqual({ kind: "calendar", days: 7 });
+  expect(() => parseWindowFlags("7", true)).toThrow("--month and --days");
+  expect(describeDaysWindow({ kind: "month" })).toBe("this month (UTC)");
+});
 
 test("describeDaysWindow phrases each window kind for the report header", () => {
   expect(describeDaysWindow(undefined)).toBe("all time");

@@ -49,11 +49,16 @@ export function parseWindowFlags(days: string | undefined, month: boolean): Days
 }
 
 /** A calendar window starts at a real local midnight, so its first day is never partial; the month
- *  starts at 00:00 UTC on the 1st, where GitHub's meter starts it. */
-export function daysCutoffMs(window: DaysWindow, nowMs: number = Date.now()): number {
+ *  starts at 00:00 UTC on the 1st, where GitHub's meter starts it. `timeZone` is the zone the
+ *  per-day split uses (the process zone when absent), so the cutoff never falls mid-bucket. */
+export function daysCutoffMs(
+  window: DaysWindow,
+  nowMs: number = Date.now(),
+  timeZone?: string,
+): number {
   switch (window.kind) {
     case "calendar":
-      return startOfLocalDay(nowMs, window.days - 1);
+      return startOfLocalDay(nowMs, window.days - 1, timeZone);
     case "exact":
       return nowMs - window.days * MILLISECONDS_PER_DAY;
     case "month": {

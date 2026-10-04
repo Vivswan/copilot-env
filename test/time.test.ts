@@ -1,4 +1,4 @@
-import { dayKeyIn, formatDuration, localDayKey } from "../src/utils/time.ts";
+import { dayKeyIn, formatDuration, localDayKey, startOfLocalDay } from "../src/utils/time.ts";
 import { expect, test, TZ_PINNABLE } from "./helpers/testing.ts";
 test("formatDuration renders compact durations and omits zero components", () => {
   expect(formatDuration(0)).toBe("0s");
@@ -26,9 +26,9 @@ test("localDayKey slices the calendar day in the zone it is NAMED, on every plat
 });
 
 test("the named-zone path agrees with the default path for the system's own zone", () => {
-  // localDayKey has two halves, Date's accessors for the default zone and an Intl formatter
-  // for a named one. If they could disagree, the named-zone assertions above would pin
-  // something the production default never does.
+  // localDayKey and startOfLocalDay each have two halves, Date's accessors for the default zone
+  // and an Intl formatter for a named one. If they could disagree, the named-zone assertions
+  // above and in test/cost.test.ts would pin something the production default never does.
   const systemZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   for (
     const iso of [
@@ -41,7 +41,23 @@ test("the named-zone path agrees with the default path for the system's own zone
   ) {
     const ms = Date.parse(iso);
     expect(localDayKey(ms, systemZone)).toBe(localDayKey(ms));
+    for (const daysBack of [0, 1, 6]) {
+      expect(startOfLocalDay(ms, daysBack, systemZone)).toBe(startOfLocalDay(ms, daysBack));
+    }
   }
+});
+
+test("startOfLocalDay in a NAMED zone starts the day at its first instant when the DST change falls on midnight itself", () => {
+  const startIso = (nowIso: string, daysBack: number, zone: string): string =>
+    new Date(startOfLocalDay(Date.parse(nowIso), daysBack, zone)).toISOString();
+  // Havana falls back at 01:00 -> 00:00 on 2026-11-01, so midnight happens twice; the first one
+  // (CDT, 04:00Z) opens the day, not the second (CST, 05:00Z).
+  expect(startIso("2026-11-01T05:30:00Z", 0, "America/Havana")).toBe("2026-11-01T04:00:00.000Z");
+  // Sao Paulo sprang forward at 00:00 -> 01:00 on 2018-11-04, so midnight never happened; the day
+  // opens at 01:00 BRST (03:00Z), not an hour before on the previous local day.
+  expect(startIso("2019-02-18T12:00:00Z", 106, "America/Sao_Paulo")).toBe(
+    "2018-11-04T03:00:00.000Z",
+  );
 });
 
 test("dayKeyIn rejects an unknown zone up front, before any row is bucketed", () => {
@@ -58,7 +74,7 @@ test("dayKeyIn rejects an unknown zone up front, before any row is bucketed", ()
 test.skipIf(!TZ_PINNABLE)(
   "the DEFAULT zone honors the process TZ (the reason the day math is JS, not SQLite)",
   () => {
-    // One of the two tests needing a process-level TZ (test/helpers/testing.ts names both).
+    // The one test needing a process-level TZ (test/helpers/testing.ts guards it alone).
     // SQLite's `localtime` caches its libc zone at first use, so a TZ change mid-process would
     // not reach it; JavaScript's does.
     //   restore by zone name     -> honored

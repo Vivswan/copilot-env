@@ -232,13 +232,7 @@ export function outcomeOf<T>(fn: () => T): Outcome<T> {
   }
 }
 
-/**
- * Deno honors a runtime `process.env.TZ` on unix only; on Windows the zone comes from the OS.
- * Two tests need this, and they are the only reason the flag survives:
- *   test/time.test.ts, "the DEFAULT zone honors the process TZ"  -> the property that justifies
- *                                                                  deriving the day key in JS
- *   test/cost.test.ts, the calendar `--days` cutoff               -> startOfLocalDay is system-zone
- *                                                                  only by design
- * Day SLICING is not gated: `localDayKey(ms, timeZone)` takes an explicit IANA zone.
- */
+/** Deno honors a runtime `process.env.TZ` on unix only; on Windows the zone comes from the OS.
+ *  Guards one test, test/time.test.ts's "the DEFAULT zone honors the process TZ"; every other day
+ *  computation names its IANA zone instead. */
 export const TZ_PINNABLE = Deno.build.os !== "windows";

@@ -1,10 +1,21 @@
-# Repo-owned. The ONE install of the agent CLIs that CI runs tests against: the matrix test job
-# (checks.yml) and the fleet nightly (nightly.yml) both call this action, so the
-# two can never install differently. Latest releases on purpose: the tests that need these
-# binaries exist to catch a CLI release changing the output shape our probe parses.
+# Repo-owned.
 
 name: Install agent CLIs
-description: Installs the current Claude Code and Codex CLI releases with npm and prints their versions.
+description: |
+  Installs the current Claude Code and Codex CLI releases with npm and proves each one runs.
+
+  Unpinned on purpose. The tests that need these binaries exist to catch a CLI release changing the output shape our Direct probe and health checks parse, so the latest release is the one under test.
+
+  The one install every real-CLI job runs, so no two jobs can install differently:
+    - checks.yml `check`, the matrix test job (COPILOT_ENV_LIVE_CLIS)
+    - checks.yml `session-log-drift` (COPILOT_ENV_LIVE_CORPUS)
+    - nightly.yml `checks` (COPILOT_ENV_LIVE_CLIS)
+
+  Each CLI is installed globally and then run with `--version`. One that does not run is uninstalled and installed once more. A second failure fails the step with the npm output attached.
+
+  On success the log carries one `claude: <version>` line and one `codex: <version>` line.
+
+  The caller owes bash, node, and npm on PATH, with npm's global bin directory on it too (the hosted runners ship all of these), and network to the npm registry. No inputs, no outputs, no permissions, no secrets.
 
 runs:
   using: composite

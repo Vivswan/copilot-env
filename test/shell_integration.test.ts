@@ -482,13 +482,15 @@ test.skipIf(process.platform !== "win32")(
 );
 
 // The rc files locate `bin/agent` from their own path, so each copy is staged in a scratch
-// `shell/` beside a fake agent. The fake answers `profile env` with one directive of each shape
-// the env command emits (a set, an unset, a function): the set counts the evals (each raises
-// COPILOT_FAKE_REFRESHES, which the next call inherits) and records the argv. One stderr line per
-// call shows which call was silenced.
+// `shell/` beside a fake agent. The failing mode's 99 is a count no run of evals reaches, so an
+// eval of a failed refresh's output is unmistakable.
 const FAKE_AGENT_SH = `#!/bin/sh
 echo "fake agent stderr: $*" >&2
 if [ "$1" = profile ] && [ "$2" = env ]; then
+  if [ -n "\${COPILOT_FAKE_REFRESH_FAILS:-}" ]; then
+    echo "export COPILOT_FAKE_REFRESHES=99"
+    exit 7
+  fi
   echo "export COPILOT_FAKE_REFRESHES=$((\${COPILOT_FAKE_REFRESHES:-0} + 1))"
   echo "export COPILOT_FAKE_ARGS='$*'"
   echo "unset COPILOT_FAKE_STALE"
@@ -499,6 +501,10 @@ fi
 `;
 const FAKE_AGENT_PS1 = `[Console]::Error.WriteLine("fake agent stderr: $($args -join ' ')")
 if ($args.Count -ge 2 -and $args[0] -eq 'profile' -and $args[1] -eq 'env') {
+  if ($env:COPILOT_FAKE_REFRESH_FAILS) {
+    "\`$env:COPILOT_FAKE_REFRESHES = '99'"
+    exit 7
+  }
   "\`$env:COPILOT_FAKE_REFRESHES = '$([int]$env:COPILOT_FAKE_REFRESHES + 1)'"
   "\`$env:COPILOT_FAKE_ARGS = '$($args -join ' ')'"
   "Remove-Item -LiteralPath Env:COPILOT_FAKE_STALE -ErrorAction SilentlyContinue"
@@ -508,7 +514,6 @@ if ($args.Count -ge 2 -and $args[0] -eq 'profile' -and $args[1] -eq 'env') {
 }
 `;
 
-/** A scratch agents dir holding a copy of the shipped `shell/<rc>` and a fake `bin/<agent>`. */
 function stageRc(rc: string, agent: string, fake: string): { root: string; rc: string } {
   const root = tempDir("copilot-rc-eval-");
   mkdirSync(join(root, "shell"));
@@ -520,7 +525,7 @@ function stageRc(rc: string, agent: string, fake: string): { root: string; rc: s
 }
 
 skipWin(
-  "agents.bashrc evals `agent profile env` silently at source time and audibly after every `agent` call",
+  "agents.bashrc evals `agent profile env` silently at source time and audibly after every `agent` call, and evals nothing from a refresh that failed",
   () => {
     const staged = stageRc("agents.bashrc", "agent", FAKE_AGENT_SH);
     const proc = runSync("bash", [
@@ -531,6 +536,9 @@ skipWin(
         "fake_launcher",
         "agent hello",
         'echo "after agent: $COPILOT_FAKE_REFRESHES"',
+        "export COPILOT_FAKE_REFRESH_FAILS=1",
+        "agent again",
+        'echo "after failed refresh: $COPILOT_FAKE_REFRESHES"',
       ].join("\n"),
       "bash",
       staged.rc,
@@ -538,20 +546,22 @@ skipWin(
     expect({ exitCode: proc.exitCode, stdout: proc.stdout, stderr: proc.stderr }).toEqual({
       exitCode: 0,
       stdout: "after source: 1 profile env stale=unset\nfake launcher ran\n" +
-        "fake agent stdout: hello\nafter agent: 2\n",
-      stderr: "fake agent stderr: hello\nfake agent stderr: profile env\n",
+        "fake agent stdout: hello\nafter agent: 2\n" +
+        "fake agent stdout: again\nafter failed refresh: 2\n",
+      stderr: "fake agent stderr: hello\nfake agent stderr: profile env\n" +
+        "fake agent stderr: again\nfake agent stderr: profile env\n",
     });
   },
 );
 
 // Off Windows the rc's `powershell` resolves to a shim that runs pwsh, so the twin is exercised
-// wherever pwsh is on PATH; a machine without it skips the case rather than reading the text.
+// wherever pwsh is on PATH.
 const pwshOnPath = (process.env.PATH ?? "").split(delimiter).some((dir) =>
   dir !== "" && existsSync(join(dir, process.platform === "win32" ? "pwsh.exe" : "pwsh"))
 );
 
 test.skipIf(!pwshOnPath)(
-  "agents.ps1 evals every `agent profile env` line, -Quiet at dot-source time and audibly after every `agent` call",
+  "agents.ps1 evals every `agent profile env` line, -Quiet at dot-source time and audibly after every `agent` call, and evals nothing from a refresh that failed",
   () => {
     const staged = stageRc("agents.ps1", "agent.ps1", FAKE_AGENT_PS1);
     const driver = join(staged.root, "driver.ps1");
@@ -563,6 +573,9 @@ test.skipIf(!pwshOnPath)(
         "fake_launcher",
         "agent hello",
         '"after agent: $env:COPILOT_FAKE_REFRESHES"',
+        "$env:COPILOT_FAKE_REFRESH_FAILS = '1'",
+        "agent again",
+        '"after failed refresh: $env:COPILOT_FAKE_REFRESHES"',
       ].join("\n"),
     );
     let path = process.env.PATH ?? "";
@@ -580,8 +593,10 @@ test.skipIf(!pwshOnPath)(
     expect({ exitCode: proc.exitCode, stdout: lf(proc.stdout), stderr: lf(proc.stderr) }).toEqual({
       exitCode: 0,
       stdout: "after source: 1 profile env --format powershell stale=[]\nfake launcher ran\n" +
-        "fake agent stdout: hello\nafter agent: 2\n",
-      stderr: "fake agent stderr: hello\nfake agent stderr: profile env --format powershell\n",
+        "fake agent stdout: hello\nafter agent: 2\n" +
+        "fake agent stdout: again\nafter failed refresh: 2\n",
+      stderr: "fake agent stderr: hello\nfake agent stderr: profile env --format powershell\n" +
+        "fake agent stderr: again\nfake agent stderr: profile env --format powershell\n",
     });
   },
 );

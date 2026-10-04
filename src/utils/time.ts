@@ -80,8 +80,7 @@ export function formatDuration(ms: number): string {
   return parts.join("");
 }
 
-/** For the synchronous retry loops (lock acquisition, a refused rename, the Direct probe) that
- *  cannot await. */
+/** For retry loops inside synchronous callers, where an `await` is not available. */
 export function sleepSync(ms: number): void {
   if (ms <= 0) return;
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);

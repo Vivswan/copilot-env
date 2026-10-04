@@ -531,7 +531,7 @@ const onPath = (exe: string): boolean =>
 // zsh, not on the first macOS login shell that sources it.
 for (const shell of ["bash", "zsh"]) {
   test.skipIf(process.platform === "win32" || !onPath(shell))(
-    `agents.bashrc under ${shell} evals \`agent profile env\` silently at source time and audibly after every \`agent\` call, and evals nothing from a refresh that failed`,
+    `agents.bashrc under ${shell} evals \`agent profile env\` silently at source time and audibly after every \`agent\` call, and evals nothing from a failed resolution, whether it failed at source time or on a refresh`,
     () => {
       const staged = stageRc("agents.bashrc", "agent", FAKE_AGENT_SH);
       const proc = runSync(shell, [
@@ -557,6 +557,19 @@ for (const shell of ["bash", "zsh"]) {
         stderr: "fake agent stderr: hello\nfake agent stderr: profile env\n" +
           "fake agent stderr: again\nfake agent stderr: profile env\n",
       });
+      // A fresh shell whose startup resolution fails: the partial output stays unevaluated and
+      // the startup stays silent.
+      const failed = runSync(shell, [
+        "-c",
+        'source "$1"\necho "after failed source: ${COPILOT_FAKE_REFRESHES-unset}"',
+        shell,
+        staged.rc,
+      ], { env: { ...process.env, HOME: home, COPILOT_FAKE_REFRESH_FAILS: "1" } });
+      expect({ exitCode: failed.exitCode, stdout: failed.stdout, stderr: failed.stderr }).toEqual({
+        exitCode: 0,
+        stdout: "after failed source: unset\n",
+        stderr: "",
+      });
     },
   );
 }
@@ -571,7 +584,7 @@ const PS_DRIVERS = [
 
 for (const { driver: ps, onThisHost } of PS_DRIVERS) {
   test.skipIf(!onThisHost)(
-    `agents.ps1 under ${ps} evals every \`agent profile env\` line, -Quiet at dot-source time and audibly after every \`agent\` call, and evals nothing from a refresh that failed`,
+    `agents.ps1 under ${ps} evals every \`agent profile env\` line, -Quiet at dot-source time and audibly after every \`agent\` call, and evals nothing from a failed resolution, whether it failed at dot-source time or on a refresh`,
     () => {
       const staged = stageRc("agents.ps1", "agent.ps1", FAKE_AGENT_PS1);
       const driver = join(staged.root, "driver.ps1");
@@ -610,6 +623,22 @@ for (const { driver: ps, onThisHost } of PS_DRIVERS) {
             "fake agent stderr: again\nfake agent stderr: profile env --format powershell\n",
         },
       );
+      // A fresh session whose startup resolution fails: the partial output stays unevaluated and
+      // the startup stays silent, the bashrc twin's shape.
+      const failedDriver = join(staged.root, "failed.ps1");
+      writeFileSync(
+        failedDriver,
+        '. $args[0]\n"after failed source: [$env:COPILOT_FAKE_REFRESHES]"\n',
+      );
+      const failed = runSync(ps, [
+        "-NoProfile",
+        "-NonInteractive",
+        "-File",
+        failedDriver,
+        staged.rc,
+      ], { env: { ...process.env, HOME: home, PATH: path, COPILOT_FAKE_REFRESH_FAILS: "1" } });
+      expect({ exitCode: failed.exitCode, stdout: lf(failed.stdout), stderr: lf(failed.stderr) })
+        .toEqual({ exitCode: 0, stdout: "after failed source: []\n", stderr: "" });
     },
   );
 }

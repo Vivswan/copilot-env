@@ -26,4 +26,5 @@ function agent {
 
 # stderr is silenced here: bootstrap output on first source would trip Powerlevel10k's
 # instant-prompt guard. A failed resolution surfaces on the next `agent` call instead.
-eval "$("${_COPILOT_AGENTS_DIR}/bin/agent" profile env 2>/dev/null)"
+_env="$("${_COPILOT_AGENTS_DIR}/bin/agent" profile env 2>/dev/null)" && eval "${_env}"
+unset _env

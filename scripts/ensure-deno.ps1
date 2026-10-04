@@ -69,15 +69,17 @@ function Install-Deno {
         $version = ([string](Invoke-RestMethod https://dl.deno.land/release-latest.txt)).Trim()
         $zip = Join-Path $scratch 'deno.zip'
         Invoke-WebRequest "https://dl.deno.land/release/$version/deno-x86_64-pc-windows-msvc.zip" -OutFile $zip -UseBasicParsing
+        & tar.exe xf $zip -C $scratch
+        if ($LASTEXITCODE -ne 0) { throw "could not unpack the deno $version zip into $scratch." }
+        # The unpacked file must itself run before it is published: a botched unpack installs nothing.
+        $unpacked = Join-Path $scratch 'deno.exe'
+        if (-not (Get-CopilotEnvDenoVersion $unpacked)) {
+            throw "the deno install did not produce a runnable $unpacked."
+        }
         New-Item $denoBin -ItemType Directory -Force | Out-Null
-        & tar.exe xf $zip -C $denoBin
-        if ($LASTEXITCODE -ne 0) { throw "could not unpack the deno $version zip into $denoBin." }
+        Move-Item $unpacked $installed -Force
     } finally {
         Remove-Item $scratch -Recurse -Force -ErrorAction SilentlyContinue
-    }
-    # The installed file must itself run: a botched install fails loudly here.
-    if (-not (Get-CopilotEnvDenoVersion $installed)) {
-        throw "the deno install did not produce a runnable $installed."
     }
     [Console]::Error.WriteLine("Deno $version was installed to $installed")
     $env:Path = "$denoBin;$env:Path"

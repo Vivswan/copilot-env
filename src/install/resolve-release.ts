@@ -1,8 +1,6 @@
-// The one source of "which release to install / update to". Discovery reads the GitHub Releases
-// REST API (published, non-prerelease, vX.Y.Z only for floating installs); an explicit tag may
-// resolve a prerelease because the user asked for it by name. Callers: `agent update` and the
-// autoupdate preflight. install.sh / install.ps1 resolve `latest` themselves: they run before
-// anything of ours is on disk.
+// The one source of "which release to install / update to", read from the GitHub Releases REST
+// API. Callers: `agent update` and the autoupdate preflight. install.sh / install.ps1 resolve
+// `latest` themselves: they run before anything of ours is on disk.
 //
 // The lookup is anonymous on purpose: the stored credential exists to reach Copilot, and a token
 // exported in the shell may belong to another account. The anonymous limit (60/hour/IP) covers a
@@ -27,8 +25,7 @@ export interface Release {
   dateSeconds: number;
 }
 
-/** Newest-first; [] on anything unparseable. */
-export function parseReleasesJson(jsonText: string, includePrereleases = false): Release[] {
+export function parseReleasesJson(jsonText: string): Release[] {
   let parsed: unknown;
   try {
     parsed = JSON.parse(jsonText);
@@ -41,7 +38,7 @@ export function parseReleasesJson(jsonText: string, includePrereleases = false):
   for (const item of parsed) {
     if (typeof item !== "object" || item === null) continue;
     const r = item as Record<string, unknown>;
-    if (r.draft === true || (r.prerelease === true && !includePrereleases)) continue;
+    if (r.draft === true || r.prerelease === true) continue;
     if (typeof r.tag_name !== "string" || !/^v\d+\.\d+\.\d+$/.test(r.tag_name)) continue;
     const date = typeof r.published_at === "string" ? r.published_at : r.created_at;
     if (typeof date !== "string") continue;
@@ -66,12 +63,6 @@ export function pickAged(releases: Release[], nowSeconds: number, days: number):
   return oldest;
 }
 
-/** Exact tag release, accepting either vX.Y.Z or X.Y.Z. */
-export function pickTag(releases: Release[], tag: string): Release | null {
-  const normalized = tag.startsWith("v") ? tag : `v${tag}`;
-  return releases.find((r) => r.tag === normalized) ?? null;
-}
-
 // The releases endpoint occasionally 5xx's, rate-limits, or drops the connection; a few
 // backed-off retries turn those into a resolve instead of a spurious "no release found".
 const RETRYABLE_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
@@ -79,8 +70,6 @@ const MAX_FETCH_ATTEMPTS = 4;
 const RETRY_BASE_MS = 400;
 
 export interface ResolveOptions {
-  /** A specific release tag instead of the newest aged one; prereleases become eligible. */
-  exactTag?: string | null;
   fetchImpl?: typeof fetch;
   retryBaseMs?: number;
 }
@@ -115,16 +104,14 @@ export async function resolveTarget(
   cooldownDays: number | null,
   opts: ResolveOptions = {},
 ): Promise<Release | null> {
-  const exactTag = opts.exactTag ?? null;
   const text = await fetchReleasesText(
     RELEASES_API,
     opts.fetchImpl ?? fetch,
     opts.retryBaseMs ?? RETRY_BASE_MS,
   );
   if (text === null) return null; // offline / API errored after retries
-  const releases = parseReleasesJson(text, exactTag !== null);
+  const releases = parseReleasesJson(text);
   if (releases.length === 0) return null;
-  if (exactTag !== null) return pickTag(releases, exactTag);
   // No cooldown: the newest (the first after sorting).
   return cooldownDays === null
     ? releases[0] ?? null

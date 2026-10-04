@@ -7,7 +7,7 @@ Everything between the BEGIN and END markers is managed by the platform and repl
 
 ## Project
 
-copilot-env: Local copilot-api proxy lifecycle + config helper (TypeScript).
+copilot-env: Points the Codex and Claude CLIs at GitHub Copilot: a managed copilot-api proxy, or Copilot Direct.
 
 ## Conventions
 

@@ -186,26 +186,24 @@ test("verbatimCliSpawn on POSIX resolves the command and never adds a shell", ()
 
 test("commandLookFromSpawn: only a completed probe yields a proven verdict", () => {
   const resolved = () => "/bin/gh";
-  expect(commandLookFromSpawn({ status: 0 }, resolved)).toEqual({ path: "/bin/gh" });
-  expect(commandLookFromSpawn({ status: 1 }, resolved)).toEqual({ path: null });
-  // A probe that never completed is the marked failed look, never a proven absence (the runCaptured mark contract).
+  expect(commandLookFromSpawn({ status: 0 }, resolved)).toEqual({ kind: "found", path: "/bin/gh" });
+  expect(commandLookFromSpawn({ status: 1 }, resolved)).toEqual({ kind: "absent" });
+  // A completed probe that resolved no path is a proven absence too.
+  expect(commandLookFromSpawn({ status: 0 }, () => null)).toEqual({ kind: "absent" });
+  // A probe that never completed is the failed look, never a proven absence (the runCaptured mark contract).
   expect(commandLookFromSpawn({ status: null, error: new Error("ENOENT") }, resolved)).toEqual({
-    path: null,
-    launchFailed: true,
+    kind: "unproven",
   });
-  expect(commandLookFromSpawn({ status: null }, resolved)).toEqual({
-    path: null,
-    launchFailed: true,
-  });
+  expect(commandLookFromSpawn({ status: null }, resolved)).toEqual({ kind: "unproven" });
 });
 
-// The real lookup argv against the real probe shell: a completed look is unmarked either way.
-test("findCommand: a real found command and a real proven absence, both unmarked", () => {
+// The real lookup argv against the real probe shell: a completed look is proven either way.
+test("findCommand: a real found command and a real proven absence, both proven", () => {
   // The probe shell itself is always findable where the probe can run at all.
   const found = findCommand(process.platform === "win32" ? "powershell" : "sh");
-  expect(found.path).toBeTruthy();
-  expect(found.launchFailed).toBeUndefined();
-  expect(findCommand("copilot-env-no-such-command-xyz")).toEqual({ path: null });
+  expect(found).toMatchObject({ kind: "found" });
+  expect(found.kind === "found" && found.path).toBeTruthy();
+  expect(findCommand("copilot-env-no-such-command-xyz")).toEqual({ kind: "absent" });
 });
 
 test("runCaptured: the launch-failure mark rides ONLY the synthesized exit", async () => {

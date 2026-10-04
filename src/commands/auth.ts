@@ -486,18 +486,20 @@ function settleGhCliAccount(
 ): GhCliSlot {
   if (account.kind === "auto") {
     const gh = look(null);
-    if (gh.token === null) throw ghCliMiss(gh, null);
+    if (gh.kind !== "found") throw ghCliMiss(gh, null);
     return { ghUser: null, activeLogin: account.activeLogin };
   }
   const pinned = look(account.login);
-  if (pinned.token !== null) return { ghUser: account.login, activeLogin: null };
+  if (pinned.kind === "found") return { ghUser: account.login, activeLogin: null };
   // A pin the user chose, or a look gh never answered: the miss is final.
-  if (account.kind === "pinned" || pinned.unproven) throw ghCliMiss(pinned, account.login);
+  if (account.kind === "pinned" || pinned.kind === "unproven") {
+    throw ghCliMiss(pinned, account.login);
+  }
   const plain = look(null);
-  if (plain.unproven) throw ghCliMiss(plain, null);
-  if (plain.token === null) throw ghCliMiss(pinned, account.login);
+  if (plain.kind === "unproven") throw ghCliMiss(plain, null);
+  if (plain.kind === "absent") throw ghCliMiss(pinned, account.login);
   logger.info(
-    `gh cannot serve account ${account.login} by name (${pinned.detail ?? "no token"}), so the ` +
+    `gh cannot serve account ${account.login} by name (${pinned.detail}), so the ` +
       "credential follows gh's active account (auto) - the same account while it is the only " +
       `login. To pin it, run \`gh auth login\` for ${account.login} on gh 2.40 or newer (the login ` +
       "rewrites hosts.yml into the layout `--user` reads), then re-run `agent auth --provider gh-cli`.",
@@ -505,15 +507,14 @@ function settleGhCliAccount(
   return { ghUser: null, activeLogin: account.login };
 }
 
-function ghCliMiss(gh: GhTokenLook, ghUser: string | null): Error {
-  const detail = gh.detail ?? "`gh auth token` gave no token";
-  if (gh.unproven) {
-    return new Error(`could not check gh authentication (${detail}) - retry \`agent auth\``);
+function ghCliMiss(gh: Exclude<GhTokenLook, { kind: "found" }>, ghUser: string | null): Error {
+  if (gh.kind === "unproven") {
+    return new Error(`could not check gh authentication (${gh.detail}) - retry \`agent auth\``);
   }
   return new Error(
     ghUser === null
-      ? `gh is not authenticated (${detail}) - run \`gh auth login\`, then retry \`agent auth\``
-      : `gh cannot serve account '${ghUser}' by name (${detail}) - run \`gh auth login\` for ` +
+      ? `gh is not authenticated (${gh.detail}) - run \`gh auth login\`, then retry \`agent auth\``
+      : `gh cannot serve account '${ghUser}' by name (${gh.detail}) - run \`gh auth login\` for ` +
         "that account (a logged-out login and a hosts.yml written before gh 2.40 both need it), " +
         "pass --gh-user <login> for another, or drop --gh-user and let " +
         "`agent auth --provider gh-cli` settle the account (auto included)",

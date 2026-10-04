@@ -2,6 +2,7 @@
 // so the agent config writers, health, and the daemon never import the `commands/` layer; the
 // interactive surface (provider prompt, device flow, `runAuth`) is src/commands/auth.ts on top.
 import { spawn, spawnSync } from "node:child_process";
+import { assertNever } from "../utils/assert.ts";
 import { findCommand } from "../utils/command.ts";
 import {
   type AuthProvider,
@@ -29,17 +30,14 @@ interface CredentialStatus {
   resolves: boolean;
 }
 
-/** `unproven` means the look never RAN to completion (the gh probe or the spawn errored or was killed),
- *  so a consumer must say "could not check", never "gh is not authenticated". An unmarked null is
- *  proven: gh is absent, or it RAN and produced no token. */
-export interface GhTokenLook {
-  token: string | null;
-  unproven?: true;
-  /** Why there is no token: what the spawn or the `gh` probe reported (null token only). */
-  detail?: string;
-  /** The gh call that produced the token (token only), as a report names it. */
-  command?: string;
-}
+/** `unproven` means the look never RAN to completion (the gh probe or the spawn errored or was
+ *  killed), so a consumer must say "could not check", never "gh is not authenticated". `absent` is
+ *  proven: gh is missing, or it RAN and produced no token. Each miss carries what the spawn or the
+ *  `gh` probe reported, and a found token names the gh call that served it, as a report names it. */
+export type GhTokenLook =
+  | { kind: "found"; token: string; command: string }
+  | { kind: "absent"; detail: string }
+  | { kind: "unproven"; detail: string };
 
 function firstStderrLine(stderr: string | null | undefined): string {
   return (stderr ?? "").trim().split(/\r?\n/)[0]?.trim() ?? "";
@@ -59,15 +57,17 @@ export function ghTokenLookFromSpawn(
   const verdict = ghAuthVerdict(result);
   if (verdict === "unproven") {
     const cause = result.error instanceof Error ? result.error.message : "the spawn was killed";
-    return { token: null, unproven: true, detail: `\`${command}\` did not complete (${cause})` };
+    return { kind: "unproven", detail: `\`${command}\` did not complete (${cause})` };
   }
   const stderr = firstStderrLine(result.stderr);
   const said = stderr ? `: ${stderr}` : "";
-  if (!verdict) return { token: null, detail: `\`${command}\` exited ${result.status}${said}` };
+  if (!verdict) {
+    return { kind: "absent", detail: `\`${command}\` exited ${result.status}${said}` };
+  }
   const token = (result.stdout ?? "").trim();
   return token
-    ? { token, command }
-    : { token: null, detail: `\`${command}\` printed no token${said}` };
+    ? { kind: "found", token, command }
+    : { kind: "absent", detail: `\`${command}\` printed no token${said}` };
 }
 
 function runGhSpec(s: GhSpawnSpec): GhSpawnResult {
@@ -165,12 +165,16 @@ export async function ghAuthTokenLookAsync(
 /** `ghUser` pins the call to that gh account; null follows gh's active account. */
 export function ghAuthTokenLook(ghUser: string | null = null): GhTokenLook {
   const gh = findCommand("gh");
-  if (gh.path === null) {
-    return gh.launchFailed
-      ? { token: null, unproven: true, detail: "looking for `gh` on PATH failed" }
-      : { token: null, detail: "`gh` is not on this process's PATH" };
+  switch (gh.kind) {
+    case "found":
+      return ghAuthTokenLookVia(ghUser, gh.path);
+    case "unproven":
+      return { kind: "unproven", detail: "looking for `gh` on PATH failed" };
+    case "absent":
+      return { kind: "absent", detail: "`gh` is not on this process's PATH" };
+    default:
+      return assertNever(gh);
   }
-  return ghAuthTokenLookVia(ghUser, gh.path);
 }
 
 /**
@@ -179,7 +183,8 @@ export function ghAuthTokenLook(ghUser: string | null = null): GhTokenLook {
  * renders a gh AUTH verdict goes through ghAuthTokenLook and honors the `unproven` mark.
  */
 export function ghAuthToken(ghUser: string | null = null): string | null {
-  return ghAuthTokenLook(ghUser).token;
+  const look = ghAuthTokenLook(ghUser);
+  return look.kind === "found" ? look.token : null;
 }
 
 /** The account listing: a choice-menu and naming input. chooseGhAccount refuses both marked shapes:
@@ -199,10 +204,16 @@ export function ghAccountsLookFromSpawn(result: GhSpawnResult): GhAccountsLook {
 
 export function ghAccountsLook(): GhAccountsLook {
   const gh = findCommand("gh");
-  if (gh.path === null) {
-    return gh.launchFailed ? { accounts: [], unproven: true } : { accounts: [] };
+  switch (gh.kind) {
+    case "found":
+      return ghAccountsLookFromSpawn(runGhSpec(ghAuthStatusSpawnSpec(gh.path)));
+    case "unproven":
+      return { accounts: [], unproven: true };
+    case "absent":
+      return { accounts: [] };
+    default:
+      return assertNever(gh);
   }
-  return ghAccountsLookFromSpawn(runGhSpec(ghAuthStatusSpawnSpec(gh.path)));
 }
 
 /**
@@ -266,9 +277,9 @@ export class Credential {
       }
       case "gh-cli": {
         const probe = look(credential.ghUser);
-        if (probe.token !== null) return { token: probe.token, reason: null };
+        if (probe.kind === "found") return { token: probe.token, reason: null };
         const who = credential.ghUser === null ? "gh-cli" : `gh-cli as ${credential.ghUser}`;
-        const detail = probe.detail ?? "gh gave no token";
+        const detail = probe.detail;
         const path = detail.includes("PATH")
           ? " (an MCP client or IDE may start this process with a minimal PATH)"
           : "";

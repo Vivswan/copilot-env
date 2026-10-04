@@ -265,8 +265,8 @@ function spawnAgentCli(plan: LaunchPlan): number {
  *  itself is then the honest test; its own spawn error names the real problem. */
 function rejectMissingCli(cli: LaunchAction["kind"]): void {
   const cliLook = findCommand(cli);
-  if (cliLook.path !== null) return;
-  if (cliLook.launchFailed) {
+  if (cliLook.kind === "found") return;
+  if (cliLook.kind === "unproven") {
     printWrappedToStderr(
       `could not check whether '${cli}' is installed (the command probe failed to run); launching anyway`,
     );

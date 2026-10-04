@@ -8,6 +8,7 @@ import { dirname } from "node:path";
 import { jsonOutputReason, PROBE_TIMEOUT_MS, probeOutputLines } from "../agents/live_probe.ts";
 import { resolveClaudeHome } from "../claude/paths.ts";
 import { effectiveCodexHome } from "../codex/host.ts";
+import { assertNever } from "../utils/assert.ts";
 import {
   ghAccountsLookFromSpawn,
   ghAuthTokenLookAsync,
@@ -85,12 +86,16 @@ function directAuthFromLook(
   ghUser: string | null,
 ): CodexDirectAuthFacts {
   const pinned = ghUser === null ? {} : { ghUser };
-  const why = look.detail === undefined ? {} : { ghDetail: look.detail };
-  if (look.unproven) {
-    return { command, authenticated: false, unproven: true, ...pinned, ...why };
+  switch (look.kind) {
+    case "unproven":
+      return { command, authenticated: false, unproven: true, ...pinned, ghDetail: look.detail };
+    case "absent":
+      return { command, authenticated: false, ...pinned, ghDetail: look.detail };
+    case "found":
+      return { command, authenticated: true, ...pinned, ghCommand: look.command };
+    default:
+      return assertNever(look);
   }
-  const served = look.command === undefined ? {} : { ghCommand: look.command };
-  return { command, authenticated: look.token !== null, ...pinned, ...served, ...why };
 }
 
 /** Null when gh is absent, has no account, or the look never completed: naming only, never a
@@ -99,7 +104,7 @@ function directAuthFromLook(
  *  timeout kill reads as unproven, so a truncated list can never name the wrong account. */
 async function ghActiveLoginProbe(): Promise<string | null> {
   const look = findCommand("gh");
-  if (look.path === null) return null;
+  if (look.kind !== "found") return null;
   const listing = ghAccountsLookFromSpawn(await runGhSpecAsync(ghAuthStatusSpawnSpec(look.path)));
   return listing.unproven ? null : activeGhLogin(listing.accounts);
 }
@@ -108,11 +113,11 @@ async function codexDirectAuth(ghUser: string | null): Promise<CodexDirectAuthFa
   // The failure arm is kept: this fact renders auth VERDICTS ("GitHub CLI not found", "not
   // authenticated"), so a look that never ran must arrive marked, not as a proven absence.
   const look = findCommand("gh");
-  if (look.path === null) {
+  if (look.kind !== "found") {
     return {
       command: null,
       authenticated: false,
-      ...(look.launchFailed ? { unproven: true as const } : {}),
+      ...(look.kind === "unproven" ? { unproven: true as const } : {}),
       ...(ghUser === null ? {} : { ghUser }),
     };
   }
@@ -158,9 +163,9 @@ export function runLiveCli(
   // `find` is a test seam; the real look keeps its failure arm (see CommandLook) because the
   // skip renders a "CLI not installed" verdict.
   const look = find(launch.cli);
-  if (look.path === null) {
+  if (look.kind !== "found") {
     return Promise.resolve(
-      look.launchFailed ? { kind: "skipped", lookFailed: true } : { kind: "skipped" },
+      look.kind === "unproven" ? { kind: "skipped", lookFailed: true } : { kind: "skipped" },
     );
   }
   const resolved = look.path;

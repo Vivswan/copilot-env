@@ -9,6 +9,7 @@ import {
   type ProbeOutcome,
   summarizeProbeFailure,
 } from "../src/agents/live_probe.ts";
+import type { CommandLook } from "../src/utils/command.ts";
 import type { DirectSmoke, SmokeModelOutcome } from "../src/copilot_api/endpoint_smoke.ts";
 import { ghAuthVerdict, ghTokenFromEnv } from "../src/copilot_api/gh_cli.ts";
 import { captureAllWrites } from "./helpers/output.ts";
@@ -49,7 +50,7 @@ type RunProbe = (cliPath: string, args: string[], env: Record<string, string>) =
 
 function passingDeps(runProbe: RunProbe) {
   return {
-    findCommand: (c: string) => ({ path: `/bin/${c}` }),
+    findCommand: (c: string): CommandLook => ({ kind: "found", path: `/bin/${c}` }),
     runProbe,
   };
 }
@@ -237,8 +238,7 @@ test("probeDirectWorks: with no CLI to run, the endpoint smoke's verdict decides
       () => {},
       c.smoke === null ? null : fakeSmoke(undefined, c.smoke),
       {
-        findCommand: () =>
-          c.launchFailed ? { path: null, launchFailed: true as const } : { path: null },
+        findCommand: () => (c.launchFailed ? { kind: "unproven" } : { kind: "absent" }),
         runProbe: () => {
           probeCalls++;
           return { ok: true };
@@ -293,7 +293,7 @@ test("probeDirectWorks: Copilot's too-old-CLI reply is no verdict: the probe thr
       Promise.resolve({ ok: false, detail: `POST /v1/messages returned 400 (${tooOld})` }),
   };
   await expect(probeDirectWorks(FAKE_DESCRIPTOR, () => {}, pinging, {
-    findCommand: () => ({ path: null }),
+    findCommand: () => ({ kind: "absent" }),
   })).rejects.toThrow(repair);
 });
 
@@ -462,7 +462,7 @@ test("probeDirectWorks spawns the CLI from inside the throwaway home, never the 
         "Deno.exit(Deno.realPathSync(Deno.cwd()) === Deno.realPathSync(import.meta.dirname) ? 0 : 3);\n",
       ),
     fakeSmoke(),
-    { findCommand: () => ({ path: process.execPath }) },
+    { findCommand: () => ({ kind: "found", path: process.execPath }) },
   );
   expect(ok).toBe(true);
 });
@@ -477,7 +477,7 @@ test.skipIf(process.platform === "win32")(
   async () => {
     let seen: { cliPath: string; path: string[] } | null = null;
     const ok = await probeDirectWorks(FAKE_DESCRIPTOR, () => {}, fakeSmoke(), {
-      findCommand: (c: string) => ({ path: join(".", "tools", c) }),
+      findCommand: (c: string) => ({ kind: "found", path: join(".", "tools", c) }),
       runProbe: (cliPath, _args, env) => {
         seen = { cliPath, path: (env.PATH ?? "").split(delimiter) };
         return { ok: true };
@@ -522,7 +522,7 @@ test("the real probe child never sees a provider variable the parent shell expor
           'Deno.exit(Deno.env.has("ANTHROPIC_BASE_URL") || Deno.env.has("OPENAI_BASE_URL") ? 3 : 0);\n',
         ),
       fakeSmoke(),
-      { findCommand: () => ({ path: process.execPath }) },
+      { findCommand: () => ({ kind: "found", path: process.execPath }) },
     );
     expect(ok).toBe(true);
   } finally {

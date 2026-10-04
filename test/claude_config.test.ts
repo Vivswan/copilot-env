@@ -8,6 +8,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import type { CommandLook } from "../src/utils/command.ts";
 import { directWiring } from "../src/agents/configure.ts";
 import {
   AUTH_TOKEN_ENV,
@@ -453,7 +454,7 @@ test("detectClaudeDirect: the CLI runs the catalog's claude model and its verdic
   };
   let seenArgs: string[] | null = null;
   const ok = {
-    findCommand: (c: string) => ({ path: `/bin/${c}` }),
+    findCommand: (c: string): CommandLook => ({ kind: "found", path: `/bin/${c}` }),
     runProbe: (_cli: string, args: string[]) => {
       seenArgs = args;
       return { ok: true };
@@ -486,7 +487,8 @@ test("detectClaudeDirect: the CLI runs the catalog's claude model and its verdic
   expect(
     await detectClaudeDirect(DIRECT_NONE, null, COMMAND, {
       ...spy,
-      findCommand: (c: string) => ({ path: c === "claude" ? null : `/bin/${c}` }),
+      findCommand: (c: string): CommandLook =>
+        c === "claude" ? { kind: "absent" } : { kind: "found", path: `/bin/${c}` },
     }),
   ).toBe(false);
   expect([probeCalls, urls]).toEqual([0, []]);
@@ -494,7 +496,8 @@ test("detectClaudeDirect: the CLI runs the catalog's claude model and its verdic
   expect(
     await detectClaudeDirect(DIRECT_NONE, "ghu_tok", COMMAND, {
       ...ok,
-      findCommand: (c: string) => ({ path: c === "gh" ? null : `/bin/${c}` }),
+      findCommand: (c: string): CommandLook =>
+        c === "gh" ? { kind: "absent" } : { kind: "found", path: `/bin/${c}` },
     }),
   ).toBe(true);
 });
@@ -519,7 +522,8 @@ test("detectClaudeDirect: with no claude CLI the endpoint smoke judges the crede
     "ghu_tok",
     COMMAND,
     {
-      findCommand: (c: string) => ({ path: c === "claude" ? null : `/bin/${c}` }),
+      findCommand: (c: string): CommandLook =>
+        c === "claude" ? { kind: "absent" } : { kind: "found", path: `/bin/${c}` },
       runProbe: () => ({ ok: false }), // must never run: no CLI was found
       fetchImpl,
     },

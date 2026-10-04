@@ -1,5 +1,6 @@
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import type { CommandLook } from "../src/utils/command.ts";
 import { directHelperCommand } from "../src/claude/config.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
@@ -1217,16 +1218,19 @@ test("shell + launcher wiring: missing warns, present ok", () => {
 });
 
 test("optional CLI + tools: missing warns (not fail), present ok, a FAILED look says could-not-check", () => {
-  expect(checkCli({ command: "claude", name: "Claude", look: { path: "/bin/claude" } }).status)
+  expect(
+    checkCli({ command: "claude", name: "Claude", look: { kind: "found", path: "/bin/claude" } })
+      .status,
+  )
     .toBe("ok");
-  const missing = checkCli({ command: "codex", name: "Codex", look: { path: null } });
+  const missing = checkCli({ command: "codex", name: "Codex", look: { kind: "absent" } });
   expect(missing.status).toBe("warn");
   expect(missing.detail).toBe("not installed (optional)");
   // An unproven look keeps the warn + fix but never claims "not installed".
   const unproven = checkCli({
     command: "codex",
     name: "Codex",
-    look: { path: null, launchFailed: true },
+    look: { kind: "unproven" },
   });
   expect(unproven.status).toBe("warn");
   expect(unproven.detail).toBe("could not check (the command probe failed to run)");
@@ -1234,16 +1238,17 @@ test("optional CLI + tools: missing warns (not fail), present ok, a FAILED look 
   expect(unproven.value).toEqual({ command: "codex", resolved: null, lookFailed: true });
 
   // The tools share the CLI census's look row under their own registered ids.
-  expect(checkLook(meta("setup.tool.node"), { path: "/usr/bin/node" })).toMatchObject({
-    id: "setup.tool.node",
-    label: "node",
-    status: "ok",
-  });
-  expect(checkLook(meta("setup.tool.npm"), { path: null })).toMatchObject({
+  expect(checkLook(meta("setup.tool.node"), { kind: "found", path: "/usr/bin/node" }))
+    .toMatchObject({
+      id: "setup.tool.node",
+      label: "node",
+      status: "ok",
+    });
+  expect(checkLook(meta("setup.tool.npm"), { kind: "absent" })).toMatchObject({
     status: "warn",
     detail: "not installed (optional)",
   });
-  const toolUnproven = checkLook(meta("setup.tool.npm"), { path: null, launchFailed: true });
+  const toolUnproven = checkLook(meta("setup.tool.npm"), { kind: "unproven" });
   expect(toolUnproven.status).toBe("warn");
   expect(toolUnproven.detail).toBe("could not check (the command probe failed to run)");
   expect(toolUnproven.value).toEqual({ resolved: null, lookFailed: true });
@@ -1433,11 +1438,11 @@ test("checkAuth: gh-cli with an UNPROVEN gh probe warns could-not-check, never `
 
 test("runLiveCli: a FAILED CLI look skips MARKED; a proven absence skips unmarked", async () => {
   const launch = codexLiveLaunch("/tmp", null);
-  expect(await runLiveCli(launch, () => ({ path: null, launchFailed: true }))).toEqual({
+  expect(await runLiveCli(launch, () => ({ kind: "unproven" }))).toEqual({
     kind: "skipped",
     lookFailed: true,
   });
-  expect(await runLiveCli(launch, () => ({ path: null }))).toEqual({ kind: "skipped" });
+  expect(await runLiveCli(launch, () => ({ kind: "absent" }))).toEqual({ kind: "skipped" });
 });
 
 // --- setup facts ------------------------------------------------------------
@@ -1453,7 +1458,7 @@ test("the shell census reads each target file for the marker; launchersWired is 
     const missing = join(home, "rc-missing");
     const deps = {
       shellTargets: () => [wired, bare, missing],
-      commandLook: () => ({ path: null }),
+      commandLook: (): CommandLook => ({ kind: "absent" }),
       codexHome: () => join(home, "no-codex"),
       claudeHome: () => join(home, "no-claude"),
     };
@@ -1518,8 +1523,8 @@ test("evaluateAll: each scope yields its own check ids", () => {
       sidecar: DEV_SIDECAR,
     },
     shell: { files: [], integrationWired: true, launchersWired: false },
-    clis: [{ command: "claude", name: "Claude", look: { path: null } }],
-    tools: { node: { path: "/n" }, npm: { path: "/m" } },
+    clis: [{ command: "claude", name: "Claude", look: { kind: "absent" } }],
+    tools: { node: { kind: "found", path: "/n" }, npm: { kind: "found", path: "/m" } },
     codex: CODEX_UNCONFIGURED,
     codexHost: CODEX_HOST_UNSUPPORTED,
     claude: {

@@ -60,8 +60,8 @@ function run(
 
 function warnMissing(command: string, name: string): void {
   const look = findCommand(command);
-  if (look.path !== null) return;
-  if (look.launchFailed) {
+  if (look.kind === "found") return;
+  if (look.kind === "unproven") {
     // A failed look must not hand out "install it yourself" advice: the probe never completed.
     consola.warn(`Could not check for ${name} ('${command}'): the command probe failed to run.`);
     return;
@@ -171,8 +171,8 @@ function installNodeWindows(): void {
 /** `planned`: a dry run, which would install Node.js and npm here and stops at saying so. */
 function ensureNpm(options: CliInstall): "present" | "absent" | "planned" {
   const npmLook = findCommand(NPM_COMMAND);
-  if (npmLook.path !== null) return "present";
-  if (npmLook.launchFailed) {
+  if (npmLook.kind === "found") return "present";
+  if (npmLook.kind === "unproven") {
     // Never install off a failed look: npm may well be there already.
     consola.warn(
       "Could not check for npm (the command probe failed to run); skipping the CLI install.",
@@ -356,14 +356,14 @@ function installCli(
   npmGlobals: Record<string, string | null>,
 ): void {
   const look = findCommand(cli.command);
-  if (look.launchFailed) {
+  if (look.kind === "unproven") {
     // Never install off a failed look: the CLI may well be there already.
     consola.warn(
       `Could not check whether ${cli.name} is installed (the command probe failed to run); skipping its install.`,
     );
     return;
   }
-  if (look.path !== null && !(cli.packageName in npmGlobals)) {
+  if (look.kind === "found" && !(cli.packageName in npmGlobals)) {
     // Only an npm-managed install is ours to move.
     consola.info(`${cli.name} is installed outside npm; leaving it as it is.`);
     return;
@@ -386,7 +386,7 @@ function installCli(
   const plan = planCliVersion(installed ?? null, target);
   switch (plan.action) {
     case "keep":
-      if (look.path === null) {
+      if (look.kind !== "found") {
         consola.warn(
           `${cli.name} ${plan.from} is installed by npm, but '${cli.command}' is not on PATH; leaving it as it is. Open a new shell and rerun 'agent shell --clis'.`,
         );
@@ -410,8 +410,8 @@ function installCli(
   runNpm(["install", "-g", spec]);
   refreshWindowsPath();
   const verify = findCommand(cli.command);
-  if (verify.path === null) {
-    if (verify.launchFailed) {
+  if (verify.kind !== "found") {
+    if (verify.kind === "unproven") {
       // The install itself succeeded; only the verifying look failed.
       consola.warn(
         `Could not verify ${cli.name} after install (the command probe failed to run).`,

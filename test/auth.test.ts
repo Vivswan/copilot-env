@@ -943,63 +943,62 @@ test("auth --get and the proxy-token resolver return the credential without a ca
 test("resolveWithReason: one probe answers with the token or names the provider and gh's detail", () => {
   isolate();
   const credential = new Credential(state());
-  expect(credential.resolveWithReason(() => ({ token: null }))).toEqual({
+  const noGh: GhTokenLook = { kind: "absent", detail: "`gh` is not on this process's PATH" };
+  expect(credential.resolveWithReason(() => noGh)).toEqual({
     token: null,
     reason: "no GitHub credential configured - run `agent auth` to log in",
   });
   credential.record({ kind: "gh-cli", ghUser: "octocat" });
-  expect(credential.resolveWithReason(() => ({ token: "tok" }))).toEqual({
+  expect(
+    credential.resolveWithReason(() => ({ kind: "found", token: "tok", command: "gh auth token" })),
+  ).toEqual({
     token: "tok",
     reason: null,
   });
   // gh-cli recorded but gh missing from this process's PATH (the MCP-server case): the
   // provider is named and nothing sends the user to `agent auth`, which from a shell
   // where gh IS on PATH would say "already authenticated".
-  const missing = credential.resolveWithReason(() => ({
-    token: null,
-    detail: "`gh` is not on this process's PATH",
-  })).reason;
+  const missing = credential.resolveWithReason(() => noGh).reason;
   expect(missing).toContain("provider 'gh-cli as octocat' is selected but no credential resolves");
   expect(missing).toContain("`gh` is not on this process's PATH");
   expect(missing).toContain("minimal PATH");
   expect(missing).not.toContain("agent auth");
   const refused = credential.resolveWithReason(() => ({
-    token: null,
+    kind: "absent",
     detail: "`gh auth token` exited 1: no oauth token",
   })).reason;
   expect(refused).toContain("no oauth token");
   expect(refused).not.toContain("minimal PATH");
   const named = new Credential(state(), parseProfileName("p1"));
-  expect(named.resolveWithReason(() => ({ token: null })).reason).toContain(
+  expect(named.resolveWithReason(() => noGh).reason).toContain(
     "for profile 'p1' - run `agent profile p1 auth` to log in (a named profile never falls back",
   );
 });
 
 test("ghTokenLookFromSpawn: completed exits prove, a dead spawn stays unproven", () => {
   expect(ghTokenLookFromSpawn({ status: 0, stdout: " tok \n" })).toEqual({
+    kind: "found",
     token: "tok",
     command: "gh auth token",
   });
   // gh RAN: proven misses, the detail carrying gh's own first stderr line when there is one.
   expect(ghTokenLookFromSpawn({ status: 0, stdout: "", stderr: "credential unavailable\n" }))
     .toEqual({
-      token: null,
+      kind: "absent",
       detail: "`gh auth token` printed no token: credential unavailable",
     });
   expect(ghTokenLookFromSpawn({ status: 1, stdout: "", stderr: "no oauth token\r\nmore\r\n" }))
     .toEqual({
-      token: null,
+      kind: "absent",
       detail: "`gh auth token` exited 1: no oauth token",
     });
   // The spawn never completed (timeout kill / spawn error): proven NOTHING.
   expect(ghTokenLookFromSpawn({ status: null })).toEqual({
-    token: null,
-    unproven: true,
+    kind: "unproven",
     detail: "`gh auth token` did not complete (the spawn was killed)",
   });
   expect(ghTokenLookFromSpawn({ status: 1, error: new Error("ETIMEDOUT"), stdout: "" })).toEqual({
-    token: null,
-    unproven: true,
+    kind: "unproven",
     detail: "`gh auth token` did not complete (ETIMEDOUT)",
   });
 });
@@ -1011,22 +1010,29 @@ const SOLE_WORK = { kind: "sole", login: "work" } as const;
 test("loginWithGhCli: an UNPROVEN look says could-not-check; a proven miss quotes gh and keeps the advice", async () => {
   isolate(); // clears GH_TOKEN/GITHUB_TOKEN so a runner credential never shapes the wording
   const killed: GhTokenLook = {
-    token: null,
-    unproven: true,
+    kind: "unproven",
     detail: "`gh auth token` did not complete (killed)",
   };
   expect(() => loginWithGhCli(AUTO, () => killed)).toThrow(
     "could not check gh authentication (`gh auth token` did not complete (killed)) - retry `agent auth`",
   );
   expect(() =>
-    loginWithGhCli(AUTO, () => ({ token: null, detail: "`gh auth token` exited 1: not logged in" }))
+    loginWithGhCli(AUTO, () => ({
+      kind: "absent",
+      detail: "`gh auth token` exited 1: not logged in",
+    }))
   ).toThrow(
     "gh is not authenticated (`gh auth token` exited 1: not logged in) - run `gh auth login`, then retry `agent auth`",
   );
-  expect(() => loginWithGhCli(AUTO, () => ({ token: "tok" }))).not.toThrow();
+  expect(() =>
+    loginWithGhCli(AUTO, () => ({ kind: "found", token: "tok", command: "gh auth token" }))
+  ).not.toThrow();
   // The auto success line names the followed account when known (nothing hidden).
   const named = await captureStderr(() => {
-    loginWithGhCli({ kind: "auto", activeLogin: "octocat" }, () => ({ token: "tok" }));
+    loginWithGhCli(
+      { kind: "auto", activeLogin: "octocat" },
+      () => ({ kind: "found", token: "tok", command: "gh auth token" }),
+    );
     return Promise.resolve();
   });
   expect(named).toContain(
@@ -1036,8 +1042,8 @@ test("loginWithGhCli: an UNPROVEN look says could-not-check; a proven miss quote
   // A pinned account wears its own words: the miss is about THAT account (gh's active login may
   // well be fine), the look receives the pin to verify, and gh's own stderr is quoted verbatim.
   const asked: Array<string | null> = [];
-  const miss = {
-    token: null,
+  const miss: GhTokenLook = {
+    kind: "absent",
     detail: "`gh auth token --user work --hostname github.com` exited 1: no oauth token found",
   };
   const pinnedMiss = (ghUser: string | null) => {
@@ -1060,12 +1066,16 @@ test("loginWithGhCli: an UNPROVEN look says could-not-check; a proven miss quote
   // when only the plain call answers, the slot follows the active account and the line names the
   // cause and the recovery. A miss on both calls is the pinned wording; an unanswered look,
   // either of them, is could-not-check (the pinned one with no second call).
-  const served = (ghUser: string | null) => {
+  const served = (ghUser: string | null): GhTokenLook => {
     asked.push(ghUser);
-    return ghUser === null ? { token: "gho_active" } : miss;
+    return ghUser === null
+      ? { kind: "found", token: "gho_active", command: "gh auth token --hostname github.com" }
+      : miss;
   };
   asked.length = 0;
-  expect(loginWithGhCli(SOLE_WORK, () => ({ token: "tok" }))).toEqual({
+  expect(
+    loginWithGhCli(SOLE_WORK, () => ({ kind: "found", token: "tok", command: "gh auth token" })),
+  ).toEqual({
     ghUser: "work",
     activeLogin: null,
   });
@@ -1144,7 +1154,7 @@ test("ghAuthTokenLookVia: one gh call per look; a pin gh cannot serve is a prove
       label: "a served pin names the --user call",
       ghUser: "work-bot",
       reply: { status: 0, stdout: "gho_pinned\n" },
-      look: { token: "gho_pinned", command: `gh ${PINNED_CALL}` },
+      look: { kind: "found", token: "gho_pinned", command: `gh ${PINNED_CALL}` },
       calls: [PINNED_CALL],
     },
     {
@@ -1152,7 +1162,7 @@ test("ghAuthTokenLookVia: one gh call per look; a pin gh cannot serve is a prove
       ghUser: "work-bot",
       reply: NO_TOKEN_FOR_USER,
       look: {
-        token: null,
+        kind: "absent",
         detail:
           `\`gh ${PINNED_CALL}\` exited 1: no oauth token found for github.com account work-bot`,
       },
@@ -1163,7 +1173,7 @@ test("ghAuthTokenLookVia: one gh call per look; a pin gh cannot serve is a prove
       ghUser: null,
       reply: { status: 1, stderr: "not logged in" },
       look: {
-        token: null,
+        kind: "absent",
         detail: "`gh auth token --hostname github.com` exited 1: not logged in",
       },
       calls: ["auth token --hostname github.com"],

@@ -352,12 +352,12 @@ export async function probeDirectWorks(
   // helper (this CLI, as a silent dry run) reads the credential the store already holds, since a
   // dry run never lands one it does not have.
   const cliLook = find(descriptor.cli);
-  if (cliLook.path === null) {
-    const look = cliLook.launchFailed
+  if (cliLook.kind !== "found") {
+    const look = cliLook.kind === "unproven"
       ? `could not check for the ${descriptor.cli} CLI (the command probe failed to run)`
       : `${descriptor.cli} CLI not found`;
     if (smoke === null) {
-      const advice = cliLook.launchFailed
+      const advice = cliLook.kind === "unproven"
         ? ""
         : " (install it with `agent shell --clis` and re-run to auto-detect Direct, or pass --direct)";
       logger.log(`    • ${look} → using the local proxy${advice}`);
@@ -388,8 +388,8 @@ export async function probeDirectWorks(
     return false;
   }
   const cliPath = anchorToCallerCwd(cliLook.path);
-  const ghLook = find("gh").path;
-  const ghPath = ghLook === null ? null : anchorToCallerCwd(ghLook);
+  const ghLook = find("gh");
+  const ghPath = ghLook.kind === "found" ? anchorToCallerCwd(ghLook.path) : null;
 
   let tmpHome: ScratchDir | null = null;
   try {

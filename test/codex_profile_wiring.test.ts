@@ -413,16 +413,53 @@ test("default and profile wiring coexist; each view reads only its own selection
   expect(profileWiring.providerWired).toBe(true);
 });
 
-test("a profile-only config leaves the default view unconfigured", () => {
-  const codexHome = isolate();
-  writeProxyProfile(codexHome);
-
-  // The named write seeds no top-level selection (it even scrubs the template's).
-  const defaultWiring = inspectCodexWiring(configText(codexHome), null, DEFAULT_PORT, false);
-  expect(defaultWiring.modelProvider).toBeNull();
-  expect(defaultWiring.providerMode).toBe("none");
-  expect(defaultWiring.providerSelected).toBe(false);
-  expect(defaultWiring.providerWired).toBe(false);
+test("a view with no selection of its own reads none, never another view's: the default view over a profile-only config, the named view over an absent config or another profile's selector", () => {
+  const unselected: Partial<CodexWiringStatus> = {
+    modelProvider: null,
+    providerSelected: false,
+    providerMode: "none",
+    providerWired: false,
+  };
+  const rows: {
+    name: string;
+    stage: () => CodexWiringStatus;
+    wiring: Partial<CodexWiringStatus>;
+  }[] = [
+    {
+      // The named write seeds no top-level selection (it even scrubs the template's).
+      name: "default view, profile-only config",
+      stage: () => {
+        const codexHome = isolate();
+        writeProxyProfile(codexHome);
+        return inspectCodexWiring(configText(codexHome), null, DEFAULT_PORT, false);
+      },
+      wiring: unselected,
+    },
+    {
+      name: "named view, absent config",
+      stage: () =>
+        inspectCodexWiring(null, null, PROFILE_PORT, false, {
+          profile: WORK,
+          profileToml: { kind: "absent" },
+        }),
+      wiring: { ...unselected, configExists: false, tokenAvailable: false },
+    },
+    {
+      name: "named view, another profile's selector",
+      stage: () => {
+        const codexHome = isolate();
+        configureCodexConfig(codexHome, {
+          mode: "proxy",
+          credential: COMMAND,
+          profile: parseProfileName("other"),
+          baseUrl: openaiBaseUrl(String(PROFILE_PORT)),
+        });
+        return inspectWork(codexHome);
+      },
+      wiring: unselected,
+    },
+  ];
+  for (const { name, stage, wiring } of rows) expect(stage(), name).toMatchObject(wiring);
 });
 
 test("no <name>.config.toml, or one without a selector, reads as none for the named view", () => {
@@ -442,36 +479,6 @@ test("no <name>.config.toml, or one without a selector, reads as none for the na
       providerWired: false,
     });
   }
-});
-
-test("an absent config reads fully unwired for the named view", () => {
-  const absent = inspectCodexWiring(null, null, PROFILE_PORT, false, {
-    profile: WORK,
-    profileToml: { kind: "absent" },
-  });
-  expect(absent.configExists).toBe(false);
-  expect(absent.modelProvider).toBeNull();
-  expect(absent.providerMode).toBe("none");
-  expect(absent.providerSelected).toBe(false);
-  expect(absent.providerWired).toBe(false);
-  expect(absent.tokenAvailable).toBe(false);
-});
-
-test("a selector for a DIFFERENT profile never selects this one", () => {
-  const codexHome = isolate();
-  const other = parseProfileName("other");
-  configureCodexConfig(codexHome, {
-    mode: "proxy",
-    credential: COMMAND,
-    profile: other,
-    baseUrl: openaiBaseUrl(String(PROFILE_PORT)),
-  });
-
-  const wiring = inspectWork(codexHome);
-  expect(wiring.modelProvider).toBeNull();
-  expect(wiring.providerSelected).toBe(false);
-  expect(wiring.providerMode).toBe("none");
-  expect(wiring.providerWired).toBe(false);
 });
 
 test("a selected profile whose provider table is absent reads unwired, not a false positive", () => {

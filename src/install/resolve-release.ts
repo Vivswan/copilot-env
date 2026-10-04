@@ -73,16 +73,16 @@ export function pickTag(releases: Release[], tag: string): Release | null {
 }
 
 // The releases endpoint occasionally 5xx's, rate-limits, or drops the connection; a few
-// backed-off retries turn those into a resolve instead of a spurious "no release found". Tests
-// set COPILOT_ENV_RELEASE_RETRY_BASE_MS=0 for speed.
+// backed-off retries turn those into a resolve instead of a spurious "no release found".
 const RETRYABLE_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
 const MAX_FETCH_ATTEMPTS = 4;
-const RETRY_BASE_MS_ENV = "COPILOT_ENV_RELEASE_RETRY_BASE_MS";
+const RETRY_BASE_MS = 400;
 
-function retryBaseMs(): number {
-  const raw = process.env[RETRY_BASE_MS_ENV];
-  if (raw !== undefined && /^\d+$/.test(raw)) return Number.parseInt(raw, 10);
-  return 400;
+export interface ResolveOptions {
+  /** A specific release tag instead of the newest aged one; prereleases become eligible. */
+  exactTag?: string | null;
+  fetchImpl?: typeof fetch;
+  retryBaseMs?: number;
 }
 
 const sleep = (ms: number): Promise<void> =>
@@ -90,12 +90,15 @@ const sleep = (ms: number): Promise<void> =>
 
 /** The body text, or null after exhausting attempts. A non-retryable response (401/404) gives up
  *  immediately: retrying would not fix it. */
-async function fetchReleasesText(url: string): Promise<string | null> {
-  const base = retryBaseMs();
+async function fetchReleasesText(
+  url: string,
+  fetchImpl: typeof fetch,
+  base: number,
+): Promise<string | null> {
   for (let attempt = 1; attempt <= MAX_FETCH_ATTEMPTS; attempt++) {
     let retryable = true;
     try {
-      const res = await fetch(url, { headers: GH });
+      const res = await fetchImpl(url, { headers: GH });
       if (res.ok) return await res.text();
       retryable = RETRYABLE_STATUSES.has(res.status);
     } catch {
@@ -110,9 +113,14 @@ async function fetchReleasesText(url: string): Promise<string | null> {
 /** Null when offline, the API errors, or no release is eligible. */
 export async function resolveTarget(
   cooldownDays: number | null,
-  exactTag: string | null = null,
+  opts: ResolveOptions = {},
 ): Promise<Release | null> {
-  const text = await fetchReleasesText(RELEASES_API);
+  const exactTag = opts.exactTag ?? null;
+  const text = await fetchReleasesText(
+    RELEASES_API,
+    opts.fetchImpl ?? fetch,
+    opts.retryBaseMs ?? RETRY_BASE_MS,
+  );
   if (text === null) return null; // offline / API errored after retries
   const releases = parseReleasesJson(text, exactTag !== null);
   if (releases.length === 0) return null;

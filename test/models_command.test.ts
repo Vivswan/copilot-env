@@ -248,19 +248,17 @@ function seedDirectProfile(home: string, name: string): void {
   );
 }
 
-test("models --proxy fails actionably when the proxy is down", () => {
-  const { exitCode, out } = runModelsCli(["--proxy"]);
-  expect(exitCode).toBe(1);
-  expect(out).toContain("proxy is not running");
-  expect(out).toContain("agent start");
-});
-
-test("models (auto) falls back to Direct and fails actionably with no credential", () => {
-  const { exitCode, out } = runModelsCli([]);
-  expect(exitCode).toBe(1);
-  expect(out).toContain("GitHub Copilot Direct");
-  expect(out).toContain("no GitHub credential");
-  expect(out).toContain("agent auth");
+test("models fails actionably offline: --proxy names the down proxy and `agent start`, auto falls back to Direct and names the missing credential and `agent auth`", () => {
+  const cases: { args: string[]; needles: string[] }[] = [
+    { args: ["--proxy"], needles: ["proxy is not running", "agent start"] },
+    { args: [], needles: ["GitHub Copilot Direct", "no GitHub credential", "agent auth"] },
+  ];
+  for (const { args, needles } of cases) {
+    const label = args.join(" ") || "(auto)";
+    const { exitCode, out } = runModelsCli(args);
+    expect(exitCode, label).toBe(1);
+    for (const needle of needles) expect(out, `${label}: ${needle}`).toContain(needle);
+  }
 });
 
 // --- a named profile ---------------------------------------------------------------

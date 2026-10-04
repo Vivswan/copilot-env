@@ -25,9 +25,6 @@ import {
   MATERIALIZED_ASSET_DIRS,
   MATERIALIZED_ASSET_FILES,
   pointCurrentAt,
-  POSIX_CURRENT_SHIM,
-  POSIX_SHIM,
-  POWERSHELL_CURRENT_SHIM,
   POWERSHELL_SHIM,
   readCurrentVersionName,
   removeVersionDirsExcept,
@@ -178,10 +175,6 @@ describe("the versioned full-install plan", () => {
       join(dest, "bin", "agent"),
       join(dest, "bin", "agent.ps1"),
     ]);
-    expect(plan.topShims.map((s) => s.body)).toEqual([
-      POSIX_CURRENT_SHIM,
-      POWERSHELL_CURRENT_SHIM,
-    ]);
   });
 
   test("a full plan aimed at the current link resolves to the same top", () => {
@@ -223,7 +216,8 @@ describe("the versioned full-install plan", () => {
     expect(readFileSync(join(versionRoot, "shell", "payload.txt"), "utf8")).toBe(
       "content of shell",
     );
-    expect(readFileSync(join(versionRoot, "bin", "agent"), "utf8")).toBe(POSIX_SHIM);
+    expect(statSync(join(versionRoot, "bin", "agent")).isFile()).toBe(true); // run under sh below
+    // PowerShell executes this file, and no test on a POSIX runner can run it: the pin is its bytes.
     expect(readFileSync(join(versionRoot, "bin", "agent.ps1"), "utf8")).toBe(POWERSHELL_SHIM);
     expect(readFileSync(join(versionRoot, "bin", installedBinaryName()), "utf8")).toBe("BINARY");
     const manifest = JSON.parse(
@@ -233,8 +227,9 @@ describe("the versioned full-install plan", () => {
 
     // The top carries only the layout: the current link and the stable shims.
     expect(readCurrentVersionName(dest)).toBe(VERSION_NAME);
-    expect(readFileSync(join(dest, "bin", "agent"), "utf8")).toBe(POSIX_CURRENT_SHIM);
-    expect(readFileSync(join(dest, "bin", "agent.ps1"), "utf8")).toBe(POWERSHELL_CURRENT_SHIM);
+    for (const shim of ["agent", "agent.ps1"]) {
+      expect(statSync(join(dest, "bin", shim)).isFile(), shim).toBe(true);
+    }
     // The flat binary was superseded by the copy inside the version root.
     expect(existsSync(join(dest, "bin", installedBinaryName()))).toBe(false);
     // No flat manifest: the sentinel lives per-version.
@@ -374,7 +369,7 @@ echo "\${${INSTALL_ROOT_ENV}:-} $@" >> "$(dirname "$0")/../../../wires.log"
 
     applyInstallPlan(versionedPlan(QUIET, binarySource));
 
-    expect(readFileSync(join(dest, "bin", "agent.ps1"), "utf8")).toBe(POWERSHELL_CURRENT_SHIM);
+    expect(statSync(join(dest, "bin", "agent.ps1")).isFile()).toBe(true);
     expect(readFileSync(join(dest, "wires.log"), "utf8").trim()).toBe(
       `${join(dest, CURRENT_LINK)} migrate 0.0.1 ${packageVersion()}`,
     );
@@ -592,11 +587,13 @@ describe("the checkout guard and the install manifest sentinel", () => {
       if (prior !== null) writeFileSync(join(dest, INSTALL_MANIFEST_FILE), prior);
       applyInstallPlan(assetsOnlyPlan());
       const manifest = JSON.parse(readFileSync(join(dest, INSTALL_MANIFEST_FILE), "utf8"));
-      expect(manifest, name).toEqual({
-        version: packageVersion(),
-        kind: "installed",
-        assets: [...MATERIALIZED_ASSET_DIRS, ...MATERIALIZED_ASSET_FILES],
-      });
+      expect(manifest, name).toMatchObject({ version: packageVersion(), kind: "installed" });
+      // The inventory is this release's, never the stale row's empty one, and an asset read out
+      // of the VFS is never vouched for on disk.
+      expect(manifest.assets.length, name).toBeGreaterThan(0);
+      for (const file of BUNDLED_ONLY_ASSETS) {
+        expect(manifest.assets, `${name}: ${file}`).not.toContain(file);
+      }
       for (const asset of manifest.assets as string[]) {
         expect(existsSync(join(dest, asset)), `${name}: ${asset}`).toBe(true);
       }

@@ -8,7 +8,7 @@ import {
 } from "../src/install/resolve-release.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { envSnapshot, isolateProxyHome } from "./helpers/env.ts";
-import { afterEach, beforeEach, describe, expect, removeDir, test } from "./helpers/testing.ts";
+import { describe, expect, removeDir, test } from "./helpers/testing.ts";
 
 // resolve-release.ts is the single source of truth for which release `agent
 // update` and the autoupdate preflight move to. The network side is thin; the
@@ -184,18 +184,14 @@ test("pickAged and pickTag select one release from the parsed list", () => {
 });
 
 describe("resolveTarget retry (de-flakes the release lookup)", () => {
-  const realFetch = globalThis.fetch;
-  const realBase = process.env.COPILOT_ENV_RELEASE_RETRY_BASE_MS;
-  beforeEach(() => {
-    process.env.COPILOT_ENV_RELEASE_RETRY_BASE_MS = "0"; // no backoff delay in tests
-  });
-  afterEach(() => {
-    globalThis.fetch = realFetch;
-    if (realBase === undefined) delete process.env.COPILOT_ENV_RELEASE_RETRY_BASE_MS;
-    else process.env.COPILOT_ENV_RELEASE_RETRY_BASE_MS = realBase;
-  });
-
   const releasesJson = JSON.stringify([rel("v1.0.0", "2026-06-01T00:00:00Z")]);
+
+  function resolveWith(answer: (init?: RequestInit) => Promise<Response>): Promise<Release | null> {
+    return resolveTarget(null, {
+      fetchImpl: (_input: string | URL | Request, init?: RequestInit) => answer(init),
+      retryBaseMs: 0,
+    });
+  }
 
   test("retries transient failures, gives up at once on a 404, and stops after the last attempt", async () => {
     // Each row is the fetch outcome per attempt; "throw" is a network error, a number a status.
@@ -221,15 +217,15 @@ describe("resolveTarget retry (de-flakes the release lookup)", () => {
     ];
     for (const { name, attempts, tag, calls } of rows) {
       let seen = 0;
-      globalThis.fetch = (() => {
+      const resolved = await resolveWith(() => {
         const outcome = attempts[seen] ?? 200;
         seen++;
         if (outcome === "throw") return Promise.reject(new Error("ECONNRESET"));
         return Promise.resolve(
           new Response(outcome === 200 ? releasesJson : "", { status: outcome }),
         );
-      }) as unknown as typeof fetch;
-      expect((await resolveTarget(null))?.tag ?? null, name).toBe(tag);
+      });
+      expect(resolved?.tag ?? null, name).toBe(tag);
       expect(seen, name).toBe(calls);
     }
   });
@@ -240,10 +236,6 @@ describe("resolveTarget retry (de-flakes the release lookup)", () => {
     const restoreEnv = envSnapshot();
     let home = "";
     let sent: Headers | null = null;
-    globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
-      sent = new Headers(init?.headers);
-      return new Response(releasesJson, { status: 200 });
-    }) as unknown as typeof fetch;
     try {
       home = isolateProxyHome("copilot-update-anon-");
       process.env.GH_TOKEN = "ghp_someone_elses";
@@ -253,7 +245,11 @@ describe("resolveTarget retry (de-flakes the release lookup)", () => {
         provider: "gh-token",
         token: "ghu_stored",
       });
-      expect((await resolveTarget(null))?.tag).toBe("v1.0.0");
+      const resolved = await resolveWith((init) => {
+        sent = new Headers(init?.headers);
+        return Promise.resolve(new Response(releasesJson, { status: 200 }));
+      });
+      expect(resolved?.tag).toBe("v1.0.0");
       expect(sent).not.toBeNull();
       expect(sent!.has("authorization")).toBe(false);
       expect(sent!.get("accept")).toBe("application/vnd.github+json");

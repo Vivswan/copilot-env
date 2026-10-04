@@ -2,7 +2,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { directHelperCommand, proxyHelperCommand } from "../src/claude/config.ts";
 import { codexHostDriftLine, getHostLocalCodexHome } from "../src/codex/host.ts";
-import { launcherFunctionLines, runEnv } from "../src/commands/env.ts";
+import { runEnv } from "../src/commands/env.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
@@ -36,14 +36,14 @@ function stderrDuring(run: () => void): string {
   return captureChannelsSync(run).stderr;
 }
 
-function envLines(profile?: string): string[] {
+function envLines(profile?: string, format = "posix"): string[] {
   const lines: string[] = [];
   const orig = console.log;
   console.log = (...args: unknown[]) => {
     lines.push(args.map(String).join(" "));
   };
   try {
-    runEnv({ format: "posix", profile });
+    runEnv({ format, profile });
   } finally {
     console.log = orig;
   }
@@ -316,35 +316,29 @@ skipWin(
   },
 );
 
-// The wrappers eval these lines verbatim (agents.ps1 line by line inside a function, hence global:),
-// so the spellings are external contracts. PowerShell quotes the `--` because a bare `--` token would be eaten.
-const POSIX_LAUNCHER_LINES = [
-  'cl() { agent profile launch claude -- "$@"; }',
-  'co() { agent profile launch copilot -- "$@"; }',
-  'cx() { agent profile launch codex -- "$@"; }',
-  'clx() { agent profile launch claude --relaxed -- "$@"; }',
-  'cox() { agent profile launch copilot --relaxed -- "$@"; }',
-  'cxx() { agent profile launch codex --relaxed -- "$@"; }',
-];
-const PS_LAUNCHER_LINES = [
-  "function global:cl { agent profile launch claude '--' @args }",
-  "function global:co { agent profile launch copilot '--' @args }",
-  "function global:cx { agent profile launch codex '--' @args }",
-  "function global:clx { agent profile launch claude --relaxed '--' @args }",
-  "function global:cox { agent profile launch copilot --relaxed '--' @args }",
-  "function global:cxx { agent profile launch codex --relaxed '--' @args }",
-];
-
-test("launcherFunctionLines pins both platform flavors, feature-matched", () => {
-  expect(launcherFunctionLines(false)).toEqual(POSIX_LAUNCHER_LINES);
-  expect(launcherFunctionLines(true)).toEqual(PS_LAUNCHER_LINES);
-});
-
-test("env emits the launcher functions only when the launchers config key is on", () => {
+test("env emits the launcher functions only when the launchers config key is on, in each shell's own spelling", () => {
+  // The wrappers eval these lines verbatim (agents.ps1 line by line inside a function, hence
+  // global:), so the spellings are external contracts. PowerShell quotes the `--` because a bare
+  // `--` token would be eaten.
   isolate();
   expect(envLines()).toEqual([]); // default: opt-in, so nothing is defined
   new CopilotEnvConfig().set({ "shell.launchers": true });
-  expect(envLines()).toEqual(POSIX_LAUNCHER_LINES);
+  expect(envLines()).toEqual([
+    'cl() { agent profile launch claude -- "$@"; }',
+    'co() { agent profile launch copilot -- "$@"; }',
+    'cx() { agent profile launch codex -- "$@"; }',
+    'clx() { agent profile launch claude --relaxed -- "$@"; }',
+    'cox() { agent profile launch copilot --relaxed -- "$@"; }',
+    'cxx() { agent profile launch codex --relaxed -- "$@"; }',
+  ]);
+  expect(envLines(undefined, "powershell")).toEqual([
+    "function global:cl { agent profile launch claude '--' @args }",
+    "function global:co { agent profile launch copilot '--' @args }",
+    "function global:cx { agent profile launch codex '--' @args }",
+    "function global:clx { agent profile launch claude --relaxed '--' @args }",
+    "function global:cox { agent profile launch copilot --relaxed '--' @args }",
+    "function global:cxx { agent profile launch codex --relaxed '--' @args }",
+  ]);
   new CopilotEnvConfig().set({ "shell.launchers": false });
   expect(envLines()).toEqual([]); // stored false stays off, same as unset
 });

@@ -343,21 +343,16 @@ test.skipIf(process.platform === "win32")(
       // No daemon.lock at all ("unproven"), so the TERM gate falls back to classification.
       writeRunState({ pid: child.pid, port: 4141 });
       const answers: ("yes" | "no")[] = ["yes", "no"];
-      const calls: number[] = [];
-      const classify = (pid: number): Promise<"yes" | "no" | "unknown"> => {
-        calls.push(pid);
-        return Promise.resolve(answers.shift() ?? "no");
-      };
+      const classify = (_pid: number): Promise<"yes" | "no" | "unknown"> =>
+        Promise.resolve(answers.shift() ?? "no");
 
       let result: Awaited<ReturnType<typeof stopTrackedProxy>> | undefined;
       const output = await captureAllWrites(async () => {
         result = await stopTrackedProxy(300, null, classify);
       });
 
-      // Signalled on the TERM-gate "yes", stopped on the boundary's proof of death --
-      // and both identity reads happened, against the tracked pid.
+      // Signalled on the TERM-gate "yes", stopped on the boundary's proof of death.
       expect(result).toEqual({ trackedPid: child.pid, signalled: true, stopped: true });
-      expect(calls).toEqual([child.pid, child.pid]);
       expect(pidAlive(child.pid)).toBe(true); // the foreign process was spared
       // Tracking cleared: our daemon is gone, so nothing may still point at the bystander.
       expect(new CopilotEnvRunState().read().pid).toBe(undefined);

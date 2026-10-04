@@ -234,6 +234,7 @@ test("4.0.2 gh pin: sole-account machines pin every pin-less gh-cli slot; anythi
   dir = isolateProxyHome("copilot-migrate-pin-");
   const state = new CopilotEnvState();
   const solo = {
+    kind: "listed" as const,
     accounts: [{ host: "github.com", login: "octocat", active: true, source: "keyring" }],
   };
   state.setCredential(null, { kind: "gh-cli", ghUser: null });
@@ -263,6 +264,7 @@ test("4.0.2 gh pin: sole-account machines pin every pin-less gh-cli slot; anythi
   // and a login seen only broken could never verify its pin.
   state.setCredential(null, { kind: "gh-cli", ghUser: null });
   pinSoleGhAccount(() => ({
+    kind: "listed",
     accounts: [
       { host: "github.com", login: "a", active: true, source: "keyring" },
       { host: "github.com", login: "b", active: false, source: "keyring" },
@@ -270,6 +272,7 @@ test("4.0.2 gh pin: sole-account machines pin every pin-less gh-cli slot; anythi
   }));
   expect(state.readCredential(null)).toEqual({ kind: "gh-cli", ghUser: null });
   pinSoleGhAccount(() => ({
+    kind: "listed",
     accounts: [
       { host: "github.com", login: "healthy", active: false, source: "keyring" },
       { host: "github.com", login: "hurt", active: true, source: "keyring", broken: true },
@@ -277,12 +280,13 @@ test("4.0.2 gh pin: sole-account machines pin every pin-less gh-cli slot; anythi
   }), () => true);
   expect(state.readCredential(null)).toEqual({ kind: "gh-cli", ghUser: null });
   pinSoleGhAccount(() => ({
+    kind: "listed",
     accounts: [
       { host: "github.com", login: "hurt", active: true, source: "keyring", broken: true },
     ],
   }), () => true);
   expect(state.readCredential(null)).toEqual({ kind: "gh-cli", ghUser: null });
-  pinSoleGhAccount(() => ({ accounts: [], unproven: true }));
+  pinSoleGhAccount(() => ({ kind: "unproven" }));
   expect(state.readCredential(null)).toEqual({ kind: "gh-cli", ghUser: null });
 });
 

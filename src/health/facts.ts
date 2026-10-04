@@ -220,36 +220,44 @@ interface ToolFacts {
   npm: CommandLook;
 }
 
-export interface CodexDirectAuthFacts {
-  command: string | null;
-  authenticated: boolean;
-  /** The pinned gh account the probe asked about (`gh auth token --user`). Absent/null = gh's
-   *  active account, so renderers can name the account a pinned verdict is about. Optional so
-   *  hand-built fixtures stay valid. */
-  ghUser?: string | null;
-  /** AUTO slots only: the github.com login gh's active credential belongs to, when the account
-   *  list was readable, so the report names the account an auto slot follows. Naming only,
-   *  never a verdict. */
-  ghActiveLogin?: string | null;
-  /** The gh call that served the token: the pinned `--user` form for a pin, the plain host-scoped
-   *  call for gh's active account (ghAuthTokenSpawnSpec, one call per look). Token found only. */
-  ghCommand?: string;
-  /** Why the look ended without a token: the gh call that failed or timed out, quoted, with what
-   *  the completed calls before it said (CodexDirectAuthFacts.ghDetail). */
-  ghDetail?: string;
-  /** The gh look never RAN to completion (the command probe failed, or `gh auth token` spawned
-   *  but errored / was timeout-killed): the two fields above are then UNPROVEN, and renderers
-   *  say "could not check", never a confident "not found"/"not authenticated" or `gh auth
-   *  login` advice. Optional so hand-built fixtures stay valid. */
-  unproven?: true;
-}
+/** How far a Direct gh probe got before it missed: no resolved gh (absent from PATH, or a command
+ *  probe that never ran; `kind` says which), or a found gh whose `gh auth token` call missed, with
+ *  `ghDetail` the look's own account of why (the gh call that failed or timed out, quoted, with
+ *  what the completed calls before it said). */
+type GhProbeMiss = { command: null } | { command: string; ghDetail: string };
 
-/** Skipped when the CLI is not installed (not a failure); `lookFailed` marks a skip off a look
- *  that never completed (a could-not-check, not a proven absence). A probe that RAN names the
- *  resolved CLI and a failure carries the captured reason, so a skipped-yet-ok result is
- *  unrepresentable. */
+/** The gh-cli Direct auth verdict, `kind` in GhTokenLook's vocabulary:
+ *    found     -> authenticated; `ghCommand` is the gh call that served the token (the pinned
+ *                 `--user` form for a pin, the plain host-scoped call for gh's active account)
+ *    absent    -> a proven miss: no gh on PATH, or gh served no token
+ *    unproven  -> the probe never RAN to completion (the command probe failed, or `gh auth token`
+ *                 spawned but errored / was timeout-killed): renderers say "could not check",
+ *                 never a confident "not found"/"not authenticated" or `gh auth login` advice */
+export type CodexDirectAuthFacts =
+  & {
+    /** The pinned gh account the probe asked about (`gh auth token --user`). Absent/null = gh's
+     *  active account, so renderers can name the account a pinned verdict is about. Optional so
+     *  hand-built fixtures stay valid. */
+    ghUser?: string | null;
+    /** AUTO slots only: the github.com login gh's active credential belongs to, when the account
+     *  list was readable, so the report names the account an auto slot follows. Naming only,
+     *  never a verdict. */
+    ghActiveLogin?: string | null;
+  }
+  & (
+    | { kind: "found"; command: string; ghCommand: string }
+    | ({ kind: "absent" } & GhProbeMiss)
+    | ({ kind: "unproven" } & GhProbeMiss)
+  );
+
+/** Why a live probe did not run: the CLI is proven not installed (not a failure), or the look
+ *  for it never completed (a could-not-check, never a proven absence). */
+export type LiveSkipReason = "not-installed" | "look-failed";
+
+/** A probe that RAN names the resolved CLI and a failure carries the captured reason, so a
+ *  skipped-yet-ok result is unrepresentable. */
 export type LiveProbeFacts =
-  | { kind: "skipped"; lookFailed?: true }
+  | { kind: "skipped"; reason: LiveSkipReason }
   | { kind: "ok"; cli: string }
   | { kind: "failed"; cli: string; detail: string };
 
@@ -370,9 +378,9 @@ export type AuthFacts =
     /** Why the look ended without a token: the gh call that failed or timed out, quoted, with what
      *  the completed calls before it said (CodexDirectAuthFacts.ghDetail). */
     ghDetail?: string;
-    /** The gh probe never ran to completion (CodexDirectAuthFacts.unproven): ghAuthenticated false
-     *  is then UNPROVEN, so the check says "could not check", never "gh is unauthenticated" plus
-     *  `gh auth login` advice. Optional so hand-built fixtures stay valid. */
+    /** The gh probe never ran to completion (CodexDirectAuthFacts kind "unproven"): ghAuthenticated
+     *  false is then UNPROVEN, so the check says "could not check", never "gh is unauthenticated"
+     *  plus `gh auth login` advice. Optional so hand-built fixtures stay valid. */
     ghAuthUnproven?: true;
   }
   & (

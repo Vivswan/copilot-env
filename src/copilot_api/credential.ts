@@ -187,19 +187,22 @@ export function ghAuthToken(ghUser: string | null = null): string | null {
   return look.kind === "found" ? look.token : null;
 }
 
-/** The account listing: a choice-menu and naming input. chooseGhAccount refuses both marked shapes:
- *  an unproven listing asks for a retry, an empty one for `gh auth login`. */
-export interface GhAccountsLook {
-  accounts: GhAccount[];
-  unproven?: true;
-}
+/** The account listing: a choice-menu and naming input. A listing is proven even when empty (gh
+ *  absent, or no login saved); `unproven` is a look that never RAN to completion. chooseGhAccount
+ *  refuses both misses: an unproven listing asks for a retry, an empty one for `gh auth login`. */
+export type GhAccountsLook =
+  | { kind: "listed"; accounts: GhAccount[] }
+  | { kind: "unproven" };
 
 /** Exported for tests. Two gh quirks shape it:
  *    non-zero exit  -> still parsed; `gh auth status` fails when one account is broken but lists the healthy ones
  *    stderr merged  -> older gh wrote the listing there */
 export function ghAccountsLookFromSpawn(result: GhSpawnResult): GhAccountsLook {
-  if (ghAuthVerdict(result) === "unproven") return { accounts: [], unproven: true };
-  return { accounts: parseGhAuthStatusAccounts(`${result.stdout ?? ""}\n${result.stderr ?? ""}`) };
+  if (ghAuthVerdict(result) === "unproven") return { kind: "unproven" };
+  return {
+    kind: "listed",
+    accounts: parseGhAuthStatusAccounts(`${result.stdout ?? ""}\n${result.stderr ?? ""}`),
+  };
 }
 
 export function ghAccountsLook(): GhAccountsLook {
@@ -208,9 +211,9 @@ export function ghAccountsLook(): GhAccountsLook {
     case "found":
       return ghAccountsLookFromSpawn(runGhSpec(ghAuthStatusSpawnSpec(gh.path)));
     case "unproven":
-      return { accounts: [], unproven: true };
+      return { kind: "unproven" };
     case "absent":
-      return { accounts: [] };
+      return { kind: "listed", accounts: [] };
     default:
       return assertNever(gh);
   }
@@ -336,7 +339,8 @@ export function liveCredentialSourceLabel(
   look: () => GhAccountsLook = ghAccountsLook,
 ): string | null {
   if (credential.kind === "gh-cli" && credential.ghUser === null) {
-    const accounts = look().accounts;
+    const listing = look();
+    const accounts = listing.kind === "listed" ? listing.accounts : [];
     const active = activeGhLogin(accounts);
     const logins = [
       ...new Set(

@@ -77,8 +77,8 @@ async function proxyIdentity(url: string, timeoutMs: number): Promise<boolean | 
   }
 }
 
-/** A look's `unproven` (a spawn error, the timeout kill) marks the facts instead of flattening
- *  into a confident authenticated:false. `ghUser` records which pinned account the probe asked
+/** The token look's kind IS the verdict's kind: an unproven look (a spawn error, the timeout
+ *  kill) never flattens into a proven miss. `ghUser` records which pinned account the probe asked
  *  about; `ghCommand` the call that served a found token. */
 function directAuthFromLook(
   command: string,
@@ -88,11 +88,11 @@ function directAuthFromLook(
   const pinned = ghUser === null ? {} : { ghUser };
   switch (look.kind) {
     case "unproven":
-      return { command, authenticated: false, unproven: true, ...pinned, ghDetail: look.detail };
+      return { kind: "unproven", command, ghDetail: look.detail, ...pinned };
     case "absent":
-      return { command, authenticated: false, ...pinned, ghDetail: look.detail };
+      return { kind: "absent", command, ghDetail: look.detail, ...pinned };
     case "found":
-      return { command, authenticated: true, ...pinned, ghCommand: look.command };
+      return { kind: "found", command, ghCommand: look.command, ...pinned };
     default:
       return assertNever(look);
   }
@@ -106,7 +106,7 @@ async function ghActiveLoginProbe(): Promise<string | null> {
   const look = findCommand("gh");
   if (look.kind !== "found") return null;
   const listing = ghAccountsLookFromSpawn(await runGhSpecAsync(ghAuthStatusSpawnSpec(look.path)));
-  return listing.unproven ? null : activeGhLogin(listing.accounts);
+  return listing.kind === "listed" ? activeGhLogin(listing.accounts) : null;
 }
 
 async function codexDirectAuth(ghUser: string | null): Promise<CodexDirectAuthFacts> {
@@ -116,9 +116,9 @@ async function codexDirectAuth(ghUser: string | null): Promise<CodexDirectAuthFa
   const pinned = ghUser === null ? {} : { ghUser };
   switch (look.kind) {
     case "unproven":
-      return { command: null, authenticated: false, unproven: true, ...pinned };
+      return { kind: "unproven", command: null, ...pinned };
     case "absent":
-      return { command: null, authenticated: false, ...pinned };
+      return { kind: "absent", command: null, ...pinned };
     case "found":
       // The SAME recipe `agent auth` and every resolve run (ghAuthTokenSpawnSpec: ONE gh call, the
       // pinned `--user` form or the active account's), off the event loop so it overlaps the other
@@ -167,9 +167,9 @@ export function runLiveCli(
   const look = find(launch.cli);
   switch (look.kind) {
     case "unproven":
-      return Promise.resolve({ kind: "skipped", lookFailed: true });
+      return Promise.resolve({ kind: "skipped", reason: "look-failed" });
     case "absent":
-      return Promise.resolve({ kind: "skipped" });
+      return Promise.resolve({ kind: "skipped", reason: "not-installed" });
     case "found":
       break;
     default:

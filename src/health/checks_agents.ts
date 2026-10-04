@@ -18,6 +18,7 @@ import type {
   CodexFacts,
   CodexHostFacts,
   LiveProbeFacts,
+  LiveSkipReason,
 } from "./facts.ts";
 import { type CheckResult, meta, profileAddFix } from "./types.ts";
 
@@ -60,25 +61,37 @@ function describeDirectGhAuth(a: CodexDirectAuthFacts): {
   //   gh found, proven or unproven -> the line names the account
   //   command === null             -> not-found / could-not-check, with no account
   const accountClause = ghAccountClause(a.ghUser ?? null, a.ghActiveLogin ?? null);
-  if (a.unproven) {
-    return {
-      ok: false,
-      detail: a.command === null
-        ? "gh auth: could not check for the GitHub CLI (the command probe failed to run)"
-        : `gh auth: ${ghCouldNotCheck(a.ghDetail, accountClause)}`,
-      ghFix: "re-run `agent health` (the gh check did not run to completion)",
-    };
-  }
   const account = (a.ghUser ?? null) !== null ? ` as ${accountClause}` : ` (${accountClause})`;
-  return {
-    ok: a.command !== null && a.authenticated,
-    detail: a.command === null
-      ? "gh auth: GitHub CLI not found"
-      : a.authenticated
-      ? `gh auth: authenticated via ${a.command}${account}`
-      : `gh auth: ${a.command} is not authenticated${account}`,
-    ghFix: a.command === null ? "install gh and run gh auth login" : "gh auth login",
-  };
+  switch (a.kind) {
+    case "unproven":
+      return {
+        ok: false,
+        detail: a.command === null
+          ? "gh auth: could not check for the GitHub CLI (the command probe failed to run)"
+          : `gh auth: ${ghCouldNotCheck(a.ghDetail, accountClause)}`,
+        ghFix: "re-run `agent health` (the gh check did not run to completion)",
+      };
+    case "absent":
+      return a.command === null
+        ? {
+          ok: false,
+          detail: "gh auth: GitHub CLI not found",
+          ghFix: "install gh and run gh auth login",
+        }
+        : {
+          ok: false,
+          detail: `gh auth: ${a.command} is not authenticated${account}`,
+          ghFix: "gh auth login",
+        };
+    case "found":
+      return {
+        ok: true,
+        detail: `gh auth: authenticated via ${a.command}${account}`,
+        ghFix: "gh auth login",
+      };
+    default:
+      return assertNever(a);
+  }
 }
 
 /** The shared direct-mode auth verdict: ok, or warn carrying its fix. */
@@ -587,24 +600,36 @@ export function checkAgentLive(
   const base = {
     ...meta(agent === "codex" ? "codex.live" : "claude.live"),
     profile,
-    value: { kind: f.kind, ...(f.kind === "skipped" && f.lookFailed ? { lookFailed: true } : {}) },
+    value: {
+      kind: f.kind,
+      ...(f.kind === "skipped" && f.reason === "look-failed" ? { lookFailed: true } : {}),
+    },
   };
-  if (f.kind === "skipped") {
-    // A skip off a FAILED look is a could-not-check, never a proven absence.
-    return {
-      ...base,
-      status: "ok",
-      detail: f.lookFailed
-        ? `skipped (could not check for the ${agent} CLI - the command probe failed to run)`
-        : `skipped (${agent} CLI not installed)`,
-    };
+  switch (f.kind) {
+    case "skipped":
+      return { ...base, status: "ok", detail: `skipped (${liveSkipWording(agent, f.reason)})` };
+    case "ok":
+      return { ...base, status: "ok", detail: `read-only prompt responded via ${f.cli}` };
+    case "failed":
+      return {
+        ...base,
+        status: "warn",
+        detail: `read-only prompt failed (${f.cli})\n${f.detail}`,
+        fix: profile === null ? `agent profile sync --${agent}` : profileAddFix(profile),
+      };
+    default:
+      return assertNever(f);
   }
-  return f.kind === "ok"
-    ? { ...base, status: "ok", detail: `read-only prompt responded via ${f.cli}` }
-    : {
-      ...base,
-      status: "warn",
-      detail: `read-only prompt failed (${f.cli})\n${f.detail}`,
-      fix: profile === null ? `agent profile sync --${agent}` : profileAddFix(profile),
-    };
+}
+
+/** A skip off a FAILED look is a could-not-check, never a proven absence. */
+function liveSkipWording(agent: "codex" | "claude", reason: LiveSkipReason): string {
+  switch (reason) {
+    case "look-failed":
+      return `could not check for the ${agent} CLI - the command probe failed to run`;
+    case "not-installed":
+      return `${agent} CLI not installed`;
+    default:
+      return assertNever(reason);
+  }
 }

@@ -16,6 +16,7 @@ import { runPrintProxyToken } from "../src/commands/proxy_token.ts";
 import {
   Credential,
   credentialSourceLabel,
+  type GhAccountsLook,
   ghAccountsLookFromSpawn,
   ghAuthTokenLookVia,
   type GhTokenLook,
@@ -1421,20 +1422,17 @@ test("the gh spawn recipes: every token call names github.com, a pinned account 
 });
 
 test("ghAccountsLookFromSpawn: ANY completed exit parses stdout+stderr; a dead spawn is unproven", () => {
-  expect(
-    ghAccountsLookFromSpawn({ status: 0, stdout: TWO_ACCOUNT_STATUS, stderr: "" }).accounts
-      .map((a) => a.login),
-  ).toEqual(["octocat", "work-bot"]);
+  const logins = (look: GhAccountsLook): string[] | "unproven" =>
+    look.kind === "listed" ? look.accounts.map((a) => a.login) : look.kind;
+  expect(logins(ghAccountsLookFromSpawn({ status: 0, stdout: TWO_ACCOUNT_STATUS, stderr: "" })))
+    .toEqual(["octocat", "work-bot"]);
   // gh exits non-zero when one account's login is broken but still lists the
   // healthy ones, and older gh printed the status to stderr: both stay proven.
-  expect(
-    ghAccountsLookFromSpawn({ status: 1, stdout: null, stderr: TWO_ACCOUNT_STATUS }).accounts
-      .length,
-  ).toBe(2);
-  expect(ghAccountsLookFromSpawn({ status: null })).toEqual({ accounts: [], unproven: true });
+  expect(logins(ghAccountsLookFromSpawn({ status: 1, stdout: null, stderr: TWO_ACCOUNT_STATUS })))
+    .toEqual(["octocat", "work-bot"]);
+  expect(ghAccountsLookFromSpawn({ status: null })).toEqual({ kind: "unproven" });
   expect(ghAccountsLookFromSpawn({ status: 0, error: new Error("ETIMEDOUT") })).toEqual({
-    accounts: [],
-    unproven: true,
+    kind: "unproven",
   });
 });
 
@@ -1446,20 +1444,22 @@ test("chooseGhAccount: pinning is the only default - sole login pins, non-TTY pi
   try {
     // Nothing pinnable is an ERROR naming the escape hatches - recording auto
     // would let a later `gh auth login` spend an unchosen account's credit.
-    await expect(chooseGhAccount(() => ({ accounts: [], unproven: true }))).rejects.toThrow(
+    await expect(chooseGhAccount(() => ({ kind: "unproven" }))).rejects.toThrow(
       "could not list gh accounts (`gh auth status` did not run to completion) - retry `agent auth`, or pass --gh-user <login>",
     );
-    await expect(chooseGhAccount(() => ({ accounts: [] }))).rejects.toThrow(
+    await expect(chooseGhAccount(() => ({ kind: "listed", accounts: [] }))).rejects.toThrow(
       "gh has no logged-in github.com account - run `gh auth login`, then retry `agent auth`",
     );
     // One saved account: SOLE, which the slot write pins when gh serves it by name.
-    expect(await chooseGhAccount(() => ({ accounts: [acct("solo", true)] }))).toEqual({
-      kind: "sole",
-      login: "solo",
-    });
+    expect(await chooseGhAccount(() => ({ kind: "listed", accounts: [acct("solo", true)] })))
+      .toEqual({
+        kind: "sole",
+        login: "solo",
+      });
     // Another host's login is not a github.com choice (Copilot's host).
     expect(
       await chooseGhAccount(() => ({
+        kind: "listed",
         accounts: [acct("solo", true), {
           host: "ghe.example.com",
           login: "enterprise",
@@ -1474,6 +1474,7 @@ test("chooseGhAccount: pinning is the only default - sole login pins, non-TTY pi
     let envChoice: Awaited<ReturnType<typeof chooseGhAccount>> | undefined;
     const envErr = await captureStderr(async () => {
       envChoice = await chooseGhAccount(() => ({
+        kind: "listed",
         accounts: [acct("solo", false), acct("ci-bot", true, "GH_TOKEN")],
       }));
     });
@@ -1484,6 +1485,7 @@ test("chooseGhAccount: pinning is the only default - sole login pins, non-TTY pi
     let overlapChoice: Awaited<ReturnType<typeof chooseGhAccount>> | undefined;
     await captureStderr(async () => {
       overlapChoice = await chooseGhAccount(() => ({
+        kind: "listed",
         accounts: [
           acct("octocat", true, "GH_TOKEN"),
           acct("octocat", false),
@@ -1494,7 +1496,7 @@ test("chooseGhAccount: pinning is the only default - sole login pins, non-TTY pi
     expect(overlapChoice).toEqual({ kind: "pinned", login: "octocat" });
     // 2+ logins and NO determinable active account: an error, never a guess.
     await expect(
-      chooseGhAccount(() => ({ accounts: [acct("a", false), acct("b", false)] })),
+      chooseGhAccount(() => ({ kind: "listed", accounts: [acct("a", false), acct("b", false)] })),
     ).rejects.toThrow(
       "gh has 2 logged-in accounts and no pinnable active one - pass --gh-user <login> " +
         "(pinnable: a, b), or run `agent auth --provider gh-cli` in a terminal",
@@ -1504,6 +1506,7 @@ test("chooseGhAccount: pinning is the only default - sole login pins, non-TTY pi
     // silently - without a TTY that is the same honest error.
     await expect(
       chooseGhAccount(() => ({
+        kind: "listed",
         accounts: [acct("healthy", false), { ...acct("hurt", true), broken: true as const }],
       })),
     ).rejects.toThrow(
@@ -1512,7 +1515,9 @@ test("chooseGhAccount: pinning is the only default - sole login pins, non-TTY pi
     );
     // A sole ENV-ONLY login still pins without a TTY (nothing to ask): its
     // verification failure names the recovery.
-    expect(await chooseGhAccount(() => ({ accounts: [acct("solo", true, "GH_TOKEN")] })))
+    expect(
+      await chooseGhAccount(() => ({ kind: "listed", accounts: [acct("solo", true, "GH_TOKEN")] })),
+    )
       .toEqual({ kind: "pinned", login: "solo" });
   } finally {
     process.stdin.isTTY = hadTty;
@@ -1567,12 +1572,13 @@ test("liveCredentialSourceLabel: an auto slot SAYS auto and lists what it may us
   // use is listed -- with NO nested brackets (callers add the one paren level).
   expect(
     liveCredentialSourceLabel(cred, () => ({
+      kind: "listed",
       accounts: [acct("octocat", true), acct("work-bot", false)],
     })),
   ).toBe("gh-cli on auto: currently octocat; may use octocat, work-bot");
   // Unproven/empty looks keep the bare auto label (never a guessed account),
   // and a pinned slot never spawns the look at all.
-  expect(liveCredentialSourceLabel(cred, () => ({ accounts: [], unproven: true })))
+  expect(liveCredentialSourceLabel(cred, () => ({ kind: "unproven" })))
     .toBe("gh-cli on auto");
   expect(
     liveCredentialSourceLabel({ kind: "gh-cli", ghUser: "work-bot" }, () => {

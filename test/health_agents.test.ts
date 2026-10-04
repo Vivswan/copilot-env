@@ -27,7 +27,7 @@ test("codex: not configured is ok; each broken part warns with a precise message
   // spreads below stay inside the discriminated union's proxy/direct variants.
   const codexExtras = {
     home: "/c",
-    directAuth: { command: "/bin/gh", authenticated: true },
+    directAuth: { kind: "found", command: "/bin/gh", ghCommand: "gh auth token" },
     directUsesToken: false,
     directNeedsNoGh: false,
     provider: "gh-cli",
@@ -192,7 +192,7 @@ test("codex: not configured is ok; each broken part warns with a precise message
       // An auto slot whose account list could not name the active login still says it is on AUTO
       // (never a bare "authenticated" that hides the mode).
       name: "auto, authenticated, login unknown",
-      directAuth: { command: "/bin/gh", authenticated: true },
+      directAuth: { kind: "found", command: "/bin/gh", ghCommand: "gh auth token" },
       status: "ok",
       detail: [
         "provider: direct",
@@ -202,14 +202,18 @@ test("codex: not configured is ok; each broken part warns with a precise message
     },
     {
       name: "gh missing",
-      directAuth: { command: null, authenticated: false },
+      directAuth: { kind: "absent", command: null },
       status: "warn",
       detail: ["GitHub CLI not found"],
       fix: "install gh and run gh auth login",
     },
     {
       name: "auto, unauthenticated",
-      directAuth: { command: "/bin/gh", authenticated: false },
+      directAuth: {
+        kind: "absent",
+        command: "/bin/gh",
+        ghDetail: "`gh auth token` printed no token",
+      },
       status: "warn",
       detail: ["not authenticated"],
       fix: "gh auth login",
@@ -218,7 +222,12 @@ test("codex: not configured is ok; each broken part warns with a precise message
       // A PINNED slot's verdict names its account: the probe ran `gh auth token --user work-bot`,
       // so "not authenticated" is about that account, not gh's active one (which may be fine).
       name: "pinned, unauthenticated",
-      directAuth: { command: "/bin/gh", authenticated: false, ghUser: "work-bot" },
+      directAuth: {
+        kind: "absent",
+        command: "/bin/gh",
+        ghDetail: "`gh auth token --user work-bot` printed no token",
+        ghUser: "work-bot",
+      },
       status: "warn",
       detail: ["gh auth: /bin/gh is not authenticated as account 'work-bot'"],
       fix: "gh auth login",
@@ -226,7 +235,12 @@ test("codex: not configured is ok; each broken part warns with a precise message
     {
       // An AUTO slot's ok line names the account it follows (no hidden information).
       name: "auto, authenticated, login named",
-      directAuth: { command: "/bin/gh", authenticated: true, ghActiveLogin: "octocat" },
+      directAuth: {
+        kind: "found",
+        command: "/bin/gh",
+        ghCommand: "gh auth token",
+        ghActiveLogin: "octocat",
+      },
       status: "ok",
       detail: ["gh auth: authenticated via /bin/gh (AUTO - currently account octocat)"],
     },
@@ -234,7 +248,7 @@ test("codex: not configured is ok; each broken part warns with a precise message
       // Non-gh-cli provider with no stored token: gh is NOT a fallback, so the warn points at
       // `agent auth`, never the gh-specific message (the provider-blind false-OK).
       name: "copilot provider, no stored token",
-      directAuth: { command: "/bin/gh", authenticated: true },
+      directAuth: { kind: "found", command: "/bin/gh", ghCommand: "gh auth token" },
       provider: "copilot",
       status: "warn",
       detail: ["no credential resolves"],
@@ -277,14 +291,18 @@ test("checkCodex/checkClaude direct: an UNPROVEN gh probe says could-not-check, 
     directUsesToken: false,
     directNeedsNoGh: false,
     provider: "gh-cli",
-    directAuth: { command: "/bin/gh", authenticated: false, unproven: true },
+    directAuth: {
+      kind: "unproven",
+      command: "/bin/gh",
+      ghDetail: "`gh auth token` did not complete (ETIMEDOUT)",
+    },
   } satisfies CodexFacts;
   // `gh auth token` spawned but never completed (error / timeout kill).
   const codexUnproven = checkCodex(codexDirect, null);
   expect(codexUnproven.status).toBe("warn");
   expect(codexUnproven.detail).toContain(
     "gh auth: could not check gh authentication " +
-      "(`gh auth token` did not run to completion; AUTO - follows gh's active account)",
+      "(`gh auth token` did not complete (ETIMEDOUT); AUTO - follows gh's active account)",
   );
   expect(codexUnproven.detail).not.toContain("is not authenticated");
   expect(codexUnproven.fix).toBe("re-run `agent health` (the gh check did not run to completion)");
@@ -293,20 +311,20 @@ test("checkCodex/checkClaude direct: an UNPROVEN gh probe says could-not-check, 
   const codexUnprovenNamed = checkCodex({
     ...codexDirect,
     directAuth: {
+      kind: "unproven",
       command: "/bin/gh",
-      authenticated: false,
-      unproven: true,
+      ghDetail: "`gh auth token` did not complete (ETIMEDOUT)",
       ghActiveLogin: "octocat",
     },
   }, null);
   expect(codexUnprovenNamed.detail).toContain(
     "gh auth: could not check gh authentication " +
-      "(`gh auth token` did not run to completion; AUTO - currently account octocat)",
+      "(`gh auth token` did not complete (ETIMEDOUT); AUTO - currently account octocat)",
   );
   // The gh LOOKUP itself failed to run: not a proven "GitHub CLI not found".
   const lookupUnproven = checkCodex({
     ...codexDirect,
-    directAuth: { command: null, authenticated: false, unproven: true },
+    directAuth: { kind: "unproven", command: null },
   }, null);
   expect(lookupUnproven.status).toBe("warn");
   expect(lookupUnproven.detail).toContain(
@@ -328,14 +346,18 @@ test("checkCodex/checkClaude direct: an UNPROVEN gh probe says could-not-check, 
     baseUrlMatches: false,
     providerMode: "direct",
     otherReason: null,
-    directAuth: { command: "/bin/gh", authenticated: false, unproven: true },
+    directAuth: {
+      kind: "unproven",
+      command: "/bin/gh",
+      ghDetail: "`gh auth token` did not complete (ETIMEDOUT)",
+    },
     directUsesToken: false,
     provider: "gh-cli",
   }, null);
   expect(claudeUnproven.status).toBe("warn");
   expect(claudeUnproven.detail).toContain(
     "gh auth: could not check gh authentication " +
-      "(`gh auth token` did not run to completion; AUTO - follows gh's active account)",
+      "(`gh auth token` did not complete (ETIMEDOUT); AUTO - follows gh's active account)",
   );
   expect(claudeUnproven.detail).not.toContain("is not authenticated");
   expect(claudeUnproven.fix).toBe("re-run `agent health` (the gh check did not run to completion)");
@@ -356,7 +378,7 @@ test("checkClaude: direct needs gh + managed base URL; proxy/none/other informat
     baseUrlMatches: false,
     providerMode: "direct",
     otherReason: null,
-    directAuth: { command: "/bin/gh", authenticated: true },
+    directAuth: { kind: "found", command: "/bin/gh", ghCommand: "gh auth token" },
     directUsesToken: false,
     provider: "gh-cli",
   } satisfies ClaudeFacts;
@@ -367,7 +389,7 @@ test("checkClaude: direct needs gh + managed base URL; proxy/none/other informat
   expect(directOk.detail).toContain("authenticated via /bin/gh");
 
   const missingGh = checkClaude(
-    { ...direct, directAuth: { command: null, authenticated: false } },
+    { ...direct, directAuth: { kind: "absent", command: null } },
     null,
   );
   expect(missingGh.status).toBe("warn");
@@ -376,7 +398,11 @@ test("checkClaude: direct needs gh + managed base URL; proxy/none/other informat
 
   const unauthed = checkClaude({
     ...direct,
-    directAuth: { command: "/bin/gh", authenticated: false },
+    directAuth: {
+      kind: "absent",
+      command: "/bin/gh",
+      ghDetail: "`gh auth token` printed no token",
+    },
   }, null);
   expect(unauthed.status).toBe("warn");
   expect(unauthed.detail).toContain("not authenticated");
@@ -403,7 +429,7 @@ test("checkClaude: direct needs gh + managed base URL; proxy/none/other informat
     baseUrl: "http://localhost:4141",
     baseUrlMatches: true,
     providerMode: "proxy",
-    directAuth: { command: null, authenticated: false },
+    directAuth: { kind: "absent", command: null },
   }, null);
   expect(proxy.status).toBe("ok");
   expect(proxy.detail).toContain("provider: proxy");
@@ -418,7 +444,7 @@ test("checkClaude: direct needs gh + managed base URL; proxy/none/other informat
     baseUrl: "http://localhost:4141",
     baseUrlMatches: false,
     providerMode: "proxy",
-    directAuth: { command: null, authenticated: false },
+    directAuth: { kind: "absent", command: null },
   }, null);
   expect(proxyStale.status).toBe("warn");
   expect(proxyStale.detail).toContain("does not match the resolved proxy port");
@@ -435,7 +461,7 @@ test("checkClaude: direct needs gh + managed base URL; proxy/none/other informat
     helperPath: null,
     baseUrl: null,
     providerMode: "none",
-    directAuth: { command: null, authenticated: false },
+    directAuth: { kind: "absent", command: null },
   }, null);
   expect(none.status).toBe("ok");
   expect(none.detail).toContain("provider: none");
@@ -499,7 +525,7 @@ test("direct + stored token reports ok with gh absent (no gh requirement)", () =
     envKeyInDotenv: false,
     envKeyInEnviron: false,
     tokenAvailable: false,
-    directAuth: { command: null, authenticated: false },
+    directAuth: { kind: "absent", command: null },
     directUsesToken: true,
     directNeedsNoGh: true,
     otherReason: null,
@@ -521,7 +547,7 @@ test("direct + stored token reports ok with gh absent (no gh requirement)", () =
     providerMode: "direct",
     wired: true,
     otherReason: null,
-    directAuth: { command: null, authenticated: false },
+    directAuth: { kind: "absent", command: null },
     directUsesToken: true,
   };
   const claudeRes = checkClaude(claudeToken, null);
@@ -548,7 +574,7 @@ test("static-key: a baked credential needs no gh; the proxy detail names the dae
     envKeyInDotenv: false,
     envKeyInEnviron: false,
     tokenAvailable: false,
-    directAuth: { command: null, authenticated: false },
+    directAuth: { kind: "absent", command: null },
     directUsesToken: false,
     directNeedsNoGh: true,
     provider: null,
@@ -606,7 +632,7 @@ test("static-key: a baked credential needs no gh; the proxy detail names the dae
     baseUrlMatches: false,
     providerMode: "direct",
     otherReason: null,
-    directAuth: { command: null, authenticated: false },
+    directAuth: { kind: "absent", command: null },
     directUsesToken: false,
     provider: "gh-cli",
   } satisfies ClaudeFacts;
@@ -687,14 +713,14 @@ test("checkAgentLive: the probe outcome decides status, fix, detail, and value",
     // could-not-check, never "not installed".
     {
       agent: "codex",
-      outcome: { kind: "skipped" },
+      outcome: { kind: "skipped", reason: "not-installed" },
       status: "ok",
       exactDetail: "skipped (codex CLI not installed)",
       value: { kind: "skipped" },
     },
     {
       agent: "codex",
-      outcome: { kind: "skipped", lookFailed: true },
+      outcome: { kind: "skipped", reason: "look-failed" },
       status: "ok",
       exactDetail: "skipped (could not check for the codex CLI - the command probe failed to run)",
       value: { kind: "skipped", lookFailed: true },
@@ -713,10 +739,10 @@ test("checkAgentLive: the probe outcome decides status, fix, detail, and value",
       detail: "401 invalid x-api-key",
       notDetail: "did not answer",
     },
-    { agent: "claude", outcome: { kind: "skipped" }, status: "ok" },
+    { agent: "claude", outcome: { kind: "skipped", reason: "not-installed" }, status: "ok" },
     {
       agent: "claude",
-      outcome: { kind: "skipped", lookFailed: true },
+      outcome: { kind: "skipped", reason: "look-failed" },
       status: "ok",
       exactDetail: "skipped (could not check for the claude CLI - the command probe failed to run)",
     },

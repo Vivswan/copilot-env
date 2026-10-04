@@ -124,7 +124,7 @@ function offlineDeps(extra: Partial<ProbeDeps> = {}): Partial<ProbeDeps> {
     reach: async () => false,
     proxyIdentity: async () => null,
     classifyTrackedPid: async () => "no" as const,
-    codexDirectAuth: () => Promise.resolve({ command: null, authenticated: false }),
+    codexDirectAuth: () => Promise.resolve({ kind: "absent", command: null }),
     ghActiveLogin: () => Promise.resolve(null),
     ...extra,
   };
@@ -491,7 +491,7 @@ test("checkCodex(named): missing wiring warns with the profile re-add fix", () =
     envKeyInDotenv: false,
     envKeyInEnviron: false,
     tokenAvailable: false,
-    directAuth: { command: null, authenticated: false },
+    directAuth: { kind: "absent", command: null },
     directUsesToken: false,
     directNeedsNoGh: false,
     otherReason: null,
@@ -525,7 +525,7 @@ test("checkClaude(named): missing wiring warns; a stale proxy port points at the
     baseUrlMatches: false,
     providerMode: "none",
     otherReason: null,
-    directAuth: { command: null, authenticated: false },
+    directAuth: { kind: "absent", command: null },
     directUsesToken: false,
   } satisfies ClaudeFacts;
   const unwired = checkClaude(base, P);
@@ -597,7 +597,7 @@ test("named wiring in the OTHER mode than the slot records warns as an interrupt
     envKeyInDotenv: false,
     envKeyInEnviron: false,
     tokenAvailable: false,
-    directAuth: { command: null, authenticated: false },
+    directAuth: { kind: "absent", command: null },
     directUsesToken: true,
     directNeedsNoGh: true,
     otherReason: null,
@@ -640,7 +640,7 @@ test("named wiring in the OTHER mode than the slot records warns as an interrupt
       baseUrlMatches: true,
       providerMode: "proxy",
       otherReason: null,
-      directAuth: { command: null, authenticated: false },
+      directAuth: { kind: "absent", command: null },
       directUsesToken: false,
       expectedMode: "direct",
     },
@@ -1046,7 +1046,7 @@ test("gatherFacts narrowed to a DIRECT profile inspects direct wiring with the p
       claudeHome: () => join(home, "no-claude"),
       codexDirectAuth: () => {
         ghProbes += 1;
-        return Promise.resolve({ command: null, authenticated: false });
+        return Promise.resolve({ kind: "absent", command: null });
       },
     });
     const commandShape = await gatherFacts("codex", { profile: P }, ghCounting);
@@ -1136,11 +1136,11 @@ test("--live probes run for the narrowed profile alone, else for the default alo
       commandLook: () => ({ kind: "absent" }),
       codexLive: async (h, profile) => {
         seen.push({ agent: "codex", home: h, profile });
-        return { kind: "skipped" };
+        return { kind: "skipped", reason: "not-installed" };
       },
       claudeLive: async (h, profile) => {
         seen.push({ agent: "claude", home: h, profile });
-        return { kind: "skipped" };
+        return { kind: "skipped", reason: "not-installed" };
       },
     });
 
@@ -1160,14 +1160,19 @@ test("--live probes run for the narrowed profile alone, else for the default alo
 });
 
 test("an UNPROVEN gh probe travels from the codexDirectAuth seam into both auth fact rows", async () => {
-  // The gatherFacts spreads (probe.ts, the auth job) carry CodexDirectAuthFacts.unproven for
-  // both targets; dropping it silently restores the confident "gh is unauthenticated" render.
+  // ghResolutionFacts (probe.ts, the auth job) projects an unproven CodexDirectAuthFacts into
+  // ghAuthUnproven for both targets; dropping it silently restores the confident "gh is
+  // unauthenticated" render.
   const home = isolateProxyHome("copilot-health-unproven-gh-");
   try {
     const store = new CopilotEnvState();
     store.setCredential(null, { kind: "gh-cli", ghUser: null });
     store.commitProfile(P, { credential: { kind: "gh-cli", ghUser: null }, mode: "direct" });
-    const unproven = { command: "/bin/gh", authenticated: false, unproven: true as const };
+    const unproven = {
+      kind: "unproven",
+      command: "/bin/gh",
+      ghDetail: "`gh auth token` did not complete (ETIMEDOUT)",
+    } as const;
     const ghDeps = {
       codexDirectAuth: () => Promise.resolve(unproven),
       ghActiveLogin: () => Promise.resolve(null),
@@ -1177,6 +1182,7 @@ test("an UNPROVEN gh probe travels from the codexDirectAuth seam into both auth 
       profile: null,
       storedToken: false,
       ghAuthenticated: false,
+      ghDetail: "`gh auth token` did not complete (ETIMEDOUT)",
       ghAuthUnproven: true,
       provider: "gh-cli",
       profiles: { [P]: { provider: "gh-cli", mode: "direct" } },
@@ -1187,7 +1193,7 @@ test("an UNPROVEN gh probe travels from the codexDirectAuth seam into both auth 
     expect(authCheck?.detail).toBe([
       "provider 'gh-cli' is selected but its credential could not be checked",
       "could not check gh authentication " +
-      "(`gh auth token` did not run to completion; AUTO - follows gh's active account)",
+      "(`gh auth token` did not complete (ETIMEDOUT); AUTO - follows gh's active account)",
       "named profiles: p (gh-cli, direct)",
     ].join("\n"));
 
@@ -1197,6 +1203,7 @@ test("an UNPROVEN gh probe travels from the codexDirectAuth seam into both auth 
       slot: { provider: "gh-cli", mode: "direct" },
       storedToken: false,
       ghAuthenticated: false,
+      ghDetail: "`gh auth token` did not complete (ETIMEDOUT)",
       ghAuthUnproven: true,
     });
     const profileCheck = evaluateAll("auth", narrowed).find((r) => r.id === "setup.auth");
@@ -1204,7 +1211,7 @@ test("an UNPROVEN gh probe travels from the codexDirectAuth seam into both auth 
     expect(profileCheck?.detail).toBe([
       "provider 'gh-cli' is recorded for profile 'p' but its credential could not be checked",
       "could not check gh authentication " +
-      "(`gh auth token` did not run to completion; AUTO - follows gh's active account)",
+      "(`gh auth token` did not complete (ETIMEDOUT); AUTO - follows gh's active account)",
     ].join("\n"));
   } finally {
     restoreEnv();

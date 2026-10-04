@@ -83,8 +83,8 @@ if (-not $InstallDir) {
     $InstallDir = if ($env:COPILOT_ENV_DIR) { $env:COPILOT_ENV_DIR } else { Join-Path $env:USERPROFILE '.copilot-env' }
 }
 
-# install.sh's retry() over curl.exe: stdout of the first try that exits 0. A native call never
-# throws on its own, so the exit code is what fails a try.
+# install.sh's retry() over curl.exe: there a launch failure and a non-zero exit both spend a
+# try, so the catch retries too.
 function Invoke-Curl {
     param(
         [Parameter(Mandatory)][string]$Label,
@@ -92,9 +92,13 @@ function Invoke-Curl {
     )
 
     for ($try = 1; $try -le 3; $try++) {
-        $out = & curl.exe @CurlArgs
-        if ($LASTEXITCODE -eq 0) { return $out }
-        $failure = "curl.exe exited $LASTEXITCODE."
+        try {
+            $out = & curl.exe @CurlArgs
+            if ($LASTEXITCODE -eq 0) { return $out }
+            $failure = "curl.exe exited $LASTEXITCODE."
+        } catch {
+            $failure = $_.Exception.Message
+        }
         if ($try -ge 3) { throw $failure }
         Write-Warning "$Label failed; retrying ($try/3): $failure"
         Start-Sleep -Seconds ($try * 2)

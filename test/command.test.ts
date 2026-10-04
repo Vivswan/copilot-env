@@ -97,25 +97,31 @@ test("childPathPrepending dedupes the dirs; childEnvWithPath builds the child en
   }
 });
 
+// The env map is a plain object: on Windows it carries the variable under the casing the runner
+// stored it (PSMODULEPATH, PsModulePath), so every read of it goes by case-insensitive match.
+const psModulePathIn = (env: Record<string, string | undefined>) =>
+  Object.fromEntries(Object.entries(env).filter(([key]) => /^psmodulepath$/i.test(key)));
+
 test("withPowershellChildEnv: a 5.1 child sees no PSModulePath under any casing, a pwsh child the parent's own, and the parent has it back after", () => {
   process.env.PSModulePath = "/pwsh/Modules";
   // One key on Windows, where env names are case-insensitive; a second casing elsewhere.
   if (process.platform !== "win32") process.env.psmodulepath = "/pwsh/modules";
+  const parentOwn = psModulePathIn(process.env);
   const childSees = () =>
     runSync(process.execPath, ["eval", 'console.log(Deno.env.get("PSModulePath") ?? "")']).stdout
       .trim();
 
   const desktop = withPowershellChildEnv("powershell", (env) => ({
-    keys: Object.keys(env).filter((key) => /^psmodulepath$/i.test(key)),
+    map: psModulePathIn(env),
     child: childSees(),
   }));
-  expect(desktop).toEqual({ keys: [], child: "" });
+  expect(desktop).toEqual({ map: {}, child: "" });
   const core = withPowershellChildEnv("pwsh", (env) => ({
-    map: env.PSModulePath,
+    map: psModulePathIn(env),
     child: childSees(),
   }));
-  expect(core).toEqual({ map: "/pwsh/Modules", child: "/pwsh/Modules" });
-  expect(process.env.PSModulePath).toBe("/pwsh/Modules");
+  expect(core).toEqual({ map: parentOwn, child: "/pwsh/Modules" });
+  expect(psModulePathIn(process.env)).toEqual(parentOwn);
 });
 
 // cmd.exe expands %VAR% even inside double quotes, so the Windows dispatch may fall back to it only

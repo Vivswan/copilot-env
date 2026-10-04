@@ -187,7 +187,7 @@ describe("resolveTarget retry (de-flakes the release lookup)", () => {
   const releasesJson = JSON.stringify([rel("v1.0.0", "2026-06-01T00:00:00Z")]);
 
   function resolveWith(answer: (init?: RequestInit) => Promise<Response>): Promise<Release | null> {
-    return resolveTarget(null, null, {
+    return resolveTarget(null, {
       fetchImpl: (_input: string | URL | Request, init?: RequestInit) => answer(init),
       retryBaseMs: 0,
     });

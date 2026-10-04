@@ -79,6 +79,8 @@ const MAX_FETCH_ATTEMPTS = 4;
 const RETRY_BASE_MS = 400;
 
 export interface ResolveOptions {
+  /** A specific release tag instead of the newest aged one; prereleases become eligible. */
+  exactTag?: string | null;
   fetchImpl?: typeof fetch;
   retryBaseMs?: number;
 }
@@ -111,9 +113,9 @@ async function fetchReleasesText(
 /** Null when offline, the API errors, or no release is eligible. */
 export async function resolveTarget(
   cooldownDays: number | null,
-  exactTag: string | null = null,
   opts: ResolveOptions = {},
 ): Promise<Release | null> {
+  const exactTag = opts.exactTag ?? null;
   const text = await fetchReleasesText(
     RELEASES_API,
     opts.fetchImpl ?? fetch,

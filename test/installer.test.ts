@@ -26,6 +26,7 @@ import {
   MATERIALIZED_ASSET_DIRS,
   MATERIALIZED_ASSET_FILES,
   pointCurrentAt,
+  POWERSHELL_SHIM,
   readCurrentVersionName,
   removeVersionDirsExcept,
   versionDirName,
@@ -212,9 +213,9 @@ describe("the versioned full-install plan", () => {
     expect(readFileSync(join(versionRoot, "shell", "payload.txt"), "utf8")).toBe(
       "content of shell",
     );
-    for (const shim of ["agent", "agent.ps1"]) {
-      expect(statSync(join(versionRoot, "bin", shim)).isFile(), shim).toBe(true);
-    }
+    expect(statSync(join(versionRoot, "bin", "agent")).isFile()).toBe(true); // run under sh below
+    // PowerShell executes this file, and no test on a POSIX runner can run it: the pin is its bytes.
+    expect(readFileSync(join(versionRoot, "bin", "agent.ps1"), "utf8")).toBe(POWERSHELL_SHIM);
     expect(readFileSync(join(versionRoot, "bin", installedBinaryName()), "utf8")).toBe("BINARY");
     const manifest = JSON.parse(
       readFileSync(join(versionRoot, INSTALL_MANIFEST_FILE), "utf8"),

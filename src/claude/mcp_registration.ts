@@ -7,10 +7,9 @@
 import { homedir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { MCP_SERVER_NAME } from "../mcp/server.ts";
-import { sameStrings } from "../utils/assert.ts";
 import { resolveExecutablePath } from "../utils/command.ts";
 import * as fs from "../utils/fs_facade.ts";
-import { isRecord } from "../utils/json.ts";
+import { isRecord, sameStrings } from "../utils/json.ts";
 import { taggedLogger } from "../utils/logger.ts";
 import { agentLauncherCommand } from "../utils/root.ts";
 import { claudeConfigDirOverride } from "./paths.ts";

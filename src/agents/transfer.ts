@@ -33,11 +33,7 @@ import {
   type GlobalMapKey,
   type ProfileConfigData,
 } from "../copilot_api/config_registry.ts";
-import {
-  CopilotEnvConfig,
-  type CopilotEnvConfigData,
-  PROFILE_SETTINGS_DEFAULT_KEY,
-} from "../copilot_api/env_config.ts";
+import { CopilotEnvConfig, type CopilotEnvConfigData } from "../copilot_api/env_config.ts";
 import {
   AUTH_PROVIDERS,
   CopilotEnvState,
@@ -48,6 +44,7 @@ import {
 } from "../copilot_api/env_state.ts";
 import { resolveRootHome } from "../copilot_api/paths.ts";
 import {
+  DEFAULT_PROFILE_NAME,
   isValidProfileName,
   parseProfileName,
   type Profile,
@@ -322,12 +319,12 @@ const GLOBAL_MAP = strictMap<GlobalConfigData>(GLOBAL_DEFS);
 const PROFILE_SECTIONS = v.pipe(
   jsonObject,
   namedSections(
-    (name) => name === PROFILE_SETTINGS_DEFAULT_KEY || isValidProfileName(name),
+    (name) => name === DEFAULT_PROFILE_NAME || isValidProfileName(name),
     "carries an invalid profile name (want `default` or 1-32 chars of [a-z0-9-], non-reserved)",
   ),
   v.objectWithRest(
     {
-      [PROFILE_SETTINGS_DEFAULT_KEY]: v.optional(
+      [DEFAULT_PROFILE_NAME]: v.optional(
         strictMap<ProfileConfigData>(DEFAULT_SECTION_DEFS),
       ),
     },

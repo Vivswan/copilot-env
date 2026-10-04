@@ -133,9 +133,6 @@ function writeCredentialFields(raw: Record<string, unknown>, patch: RawCredentia
 export const PROFILE_MODES = ["direct", "proxy"] as const;
 export type ProfileMode = (typeof PROFILE_MODES)[number];
 
-/** parseProfileName rejects `default`, so no named profile can collide with this key. */
-export const DEFAULT_PROFILE_KEY = DEFAULT_PROFILE_NAME;
-
 /** The two creators refuse a word `agent profile` routes as a verb, so it can never become a
  *  profile; a profile named before its word became a verb is read as it is. */
 function refuseReservedWord(name: ProfileName): void {
@@ -391,7 +388,7 @@ export class CopilotEnvState {
 
   read(): CopilotEnvStateData {
     const data = this.rawRead();
-    const { [DEFAULT_PROFILE_KEY]: slot = emptyProfile(), ...profiles } = data.profiles;
+    const { [DEFAULT_PROFILE_NAME]: slot = emptyProfile(), ...profiles } = data.profiles;
     return {
       ...data,
       githubToken: slot.githubToken,
@@ -440,7 +437,7 @@ export class CopilotEnvState {
 
   readProfileSlot(profile: Profile): ProfileSlot {
     if (profile !== null) return this.profileSlotStatus(profile).slot;
-    return parseProfileSlot(this.rawRead().profiles[DEFAULT_PROFILE_KEY] ?? emptyProfile());
+    return parseProfileSlot(this.rawRead().profiles[DEFAULT_PROFILE_NAME] ?? emptyProfile());
   }
 
   /** Existence and contents come from ONE read, so they can never disagree under a concurrent write. */
@@ -614,16 +611,16 @@ export class CopilotEnvState {
   recordDefaultMode(mode: ProfileMode | null): void {
     this.store.update((d) => {
       const profiles = isRecord(d.profiles) ? d.profiles : {};
-      const raw = profiles[DEFAULT_PROFILE_KEY];
+      const raw = profiles[DEFAULT_PROFILE_NAME];
       if (mode === null) {
         if (!isRecord(raw)) return;
         delete raw.mode;
-        tidyEmptySlot(d, profiles, DEFAULT_PROFILE_KEY);
+        tidyEmptySlot(d, profiles, DEFAULT_PROFILE_NAME);
         return;
       }
       const slot: Record<string, unknown> = isRecord(raw) ? raw : {};
       slot.mode = mode;
-      profiles[DEFAULT_PROFILE_KEY] = slot;
+      profiles[DEFAULT_PROFILE_NAME] = slot;
       d.profiles = profiles;
     });
   }

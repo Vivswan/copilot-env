@@ -18,13 +18,33 @@ import {
 import { type CatalogModel, ONE_M_SUFFIX, parseCatalogModels } from "./models.ts";
 import { PING_TIMEOUT_MS } from "./endpoint_smoke.ts";
 import { fetchModelCatalog } from "./models_fetch.ts";
-import { CopilotEnvState } from "./env_state.ts";
+import { CODEX_IDENTITY_NAME } from "./config_registry.ts";
+import { CopilotEnvState, type ModelVerdict } from "./env_state.ts";
 import { errMessage } from "../utils/error.ts";
 import { isDue } from "../utils/time.ts";
 import { defaultFetch } from "../utils/fetch.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 
 const logger = createStderrLogger();
+
+/** What this process already asked Copilot, under the store's verdict keys: the oracle's answer per
+ *  candidate (its allowlist, or that the candidate itself served) and the verdicts it pinged. A run
+ *  on the fs overlay (an import's preview) lands its store write nowhere, so the real run after it
+ *  takes these from here instead of paying the requests again, and persists the verdicts. */
+const oracled = new Map<string, string[] | "servable">();
+const pinged = new Map<string, ModelVerdict>();
+
+/** Test hook: the next discovery asks as a fresh process would. */
+export function forgetDiscoveryAnswers(): void {
+  oracled.clear();
+  pinged.clear();
+}
+
+/** The identity segment of an answer's key: the header's value, or for the set that sends none its
+ *  own name, which the registry refuses as a pin, so no pinned identity can share a key with it. */
+function identityKey(integrationId: string | null): string {
+  return integrationId ?? CODEX_IDENTITY_NAME;
+}
 
 /** Above every 200k window, comfortably below the 1M prompt caps. */
 const ONE_M_PROBE_TOKENS = 230_000;
@@ -81,46 +101,51 @@ export async function discoverServableClaudeModels(
   const unlisted: string[] = [];
 
   try {
+    // Answers are keyed per host and credential: a profile's must never answer for the default's
+    // (entitlements differ per account), nor one host's for another's.
+    const credential = await credentialDigest(`${apiBase}|${token}`);
     const extras = await unadvertisedClaudeIds(
       fetchImpl,
       apiBase,
       token,
       userAgent,
       integrationId,
+      credential,
       advertised,
     );
     const state = new CopilotEnvState();
     const now = opts.nowMs?.() ?? Date.now();
-    // Verdicts are keyed per host and credential: a profile's must never answer for the default's
-    // (entitlements differ per account), nor one host's for another's.
-    const credential = await credentialDigest(`${apiBase}|${token}`);
     for (const id of extras) {
       // `agent profile models` and the Desktop wiring share the persisted verdicts, so a DEFINITIVE one costs its
       // billed ping once per model+identity+credential per day for sequential runs; overlapping runs each
       // probe. An inconclusive probe caches nothing (below), so it pings again on the next invocation.
-      const key = `${credential}|${integrationId ?? "default"}|${id}`;
+      const key = `${credential}|${identityKey(integrationId)}|${id}`;
       let verdict = state.readModelVerdict(key);
       if (verdict === null || isDue(verdict.atMs, now)) {
-        const servable = await pingModel(fetchImpl, apiBase, own, id, "x");
-        const is1m = servable === "yes"
-          ? await pingModel(
-            fetchImpl,
-            apiBase,
-            own,
-            id,
-            "x ".repeat(ONE_M_PROBE_TOKENS),
-          )
-          : "no";
-        // Only DEFINITIVE outcomes are cached: a timeout / 429 / 5xx must not wedge
-        // a servable model out (or in) for a whole TTL window.
-        if (servable === "unknown" || is1m === "unknown") {
-          if (servable === "yes") {
-            models.push({ id, is1m: false });
-            unlisted.push(id);
+        verdict = pinged.get(key) ?? null;
+        if (verdict === null || isDue(verdict.atMs, now)) {
+          const servable = await pingModel(fetchImpl, apiBase, own, id, "x");
+          const is1m = servable === "yes"
+            ? await pingModel(
+              fetchImpl,
+              apiBase,
+              own,
+              id,
+              "x ".repeat(ONE_M_PROBE_TOKENS),
+            )
+            : "no";
+          // Only DEFINITIVE outcomes are cached: a timeout / 429 / 5xx must not wedge
+          // a servable model out (or in) for a whole TTL window.
+          if (servable === "unknown" || is1m === "unknown") {
+            if (servable === "yes") {
+              models.push({ id, is1m: false });
+              unlisted.push(id);
+            }
+            continue;
           }
-          continue;
+          verdict = { servable: servable === "yes", is1m: is1m === "yes", atMs: now };
+          pinged.set(key, verdict);
         }
-        verdict = { servable: servable === "yes", is1m: is1m === "yes", atMs: now };
         state.setModelVerdict(key, verdict);
       }
       if (verdict.servable) {
@@ -177,6 +202,7 @@ async function unadvertisedClaudeIds(
   token: string,
   userAgent: string,
   integrationId: string | null,
+  credential: string,
   advertised: CatalogModel[],
 ): Promise<string[]> {
   const ownIds = new Set(advertised.map((m) => m.id));
@@ -201,23 +227,31 @@ async function unadvertisedClaudeIds(
 
   const own = wireHeaders(token, userAgent, integrationId);
   for (const candidate of candidates.slice(0, ORACLE_ATTEMPTS)) {
-    const allowlist = await oracleAllowlist(fetchImpl, apiBase, own, candidate);
-    if (allowlist === null) continue;
-    return allowlist.filter(
+    const key = `${credential}|${identityKey(integrationId)}|${candidate}`;
+    let answer = oracled.get(key);
+    if (answer === undefined) {
+      const asked = await oracleAllowlist(fetchImpl, apiBase, own, candidate);
+      if (asked === null) continue;
+      answer = asked;
+      oracled.set(key, answer);
+    }
+    if (answer === "servable") continue;
+    return answer.filter(
       (id) => id.startsWith("claude-") && !id.endsWith(ONE_M_SUFFIX) && !ownIds.has(id),
     );
   }
   return [];
 }
 
-/** A 2xx (the id turned out servable; max_output_tokens caps the accident at one token) or an
- *  unrecognized error shape yields null. */
+/** The allowlist the rejection printed; "servable" for a 2xx (the id turned out servable, and
+ *  max_output_tokens caps the accident at one billed token); null for an unrecognized error
+ *  shape. */
 async function oracleAllowlist(
   fetchImpl: ProbeFetch,
   apiBase: string,
   headers: Record<string, string>,
   gatedId: string,
-): Promise<string[] | null> {
+): Promise<string[] | "servable" | null> {
   const res = await fetchImpl(`${apiBase}/responses`, {
     method: "POST",
     headers: { ...headers, "Content-Type": "application/json" },
@@ -230,7 +264,7 @@ async function oracleAllowlist(
     signal: AbortSignal.timeout(PING_TIMEOUT_MS),
   });
   const text = await res.text();
-  if (res.ok) return null;
+  if (res.ok) return "servable";
   const match = text.match(/Available models: \[([^\]]*)\]/);
   if (match === null || match[1] === undefined) return null;
   const ids = match[1].split(/\s+/).filter((id) => id !== "");

@@ -17,16 +17,10 @@
 //   bundle mode "none"                  -> that agent left alone
 import { basename, join, posix, win32 } from "node:path";
 import * as v from "valibot";
-import { claudeJsonPath } from "../claude/mcp_registration.ts";
-import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
-import { codexHostFarm, effectiveCodexHomeFor, planCodexHostFarm } from "../codex/host.ts";
-import { codexConfigPath, codexProfileConfigPath } from "../codex/paths.ts";
 import { Credential, ghAuthToken } from "../copilot_api/credential.ts";
 import { GH_LOGIN_RE } from "../copilot_api/gh_cli.ts";
 import {
-  codexHomePrefsFor,
   CONFIG_REGISTRY,
-  configDefaultBoolean,
   type ConfigKeyDef,
   type ConfigValue,
   type GlobalConfigData,
@@ -50,9 +44,12 @@ import {
   type Profile,
   type ProfileName,
 } from "../copilot_api/profile.ts";
+import { type FileChange, underDryRunMarker, withDryRun } from "../utils/dry_run.ts";
 import { errMessage } from "../utils/error.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { isRecord } from "../utils/json.ts";
+import { withNarrationMuted } from "../utils/logger.ts";
+import { underInternalRoot } from "../utils/report_write.ts";
 import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
 import { configureDefaultAgents } from "./configure_defaults.ts";
 import { reconcileClaudeDesktopWiring } from "./claude_desktop.ts";
@@ -289,7 +286,6 @@ const PROFILE_DEFS = CONFIG_REGISTRY.filter((def) => def.scope !== "global");
 /** The default profile's proxy knobs are the global map (what `--set` writes without `--profile`),
  *  so its section admits the profile keys alone: an override there could be removed by no command. */
 const DEFAULT_SECTION_DEFS = CONFIG_REGISTRY.filter((def) => def.scope === "profile");
-const GLOBAL_MAP_KEYS = GLOBAL_DEFS.map((def) => def.key);
 
 /** One map of the preference store, each value judged by its registry domain (env_config owns the
  *  shapes, so a new key is admitted here automatically) and refused where the store's own read
@@ -402,11 +398,11 @@ export function parseSettingsBundle(raw: unknown): SettingsBundle {
 
 // --- import planning --------------------------------------------------------
 //
-// The import is ONE plan computed up front (every slot's landing, the default modes, the exact
-// writes); the confirmation summary and the apply both execute that plan, so the prompt cannot
-// describe a landing the apply would not perform. Its `writes` lines are overwrite-only
-// (planWrites), so a bundle preference with no local counterpart lands without a line. The gh CLI
-// is probed once per pinned account (ghUser; null is gh's active account) per import.
+// The import is ONE plan computed up front (every slot's landing, the default modes); the
+// confirmation and the apply both execute that plan, so the prompt cannot describe a landing the
+// apply would not perform. The confirmation's file list is the apply itself run on the fs seam's
+// overlay (previewImportChanges). The gh CLI is probed once per pinned account (ghUser; null is
+// gh's active account) per import.
 
 /** Import test seams, threaded through to the wiring layers untouched.
  *  `ghAuthToken` substitutes the gh CLI token probe so gh-cli slot handling is
@@ -520,8 +516,7 @@ interface PlannedProfile {
   landing: SlotPlan;
 }
 
-/** The complete import plan: what lands where, what gets wired, what gets
- *  skipped (and why), and every write the apply will perform. */
+/** The complete import plan: what lands where, what gets wired, and what gets skipped (and why). */
 export interface ImportPlan {
   bundle: SettingsBundle;
   defaultSlot: SlotPlan;
@@ -530,111 +525,6 @@ export interface ImportPlan {
   profiles: PlannedProfile[];
   /** Skip messages, decided here so the summary and the apply agree. */
   skipped: string[];
-  /** Confirmation lines from planWrites: what the apply OVERWRITES, not all it writes. */
-  writes: string[];
-}
-
-// PLAN-INPUT RULE for planWrites: everything read there is either apply-immutable (env, homes,
-// the pre-import store content described as overwritten) or resolved as its POST-import value
-// when the apply mutates it before the writers read it. wire-mcp is resolved post-import (the
-// preference store is replaced before the Claude writer consults it); codex-model-catalog is
-// covered by the default-Codex line's unconditional "may rewrite" hedge.
-
-/**
- * The lines name what the apply OVERWRITES locally, never everything it writes. The file list
- * mirrors what the wiring writers touch (configureClaudeConfig / applyCodexConfig /
- * wireBothAgents); they expose no dry run to derive it from, so the mapping lives here beside
- * the plan.
- *
- *   no locally stored pref key       -> no line; the bundle's preferences still land
- *   skipped slot, or an empty one    -> no line
- *   catalog sync's host-config sweep -> one summary line, the set is dynamic
- */
-function planWrites(
-  bundle: SettingsBundle,
-  defaultSlot: SlotPlan,
-  modes: ImportPlan["modes"],
-  profiles: PlannedProfile[],
-): string[] {
-  const lines: string[] = [];
-  const prefs = new CopilotEnvConfig().read();
-  // Preferences are full-replace: every locally stored key, global or per profile, is rewritten or
-  // reset, except one the bundle redacted, which keeps the local value like a redacted token.
-  const storedPrefKeys = [
-    ...GLOBAL_MAP_KEYS.filter(
-      (key) => prefs.global[key] !== undefined && !isRedactedPref(bundle.config, key),
-    ),
-    ...Object.entries(prefs.profiles).flatMap(([name, section]) =>
-      setKeys(section).map((key) => `${key} [${name}]`)
-    ),
-  ];
-  if (storedPrefKeys.length > 0) {
-    lines.push(`preferences (${storedPrefKeys.join(", ")})`);
-  }
-  const local = new CopilotEnvState().read();
-  if (
-    defaultSlot.action === "write" &&
-    (local.githubToken !== null || local.authProvider !== null)
-  ) {
-    lines.push(`the default credential (${local.authProvider ?? "token only"})`);
-  }
-  const overwritten = profiles
-    .filter((p) => p.landing.action === "write" && Object.hasOwn(local.profiles, p.name))
-    .map((p) => p.name);
-  if (overwritten.length > 0) {
-    lines.push(`profile slot${overwritten.length === 1 ? "" : "s"}: ${overwritten.join(", ")}`);
-  }
-  // A mode-less bundle slot landing a credential on a local Direct profile rebakes it too
-  // (importProfiles), so its files are named like a mode-bearing one's.
-  const wired = profiles.filter((p) =>
-    p.landing.action !== "skip" &&
-    (p.slot.mode !== null ||
-      (p.landing.action === "write" && Object.hasOwn(local.profiles, p.name) &&
-        local.profiles[p.name]?.mode === "direct"))
-  );
-  // Named-profile wiring writes its provider table into config.toml and its selector into
-  // `<name>.config.toml` of the effective home. The apply replaces the preference store before it
-  // wires, so the home is resolved under the BUNDLE's codex-home and codex-host values, not the
-  // local ones.
-  const homePrefs = codexHomePrefsFor(bundle.config.global);
-  const profileCodexHome = effectiveCodexHomeFor(homePrefs);
-  if (modes.codex !== null) {
-    // Post-import resolution (the plan-input rule): the farm decision is the SAME one the apply
-    // takes, so its action and landing can be named.
-    const farm = codexHostFarm(homePrefs);
-    const plan = planCodexHostFarm(homePrefs.hostFarm, farm);
-    if (plan.action === "build") lines.push(`Per-host CODEX_HOME farm (built): ${farm.hostHome}`);
-    if (plan.action === "remove") {
-      lines.push(`Per-host CODEX_HOME farm (removed): ${farm.hostHome}`);
-    }
-    if (plan.action === "leave") {
-      lines.push(`Per-host CODEX_HOME farm path (left alone, not proven ours): ${farm.hostHome}`);
-    }
-    // The catalog sync may rewrite other host configs and the generated catalog file; the set is
-    // dynamic, so one honest line beats an enumeration that would go stale.
-    lines.push(
-      `Codex config: ${codexConfigPath(profileCodexHome)} (the model-catalog sync may rewrite ` +
-        "other known host configs and the generated catalog file)",
-    );
-  } else if (wired.length > 0) {
-    lines.push(`Codex config: ${codexConfigPath(profileCodexHome)}`);
-  }
-  const claudeHome = resolveClaudeHome();
-  if (modes.claude !== null) {
-    lines.push(`Claude settings: ${settingsPathFor(claudeHome)}`);
-    // Post-import resolution: the bundle's claude.wire-mcp (else the default) decides, the same
-    // stored-else-default precedence wireMcpResolved applies to the store this import creates.
-    const wireMcp = bundle.config.global["claude.wire-mcp"] ??
-      configDefaultBoolean("claude.wire-mcp");
-    if (modes.claude === "direct" && wireMcp) {
-      lines.push(`Claude MCP registration (+ WebSearch deny): ${claudeJsonPath()}`);
-    }
-  }
-  for (const p of wired) {
-    lines.push(`Codex profile config: ${codexProfileConfigPath(profileCodexHome, p.name)}`);
-    lines.push(`Claude profile settings: ${settingsPathFor(claudeHome, p.name)}`);
-  }
-  return lines;
 }
 
 /** How far an import reaches. The whole store lands the default's credential and wiring and
@@ -677,8 +567,8 @@ export function planImport(
   const profiles: PlannedProfile[] = [];
   const state = new CopilotEnvState();
   const recorded = state.readProfileSlot(null).mode;
-  // The default is one mode for both agents, decided at PLAN time so planWrites names every file
-  // the apply touches and the outcome reports both agents. Three bundles land BOTH agents:
+  // The default is one mode for both agents, decided at PLAN time so the skip lines and the
+  // outcome name both agents. Three bundles land BOTH agents:
   //   NO default wiring (`none` for both, never a skipped or unmanaged mode) on a recorded Direct
   //   default whose pair will not be stored at apply time -> rebakes both, as a named profile's
   //   slot does below (importProfiles): a landing is where the pair is probed and stored;
@@ -744,14 +634,7 @@ export function planImport(
     }
     profiles.push({ name, slot, landing });
   }
-  return {
-    bundle,
-    defaultSlot,
-    modes,
-    profiles,
-    skipped,
-    writes: planWrites(bundle, defaultSlot, modes, profiles),
-  };
+  return { bundle, defaultSlot, modes, profiles, skipped };
 }
 
 // --- import apply -------------------------------------------------------------
@@ -879,6 +762,26 @@ export async function applyImportPlan(
     }
   }
   return outcome;
+}
+
+/** The files the import would create or rewrite: the apply itself, run on the fs seam's overlay
+ *  with every spawned child a silent dry run and its narration muted (the real run's follows the
+ *  confirmation). A create of copilot-env's own homes or inside them is bookkeeping, as the write
+ *  ledger treats it; a rewrite or delete there changes recorded state and is listed. A throw is the
+ *  real apply's, raised here before anything lands. */
+export async function previewImportChanges(
+  plan: ImportPlan,
+  scope: ImportScope = { defaultWiring: true },
+  apply: typeof applyImportPlan = applyImportPlan,
+): Promise<FileChange[]> {
+  const run = await withNarrationMuted(() =>
+    underDryRunMarker(() => withDryRun(() => apply(plan, scope)))
+  );
+  if (run.status === "failed") throw run.error;
+  return run.changes.filter((change) =>
+    change.verdict === "rewrite" || change.verdict === "delete" ||
+    (change.verdict === "create" && !underInternalRoot(change.path))
+  );
 }
 
 // --- pre-import backups -------------------------------------------------------

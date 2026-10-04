@@ -6,6 +6,7 @@ import {
   type ConsolaInstance,
   type ConsolaReporter,
   createConsola,
+  LogLevels,
   type LogObject,
 } from "consola";
 import { format } from "node:util";
@@ -13,6 +14,36 @@ import { colorEnabled, FG_CLOSE, palette, sgrOpen, type Tone } from "./ansi.ts";
 import { terminalWidth, wrapMessage } from "./table.ts";
 
 const NO_DATE = { date: false } as const;
+
+/** Every logger made here, so one scope can silence them all (withNarrationMuted); a logger made
+ *  inside that scope joins it silenced. */
+const INSTANCES: ConsolaInstance[] = [consola];
+
+/** The active mute: each silenced logger's level from before it. */
+let muted: Map<ConsolaInstance, number> | null = null;
+
+/** `level` is what the logger returns to after the mute: its own, or for a tagged child made
+ *  inside the scope its parent's, since the child copied the parent's muted level. */
+function register(logger: ConsolaInstance, level = logger.level): ConsolaInstance {
+  INSTANCES.push(logger);
+  if (muted !== null) silence(logger, muted, level);
+  return logger;
+}
+
+function silence(
+  logger: ConsolaInstance,
+  mute: Map<ConsolaInstance, number>,
+  level = logger.level,
+): void {
+  mute.set(logger, level);
+  logger.level = LogLevels.silent;
+}
+
+/** True inside withNarrationMuted: a line said now is not said, so a site that says a line once
+ *  per process must not record it. */
+export function narrationMuted(): boolean {
+  return muted !== null;
+}
 
 type ReporterContext = Parameters<ConsolaReporter["log"]>[1];
 type WidthOf = (stream: NodeJS.WriteStream) => number | null;
@@ -149,7 +180,7 @@ export function configureConsolaOutput(): void {
 export function taggedLogger(tag: string): ConsolaInstance {
   const logger = consola.withTag(tag);
   logger.options.formatOptions = { ...logger.options.formatOptions, ...NO_DATE };
-  return wrapToTerminal(logger);
+  return register(wrapToTerminal(logger), muted?.get(consola));
 }
 
 /** The MCP stdio server owns stdout as JSON-RPC and library code it calls logs through the global
@@ -202,9 +233,24 @@ export const prompt: ConsolaInstance["prompt"] = (message, options) => {
 };
 
 export function createStderrLogger(): ConsolaInstance {
-  return wrapToTerminal(createConsola({
+  return register(wrapToTerminal(createConsola({
     stdout: process.stderr,
     stderr: process.stderr,
     formatOptions: NO_DATE,
-  }));
+  })));
+}
+
+/** For a body run only to learn what it would do (an import's apply on the fs overlay, whose
+ *  changes the confirmation lists): its narration belongs to the real run that follows. */
+export async function withNarrationMuted<T>(fn: () => Promise<T>): Promise<T> {
+  if (muted !== null) return await fn();
+  const mute = new Map<ConsolaInstance, number>();
+  muted = mute;
+  for (const logger of INSTANCES) silence(logger, mute);
+  try {
+    return await fn();
+  } finally {
+    muted = null;
+    for (const [logger, level] of mute) logger.level = level;
+  }
 }

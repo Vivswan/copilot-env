@@ -199,12 +199,13 @@ interface CopilotEnvStateData {
   /** The catalog (by content hash) the installed codex (by version) last parsed, so the reference
    *  sync re-asks only when either changes (src/codex/catalog.ts). */
   codexCatalogAccepted: { sha256: string; codexVersion: string } | null;
-  /** Keyed `<credentialDigest>|<integrationId|default>|<modelId>` (src/copilot_api/discovery.ts). The
-   *  verification pings are billed requests, so this cache is shared by every consumer. Never exported. */
+  /** Keyed `<credentialDigest>|<integrationId, or codex for none>|<modelId>` (src/copilot_api/discovery.ts).
+   *  The verification pings are billed requests, so this cache is shared by every consumer. Never
+   *  exported. */
   claudeModelVerdicts: Record<string, ModelVerdict>;
 }
 
-interface ModelVerdict {
+export interface ModelVerdict {
   servable: boolean;
   is1m: boolean;
   atMs: number;

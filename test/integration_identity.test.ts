@@ -18,6 +18,8 @@ import {
   VSCODE_CHAT_INTEGRATION_ID,
 } from "../src/copilot_api/integration_identity.ts";
 import { codexUserAgent } from "../src/codex/user_agent.ts";
+import { withNarrationMuted } from "../src/utils/logger.ts";
+import { captureChannels } from "./helpers/output.ts";
 import { expect, test } from "./helpers/testing.ts";
 
 /** THE candidate list, as every mode probes it. */
@@ -596,5 +598,35 @@ test("fetchRawModels(direct) under the agents' identity sends the exact header s
       body: { data: [] },
       sent: c.expected,
     });
+  }
+});
+
+// An import's preview resolves the host muted, and the answer is memoized for the process: the one
+// narration of it belongs to the first caller that is not muted, the real run.
+test("the host note is said once per process, by the first caller that is not muted", async () => {
+  setIntegrationProbeFetch((input) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (url.includes("/copilot_internal/user")) {
+      return Promise.resolve(
+        new Response(JSON.stringify({ endpoints: { api: ENTERPRISE_API_BASE } }), { status: 200 }),
+      );
+    }
+    return Promise.resolve(new Response("gated", { status: 403 }));
+  });
+  // The default narrator (consola) is what the mute silences; a hand-made one would not be.
+  const resolve = (): Promise<string> =>
+    selectDirectIdentityAndHost("ghp_once", "codex_exec/1", { pinned: COPILOT_CLI_INTEGRATION_ID })
+      .then((selected) => selected.apiBase);
+  try {
+    const { all } = await captureChannels(async () => {
+      await withNarrationMuted(async () => {
+        expect(await resolve()).toBe(ENTERPRISE_API_BASE);
+      });
+      expect(await resolve()).toBe(ENTERPRISE_API_BASE);
+      expect(await resolve()).toBe(ENTERPRISE_API_BASE);
+    });
+    expect(all.split(`Copilot API host: ${ENTERPRISE_API_BASE}`).length - 1).toBe(1);
+  } finally {
+    setIntegrationProbeFetch(null);
   }
 });

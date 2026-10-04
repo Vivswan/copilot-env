@@ -1,8 +1,13 @@
-import { discoverServableClaudeModels } from "../src/copilot_api/discovery.ts";
+import {
+  discoverServableClaudeModels,
+  forgetDiscoveryAnswers,
+} from "../src/copilot_api/discovery.ts";
+import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import {
   DEFAULT_COPILOT_API_BASE,
   type ProbeFetch,
 } from "../src/copilot_api/integration_identity.ts";
+import { withDryRun } from "../src/utils/dry_run.ts";
 import { afterEach, expect, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateProxyHome } from "./helpers/env.ts";
 
@@ -13,8 +18,10 @@ afterEach(() => {
   restoreEnv();
 });
 
+/** A fresh home is a fresh machine: the answers this process got from Copilot go with the store. */
 function isolate(): void {
   isolateProxyHome("copilot-discovery-");
+  forgetDiscoveryAnswers();
 }
 
 interface StubOptions {
@@ -32,6 +39,8 @@ interface StubOptions {
   transient1m?: string[];
   /** Models whose small ping answers 201 (a 2xx that is not the exact 200). */
   odd?: string[];
+  /** Candidates whose oracle completion answers 200 (the candidate itself served: one billed token). */
+  oracleServable?: string[];
   /** Spy log: "oracle:<id>", "ping:<id>", "probe1m:<id>". */
   calls?: string[];
 }
@@ -54,6 +63,9 @@ function stubFetch(opts: StubOptions): ProbeFetch {
     };
     if (url.endsWith("/responses")) {
       opts.calls?.push(`oracle:${body.model}`);
+      if (opts.oracleServable?.includes(body.model)) {
+        return Promise.resolve(new Response("{}", { status: 200 }));
+      }
       const message = opts.allowlist === undefined
         ? "The requested model is not supported."
         : `The requested model is not available for integrator "x". Available models: [${
@@ -227,6 +239,53 @@ test("verification verdicts are cached: a rerun pays zero pings until the TTL la
   expect(third).toContain("ping:claude-fable-5");
 });
 
+// An import's confirmation runs the apply on the fs overlay first, where the verdict's store write
+// lands nowhere: the real run after it must not pay the oracle's billed completion or the pings
+// again, and must persist what the preview learned.
+test("answers got on the fs overlay are reused by the real run in the same process, which persists the verdicts", async () => {
+  isolate();
+  const opts = {
+    catalogs: {
+      "none": ["claude-haiku-4.5"],
+      "vscode-chat": ["claude-haiku-4.5"],
+      "copilot-developer-cli": ["claude-haiku-4.5", "claude-sonnet-4.6", "claude-opus-4.1"],
+      "copilot-developer-sandbox": ["claude-haiku-4.5"],
+    },
+    // The first candidate turns out servable (a billed token); the second prints the allowlist.
+    oracleServable: ["claude-sonnet-4.6"],
+    allowlist: ["claude-fable-5"],
+    servable: ["claude-fable-5"],
+    oneM: ["claude-fable-5"],
+  };
+  const t0 = 1_700_000_000_000;
+  const asked = async (nowMs: number): Promise<string[]> => {
+    const calls: string[] = [];
+    await discoverServableClaudeModels("ghu_x", UA, null, DEFAULT_COPILOT_API_BASE, {
+      fetchImpl: stubFetch({ ...opts, calls }),
+      nowMs: () => nowMs,
+    });
+    return calls;
+  };
+  const preview = await withDryRun(() => asked(t0));
+  expect(preview.status === "done" && preview.result).toEqual([
+    "oracle:claude-sonnet-4.6",
+    "oracle:claude-opus-4.1",
+    "ping:claude-fable-5",
+    "probe1m:claude-fable-5",
+  ]);
+  expect(new CopilotEnvState().read().claudeModelVerdicts).toEqual({});
+
+  // The real run: no request, and the store now holds the verdict.
+  expect(await asked(t0 + 1000)).toEqual([]);
+  expect(Object.values(new CopilotEnvState().read().claudeModelVerdicts)).toEqual([
+    { servable: true, is1m: true, atMs: t0 },
+  ]);
+
+  // A fresh process asks the oracle again and reads the verdict from the store.
+  forgetDiscoveryAnswers();
+  expect(await asked(t0 + 2000)).toEqual(["oracle:claude-sonnet-4.6", "oracle:claude-opus-4.1"]);
+});
+
 // Only the exact 200 is a "yes" and only a 400 a "no"; anything else is "unknown": the model is
 // excluded THIS run, but no verdict is written -- a wedged-out-for-a-day servable model is the
 // failure mode this stops.
@@ -339,4 +398,29 @@ test("verdicts are credential-exact: a different token probes for itself", async
     { fetchImpl: stubFetch({ ...opts, calls: elsewhere }), nowMs: () => t0 + 2000 },
   );
   expect(elsewhere).toContain("ping:claude-fable-5");
+});
+
+// `default` is a header-safe token the registry accepts as a pin; only `codex` (the no-header
+// identity's own name) is refused, so that name keys the no-header answers and the two never share one.
+test("the no-header identity's answers never stand in for an identity pinned `default`", async () => {
+  isolate();
+  const opts = {
+    catalogs: {
+      "none": ["claude-haiku-4.5"],
+      "default": ["claude-haiku-4.5"],
+      "vscode-chat": ["claude-haiku-4.5"],
+      "copilot-developer-cli": ["claude-haiku-4.5", "claude-sonnet-4.6"],
+      "copilot-developer-sandbox": ["claude-haiku-4.5"],
+    },
+    oracleServable: ["claude-sonnet-4.6"],
+  };
+  const asked = async (integrationId: string | null): Promise<string[]> => {
+    const calls: string[] = [];
+    await discoverServableClaudeModels("ghu_x", UA, integrationId, DEFAULT_COPILOT_API_BASE, {
+      fetchImpl: stubFetch({ ...opts, calls }),
+    });
+    return calls;
+  };
+  expect(await asked(null)).toEqual(["oracle:claude-sonnet-4.6"]);
+  expect(await asked("default")).toEqual(["oracle:claude-sonnet-4.6"]);
 });

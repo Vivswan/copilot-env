@@ -8,6 +8,7 @@
 // The overlay is one per process and entered once per command (src/utils/dry_run.ts); a run's
 // children learn of the dry run through the marker that module hands them, not through here.
 import { basename, dirname, join } from "node:path";
+import { isEnoentOrNotdir } from "./fs.ts";
 import * as disk from "./fs_disk.ts";
 import { openOverlay, type Overlay } from "./fs_overlay.ts";
 import { underScratch } from "./report_write.ts";
@@ -75,11 +76,6 @@ export function readTextResult(path: string): TextReadResult {
     if (isEnoentOrNotdir(e) && entryAbsent(path)) return { kind: "absent" };
     return { kind: "unreadable", error: e instanceof Error ? e.message : String(e) };
   }
-}
-
-function isEnoentOrNotdir(e: unknown): boolean {
-  const code = (e as NodeJS.ErrnoException).code;
-  return code === "ENOENT" || code === "ENOTDIR";
 }
 
 /** Fail-closed: only lstat's own ENOENT/ENOTDIR confirms absence; EACCES or a transient error reads

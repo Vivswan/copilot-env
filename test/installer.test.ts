@@ -17,7 +17,6 @@ import {
   buildInstallPlan,
   BUNDLED_ONLY_ASSETS,
   CHECKOUT_MARKERS,
-  CURRENT_LINK,
   currentLinkPath,
   INSTALL_ROOT_ENV,
   type InstallOptions,
@@ -33,13 +32,17 @@ import {
   readCurrentVersionName,
   removeVersionDirsExcept,
   versionDirName,
-  VERSIONS_DIR,
   writeTopLevelShims,
 } from "../src/install/installer.ts";
 import { deferWriteReports, flushWriteReports } from "../src/utils/report_write.ts";
 import { installedBinaryName } from "../src/install/targets.ts";
 import { CI_PS_DOCUMENTS_DIR_ENV, CI_RC_DIR_ENV } from "../src/shell/integration.ts";
-import { INSTALL_MANIFEST_FILE, INSTALL_ROOT_MARKERS } from "../src/utils/root.ts";
+import {
+  CURRENT_LINK,
+  INSTALL_MANIFEST_FILE,
+  INSTALL_ROOT_MARKERS,
+  VERSIONS_DIR,
+} from "../src/utils/root.ts";
 import { packageVersion } from "../src/utils/version.ts";
 import { envSnapshot } from "./helpers/env.ts";
 import { runSync } from "./helpers/run.ts";

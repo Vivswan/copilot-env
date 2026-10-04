@@ -36,3 +36,9 @@ export function readStringField(doc: Record<string, unknown>, key: string): stri
   const value = doc[key];
   return typeof value === "string" ? value : null;
 }
+
+/** The dotted leaf key of a JSON or TOML document path. A segment carrying a dot or a space is
+ *  quoted, so a dotted key never reads as two levels. */
+export function dottedKey(path: readonly string[]): string {
+  return path.map((s) => (s.includes(".") || s.includes(" ") ? JSON.stringify(s) : s)).join(".");
+}

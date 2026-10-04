@@ -2,7 +2,12 @@
 // one property of its scrub that matters: nothing private survives into the shareable copies.
 import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { IdMap, isClaudeUsageLine, isCodexUsageLine, scrubJsonl } from "../scripts/usage_corpus.ts";
+import {
+  IdMap,
+  isClaudeUsageLine,
+  isCodexUsageLine,
+  scrubJsonl,
+} from "../scripts/usage_corpus/scrub.ts";
 import { agentHomeEnv } from "./helpers/env.ts";
 import { ROOT, runCli, runScript } from "./helpers/run.ts";
 import { describe, expect, tempDir, test } from "./helpers/testing.ts";
@@ -32,7 +37,7 @@ describe("usage corpus scrub", () => {
       "sessionId": session,
       "version": "2.1.258",
       // Content of every length and shape under known keys.
-      "cwd": "/Users/viv/secret-project",
+      "cwd": "/home/octocat/secret-project",
       "gitBranch": "sk-ant-1",
       // Timestamp-shaped content: only a timestamp KEY keeps an ISO string.
       "lastPrompt": "1984-03-21T09:45:00.4111111111111111Z",
@@ -81,7 +86,7 @@ describe("usage corpus scrub", () => {
     const result = scrubJsonl(line, isClaudeUsageLine, new IdMap("fixed-salt-for-tests"));
     for (
       const secret of [
-        "viv",
+        "octocat",
         "secret",
         "sk-ant",
         "aGVsbG8",
@@ -151,7 +156,7 @@ describe("usage corpus scrub", () => {
           "id": thread,
           "session_id": thread,
           "forked_from_id": "01a06f2d-1111-7cb3-b769-258714552122",
-          "cwd": "/Users/viv/secret-project",
+          "cwd": "/home/octocat/secret-project",
           "model_provider": "fake",
           "cli_version": "0.153.4",
           "base_instructions": { "text": "You are a secret assistant" },
@@ -162,7 +167,7 @@ describe("usage corpus scrub", () => {
         "type": "turn_context",
         "payload": {
           "model": "gpt-5.4",
-          "cwd": "/Users/viv/secret-project",
+          "cwd": "/home/octocat/secret-project",
           "approval_policy": "never",
         },
       },
@@ -184,7 +189,7 @@ describe("usage corpus scrub", () => {
     ].map((record) => JSON.stringify(record)).join("\n");
     const codex = scrubJsonl(codexLines, isCodexUsageLine, new IdMap("fixed-salt-for-tests"));
     expect(codex.usageLines).toBe(1);
-    for (const secret of ["viv", "secret", thread]) expect(codex.text).not.toContain(secret);
+    for (const secret of ["octocat", "secret", thread]) expect(codex.text).not.toContain(secret);
     const [meta, turn, count] = codex.text.split("\n").map((l) => JSON.parse(l) as Json);
     expect(meta!.type).toBe("session_meta");
     expect(meta!.timestamp).toBe("2026-09-05T00:35:24.019Z");

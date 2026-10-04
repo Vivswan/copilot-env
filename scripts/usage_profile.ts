@@ -21,6 +21,8 @@ import { fileURLToPath } from "node:url";
 import { zstdDecompressSync } from "node:zlib";
 import { resolveClaudeHome } from "../src/claude/paths.ts";
 import { knownCodexHomes } from "../src/codex/host.ts";
+import { SYNTHETIC_MODEL } from "../src/usage/claude_sessions.ts";
+import { ROLLOUT_FILE } from "../src/usage/codex_sessions.ts";
 import { isEnoentOrNotdir } from "../src/utils/fs.ts";
 import { isRecord } from "../src/utils/json.ts";
 import { localDayKey } from "../src/utils/time.ts";
@@ -43,16 +45,13 @@ import {
 
 const RESERVOIR_SIZE = 200_000;
 /**
- * What each reader would price, and nothing else: Codex rollouts by their filename
- * pattern (plain or zstd) no deeper than sessions/YYYY/MM/DD, Claude transcripts as any
- * plain .jsonl down to the subagent workflow depth. A file the readers skip must not
- * shape the profile.
+ * What each reader would price, and nothing else: Codex rollouts by the reader's own filename
+ * pattern no deeper than sessions/YYYY/MM/DD, Claude transcripts as any plain .jsonl down to
+ * the subagent workflow depth. A file the readers skip must not shape the profile.
  */
-const ROLLOUT_FILE = /^rollout-(\d{4})-(\d{2})-(\d{2})T.*\.jsonl(\.zst)?$/;
 const CODEX_MAX_DEPTH = 4;
 const CLAUDE_FILE = /\.jsonl$/;
 const CLAUDE_MAX_DEPTH = 8;
-const SYNTHETIC_MODEL = "<synthetic>";
 /** This checkout, symlinks resolved: the one place the profile must never be written. */
 const REPO_ROOT = realpathSync(fileURLToPath(new URL("..", import.meta.url)));
 

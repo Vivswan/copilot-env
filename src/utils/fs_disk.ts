@@ -36,7 +36,7 @@ import {
   writeSync,
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { isEnoentOrNotdir } from "./fs.ts";
+import { isEnoentOrNotdir, isOpenHandleRefusal, retryOpenHandleRefusal } from "./fs.ts";
 import {
   forgetReported,
   kindOf,
@@ -45,7 +45,6 @@ import {
   underScratch,
   untrackScratch,
 } from "./report_write.ts";
-import { sleepSync } from "./time.ts";
 
 declare const scratchBrand: unique symbol;
 
@@ -338,10 +337,7 @@ function writeStaged(path: string, data: string | Uint8Array, options: WriteOpti
     renameWithRetry(tmp, path);
   } catch (err) {
     dropTransient(tmp, tmpWas);
-    const code = (err as NodeJS.ErrnoException).code;
-    if (code !== undefined && RENAME_REFUSED_CODES.has(code)) {
-      throw new RenameRefusedError(path, err);
-    }
+    if (isOpenHandleRefusal(err)) throw new RenameRefusedError(path, err);
     throw err;
   }
   reportWrite(kindOf(was), path, options.detail);
@@ -518,10 +514,6 @@ export function removeScratchDir(dir: ScratchDir): void {
 
 // --- the rename over a live file -------------------------------------------------------------------
 
-/** What a rename refused by an open handle on the destination surfaces (Windows: the daemon,
- *  antivirus, the search indexer). */
-const RENAME_REFUSED_CODES: ReadonlySet<string> = new Set(["EPERM", "EBUSY", "EACCES"]);
-
 /** The live file is untouched; the staged copy is dropped where removal succeeded, and a leftover
  *  is reported. The one failure a caller may answer with a direct write (the installer's launcher
  *  shims); every other failure propagates as itself. */
@@ -532,24 +524,12 @@ export class RenameRefusedError extends Error {
   }
 }
 
-/** A POSIX rename over an open destination always succeeds; Windows transiently refuses it while
- *  another process holds the file open. */
+/** `rename` is the test seam. */
 export function renameWithRetry(
   from: string,
   to: string,
   attempts = 5,
   rename: (f: string, t: string) => void = renameSync,
 ): void {
-  for (let i = 0; i <= attempts; i++) {
-    try {
-      rename(from, to);
-      return;
-    } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code;
-      if (i >= attempts || code === undefined || !RENAME_REFUSED_CODES.has(code)) {
-        throw err;
-      }
-      sleepSync(50);
-    }
-  }
+  retryOpenHandleRefusal(() => rename(from, to), attempts);
 }

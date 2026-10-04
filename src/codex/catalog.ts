@@ -76,9 +76,6 @@ export async function withCatalogRefreshDeadline<T>(work: () => Promise<T>): Pro
   }
 }
 
-// The shared fetch (copilot_api/catalog.ts) owns the two roads to the raw `/models` body.
-export type { CatalogSource } from "../copilot_api/catalog.ts";
-
 export interface CopilotModelLimits {
   maxContextWindowTokens: number;
   maxPromptTokens: number;

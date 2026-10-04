@@ -286,10 +286,7 @@ export function removeShellIntegrationFrom(files: readonly string[]): void {
   }
 }
 
-// --- block builders (path-quoted; quote helpers re-exported for tests) --------
-
-// Re-exported so test/shell_integration.test.ts can import them from here.
-export { quotePosix, quotePowerShell };
+// --- block builders (path-quoted) ----------------------------------------------
 
 /** The `$HOME` tail of `path` when it lives under the user's home directory, else null.
  *  Anchoring the written block at `$HOME` keeps a synced rc/profile file working across

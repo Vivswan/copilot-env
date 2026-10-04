@@ -35,7 +35,7 @@ import {
 } from "./usage.ts";
 
 const SESSION_SUBDIRS = ["sessions", "archived_sessions"];
-const ROLLOUT_FILE = /^rollout-(\d{4})-(\d{2})-(\d{2})T.*\.jsonl(\.zst)?$/;
+export const ROLLOUT_FILE = /^rollout-(\d{4})-(\d{2})-(\d{2})T.*\.jsonl(\.zst)?$/;
 const MAX_WALK_DEPTH = 4; // sessions/YYYY/MM/DD/<file>
 
 const CODEX_NEEDLES: readonly string[] = [

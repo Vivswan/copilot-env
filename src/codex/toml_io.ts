@@ -6,7 +6,7 @@ import { parse, stringify } from "smol-toml";
 import { errMessage } from "../utils/error.ts";
 import { isEnoent } from "../utils/fs.ts";
 import * as fs from "../utils/fs_facade.ts";
-import { isRecord } from "../utils/json.ts";
+import { dottedKey, isRecord } from "../utils/json.ts";
 
 export type CodexTomlRead =
   | { kind: "absent" }
@@ -52,18 +52,16 @@ export function codexBearerLeaf(providerId: string): string {
 /** Every `http_headers.Authorization` leaf of `doc`, dotted, wherever a table carries one: the
  *  managed provider tables, and a legacy `[profiles.<name>]` table a migration still moves. The
  *  header name is matched case-insensitively, as HTTP reads it (a user's own `authorization`
- *  spelling is a bearer too). A segment carrying a dot or a space is quoted, so a dotted key never
- *  reads as two levels. */
+ *  spelling is a bearer too). */
 export function codexBearerLeaves(doc: Record<string, unknown>): string[] {
   const leaves: string[] = [];
-  const quote = (s: string): string => (s.includes(".") || s.includes(" ") ? JSON.stringify(s) : s);
   const walk = (value: unknown, path: readonly string[]): void => {
     if (!isRecord(value) || value instanceof Date) return;
     for (const [key, child] of Object.entries(value)) {
       if (key === "http_headers" && isRecord(child)) {
         for (const header of Object.keys(child)) {
           if (header.toLowerCase() === "authorization") {
-            leaves.push([...path, key, header].map(quote).join("."));
+            leaves.push(dottedKey([...path, key, header]));
           }
         }
       }

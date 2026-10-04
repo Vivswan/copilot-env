@@ -12,7 +12,7 @@ import { extname, join, sep } from "node:path";
 import { parse as parseToml } from "smol-toml";
 import * as disk from "./fs_disk.ts";
 import type { Overlay, OverlayEntry } from "./fs_overlay.ts";
-import { isRecord, parseJsonRecord } from "./json.ts";
+import { dottedKey, isRecord, parseJsonRecord } from "./json.ts";
 
 type FileVerdict = "create" | "rewrite" | "same" | "delete";
 
@@ -157,11 +157,6 @@ function parseDoc(path: string, text: string | null): Doc | null {
   } catch {
     return null;
   }
-}
-
-/** A segment carrying a dot or a space is quoted, so a dotted key never reads as two levels. */
-function dottedKey(path: readonly string[]): string {
-  return path.map((s) => (s.includes(".") || s.includes(" ") ? JSON.stringify(s) : s)).join(".");
 }
 
 /** A Date is a leaf: smol-toml parses a TOML datetime into one. An empty table is no leaf of its

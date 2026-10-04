@@ -41,7 +41,7 @@ import {
 } from "./usage.ts";
 
 /** Error placeholders carry this model id and no real usage attribution. */
-const SYNTHETIC_MODEL = "<synthetic>";
+export const SYNTHETIC_MODEL = "<synthetic>";
 
 const CLAUDE_NEEDLES: readonly string[] = ['"type":"assistant"'];
 

@@ -81,12 +81,10 @@ function mapSchema<T>(keys: readonly ConfigKeyDef[]): v.GenericSchema<unknown, T
   ) as unknown as v.GenericSchema<unknown, T>;
 }
 
-/** Exported for the settings-bundle parser (src/agents/transfer.ts), which hardens the leniency into
- *  strict rejections at its own trust boundary. */
-export const GLOBAL_CONFIG_SCHEMA = mapSchema<GlobalConfigData>(
+const GLOBAL_CONFIG_SCHEMA = mapSchema<GlobalConfigData>(
   CONFIG_REGISTRY.filter((def) => def.scope !== "profile"),
 );
-export const PROFILE_CONFIG_SCHEMA = mapSchema<ProfileConfigData>(
+const PROFILE_CONFIG_SCHEMA = mapSchema<ProfileConfigData>(
   CONFIG_REGISTRY.filter((def) => def.scope !== "global"),
 );
 

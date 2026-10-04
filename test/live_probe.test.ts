@@ -184,11 +184,7 @@ test("summarizeProbeFailure: the reason per (status, signal, error, stdout, stde
 // --- the gh-token env vars ------------------------------------------------------
 
 test("ghTokenFromEnv: precedence COPILOT_GITHUB_TOKEN > GH_TOKEN > GITHUB_TOKEN, trims, null when unset", () => {
-  const saved = {
-    COPILOT_GITHUB_TOKEN: process.env.COPILOT_GITHUB_TOKEN,
-    GH_TOKEN: process.env.GH_TOKEN,
-    GITHUB_TOKEN: process.env.GITHUB_TOKEN,
-  };
+  const restoreEnv = envSnapshot();
   try {
     delete process.env.COPILOT_GITHUB_TOKEN;
     delete process.env.GH_TOKEN;
@@ -202,10 +198,7 @@ test("ghTokenFromEnv: precedence COPILOT_GITHUB_TOKEN > GH_TOKEN > GITHUB_TOKEN,
     );
     expect(ghTokenFromEnv({ GH_TOKEN: "g", GITHUB_TOKEN: "gh" })).toBe("g");
   } finally {
-    for (const [key, value] of Object.entries(saved)) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
+    restoreEnv();
   }
 });
 
@@ -501,10 +494,7 @@ test("the real probe child never sees a provider variable the parent shell expor
   // spawnSync merges the parent's variables back into the child whatever `env` says (2.9.6,
   // verified): a shell ANTHROPIC_BASE_URL at a running proxy would answer the Claude smoke
   // prompt and mint a Direct verdict the proxy earned. Only a REAL child can see that.
-  const saved = {
-    ANTHROPIC_BASE_URL: process.env.ANTHROPIC_BASE_URL,
-    OPENAI_BASE_URL: process.env.OPENAI_BASE_URL,
-  };
+  const restoreEnv = envSnapshot();
   process.env.ANTHROPIC_BASE_URL = "http://127.0.0.1:4141";
   process.env.OPENAI_BASE_URL = "http://127.0.0.1:4141/v1";
   const script = "env_check.mts";
@@ -527,10 +517,7 @@ test("the real probe child never sees a provider variable the parent shell expor
     );
     expect(ok).toBe(true);
   } finally {
-    for (const [key, value] of Object.entries(saved)) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
+    restoreEnv();
   }
 });
 

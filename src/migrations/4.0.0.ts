@@ -435,5 +435,5 @@ export function dropLegacyAutoupdateFlag(file: string): boolean {
 export const v400AutoupdateFlag: Migration = {
   version: "4.0.0",
   description: "drop the retired `enabled` field from the autoupdate state file",
-  run: () => void dropLegacyAutoupdateFlag(autoupdateStateFile()),
+  run: (installRoot) => void dropLegacyAutoupdateFlag(autoupdateStateFile(installRoot)),
 };

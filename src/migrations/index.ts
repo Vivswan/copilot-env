@@ -22,6 +22,7 @@ import {
   v409StaticKeyScope,
 } from "./4.0.9.ts";
 import { dryRunActive } from "../utils/fs_facade.ts";
+import { PROJECT_ROOT } from "../utils/root.ts";
 
 /** One step, named for the release it migrates AWAY FROM (authored against the current release,
  *  with no future number to predict). It runs when an update leaves that version behind:
@@ -36,7 +37,9 @@ export interface Migration {
    *  stores through the NEW code and so at the new paths. Version-then-registry order still
    *  applies within each half. */
   layout?: true;
-  run: () => void | Promise<void>;
+  /** `installRoot` is the root whose machine state (`.autoupdate`) the step may touch: the
+   *  runner's, as every other install-root write takes it from its caller. */
+  run: (installRoot: string) => void | Promise<void>;
 }
 
 /** Ascending version order; a release with several INDEPENDENT fix-ups registers them all under
@@ -100,11 +103,13 @@ export function dueMigrations(
 }
 
 /** Best-effort: a failing migration warns and the rest still run; migrations must never abort
- *  an otherwise-successful update. `migrations` is the test seam, as for dueMigrations. */
+ *  an otherwise-successful update. `migrations` is the test seam, as for dueMigrations;
+ *  `installRoot` aims the machine-state step, as `root` does for the installer. */
 export async function runMigrations(
   from: string,
   to: string,
   migrations: Migration[] = MIGRATIONS,
+  installRoot: string = PROJECT_ROOT,
 ): Promise<void> {
   const due = dueMigrations(from, to, migrations);
   if (due.length === 0) return;
@@ -116,7 +121,7 @@ export async function runMigrations(
       // A dry run runs the step too: its moves and removals record through the seam and print as
       // the plan; nothing lands. The step narrates as it runs (a skip says what to do next), so a
       // preview hears the step's own lines under its "Would migrate" header.
-      await m.run();
+      await m.run(installRoot);
       if (!preview) consola.success(`Migration ${m.version} complete.`);
     } catch (e) {
       consola.warn(

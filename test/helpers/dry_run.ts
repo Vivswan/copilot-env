@@ -53,6 +53,23 @@ export function linesNaming(text: string, path: string): string[] {
   return text.split("\n").filter((line) => line.includes(path));
 }
 
+const PLAN_HEADER = "DRY RUN: nothing was written.";
+const PLAN_VERDICTS = new Set(["create", "rewrite", "unchanged", "delete"]);
+
+/** Every path a CLI dry run's stdout plans, in print order: the `<verdict> <path>` rows under the
+ *  DRY RUN header (two spaces in), never a leaf or diff row (four spaces in). A stdout with no
+ *  header, or a row whose first word is no verdict, is an error, not an empty plan. */
+export function plannedPaths(stdout: string): string[] {
+  const lines = stdout.split("\n");
+  const header = lines.findIndex((line) => line.startsWith(PLAN_HEADER));
+  if (header === -1) throw new Error(`no dry-run plan in stdout:\n${stdout}`);
+  return lines.slice(header + 1).filter((line) => /^ {2}\S/.test(line)).map((line) => {
+    const [verdict, ...path] = line.trimStart().split(" ");
+    if (!PLAN_VERDICTS.has(verdict ?? "")) throw new Error(`not a plan row: ${line}`);
+    return path.join(" ");
+  });
+}
+
 /** `body` run as a dry run: the tree diff it would print and its result; a body that fails
  *  rethrows, as the command does. */
 export async function dryRunChanges<T>(

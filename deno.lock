@@ -34,7 +34,7 @@
     "npm:undici@^7.29.1": "7.29.1",
     "npm:undici@^8.11.2": "8.11.2",
     "npm:valibot@^1.5.0": "1.5.0",
-    "npm:wrap-ansi@^10.0.1": "10.0.1"
+    "npm:wrap-ansi@^10.0.2": "10.0.2"
   },
   "jsr": {
     "@std/assert@1.0.19": {
@@ -1464,8 +1464,8 @@
     "winreg@1.2.5": {
       "integrity": "sha512-uf7tHf+tw0B1y+x+mKTLHkykBgK2KMs3g+KlzmyMbLvICSHQyB/xOFjTT8qZ3oeTFyU7Bbj4FzXitGG6jvKhYw=="
     },
-    "wrap-ansi@10.0.1": {
-      "integrity": "sha512-M0N4xzyzosiIok3svYlEo1sdLZts/8FPgYH/GPC3wvlmPoRvnoManGMrE54waYj3tISA8w6lsdesfVv67qSr8Q==",
+    "wrap-ansi@10.0.2": {
+      "integrity": "sha512-6OLRNZqRntVGBm26ghZ5eZhCuWWyOkRCSn8XsOIuq5stpCE/tjLbdozd93naILZig0lmD8ANfRwnhn0DLeXGlg==",
       "dependencies": [
         "ansi-styles",
         "string-width"
@@ -1521,7 +1521,7 @@
       "npm:undici@^7.29.1",
       "npm:undici@^8.11.2",
       "npm:valibot@^1.5.0",
-      "npm:wrap-ansi@^10.0.1"
+      "npm:wrap-ansi@^10.0.2"
     ]
   }
 }

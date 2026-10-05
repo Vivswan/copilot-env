@@ -624,6 +624,8 @@ function writeCodexProbeConfig(
   }, "Codex probe config");
 }
 
+/** With no codex CLI on the machine the endpoint smoke judges the credential instead. False means
+ *  the caller writes proxy. */
 export function detectCodexDirect(
   direct: DirectWiring,
   ghToken: string | null,
@@ -661,6 +663,7 @@ export function codexAdapter(): AgentAdapter {
         configureCodexConfig(effectiveCodexHome(), codexWriteRequest(write, profile));
         return;
       }
+      // The farm derivation records the home only after the write lands in it.
       await withCodexHostFarm((codexHome) =>
         applyCodexConfig(codexHome, write, options.directToken ?? null, null)
       );

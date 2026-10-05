@@ -753,6 +753,9 @@ export const CLAUDE_ENDPOINT_SMOKE: EndpointSmoke = {
   cliFallback: (body) => newestClaudeModel(parseCatalogModels(body)),
 };
 
+/** With no claude CLI on the machine the endpoint smoke judges the credential instead. False means
+ *  the caller writes proxy. `credential` is the probe subject's: the resolver command, or a named
+ *  profile's token baked. */
 export function detectClaudeDirect(
   direct: DirectWiring,
   ghToken: string | null,

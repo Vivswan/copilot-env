@@ -196,10 +196,10 @@ test(
       // The whole plan, so a file planned outside the scope fails as surely as one missing from it.
       expect(plannedPaths(proc.stdout).sort(), args.join(" ")).toEqual([...named].sort());
     }
-    // `agent init` is the default's add, --dry-run included.
-    expect(observe(["init", "--proxy", "--dry-run"], scratch).stdout).toBe(
-      observe(["profile", "add", "--proxy", "--dry-run"], scratch).stdout,
-    );
+    // `agent init` is the default's add, --dry-run included: the same plan, both exiting 0.
+    const init = observe(["init", "--proxy", "--dry-run"], scratch);
+    expect(init.exitCode).toBe(0);
+    expect(init.stdout).toBe(observe(["profile", "add", "--proxy", "--dry-run"], scratch).stdout);
     expect(treeContents(scratch.home)).toEqual(before);
     // Thirteen cold CLI spawns; generous headroom for loaded Windows CI runners.
   },

@@ -1,0 +1,9 @@
+install.sh # the bootstrap installer, nothing is installed yet
+install.ps1 # the bootstrap installer, nothing is installed yet
+scripts/ensure-deno.sh # installs Deno
+scripts/ensure-deno.ps1 # installs Deno
+scripts/setup-env.ps1 # runs before Deno exists
+bin/agent # runs before Deno exists
+bin/agent.ps1 # runs before Deno exists
+shell/agents.ps1 # sourced by the user's shell
+.github/actions/install-agent-clis/action.yml # no bun toolchain here

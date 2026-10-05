@@ -65,10 +65,8 @@ const logger = createStderrLogger();
 /** How a removal's report names an entry file. */
 const ENTRY = "Claude Desktop entry";
 
-/** The uuid minted for a profile's NEW entry in a library, per process, reused while nothing sits
- *  at it. A wire on the fs overlay (an import's preview) lands its entry nowhere, so the real wire
- *  after it finds none and would otherwise mint a second uuid: the confirmation would name a file
- *  never created. An existing entry is found by the ledger or adopted before this is consulted. */
+/** A new entry's uuid, reserved across an overlay preview and the real wire while its slot stays
+ *  unused, so the confirmation names the file the wire then creates. */
 const mintedEntryIds = new Map<string, string>();
 
 function mintedEntryId(dir: string, profile: Profile, free: (id: string) => boolean): string {

@@ -27,14 +27,10 @@ import { createStderrLogger } from "../utils/logger.ts";
 
 const logger = createStderrLogger();
 
-/** What this process already asked Copilot, keyed per credential (a digest of the host and token:
- *  a profile's answers must never serve the default's, since entitlements differ per account, nor
- *  one host's another's) and identity: the catalog under each identity, the oracle's answer per
- *  candidate (its allowlist, or that the candidate itself served), and each DEFINITIVE probe
- *  outcome under the store's verdict key plus the probe's name. A run on the fs overlay (an
- *  import's preview) lands its store write nowhere, so the real run after it takes these from here
- *  instead of paying the requests again, and persists the verdicts. The probes are kept one by
- *  one: a preview whose 1m probe was inconclusive still keeps its small ping's billed answer. */
+/** What this process already asked Copilot, keyed per credential and identity (entitlements differ
+ *  per account and host). A run on the fs overlay lands its store write nowhere, so the real run
+ *  after it pays none of these again; probes are kept one by one so a definitive small ping
+ *  survives an inconclusive 1m probe. */
 const catalogs = new Map<string, unknown>();
 const oracled = new Map<string, string[] | "servable">();
 const probed = new Map<string, { outcome: "yes" | "no"; atMs: number }>();

@@ -1556,8 +1556,8 @@ test("the confirmation names the Desktop entry file the apply then creates", asy
 test("preview then apply: the apply issues no request or scan the preview paid, and the preview leaves the homes untouched", async () => {
   const homes = isolate();
   const library = installDesktop(homes);
-  const pgrepRuns = WIN ? null : fakePgrep(homes);
   const savedPath = process.env.PATH;
+  const pgrepRuns = WIN ? null : fakePgrep(homes);
   // Every identity's catalog is the same: no gated candidate, so discovery is the catalog GETs
   // alone; the Direct wiring's identity and host probes go through the probe seam.
   const catalog = {
@@ -1603,6 +1603,7 @@ test("preview then apply: the apply issues no request or scan the preview paid, 
     expect(entry.filter(existsSync)).toEqual(entry);
   } finally {
     globalThis.fetch = realFetch;
-    process.env.PATH = savedPath;
+    if (savedPath === undefined) delete process.env.PATH;
+    else process.env.PATH = savedPath;
   }
 });

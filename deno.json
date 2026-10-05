@@ -20,7 +20,7 @@
     ".github/workflows/pr-title.yml"
   ],
   "imports": {
-    "@copilotkit/aimock": "npm:@copilotkit/aimock@1.41.0",
+    "@copilotkit/aimock": "npm:@copilotkit/aimock@1.43.0",
     "@jeffreycao/copilot-api": "npm:@jeffreycao/copilot-api@^2.6.19",
     "@modelcontextprotocol/client": "npm:@modelcontextprotocol/client@^2.1.0",
     "@modelcontextprotocol/client/": "npm:/@modelcontextprotocol/client@^2.0.0/",

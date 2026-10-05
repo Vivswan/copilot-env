@@ -133,6 +133,7 @@ const RESPONSES_URL = `${GENERIC_HOST}/responses`;
 const ENTERPRISE = "https://api.enterprise.githubcopilot.com";
 const QUERY = "bun release";
 
+/** A raw direct-catalog body for the alias-resolution tests. */
 function catalogFixture(): unknown {
   return {
     "data": [{ "id": "gpt-6" }, { "id": "gpt-6-mini" }, { "id": "claude-fable-5" }],

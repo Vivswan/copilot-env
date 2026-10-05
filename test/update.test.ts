@@ -14,6 +14,7 @@ import { describe, expect, removeDir, test } from "./helpers/testing.ts";
 // logic worth testing is parsing + selection.
 
 const secs = (iso: string): number => Math.floor(Date.parse(iso) / 1000);
+// A release row in the GitHub Releases API's shape.
 const rel = (tag: string, date: string, over: Record<string, unknown> = {}): unknown => ({
   tag_name: tag,
   published_at: date,

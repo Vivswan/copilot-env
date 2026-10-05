@@ -18,6 +18,7 @@ export { assertNotDirectory, RenameRefusedError } from "./fs_disk.ts";
 
 let overlay: Overlay | null = null;
 
+/** True inside withDryRun. */
 export function dryRunActive(): boolean {
   return overlay !== null;
 }

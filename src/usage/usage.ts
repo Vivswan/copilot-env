@@ -404,6 +404,7 @@ function mergeTotals(into: UsageTotals, from: ReadonlyUsageTotals): void {
   }
 }
 
+/** Summed per model: recordBilled adds a repeated model's requests, never replaces them. */
 export function mergeBilled(reports: readonly ReadonlyUsageReport[]): Map<string, BilledUsage> {
   const merged = usageReport();
   for (const report of reports) {

@@ -17,6 +17,7 @@ import { isRecord, sameStrings } from "../utils/json.ts";
 import { agentLauncherCommand } from "../utils/root.ts";
 import { type Doc, readFileOrNull } from "./desktop_library.ts";
 
+/** A leaf in the way is replaced, as the writers always did. */
 function tableAt(doc: Doc, key: string): Doc {
   const table = isRecord(doc[key]) ? doc[key] : {};
   doc[key] = table;

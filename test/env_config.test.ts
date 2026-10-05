@@ -78,6 +78,7 @@ function face(key: string | undefined, profile: Profile = null): ConfigView {
 /** Every key a view lists: the config view drops the profile keys, a profile's view the machine's. */
 const MACHINE_AND_SHARED_KEYS = CONFIG_REGISTRY.filter((d) => d.scope !== "profile").length;
 
+/** The shape read() returns. */
 function stored(
   global: CopilotEnvConfigData["global"],
   profiles: CopilotEnvConfigData["profiles"] = {},

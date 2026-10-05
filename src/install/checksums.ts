@@ -3,7 +3,6 @@
 // tool before the binary lands; this module is the in-process twin `agent update` uses.
 import { crypto } from "@std/crypto";
 
-/** File name -> expected hex digest, lowercase. */
 export type Checksums = ReadonlyMap<string, string>;
 
 /** A leading `*` on the name marks binary mode in both tools' output and is not part of the file

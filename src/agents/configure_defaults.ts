@@ -1,8 +1,17 @@
-// The default profile's writers. The record (`mode` in the default slot) and the Direct pair land in
-// commitDefaultWiring after BOTH agents' writes succeeded; the one other writer of the record is the
-// default's `add` with no credential yet, which records the mode alone. The file needs BOTH adapters
-// (src/codex/, src/claude/) and the re-render funnel (src/agents/profile_wiring.ts), so it lives in
+// The default profile's writers. The default is a profile: one credential, ONE mode, always both
+// agents. The record (`mode` in the default slot) and the Direct pair land in commitDefaultWiring
+// after BOTH agents' writes succeeded; the one other writer of the record is the default's `add`
+// with no credential yet, which records the mode alone. The file needs BOTH adapters (src/codex/,
+// src/claude/) and the re-render funnel (src/agents/profile_wiring.ts), so it lives in
 // src/agents/, not src/commands/.
+//
+//   `agent init`, an import naming both agents                      -> configureDefaultAgents, the landing
+//   `agent profile sync --codex|--claude`, an import naming one agent, a launcher's proxy wire
+//                                                                   -> runAgentConfig (runCodex, runClaude)
+//
+// An `auto` landing probes EVERY run; when the verdict differs from the recorded mode, the caller's
+// `onVerdict` (the CLI's question) says which one lands. A failed write leaves the previous record,
+// and the guidance names the agent that did not move and the repair.
 import { codexAdapter } from "../codex/config.ts";
 import { claudeAdapter } from "../claude/config.ts";
 import { Credential } from "../copilot_api/credential.ts";

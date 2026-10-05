@@ -130,6 +130,7 @@ for (const scenario of CLAUDE_SCENARIOS) {
 
 // ---------- change between runs ----------
 
+/** The index database is opened read-only. */
 function storedPaths(indexDir: string): string[] {
   return storedIndexPaths(join(indexDir, USAGE_INDEX_DB_NAME));
 }

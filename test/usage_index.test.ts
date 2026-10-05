@@ -235,6 +235,7 @@ function hideFilesTable(hidden: boolean): void {
   }
 }
 
+/** The database and any sidecar (-wal, -shm, -journal). */
 function rawIndexBytes(): string {
   return indexBytesOnDisk(dbPath());
 }

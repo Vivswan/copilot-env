@@ -42,6 +42,7 @@ import {
 import { registerProfileOps } from "./profile_ops.ts";
 import { DRY_RUN_HELP, type Opts, valueList } from "./registration.ts";
 
+/** The `--auto` option line `add` and `init` share. */
 const AUTO_HELP = "Probe Direct vs the proxy and record the verdict.";
 
 // Keyed exhaustively on AuthProvider so a membership change in env_state.ts fails the compile here
@@ -120,6 +121,7 @@ async function confirmOrRefuse(question: string, opts: Opts, what: string): Prom
 
 const ONE_MODE = "--direct, --proxy, and --auto are mutually exclusive (a profile has ONE mode)";
 
+/** `unflagged` for no mode flag: parseModeFlags answers `auto` to none. */
 function parseAddMode(opts: Opts): AddMode {
   if ([opts.direct, opts.proxy, opts.auto].filter(Boolean).length > 1) throw new Error(ONE_MODE);
   if (opts.auto) return "auto";
@@ -370,6 +372,8 @@ export function registerProfileCommand(program: Command, rawProfile: string | nu
       return checkProfile(minted(), agent);
     });
 
+  // The runtime verbs (launch env proxy-token mcp start stop health models credits settings) are
+  // profile_ops.ts's, routed onto their command functions with this name.
   registerProfileOps({
     rawProfile,
     verb,
@@ -378,6 +382,7 @@ export function registerProfileCommand(program: Command, rawProfile: string | nu
   return profile;
 }
 
+/** listProfiles prints one row per profile. */
 export function registerListCommand(program: Command): void {
   program
     .command("list")
@@ -474,6 +479,7 @@ function addAuthOptions(cmd: Command): Command {
     .option("--dry-run", "Show what would change; no login runs.");
 }
 
+/** runAuth's arguments less `profile`, which the profile verb adds. */
 function authArgs(opts: Opts): {
   provider?: string;
   set?: string;

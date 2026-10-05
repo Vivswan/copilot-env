@@ -350,6 +350,7 @@ const INTEGRATION_ID_DOMAIN: ConfigDomain<string> = domain(
   "id|auto",
 );
 
+/** The one validator behind `agent profile [<name>] set identity` and `identity --set`. */
 export function parseIntegrationIdPin(raw: string): string {
   return INTEGRATION_ID_DOMAIN.parse(raw);
 }
@@ -862,7 +863,6 @@ export function registryEntry(key: ConfigKey): ConfigKeyDef {
   return def;
 }
 
-/** The two guards below are this one fact as type narrowing. */
 export function configScope(key: ConfigKey): ConfigScope {
   return registryEntry(key).scope;
 }

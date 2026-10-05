@@ -883,6 +883,7 @@ function printCostReport(
   console.log("");
 }
 
+/** "fetched 2026-09-19": today, or the day a cached copy was fetched. */
 function describeRateCard(from: RateCardSource): string {
   return from.source === "built-in" ? "built-in table" : `fetched ${isoDay(from.fetchedAtMs)}`;
 }

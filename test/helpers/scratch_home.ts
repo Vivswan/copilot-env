@@ -29,6 +29,8 @@ export function scratchHome(prefix: string): ScratchHome {
       ...process.env,
       CONSOLA_LEVEL: "5",
       NO_COLOR: "1",
+      // Wide enough that no planned path wraps onto a continuation line the row parser skips.
+      COLUMNS: "400",
       ...agentHomeEnv(home),
     },
   };

@@ -49,9 +49,10 @@ test(
     const powershell = observe(["profile", "work", "env", "--format", "powershell"], scratch);
     expect(powershell.exitCode).toBe(0);
     expect(powershell.stdout).toBe(`$env:ANTHROPIC_BASE_URL = 'http://127.0.0.1:${port}'\n`);
-    expect(observe(["profile", "env"], scratch).stdout).toBe(
-      "export ANTHROPIC_BASE_URL='http://127.0.0.1:4199'\n",
-    );
+    expect(observe(["profile", "env"], scratch)).toMatchObject({
+      exitCode: 0,
+      stdout: "export ANTHROPIC_BASE_URL='http://127.0.0.1:4199'\n",
+    });
     // The auth scope narrowed to work is its one credential check, passing on the stored token.
     const auth = observe(["profile", "work", "health", "--scope", "auth", "--json"], scratch);
     expect(auth.exitCode).toBe(0);

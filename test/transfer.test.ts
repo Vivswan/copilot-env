@@ -1176,7 +1176,9 @@ test("import confirms only for actual overwrites: stores with content, or wiring
     })
   );
   expect(refusal).toContain("--force");
-  expect(listed.indexOf("Importing ")).toBe(0);
+  // The header is the first line under either consola reporter (CI's prefixes `[log] `).
+  const [firstLine = ""] = listed.split("\n");
+  expect(firstLine.replace(/^\[\w+\] /, "")).toMatch(/^Importing /);
   expect(listed).toContain(`create ${join(machine2.codexHome, "config.toml")}`);
   expect(listed).toContain(`create ${settingsPathFor(machine2.claudeHome)}`);
   expect(listed).not.toContain("Configuring");

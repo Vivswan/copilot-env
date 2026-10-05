@@ -388,11 +388,17 @@ function runCodexDebugModels(
   }
 }
 
-/** `codex debug models --bundled` stdout, or null on any failure. */
+/** `codex debug models --bundled` stdout, or null on any failure; one spawn per process, since the
+ *  codex binary does not change under one run, so a generation on the fs overlay (an import's
+ *  preview) and the real one after it share the dump. */
+let bundledDump: string | null | undefined;
+
 function bundledCatalog(): string | null {
-  const result = runCodexDebugModels(["--bundled"], () => {}, BUNDLED_DUMP_TIMEOUT_MS);
-  if (result === null || result.error || result.status !== 0) return null;
-  return result.stdout;
+  if (bundledDump === undefined) {
+    const result = runCodexDebugModels(["--bundled"], () => {}, BUNDLED_DUMP_TIMEOUT_MS);
+    bundledDump = result === null || result.error || result.status !== 0 ? null : result.stdout;
+  }
+  return bundledDump;
 }
 
 /** Null unless `raw` parses as a catalog at the JSON level (an object with a non-empty `models`
@@ -430,11 +436,12 @@ let probeBudgetLeftMs = CATALOG_PROBE_TIMEOUT_MS;
 export const UNVERIFIED_SUFFIX =
   "; schema acceptance by the installed Codex could not be verified (probe unavailable or inconclusive)";
 
-/** Test hook: restore (or shrink) the per-process probe budget and forget the per-process probe
- *  caches. */
+/** Test hook: restore (or shrink) the per-process probe budget and forget what the process asked
+ *  codex (its path, the bundled dump, the probe verdicts). */
 export function resetCatalogProbeState(budgetMs: number = CATALOG_PROBE_TIMEOUT_MS): void {
   probeBudgetLeftMs = budgetMs;
   cachedCodexCliPath = undefined;
+  bundledDump = undefined;
   probeVerdicts.clear();
 }
 

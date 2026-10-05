@@ -15,6 +15,7 @@
 //   codex_exec UA with any id                       -> 33-41 models, no Fable
 //   the proxy's own editor UA, with or without id   -> 40-41 models, no Fable
 import { consola } from "consola";
+import { narrationMuted } from "../utils/logger.ts";
 import { errMessage } from "../utils/error.ts";
 import { defaultFetch } from "../utils/fetch.ts";
 import { isRecord } from "../utils/json.ts";
@@ -471,7 +472,14 @@ interface ResolveHostOptions extends Omit<IdentityProbeDeps, "apiBase"> {
 }
 
 // One `host auto` answer, and one narration of it, per (token, identity) in a process (memoizable).
-const hostMemo = new Map<string, Promise<string>>();
+// The narration is the first caller's that is not muted (an import's preview is), so the real run
+// after a muted one still says it.
+interface HostAnswer {
+  resolved: Promise<{ apiBase: string; note: string | null }>;
+  said: boolean;
+}
+
+const hostMemo = new Map<string, HostAnswer>();
 
 /**
  * THE `host auto` rule, for every mode. `headers` is the identity's header set the caller
@@ -484,46 +492,43 @@ const hostMemo = new Map<string, Promise<string>>();
  *   generic /models 403, 404, 5xx, or a network failure
  *                                   -> the account's designated host, else the generic host
  */
-function resolveCopilotHost(
+async function resolveCopilotHost(
   token: string | null,
   headers: Record<string, string>,
   opts: ResolveHostOptions = {},
 ): Promise<string> {
   const { literal = null, narrator = consola, ...deps } = opts;
-  if (literal !== null) return Promise.resolve(literal);
-  if (token === null) return Promise.resolve(DEFAULT_COPILOT_API_BASE);
+  if (literal !== null) return literal;
+  if (token === null) return DEFAULT_COPILOT_API_BASE;
   const memoize = memoizable(deps);
   const key = JSON.stringify([token, headers]);
   const cached = memoize ? hostMemo.get(key) : undefined;
-  if (cached !== undefined) return cached;
-  const pending = resolveAutoHost(token, headers, deps, narrator);
-  if (memoize) hostMemo.set(key, pending);
-  return pending;
+  const answer = cached ?? { resolved: resolveAutoHost(token, headers, deps), said: false };
+  if (memoize && cached === undefined) hostMemo.set(key, answer);
+  const { apiBase, note } = await answer.resolved;
+  if (note !== null && !answer.said) {
+    answer.said = !narrationMuted();
+    narrator.info(note);
+  }
+  return apiBase;
 }
 
 async function resolveAutoHost(
   token: string,
   headers: Record<string, string>,
   deps: Omit<IdentityProbeDeps, "apiBase">,
-  narrator: HostNarrator,
-): Promise<string> {
+): Promise<{ apiBase: string; note: string | null }> {
   const fetchImpl = deps.fetchImpl ?? defaultProbeFetch;
   const timeoutMs = deps.timeoutMs ?? PROBE_TIMEOUT_MS;
   const generic = await probeGenericHost(token, headers, deps);
-  if (generic.kind === "kept") return DEFAULT_COPILOT_API_BASE;
+  if (generic.kind === "kept") return { apiBase: DEFAULT_COPILOT_API_BASE, note: null };
   const designated = await accountApiBase(token, fetchImpl, timeoutMs, deps.signal);
   const genericHost = new URL(DEFAULT_COPILOT_API_BASE).host;
-  if (designated.apiBase === DEFAULT_COPILOT_API_BASE) {
-    narrator.info(
-      `Copilot API host: ${genericHost} answered ${generic.detail} and the account host lookup ` +
-        "gave no other host; staying on it.",
-    );
-  } else {
-    narrator.info(
-      `Copilot API host: ${designated.apiBase} (${genericHost} answered ${generic.detail}).`,
-    );
-  }
-  return designated.apiBase;
+  const note = designated.apiBase === DEFAULT_COPILOT_API_BASE
+    ? `Copilot API host: ${genericHost} answered ${generic.detail} and the account host lookup ` +
+      "gave no other host; staying on it."
+    : `Copilot API host: ${designated.apiBase} (${genericHost} answered ${generic.detail}).`;
+  return { apiBase: designated.apiBase, note };
 }
 
 /** Test hook. */

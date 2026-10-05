@@ -21,6 +21,7 @@ import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { OwnershipLedger } from "../src/copilot_api/ownership.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
+import { withDryRun } from "../src/utils/dry_run.ts";
 import { MILLISECONDS_PER_DAY } from "../src/utils/time.ts";
 import {
   type FakeCodex,
@@ -704,6 +705,19 @@ test("generateCodexModelCatalog writes the patched catalog file", async () => {
   expect(written.models[0].effective_context_window_percent).toBe(87);
   // Owner-only, like every file the store writes beside it.
   if (process.platform !== "win32") expect(statSync(file).mode & 0o777).toBe(0o600);
+});
+
+// An import's confirmation runs the generation on the fs overlay first, where its file lands
+// nowhere: the real run after it must not cold-start codex for the same bundled dump again.
+test("the bundled dump is spawned once per process: a run on the fs overlay serves the real run after it", async () => {
+  const codex = catalogFixture();
+  const file = new CopilotApiPaths().codexModelCatalogFile;
+  const preview = await withDryRun(() => generate());
+  expect(preview.status === "done" && preview.result).toBe(true);
+  expect(existsSync(file)).toBe(false);
+  expect(await generate()).toBe(true);
+  expect(existsSync(file)).toBe(true);
+  expect(codex.runs().filter((run) => run.args.includes("--bundled")).length).toBe(1);
 });
 
 test("a regenerated catalog identical to the one on disk previews as unchanged", async () => {

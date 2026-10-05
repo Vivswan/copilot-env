@@ -23,6 +23,7 @@ import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
 import { CopilotEnvRunState } from "../src/copilot_api/run_state.ts";
 import { codexFarmHostsDir, getSanitizedHostname } from "../src/utils/hostname.ts";
+import { withNarrationMuted } from "../src/utils/logger.ts";
 import { deferWriteReports, flushWriteReports } from "../src/utils/report_write.ts";
 import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateAgentHomes, resetExitCode } from "./helpers/env.ts";
@@ -1248,3 +1249,21 @@ skipWin(
     expect(new CopilotEnvState().readProfileSlot(null).mode).toBe("proxy");
   },
 );
+
+// An import's preview resolves the Codex home muted; the stale-export note belongs to the real run
+// after it, said once there like anywhere else.
+test("a muted narrateCodexHome does not spend the once-per-process stale-export note", async () => {
+  const resolution = {
+    home: "/home/user/bundle-root",
+    by: "codex-home",
+    staleExport: "/home/user/old-codex",
+  } as const;
+  const line = staleCodexHomeExportLine(resolution) ?? "";
+  expect(line).not.toBe("");
+  const { stderr } = await captureChannels(async () => {
+    await withNarrationMuted(() => Promise.resolve(narrateCodexHome(resolution)));
+    narrateCodexHome(resolution);
+    narrateCodexHome(resolution);
+  });
+  expect(stderr.split(line).length - 1).toBe(1);
+});

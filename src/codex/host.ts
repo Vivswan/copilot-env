@@ -13,7 +13,7 @@ import { isDir, isEnoentOrNotdir, isFile } from "../utils/fs.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { isRecord } from "../utils/json.ts";
 import { codexFarmHostsDir, getSanitizedHostname } from "../utils/hostname.ts";
-import { createStderrLogger } from "../utils/logger.ts";
+import { createStderrLogger, narrationMuted } from "../utils/logger.ts";
 import type { ManagedEnvValue } from "../utils/shell_quote.ts";
 import { reportWrite } from "../utils/report_write.ts";
 import { CODEX_PROVIDER_ID, codexConfigPath, defaultCodexHome, plainCodexHome } from "./paths.ts";
@@ -164,11 +164,12 @@ export function staleCodexHomeExportLine(resolution: CodexHomeResolution): strin
 const narratedStaleExports = new Set<string>();
 
 /** Prints the stale-export note once per process and hands the home back. A launch that re-wires
- *  Codex resolves the home twice (the write, then the child's pin) and must not say it twice. */
+ *  Codex resolves the home twice (the write, then the child's pin) and must not say it twice; a
+ *  muted say (an import's preview) is no say, so the real run after it still gets its one. */
 export function narrateCodexHome(resolution: CodexHomeResolution): string {
   const line = staleCodexHomeExportLine(resolution);
   if (line !== null && !narratedStaleExports.has(line)) {
-    narratedStaleExports.add(line);
+    if (!narrationMuted()) narratedStaleExports.add(line);
     logger.warn(line);
   }
   return resolution.home;

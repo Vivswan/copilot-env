@@ -24,21 +24,29 @@ export function hideWritesUnder(root: () => string): void {
   INTERNAL_ROOTS.push(root);
 }
 
-/** A home itself always prints, even nested inside another home (the data home under the install
- *  root), so the exact match is checked against every root before any prefix test. The trailing
- *  separator is dropped so a filesystem root (`/`, `C:\`) prefixes correctly. */
-function insideInternalRoot(path: string): boolean {
-  // On POSIX a backslash is a byte of the name; stripping it would fold a home onto a sibling's
-  // prefix.
+/** The trailing separator is dropped so a filesystem root (`/`, `C:\`) prefixes correctly. On
+ *  POSIX a backslash is a byte of the name; stripping it would fold a home onto a sibling's
+ *  prefix. */
+function fold(path: string): string {
   const trailing = process.platform === "win32" ? /[\\/]+$/ : /\/+$/;
-  const fold = (p: string): string => {
-    const r = resolve(p).replace(trailing, "");
-    return process.platform === "win32" ? r.toLowerCase() : r;
-  };
+  const folded = resolve(path).replace(trailing, "");
+  return process.platform === "win32" ? folded.toLowerCase() : folded;
+}
+
+/** Whether `path` is one of copilot-env's own homes or lies inside one: a write there is
+ *  bookkeeping, which the import's confirmation lists only when it overwrites. */
+export function underInternalRoot(path: string): boolean {
   const target = fold(path);
-  const roots = INTERNAL_ROOTS.map((root) => fold(root()));
-  if (roots.includes(target)) return false;
-  return roots.some((root) => target.startsWith(root + sep));
+  return INTERNAL_ROOTS.map((root) => fold(root())).some((root) =>
+    target === root || target.startsWith(root + sep)
+  );
+}
+
+/** A home itself always prints, even nested inside another home (the data home under the install
+ *  root), so the exact match is checked against every root before any prefix test. */
+function insideInternalRoot(path: string): boolean {
+  const target = fold(path);
+  return !INTERNAL_ROOTS.some((root) => fold(root()) === target) && underInternalRoot(path);
 }
 
 let deferred: string[] | null = null;

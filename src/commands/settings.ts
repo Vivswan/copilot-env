@@ -11,6 +11,7 @@ import {
   type ImportScope,
   parseSettingsBundle,
   planImport,
+  previewImportChanges,
   rollbackCommand,
   serializeSettingsBundle,
   type SettingsBundle,
@@ -34,6 +35,8 @@ import {
   profileKey,
   profileLabel,
 } from "../copilot_api/profile.ts";
+import { type FileChange } from "../utils/dry_run.ts";
+import { renderDryRun } from "../utils/dry_run_report.ts";
 import { errMessage } from "../utils/error.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { createStderrLogger, prompt } from "../utils/logger.ts";
@@ -161,8 +164,12 @@ function runExport(target: string | boolean, withCredentials: boolean, build: Bu
   }
 }
 
-async function confirmImport(writeLines: string[], file: string): Promise<boolean> {
-  logger.log(`Importing ${file} will overwrite:\n${writeLines.map((l) => `  • ${l}`).join("\n")}`);
+/** The dry run's own rows, each file bulleted and its attribute rows hanging under it. */
+async function confirmImport(changes: readonly FileChange[], file: string): Promise<boolean> {
+  const lines = renderDryRun(changes).map((line) =>
+    line.startsWith("  ") ? `    ${line}` : `  • ${line}`
+  );
+  logger.log(`Importing ${file} will overwrite:\n${lines.join("\n")}`);
   if (!process.stdin.isTTY) {
     throw new Error("not a terminal - pass --force to import non-interactively");
   }
@@ -203,24 +210,28 @@ async function runImport(
   const bundle = scope.widen(parseSettingsBundle(parsed), file);
 
   // One plan drives both the confirmation and the apply, so the prompt shows exactly what the
-  // import OVERWRITES (planWrites), not every file it writes.
+  // import changes: the apply's own change set, read off the overlay before anything lands.
   const plan = planImport(bundle, deps, scope.plan);
+  const apply = deps.applyPlan ?? applyImportPlan;
   if (action.dryRun) {
     // The same landing, recorded: the pre-import backup (its file, and the prune it triggers), then
     // every store slot and agent file the bundle would change, by key. The skips and failures the
     // apply would report are said, and fail the run, the same way. Only the confirmation is skipped.
     await runDryRun(async () => {
       if (!action.noBackup) writeSettingsBackup();
-      const outcome = await (deps.applyPlan ?? applyImportPlan)(plan, scope.plan);
+      const outcome = await apply(plan, scope.plan);
       for (const line of [...outcome.skipped, ...outcome.failures]) logger.warn(line);
       if (outcome.failures.length > 0) process.exitCode = 1;
     });
     return;
   }
-  if (plan.writes.length > 0 && !action.force && !(await confirmImport(plan.writes, file))) {
-    consola.info("Import aborted - nothing was changed.");
-    process.exitCode = 1;
-    return;
+  if (!action.force) {
+    const changes = await previewImportChanges(plan, scope.plan, apply);
+    if (changes.length > 0 && !(await confirmImport(changes, file))) {
+      consola.info("Import aborted - nothing was changed.");
+      process.exitCode = 1;
+      return;
+    }
   }
 
   const backupPath = action.noBackup ? null : writeSettingsBackup();
@@ -229,7 +240,7 @@ async function runImport(
 
   let outcome: ImportOutcome;
   try {
-    outcome = await (deps.applyPlan ?? applyImportPlan)(plan, scope.plan);
+    outcome = await apply(plan, scope.plan);
   } catch (e) {
     // A mid-import throw may leave the stores half-written, so the rollback hint rides the rendered
     // error.

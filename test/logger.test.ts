@@ -1,7 +1,15 @@
 import { createConsola, type LogObject } from "consola";
 import stringWidth from "string-width";
-import { promptLayout, WrappingReporter, wrapToTerminal } from "../src/utils/logger.ts";
+import {
+  createStderrLogger,
+  promptLayout,
+  taggedLogger,
+  withNarrationMuted,
+  WrappingReporter,
+  wrapToTerminal,
+} from "../src/utils/logger.ts";
 import { expect, test } from "./helpers/testing.ts";
+import { captureChannels } from "./helpers/output.ts";
 
 const LEGEND =
   "* = in use: the pin, else the slot's probed identity; what every Direct re-render bakes and a daemon launch sends";
@@ -143,4 +151,30 @@ test("promptLayout wraps the question under Clack's three-column lead and select
     message: "short?",
     options: { type: "confirm" },
   });
+});
+
+// The import's preview runs the wiring once on the fs overlay; its narration belongs to the real
+// run after the confirmation, including a logger a module creates mid-run (a catalog fetch's) and
+// a tagged child, which copies its parent's muted level.
+test("withNarrationMuted silences the loggers made before it and inside it, tagged ones included, and all print again after", async () => {
+  const before = createStderrLogger();
+  let inside: ReturnType<typeof createStderrLogger> | null = null;
+  let tagged: ReturnType<typeof taggedLogger> | null = null;
+  const { all } = await captureChannels(async () => {
+    await withNarrationMuted(async () => {
+      before.log("before: muted");
+      inside = createStderrLogger();
+      inside.log("inside: muted");
+      tagged = taggedLogger("preview");
+      tagged.log("tagged: muted");
+      await Promise.resolve();
+    });
+    before.log("before: after");
+    inside?.log("inside: after");
+    tagged?.log("tagged: after");
+  });
+  expect(all).not.toContain("muted");
+  expect(all).toContain("before: after");
+  expect(all).toContain("inside: after");
+  expect(all).toContain("tagged: after");
 });

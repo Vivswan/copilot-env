@@ -22,7 +22,7 @@ import { CopilotEnvState } from "../copilot_api/env_state.ts";
 import { CopilotApiPaths } from "../copilot_api/paths.ts";
 import { profileLabel, type ProfileName } from "../copilot_api/profile.ts";
 import { errMessage } from "../utils/error.ts";
-import { createStderrLogger } from "../utils/logger.ts";
+import { createStderrLogger, narrationMuted } from "../utils/logger.ts";
 import { type ManagedWrite, resolveCredentialWiring, resolvedDirectToken } from "./configure.ts";
 import { renderDirectWiring } from "./profile_wiring.ts";
 
@@ -151,8 +151,10 @@ export async function reconcileClaudeDesktopWiring(
 
 /** One line, only when the app WILL come up on the default entry at its next launch: the default is
  *  wired, `_meta.json` applies it, and the app boots third-party. Anything less is left to
- *  `agent profile check --claude`, whose lines name the gap. */
+ *  `agent profile check --claude`, whose lines name the gap. Narration only, so a muted pass (an
+ *  import's preview) has nothing to say and no process scan to pay for. */
 async function reportClaudeDesktopReady(resolution: DesktopTargetResolution): Promise<void> {
+  if (narrationMuted()) return;
   const status = inspectClaudeDesktopWiring(resolution);
   if (status.kind !== "inspected") return;
   const ready =

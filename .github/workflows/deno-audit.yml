@@ -1,8 +1,8 @@
 # This file is managed by Vivswan/repo-platform.
 # Local edits are replaced on the next sync.
 #
-# Dependabot's deno ecosystem does version updates only, so this run is
-# the advisory coverage (GitHub Advisory Database via `deno audit`).
+# Audits the deno dependencies against the GitHub Advisory Database with `deno audit`, the advisory coverage, since
+# Dependabot's deno ecosystem does version updates only.
 
 name: Deno Audit
 

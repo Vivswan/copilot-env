@@ -559,12 +559,12 @@ export function daemonArgv(spec: DaemonSpec): string[] {
 
 export function launchDaemon(spec: DaemonSpec): number {
   const logFd = fs.openWriteFd(spec.logFile);
-  // The disk's `/dev/null` in every mode: a read fd for the child's stdin.
+  // The disk's `/dev/null` in every mode, a dry run included: the raw open the fs lint exempts.
   const devnull = openSync(devNull, "r");
   const proc = spawn(spec.denoBin, daemonArgv(spec), {
     stdio: [devnull, logFd, logFd],
     detached: true,
-    // No console window on Windows (defensive; redirected stdio already avoids one).
+    // Defensive: redirected stdio already avoids a console window on Windows.
     windowsHide: true,
     env: daemonEnvironment(spec, process.env),
   });

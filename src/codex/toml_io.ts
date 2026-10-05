@@ -18,10 +18,9 @@ export type CodexTomlRead =
 // rejected file must read as "unparseable" (refuse to clobber), never as "absent".
 const BLANK_TOML = /^(?:[ \t\n]|\r\n)*$/;
 
-/** ENOENT reads as "absent"; any other filesystem error (EISDIR, permission, I/O) THROWS raw, so a
- *  caller cannot mistake an unreadable config for a missing one. An empty or whitespace-only file
- *  also reads as "absent": a blank TOML document carries nothing worth preserving, and the
- *  seed-a-default site (loadOrCreateConfig) treats it like a missing file. Read through the
+/** Any filesystem error but ENOENT THROWS raw, so a caller cannot mistake an unreadable config for
+ *  a missing one. A blank document reads as "absent": it carries nothing worth preserving, and
+ *  the seed-a-default site (loadOrCreateConfig) treats it like a missing file. Read through the
  *  facade, so a dry run's planned content answers in place of the disk. */
 export function readCodexToml(path: string): CodexTomlRead {
   let text: string;
@@ -44,15 +43,14 @@ export function readCodexToml(path: string): CodexTomlRead {
   }
 }
 
-/** The dotted leaf a static-key write bakes the bearer into, for `providerId`'s table. */
+/** The leaf the static-key write bakes the bearer into. */
 export function codexBearerLeaf(providerId: string): string {
   return `model_providers.${providerId}.http_headers.Authorization`;
 }
 
-/** Every `http_headers.Authorization` leaf of `doc`, dotted, wherever a table carries one: the
- *  managed provider tables, and a legacy `[profiles.<name>]` table a migration still moves. The
- *  header name is matched case-insensitively, as HTTP reads it (a user's own `authorization`
- *  spelling is a bearer too). */
+/** Every table is walked, not just the managed providers: a legacy `[profiles.<name>]` table a
+ *  migration still moves carries one too. Case-insensitive, as HTTP reads the header name (a
+ *  user's own `authorization` spelling is a bearer too). */
 export function codexBearerLeaves(doc: Record<string, unknown>): string[] {
   const leaves: string[] = [];
   const walk = (value: unknown, path: readonly string[]): void => {
@@ -72,10 +70,10 @@ export function codexBearerLeaves(doc: Record<string, unknown>): string[] {
   return leaves;
 }
 
-/** Every write names the leaves a preview redacts: the bearers the written document carries, and
- *  those the file carries now (a table a migration renames leaves its old bearer as a row that
- *  goes). The non-secret rows print attribute by attribute; a bearer prints `<redacted>`. In
- *  place, as Codex itself writes it: a user's symlinked config.toml stays a link. */
+/** The file's current bearers are redacted too: a table a migration renames leaves its old bearer
+ *  as a row that goes. The non-secret rows print attribute by attribute; a bearer prints
+ *  `<redacted>`. In place, as Codex itself writes it: a user's symlinked config.toml stays a
+ *  link. */
 export function saveCodexToml(path: string, doc: Record<string, unknown>, detail?: string): void {
   const current = readCodexToml(path);
   const secretKeys = new Set([

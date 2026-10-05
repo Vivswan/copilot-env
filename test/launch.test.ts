@@ -48,7 +48,7 @@ function e2eRoot(): string {
   return root;
 }
 
-/** Isolated agent and proxy homes the in-process plans read and (on the overlay) write. */
+/** The homes the in-process plans read and, on the overlay, write. */
 function scratchState(): AgentHomes {
   const homes = isolateAgentHomes("copilot-launch-state-");
   roots.push(homes.dir);
@@ -261,7 +261,6 @@ test("codex --profile: a failed wiring refresh warns and launches with the exist
   });
 });
 
-/** The default slot with a credential, its identity probe stubbed to accept. */
 function seedDefault(mode: "direct" | "proxy"): void {
   const state = new CopilotEnvState();
   state.setCredential(null, { kind: "stored", provider: "gh-token", token: "tok" });

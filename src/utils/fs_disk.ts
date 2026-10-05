@@ -128,8 +128,6 @@ function entryFingerprint(stat: Stats): string {
   return `${stat.dev}:${stat.ino}:${stat.mtimeMs}:${stat.size}`;
 }
 
-/** False when a level cannot be listed or an entry vanishes mid-walk: a tree that cannot be judged.
- */
 function fingerprintTree(dir: string, rel: string, lines: string[]): boolean {
   let names: string[];
   try {
@@ -231,8 +229,6 @@ export function missingDirectories(path: string): string[] {
   }
 }
 
-/** What mkdir meets at `path`: the entry as it resolves (a symlink followed), a dangling link, or
- *  nothing. `unreadable` is a look that failed for a reason other than absence. */
 function lookEntry(path: string): Stats | "dangling" | "absent" | "unreadable" {
   let entry: Stats;
   try {
@@ -248,7 +244,6 @@ function lookEntry(path: string): Stats | "dangling" | "absent" | "unreadable" {
   }
 }
 
-/** Whether the entry at `path` itself (a link never followed) is a directory. */
 function isDirectoryEntry(path: string): boolean {
   try {
     return lstatSync(path).isDirectory();
@@ -479,10 +474,7 @@ export function atomicSymlink(target: string, link: string): void {
   reportWrite("linked", link, `to ${target}`);
 }
 
-/**
- * A file opened for writing (created or truncated at the open, which is the mutation reported):
- * the one way runtime code streams bytes to a path (a release download, the daemon's log).
- */
+/** The one way runtime code streams bytes to a path (a release download, the daemon's log). */
 export async function openWritable(path: string): Promise<Deno.FsFile> {
   const was = look(path);
   const file = await Deno.open(path, { write: true, create: true, truncate: true });

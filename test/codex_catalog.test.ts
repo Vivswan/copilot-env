@@ -633,8 +633,8 @@ const GPT55_BODY = {
 };
 const TOKEN = "gho_x";
 
-/** Copilot as the direct fetch reaches it: every request (the identity probes, then GET /models)
- *  answers 200 with `body`; null is a Copilot that cannot be reached. */
+/** Copilot as the direct fetch reaches it: the identity probes, then GET /models, every request
+ *  answered alike. */
 async function withCopilot<T>(
   body: unknown,
   fn: () => Promise<T>,
@@ -653,7 +653,7 @@ async function withCopilot<T>(
   }
 }
 
-/** The opted-in isolated home with the fake codex on PATH: a bundled dump, an accepting probe. */
+/** The opted-in home: isolate() turns the catalog key on. */
 function catalogFixture(spec: Partial<FakeCodexSpec> = {}): FakeCodex {
   isolate();
   return fakeCodexOnPath(dir, { bundled: BUNDLED, probe: "accept", ...spec });

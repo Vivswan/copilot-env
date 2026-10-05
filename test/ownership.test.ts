@@ -36,7 +36,6 @@ test("ownership round-trips per kind; kinds never bleed into one another", () =>
   expect(reread.owns("claudeDesktop", "/a/settings.json")).toBe(false);
   expect(reread.ownedPaths("codexCatalog")).toEqual(["/home/.codex/config.toml"]);
 
-  // Idempotent record: no duplicate entries.
   ledger.record("webSearchDeny", "/a/settings.json");
   expect(ledger.ownedPaths("webSearchDeny")).toEqual(["/a/settings.json"]);
 

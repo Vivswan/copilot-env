@@ -46,7 +46,7 @@ afterEach(async () => {
   await fake.close();
 });
 
-/** The probe's exact argv against a scratch CODEX_HOME, under a hermetic env (fakeCliEnv). */
+/** Under a hermetic env (fakeCliEnv): runFakeCli clears the inherited one. */
 function runCodex(scenario: ScenarioName) {
   if (codexPath === null) throw new Error(`${LIVE_ENV} is set but no codex CLI is on PATH`);
   const codexHome = join(home, ".codex");
@@ -65,7 +65,6 @@ live(
   async () => {
     const run = await runCodex("ok");
     expect(run.exitCode, run.stderr).toBe(0);
-    // The health probe's own read of the same stream: the model answered.
     expect(answered(run.stdout)).toBe(true);
     // Since 0.158 an `item.completed` whose item is an `error` (a model-metadata warning for an
     // id outside codex's built-in table) precedes the turn, so the answer is the agent_message

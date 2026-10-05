@@ -57,7 +57,7 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-/** Parse-mutate-stringify a writer-produced file: real output, one drifted detail. */
+/** Real writer output with one drifted detail. */
 function mutateToml(path: string, mutate: (doc: Record<string, unknown>) => void): string {
   const doc = asRecord(parse(readFileSync(path, "utf8")));
   mutate(doc);

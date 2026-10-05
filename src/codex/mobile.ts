@@ -2,7 +2,6 @@
 // temporarily removes the managed `model_provider`, walks the user through pairing in the app, then
 // restores it. There is no Linux Codex app, so it is gated to macOS/Windows.
 import { setTimeout as sleep } from "node:timers/promises";
-import { stringify } from "smol-toml";
 import {
   appRunning,
   type AppScan,
@@ -15,7 +14,7 @@ import { runCaptured, withPowershellChildEnv } from "../utils/command.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { isRecord } from "../utils/json.ts";
 import { createStderrLogger, prompt } from "../utils/logger.ts";
-import { parseToml } from "../utils/toml.ts";
+import { parseToml, stringify } from "../utils/toml.ts";
 import { inspectCatalogFile } from "./catalog.ts";
 import { effectiveCodexHome } from "./host.ts";
 import { CODEX_PROVIDER_ID, codexConfigPath } from "./paths.ts";

@@ -2,7 +2,6 @@
 // managed write seeds the key): the wiring- and launch-time sync that heals or strips it, and the account-wide
 // sweep that keeps a deleted catalog from leaving a dangling reference in any known Codex home.
 // Best-effort throughout: stderr-only, never throws.
-import { stringify } from "smol-toml";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { CopilotEnvState } from "../copilot_api/env_state.ts";
 import { OwnershipLedger } from "../copilot_api/ownership.ts";
@@ -11,7 +10,7 @@ import { errMessage } from "../utils/error.ts";
 import { isEnoent } from "../utils/fs.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { createStderrLogger } from "../utils/logger.ts";
-import { parseToml } from "../utils/toml.ts";
+import { parseToml, stringify } from "../utils/toml.ts";
 import type { CatalogSource } from "../copilot_api/catalog.ts";
 import {
   catalogBookkeepingAllowed,

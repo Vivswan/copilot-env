@@ -8,13 +8,12 @@ import { ROOT } from "./helpers/run.ts";
 import { expect, test } from "./helpers/testing.ts";
 import { tsFilesUnder } from "./helpers/tree.ts";
 
-test("smol-toml's parse is imported by src/utils/toml.ts and nowhere else under src/", () => {
+test("smol-toml is named by src/utils/toml.ts and nowhere else under src/", () => {
+  // The specifier in any quote, bare or `npm:`-prefixed with a version: a named, default,
+  // namespace, or dynamic import, or a re-export, all reach the parser without the owner. The
+  // guard is against an omission, not a spelling built to evade it.
   const importers = tsFilesUnder(join(ROOT, "src"))
-    .filter((file) =>
-      /import\s+(?:\*\s+as\s+\w+|\{[^}]*\bparse\b[^}]*\})\s*from\s*"smol-toml"/.test(
-        readFileSync(file, "utf8"),
-      )
-    )
+    .filter((file) => /(["'`])(?:npm:)?smol-toml(?:@[^"'`]*)?\1/.test(readFileSync(file, "utf8")))
     .map((file) => relative(ROOT, file).replaceAll("\\", "/"))
     .sort();
   expect(importers).toEqual(["src/utils/toml.ts"]);

@@ -2,12 +2,11 @@
 // POLICY (throw, skip, seed a default) stays a small visible switch. "unparseable" is distinct so
 // write paths can refuse to clobber a config that exists but could not be read: a hand-edit typo
 // must never cost the user their config.toml.
-import { stringify } from "smol-toml";
 import { errMessage } from "../utils/error.ts";
 import { isEnoent } from "../utils/fs.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { dottedKey, isRecord } from "../utils/json.ts";
-import { isTomlTable, parseToml } from "../utils/toml.ts";
+import { isTomlTable, parseToml, stringify } from "../utils/toml.ts";
 
 export type CodexTomlRead =
   | { kind: "absent" }

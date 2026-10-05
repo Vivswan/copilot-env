@@ -73,7 +73,8 @@ export function verificationFailedMessage(tag: string, detail: string): string {
   return `build provenance verification FAILED for ${tag}: ${detail}. Do not install it.`;
 }
 
-/** Throws the mismatch DETAIL; the caller wraps it with the tag. */
+/** The DSSE payload as an in-toto v1 statement carrying SLSA provenance. Throws the mismatch
+ *  DETAIL; the caller wraps it with the tag. */
 export function parseStatement(payload: Uint8Array): ProvenanceStatement {
   let parsed: unknown;
   try {

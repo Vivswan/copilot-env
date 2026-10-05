@@ -108,7 +108,8 @@ export interface ScanResult {
   bytesRead: number;
   /** Just past the LF of the last COMPLETE line: an unterminated final fragment is never delivered
    *  or counted, and the next run reads it once the writer terminates it. Both writers end every
-   *  line in LF, so a permanently unterminated last line does not occur in practice. */
+   *  line they complete in LF, so only an append cut short mid-line leaves a fragment, and that
+   *  fragment is never counted. */
   parsedThrough: number;
   /** Hex of the last `TAIL_PROBE_BYTES` before `parsedThrough`; fewer when it is smaller, empty at
    *  0. */

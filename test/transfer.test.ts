@@ -10,7 +10,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { join, sep } from "node:path";
+import { basename, delimiter, dirname, join, sep } from "node:path";
 import {
   applyImportPlan,
   buildExportBundle,
@@ -47,12 +47,18 @@ import {
 import { OwnershipLedger } from "../src/copilot_api/ownership.ts";
 import { claudeDesktopStatus, reconcileClaudeDesktopWiring } from "../src/agents/claude_desktop.ts";
 import { wireClaudeDesktopEntry } from "../src/claude/desktop.ts";
-import { CLAUDE_DESKTOP_DIR_ENV, desktopLibraryDirUnder } from "../src/claude/desktop_library.ts";
+import {
+  CLAUDE_DESKTOP_DIR_ENV,
+  desktopLibraryDirUnder,
+  META_FILENAME,
+} from "../src/claude/desktop_library.ts";
 import { resolveRootHome } from "../src/copilot_api/paths.ts";
 import { parseProfileName, type ProfileName } from "../src/copilot_api/profile.ts";
+import { type FileChange } from "../src/utils/dry_run.ts";
 import { renderDryRun } from "../src/utils/dry_run_report.ts";
 import { afterEach, beforeEach, expect, test } from "./helpers/testing.ts";
 import { type AgentHomes, envSnapshot, isolateAgentHomes, resetExitCode } from "./helpers/env.ts";
+import { changedPaths, fingerprintTree } from "./helpers/dry_run.ts";
 import { writeRunState } from "./helpers/fixtures.ts";
 import { captureChannels } from "./helpers/output.ts";
 
@@ -92,6 +98,35 @@ async function previewLines(plan: ImportPlan): Promise<string> {
 /** stderr is the command's narration logger. */
 async function captureStderr(fn: () => Promise<void>): Promise<string> {
   return (await captureChannels(fn)).stderr;
+}
+
+/** Claude Desktop installed on this machine: a data dir with an empty config library under the
+ *  seam. Returns the library. */
+function installDesktop(homes: AgentHomes): string {
+  const dataDir = join(homes.dir, "claude-desktop");
+  mkdirSync(join(dataDir, "configLibrary"), { recursive: true });
+  process.env[CLAUDE_DESKTOP_DIR_ENV] = dataDir;
+  return desktopLibraryDirUnder(dataDir);
+}
+
+/** The Desktop entry files among the preview's rows (the library's `<uuid>.json`, never its
+ *  `_meta.json`). */
+function desktopEntryRows(changes: readonly FileChange[], library: string): FileChange[] {
+  return changes.filter((c) => dirname(c.path) === library && basename(c.path) !== META_FILENAME);
+}
+
+/** A `pgrep` on PATH that journals every run and reports the app absent (POSIX only; Windows
+ *  scans through PowerShell). Returns the run count so far. */
+function fakePgrep(homes: AgentHomes): () => number {
+  const bin = join(homes.dir, "bin");
+  mkdirSync(bin, { recursive: true });
+  const journal = join(bin, "runs");
+  writeFileSync(join(bin, "pgrep"), `#!/bin/sh\necho run >> "${journal}"\nexit 1\n`, {
+    mode: 0o755,
+  });
+  process.env.PATH = `${bin}${delimiter}${process.env.PATH ?? ""}`;
+  return () =>
+    existsSync(journal) ? readFileSync(journal, "utf8").split("\n").filter(Boolean).length : 0;
 }
 
 /** claudeTokenMultiplier is a registry key newer than the bundle feature, so its round trip
@@ -1406,10 +1441,7 @@ test("the backup pile is pruned to the newest 5", async () => {
 
 test("a config-only import of claude-desktop false sweeps a PROMISED Desktop entry", async () => {
   const homes = isolate();
-  const dataDir = join(homes.dir, "claude-desktop");
-  mkdirSync(join(dataDir, "configLibrary"), { recursive: true });
-  process.env[CLAUDE_DESKTOP_DIR_ENV] = dataDir;
-  const library = desktopLibraryDirUnder(dataDir);
+  const library = installDesktop(homes);
   // A complete proxy profile with its Desktop entry wired: a currently promised entry.
   new CopilotEnvState().commitProfile(WORK, {
     credential: { kind: "stored", provider: "gh-token", token: "ghp_work" },
@@ -1453,10 +1485,7 @@ test("a config-only import of claude-desktop false sweeps a PROMISED Desktop ent
 
 test("a config-only import of claude-desktop true restores the DEFAULT Desktop entry", async () => {
   const homes = isolate();
-  const dataDir = join(homes.dir, "claude-desktop");
-  mkdirSync(join(dataDir, "configLibrary"), { recursive: true });
-  process.env[CLAUDE_DESKTOP_DIR_ENV] = dataDir;
-  const library = desktopLibraryDirUnder(dataDir);
+  const library = installDesktop(homes);
   const names = () =>
     existsSync(join(library, "_meta.json"))
       ? (JSON.parse(readFileSync(join(library, "_meta.json"), "utf8")) as {
@@ -1489,5 +1518,89 @@ test("a config-only import of claude-desktop true restores the DEFAULT Desktop e
   if (status.kind === "inspected") {
     expect(status.owned).toHaveLength(1);
     expect(status.entries.map((e) => e.verdict.kind)).toEqual(["wired"]);
+  }
+});
+
+// The entry's uuid is minted at write time, and the preview's write lands on the overlay: the real
+// run must create the file the confirmation named, never a second uuid beside it.
+test("the confirmation names the Desktop entry file the apply then creates", async () => {
+  const homes = isolate();
+  const library = installDesktop(homes);
+  new CopilotEnvState().recordDefaultMode("proxy");
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = () => Promise.reject(new Error("offline"));
+  try {
+    // A config-only import: the reconcile upserts the default's entry, which does not exist yet.
+    const plan = planImport(parseSettingsBundle(rawBundle({ config: configOf({}) })));
+    const named = desktopEntryRows(await previewImportChanges(plan), library);
+    expect(named.map((c) => c.verdict)).toEqual(["create"]);
+    const entryPath = named[0]?.path ?? "";
+    await captureChannels(async () => {
+      await applyImportPlan(plan);
+    }, { writeReports: true });
+    expect(existsSync(entryPath)).toBe(true);
+    const meta = JSON.parse(readFileSync(join(library, META_FILENAME), "utf8")) as {
+      entries: { id: string }[];
+    };
+    expect(meta.entries.map((e) => join(library, `${e.id}.json`))).toEqual([entryPath]);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+// The confirmation is the apply run on the overlay: what it asked Copilot is remembered in the
+// process, so the real run after the user's answer issues no request, the readiness scan runs only
+// in that real run, and nothing in the homes moves before the answer.
+test("preview then apply: the apply issues no request or scan the preview paid, and the preview leaves the homes untouched", async () => {
+  const homes = isolate();
+  const library = installDesktop(homes);
+  const pgrepRuns = WIN ? null : fakePgrep(homes);
+  const savedPath = process.env.PATH;
+  // Every identity's catalog is the same: no gated candidate, so discovery is the catalog GETs
+  // alone; the Direct wiring's identity and host probes go through the probe seam.
+  const catalog = {
+    data: [{
+      id: "claude-haiku-4.5",
+      capabilities: {
+        limits: { max_context_window_tokens: 200_000, max_prompt_tokens: 100_000 },
+      },
+    }],
+  };
+  let fetches = 0;
+  let probes = 0;
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (() => {
+    fetches++;
+    return Promise.resolve(Response.json(catalog));
+  }) as typeof fetch;
+  setIntegrationProbeFetch(() => {
+    probes++;
+    return Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 }));
+  });
+  try {
+    const plan = planImport(parseSettingsBundle(rawBundle({
+      credential: { githubToken: "ghp_x", authProvider: "gh-token" },
+      modes: { codex: "direct", claude: "direct" },
+    })));
+    const before = fingerprintTree(homes.dir);
+    const changes = await previewImportChanges(plan);
+    expect([...changedPaths(before, fingerprintTree(homes.dir))]).toEqual([]);
+    expect({ fetched: fetches > 0, probed: probes > 0 }).toEqual({ fetched: true, probed: true });
+    if (pgrepRuns !== null) expect(pgrepRuns()).toBe(0);
+    const entry = desktopEntryRows(changes, library).map((c) => c.path);
+    expect(entry).toHaveLength(1);
+
+    fetches = 0;
+    probes = 0;
+    const { stderr: outcome } = await captureChannels(async () => {
+      expect((await applyImportPlan(plan)).failures).toEqual([]);
+    }, { writeReports: true });
+    expect({ fetches, probes }).toEqual({ fetches: 0, probes: 0 });
+    if (pgrepRuns !== null) expect(pgrepRuns()).toBe(1);
+    expect(outcome).toContain("Claude Desktop is ready to use.");
+    expect(entry.filter(existsSync)).toEqual(entry);
+  } finally {
+    globalThis.fetch = realFetch;
+    process.env.PATH = savedPath;
   }
 });

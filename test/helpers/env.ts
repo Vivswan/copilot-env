@@ -3,6 +3,7 @@
 // five-key agent-home env a child or this process is pointed at.
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { forgetDiscoveryAnswers } from "../../src/copilot_api/discovery.ts";
 import { defaultDaemonHome } from "../../src/copilot_api/paths.ts";
 import { removeDir, tempDir } from "./testing.ts";
 
@@ -84,9 +85,12 @@ export function agentHomeEnv(home: string, layout: AgentHomeLayout = {}): AgentH
 
 // --- temp homes -----------------------------------------------------------------
 
-function clearInheritedEnv(): void {
+/** A fresh home is a fresh machine: no inherited credential or root-home override, and none of
+ *  the answers this process already got from Copilot (they go with the store). */
+function freshMachine(): void {
   for (const key of CREDENTIAL_ENV_KEYS) delete process.env[key];
   delete process.env.COPILOT_ENV_ROOT_HOME;
+  forgetDiscoveryAnswers();
 }
 
 /** COPILOT_API_HOME only (the config, state, and credential stores all live under it); the caller
@@ -94,7 +98,7 @@ function clearInheritedEnv(): void {
 export function isolateProxyHome(prefix: string): string {
   const dir = tempDir(prefix);
   process.env.COPILOT_API_HOME = dir;
-  clearInheritedEnv();
+  freshMachine();
   return dir;
 }
 
@@ -123,7 +127,7 @@ export function isolateAgentHomes(prefix: string, opts: { mkdirs?: boolean } = {
     codexHome: join(dir, ".codex"),
   };
   Object.assign(process.env, agentHomeEnv(dir, homes));
-  clearInheritedEnv();
+  freshMachine();
   if (opts.mkdirs) {
     try {
       for (const d of [homes.proxyHome, homes.claudeHome, homes.codexHome]) {

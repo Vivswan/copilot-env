@@ -18,10 +18,8 @@ afterEach(() => {
   restoreEnv();
 });
 
-/** A fresh home is a fresh machine: the answers this process got from Copilot go with the store. */
 function isolate(): void {
   isolateProxyHome("copilot-discovery-");
-  forgetDiscoveryAnswers();
 }
 
 interface StubOptions {
@@ -41,7 +39,7 @@ interface StubOptions {
   odd?: string[];
   /** Candidates whose oracle completion answers 200 (the candidate itself served: one billed token). */
   oracleServable?: string[];
-  /** Spy log: "oracle:<id>", "ping:<id>", "probe1m:<id>". */
+  /** Spy log, every request: "catalog:<identity>", "oracle:<id>", "ping:<id>", "probe1m:<id>". */
   calls?: string[];
 }
 
@@ -51,6 +49,7 @@ function stubFetch(opts: StubOptions): ProbeFetch {
     const headers = new Headers(init?.headers as HeadersInit | undefined);
     if (url.endsWith("/models")) {
       const identity = headers.get("Copilot-Integration-Id") ?? "none";
+      opts.calls?.push(`catalog:${identity}`);
       const ids = opts.catalogs[identity];
       if (ids === undefined) return Promise.resolve(new Response("{}", { status: 403 }));
       return Promise.resolve(
@@ -95,6 +94,21 @@ function stubFetch(opts: StubOptions): ProbeFetch {
 
 const UA = "codex_exec/0.152.0";
 
+/** The catalog GETs one discovery issues: its own identity first, then every other known one. */
+function catalogGets(own: string): string[] {
+  const others = ["none", "vscode-chat", "copilot-developer-cli", "copilot-developer-sandbox"];
+  return [own, ...others.filter((id) => id !== own)].map((id) => `catalog:${id}`);
+}
+
+/** The billed requests of a spy log: the oracle completions and the pings. */
+function billed(calls: string[]): string[] {
+  return calls.filter((call) => !call.startsWith("catalog:"));
+}
+
+function pings(calls: string[]): string[] {
+  return calls.filter((call) => call.startsWith("ping:") || call.startsWith("probe1m:"));
+}
+
 test("identical catalogs across identities: advertised only, zero oracle/ping traffic", async () => {
   isolate();
   const calls: string[] = [];
@@ -111,7 +125,7 @@ test("identical catalogs across identities: advertised only, zero oracle/ping tr
     }),
   });
   expect(result.models.map((m) => m.id)).toEqual(same);
-  expect(calls).toEqual([]); // no gated candidate -> no oracle, no pings
+  expect(calls).toEqual(catalogGets("none")); // no gated candidate -> no oracle, no pings
 });
 
 test("full pipeline: oracle extras verified one by one, 1m probed, failures excluded", async () => {
@@ -138,7 +152,7 @@ test("full pipeline: oracle extras verified one by one, 1m probed, failures excl
       calls,
     }),
   });
-  expect(calls[0]).toBe("oracle:claude-sonnet-4.6"); // trigger derived, not hand-kept
+  expect(billed(calls)[0]).toBe("oracle:claude-sonnet-4.6"); // trigger derived, not hand-kept
   expect(result.models).toEqual([
     { id: "claude-haiku-4.5", is1m: false },
     { id: "claude-fable-5", is1m: true },
@@ -215,10 +229,7 @@ test("verification verdicts are cached: a rerun pays zero pings until the TTL la
     fetchImpl: stubFetch({ ...opts, calls: first }),
     nowMs: () => t0,
   });
-  expect(first.filter((c) => !c.startsWith("oracle:"))).toEqual([
-    "ping:claude-fable-5",
-    "probe1m:claude-fable-5",
-  ]);
+  expect(pings(first)).toEqual(["ping:claude-fable-5", "probe1m:claude-fable-5"]);
 
   // Same day: the cached verdict answers; only the oracle re-runs.
   const second: string[] = [];
@@ -226,7 +237,7 @@ test("verification verdicts are cached: a rerun pays zero pings until the TTL la
     fetchImpl: stubFetch({ ...opts, calls: second }),
     nowMs: () => t0 + 1000,
   });
-  expect(second.filter((c) => !c.startsWith("oracle:"))).toEqual([]);
+  expect(pings(second)).toEqual([]);
   expect(result.models).toContainEqual({ id: "claude-fable-5", is1m: true });
   expect(result.unlisted).toEqual(["claude-fable-5"]);
 
@@ -240,8 +251,8 @@ test("verification verdicts are cached: a rerun pays zero pings until the TTL la
 });
 
 // An import's confirmation runs the apply on the fs overlay first, where the verdict's store write
-// lands nowhere: the real run after it must not pay the oracle's billed completion or the pings
-// again, and must persist what the preview learned.
+// lands nowhere: the real run after it must not fetch a catalog or pay the oracle's billed
+// completion or the pings again, and must persist what the preview learned.
 test("answers got on the fs overlay are reused by the real run in the same process, which persists the verdicts", async () => {
   isolate();
   const opts = {
@@ -268,6 +279,7 @@ test("answers got on the fs overlay are reused by the real run in the same proce
   };
   const preview = await withDryRun(() => asked(t0));
   expect(preview.status === "done" && preview.result).toEqual([
+    ...catalogGets("none"),
     "oracle:claude-sonnet-4.6",
     "oracle:claude-opus-4.1",
     "ping:claude-fable-5",
@@ -281,9 +293,14 @@ test("answers got on the fs overlay are reused by the real run in the same proce
     { servable: true, is1m: true, atMs: t0 },
   ]);
 
-  // A fresh process asks the oracle again and reads the verdict from the store.
+  // A fresh process fetches the catalogs and asks the oracle again, and reads the verdict from the
+  // store.
   forgetDiscoveryAnswers();
-  expect(await asked(t0 + 2000)).toEqual(["oracle:claude-sonnet-4.6", "oracle:claude-opus-4.1"]);
+  expect(await asked(t0 + 2000)).toEqual([
+    ...catalogGets("none"),
+    "oracle:claude-sonnet-4.6",
+    "oracle:claude-opus-4.1",
+  ]);
 });
 
 // Only the exact 200 is a "yes" and only a 400 a "no"; anything else is "unknown": the model is
@@ -329,7 +346,7 @@ test("an inconclusive ping (a 503, a non-200 2xx) is never servable and never ca
   }
 });
 
-test("servable-yes with a transient 1m probe: listed without 1m, verdict uncached", async () => {
+test("servable-yes with a transient 1m probe: listed without 1m, verdict uncached, the ping's yes kept for the process", async () => {
   isolate();
   const opts = {
     catalogs: {
@@ -343,23 +360,31 @@ test("servable-yes with a transient 1m probe: listed without 1m, verdict uncache
     oneM: ["claude-fable-5"],
   };
   const t0 = 1_700_000_000_000;
-  // The ping said yes but the 1m probe 503'd: the model is listed THIS run (without
-  // the 1m window), and no verdict is cached -- a 503 must not deny 1m for a day.
-  const first = await discoverServableClaudeModels("ghu_x", UA, null, DEFAULT_COPILOT_API_BASE, {
-    fetchImpl: stubFetch({ ...opts, transient1m: ["claude-fable-5"] }),
-    nowMs: () => t0,
-  });
-  expect(first.models).toContainEqual({ id: "claude-fable-5", is1m: false });
-  expect(first.unlisted).toEqual(["claude-fable-5"]);
+  // An import's preview: the ping said yes but the 1m probe 503'd. The model is listed THIS run
+  // (without the 1m window), and no verdict is cached -- a 503 must not deny 1m for a day.
+  const preview = await withDryRun(() =>
+    discoverServableClaudeModels("ghu_x", UA, null, DEFAULT_COPILOT_API_BASE, {
+      fetchImpl: stubFetch({ ...opts, transient1m: ["claude-fable-5"] }),
+      nowMs: () => t0,
+    })
+  );
+  const first = preview.status === "done" ? preview.result : null;
+  expect(first?.models).toContainEqual({ id: "claude-fable-5", is1m: false });
+  expect(first?.unlisted).toEqual(["claude-fable-5"]);
+  expect(new CopilotEnvState().read().claudeModelVerdicts).toEqual({});
 
-  // Same TTL window: both probes re-run and the full verdict lands.
+  // The real run, same TTL window: only the 1m probe re-runs (the small ping's yes was billed
+  // once and is kept in the process), and the full verdict lands, timed at that ping.
   const calls: string[] = [];
   const second = await discoverServableClaudeModels("ghu_x", UA, null, DEFAULT_COPILOT_API_BASE, {
     fetchImpl: stubFetch({ ...opts, calls }),
     nowMs: () => t0 + 1000,
   });
-  expect(calls).toContain("probe1m:claude-fable-5");
+  expect(pings(calls)).toEqual(["probe1m:claude-fable-5"]);
   expect(second.models).toContainEqual({ id: "claude-fable-5", is1m: true });
+  expect(Object.values(new CopilotEnvState().read().claudeModelVerdicts)).toEqual([
+    { servable: true, is1m: true, atMs: t0 },
+  ]);
 });
 
 test("verdicts are credential-exact: a different token probes for itself", async () => {
@@ -421,6 +446,8 @@ test("the no-header identity's answers never stand in for an identity pinned `de
     });
     return calls;
   };
-  expect(await asked(null)).toEqual(["oracle:claude-sonnet-4.6"]);
-  expect(await asked("default")).toEqual(["oracle:claude-sonnet-4.6"]);
+  expect(await asked(null)).toEqual([...catalogGets("none"), "oracle:claude-sonnet-4.6"]);
+  // The pinned identity's own catalog is new; the other four were fetched above for the same
+  // credential, so only the oracle (keyed per identity) asks again.
+  expect(await asked("default")).toEqual(["catalog:default", "oracle:claude-sonnet-4.6"]);
 });

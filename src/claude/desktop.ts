@@ -20,7 +20,7 @@ import {
 } from "../copilot_api/models.ts";
 import { CopilotApiPaths, resolveRootHome } from "../copilot_api/paths.ts";
 import { copilotApiResolvePort, proxyLoopbackOrigin } from "../copilot_api/port.ts";
-import { type Profile, profileLabel } from "../copilot_api/profile.ts";
+import { type Profile, profileKey, profileLabel } from "../copilot_api/profile.ts";
 import { errMessage } from "../utils/error.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { isRecord, parseJsonRecord } from "../utils/json.ts";
@@ -64,6 +64,20 @@ const logger = createStderrLogger();
 
 /** How a removal's report names an entry file. */
 const ENTRY = "Claude Desktop entry";
+
+/** The uuid minted for a profile's NEW entry in a library, per process, reused while nothing sits
+ *  at it. A wire on the fs overlay (an import's preview) lands its entry nowhere, so the real wire
+ *  after it finds none and would otherwise mint a second uuid: the confirmation would name a file
+ *  never created. An existing entry is found by the ledger or adopted before this is consulted. */
+const mintedEntryIds = new Map<string, string>();
+
+function mintedEntryId(dir: string, profile: Profile, free: (id: string) => boolean): string {
+  const key = `${dir}|${profileKey(profile)}`;
+  const remembered = mintedEntryIds.get(key);
+  const id = remembered !== undefined && free(remembered) ? remembered : crypto.randomUUID();
+  mintedEntryIds.set(key, id);
+  return id;
+}
 
 export type DesktopWireOptions = ManagedWrite & {
   profile: Profile;
@@ -222,7 +236,12 @@ export async function wireClaudeDesktopEntry(opts: DesktopWireOptions): Promise<
     ledger.owns("claudeDesktop", configPathOf(entry.id));
   const created = entry === undefined;
   if (entry === undefined) {
-    entry = { id: crypto.randomUUID(), name, extra: {} };
+    const id = mintedEntryId(
+      dir,
+      opts.profile,
+      (id) => !meta.entries.some((e) => e.id === id) && fs.entryAbsent(configPathOf(id)),
+    );
+    entry = { id, name, extra: {} };
   }
 
   const configPath = configPathOf(entry.id);

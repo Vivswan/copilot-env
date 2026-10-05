@@ -19,7 +19,7 @@ import { type CatalogModel, ONE_M_SUFFIX, parseCatalogModels } from "./models.ts
 import { PING_TIMEOUT_MS } from "./endpoint_smoke.ts";
 import { fetchModelCatalog } from "./models_fetch.ts";
 import { CODEX_IDENTITY_NAME } from "./config_registry.ts";
-import { CopilotEnvState, type ModelVerdict } from "./env_state.ts";
+import { CopilotEnvState } from "./env_state.ts";
 import { errMessage } from "../utils/error.ts";
 import { isDue } from "../utils/time.ts";
 import { defaultFetch } from "../utils/fetch.ts";
@@ -27,17 +27,23 @@ import { createStderrLogger } from "../utils/logger.ts";
 
 const logger = createStderrLogger();
 
-/** What this process already asked Copilot, under the store's verdict keys: the oracle's answer per
- *  candidate (its allowlist, or that the candidate itself served) and the verdicts it pinged. A run
- *  on the fs overlay (an import's preview) lands its store write nowhere, so the real run after it
- *  takes these from here instead of paying the requests again, and persists the verdicts. */
+/** What this process already asked Copilot, keyed per credential (a digest of the host and token:
+ *  a profile's answers must never serve the default's, since entitlements differ per account, nor
+ *  one host's another's) and identity: the catalog under each identity, the oracle's answer per
+ *  candidate (its allowlist, or that the candidate itself served), and each DEFINITIVE probe
+ *  outcome under the store's verdict key plus the probe's name. A run on the fs overlay (an
+ *  import's preview) lands its store write nowhere, so the real run after it takes these from here
+ *  instead of paying the requests again, and persists the verdicts. The probes are kept one by
+ *  one: a preview whose 1m probe was inconclusive still keeps its small ping's billed answer. */
+const catalogs = new Map<string, unknown>();
 const oracled = new Map<string, string[] | "servable">();
-const pinged = new Map<string, ModelVerdict>();
+const probed = new Map<string, { outcome: "yes" | "no"; atMs: number }>();
 
 /** Test hook: the next discovery asks as a fresh process would. */
 export function forgetDiscoveryAnswers(): void {
+  catalogs.clear();
   oracled.clear();
-  pinged.clear();
+  probed.clear();
 }
 
 /** The identity segment of an answer's key: the header's value, or for the set that sends none its
@@ -89,21 +95,21 @@ export async function discoverServableClaudeModels(
 ): Promise<DiscoveredClaudeModels> {
   const fetchImpl: ProbeFetch = opts.fetchImpl ?? defaultFetch;
   const own = wireHeaders(token, userAgent, integrationId);
+  const credential = await credentialDigest(`${apiBase}|${token}`);
 
-  const catalogBody = await fetchCatalog(
+  const catalogBody = await catalogUnder(
     fetchImpl,
     apiBase,
     token,
-    directClientHeaders(userAgent, integrationId),
+    userAgent,
+    integrationId,
+    credential,
   );
   const advertised = parseCatalogModels(catalogBody);
   const models = [...advertised];
   const unlisted: string[] = [];
 
   try {
-    // Answers are keyed per host and credential: a profile's must never answer for the default's
-    // (entitlements differ per account), nor one host's for another's.
-    const credential = await credentialDigest(`${apiBase}|${token}`);
     const extras = await unadvertisedClaudeIds(
       fetchImpl,
       apiBase,
@@ -122,30 +128,32 @@ export async function discoverServableClaudeModels(
       const key = `${credential}|${identityKey(integrationId)}|${id}`;
       let verdict = state.readModelVerdict(key);
       if (verdict === null || isDue(verdict.atMs, now)) {
-        verdict = pinged.get(key) ?? null;
-        if (verdict === null || isDue(verdict.atMs, now)) {
-          const servable = await pingModel(fetchImpl, apiBase, own, id, "x");
-          const is1m = servable === "yes"
-            ? await pingModel(
-              fetchImpl,
-              apiBase,
-              own,
-              id,
-              "x ".repeat(ONE_M_PROBE_TOKENS),
-            )
-            : "no";
-          // Only DEFINITIVE outcomes are cached: a timeout / 429 / 5xx must not wedge
-          // a servable model out (or in) for a whole TTL window.
-          if (servable === "unknown" || is1m === "unknown") {
-            if (servable === "yes") {
-              models.push({ id, is1m: false });
-              unlisted.push(id);
-            }
-            continue;
+        const ping = await probeOnce(
+          `${key}|ping`,
+          now,
+          () => pingModel(fetchImpl, apiBase, own, id, "x"),
+        );
+        const oneM = ping.outcome === "yes"
+          ? await probeOnce(
+            `${key}|1m`,
+            now,
+            () => pingModel(fetchImpl, apiBase, own, id, "x ".repeat(ONE_M_PROBE_TOKENS)),
+          )
+          : { outcome: "no" as const, atMs: ping.atMs };
+        // Only DEFINITIVE outcomes are cached: a timeout / 429 / 5xx must not wedge
+        // a servable model out (or in) for a whole TTL window.
+        if (ping.outcome === "unknown" || oneM.outcome === "unknown") {
+          if (ping.outcome === "yes") {
+            models.push({ id, is1m: false });
+            unlisted.push(id);
           }
-          verdict = { servable: servable === "yes", is1m: is1m === "yes", atMs: now };
-          pinged.set(key, verdict);
+          continue;
         }
+        verdict = {
+          servable: ping.outcome === "yes",
+          is1m: oneM.outcome === "yes",
+          atMs: ping.atMs,
+        };
         state.setModelVerdict(key, verdict);
       }
       if (verdict.servable) {
@@ -170,17 +178,28 @@ async function credentialDigest(hostAndToken: string): Promise<string> {
   ).join("");
 }
 
-/** The raw body; a failure throws with the status (an unusable 2xx body or a network error rethrows
- *  its own error). */
-async function fetchCatalog(
+/** The raw /models body under `integrationId`, fetched once per credential and identity in this
+ *  process; a failure throws with the status (an unusable 2xx body or a network error rethrows its
+ *  own error) and is not remembered. */
+async function catalogUnder(
   fetchImpl: ProbeFetch,
   apiBase: string,
   token: string,
-  headers: Record<string, string>,
+  userAgent: string,
+  integrationId: string | null,
+  credential: string,
 ): Promise<unknown> {
-  const got = await fetchModelCatalog({ host: apiBase, token, headers, fetchImpl });
+  const key = `${credential}|${identityKey(integrationId)}`;
+  if (catalogs.has(key)) return catalogs.get(key);
+  const got = await fetchModelCatalog({
+    host: apiBase,
+    token,
+    headers: directClientHeaders(userAgent, integrationId),
+    fetchImpl,
+  });
   switch (got.kind) {
     case "ok":
+      catalogs.set(key, got.body);
       return got.body;
     case "http":
       throw new Error(`GET ${apiBase}/models returned ${got.status}`);
@@ -211,12 +230,7 @@ async function unadvertisedClaudeIds(
   for (const id of KNOWN_IDENTITY_IDS) {
     if (id === integrationId) continue;
     try {
-      const body = await fetchCatalog(
-        fetchImpl,
-        apiBase,
-        token,
-        directClientHeaders(userAgent, id),
-      );
+      const body = await catalogUnder(fetchImpl, apiBase, token, userAgent, id, credential);
       for (const model of parseCatalogModels(body)) {
         if (!ownIds.has(model.id) && !candidates.includes(model.id)) candidates.push(model.id);
       }
@@ -269,6 +283,20 @@ async function oracleAllowlist(
   if (match === null || match[1] === undefined) return null;
   const ids = match[1].split(/\s+/).filter((id) => id !== "");
   return ids.length > 0 ? ids : null;
+}
+
+/** One probe's outcome, taken once per process while it holds (the verdict TTL); "unknown" is never
+ *  kept, so the next run probes again. */
+async function probeOnce(
+  key: string,
+  now: number,
+  probe: () => Promise<ProbeOutcome>,
+): Promise<{ outcome: ProbeOutcome; atMs: number }> {
+  const known = probed.get(key);
+  if (known !== undefined && !isDue(known.atMs, now)) return known;
+  const outcome = await probe();
+  if (outcome !== "unknown") probed.set(key, { outcome, atMs: now });
+  return { outcome, atMs: now };
 }
 
 /** DEFINITIVE outcomes only; "unknown" is never cached. The oversized-prompt variant doubles as the 1M probe.

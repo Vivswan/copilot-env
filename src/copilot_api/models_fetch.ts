@@ -17,7 +17,6 @@ interface FetchModelCatalogOptions {
   headers: Record<string, string>;
   fetchImpl?: ProbeFetch;
   timeoutMs?: number;
-  /** A caller deadline, combined with the request's own timeout. */
   signal?: AbortSignal;
 }
 

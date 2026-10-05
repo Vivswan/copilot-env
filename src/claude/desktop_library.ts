@@ -95,7 +95,7 @@ function desktopDirs(): DesktopDirs {
   return desktopDirsFor(process.platform, homedir(), desktopEnv());
 }
 
-/** Under the seam, the standard dir is the seam's `-1p` sibling. */
+/** The `-1p` spelling is a contract with test/claude_desktop.test.ts. */
 function resolveDesktopDataDirs(): { data: string; standard: string } | null {
   const seam = seamDir();
   if (seam !== null) return { data: seam, standard: `${seam}-1p` };
@@ -239,8 +239,7 @@ export function saveJsonIfChanged(path: string, doc: unknown, detail?: string): 
   return true;
 }
 
-/** A JSON write: the bytes land unless the file already holds them (true when written). `secretKeys`
- *  names the leaves a preview redacts. */
+/** `secretKeys` names the leaves a preview redacts. */
 export function writeJson(
   path: string,
   currentRaw: string | null,

@@ -122,7 +122,7 @@ export function checkProxyPackage(f: ProxyFacts): CheckResult {
   let outcome: CheckOutcome;
   let standaloneMissing = false;
   if (bounds.ok) {
-    // Version + cooldown as separate lines -> rendered as `-` sub-items.
+    // Version and cooldown as separate lines: the report renders each as its own sub-item.
     outcome = {
       status: "ok",
       detail: `${PROXY_PACKAGE_NAME} ${bounds.version}\nfloat ${
@@ -868,7 +868,7 @@ export function checkAuth(f: AuthFacts): CheckResult {
   };
 }
 
-/** Report opt-in autoupdate status (mirrors `agent update --auto-status`). */
+/** Mirrors `agent update --auto-status`. */
 export function checkAutoupdate(f: AutoupdateStatus): CheckResult {
   const base = {
     ...meta("setup.autoupdate"),
@@ -880,8 +880,7 @@ export function checkAutoupdate(f: AutoupdateStatus): CheckResult {
       lastResult: f.lastResult,
     },
   };
-  // The full status whether or not autoupdate is on, matching `agent update --auto-status`. One
-  // fact per line so the report renders them as `-` sub-items.
+  // One fact per line: the report renders each as its own sub-item.
   const last = f.lastCheckMs > 0 ? new Date(f.lastCheckMs).toISOString() : "never";
   const detail = [
     `status: ${f.enabled ? "enabled" : "disabled"} (the update.auto config key)`,

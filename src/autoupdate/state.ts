@@ -28,7 +28,7 @@ export function autoupdateStateFile(root: string = PROJECT_ROOT): string {
   return join(autoupdateDir(root), AUTOUPDATE_FILENAME);
 }
 
-/** Lock file guarding concurrent preflight updates. */
+/** Taken through withUpdateLock (lock.ts) by `agent update` and the preflight. */
 export function autoupdateLockFile(root: string = PROJECT_ROOT): string {
   return join(autoupdateDir(root), "update.lock");
 }

@@ -106,7 +106,6 @@ function settingsOf(data: CopilotEnvConfigData): CopilotEnvConfigData {
   };
 }
 
-/** A missing map reads as empty; a malformed one (not an object) reads as empty too. */
 export const CONFIG_SCHEMA: v.GenericSchema<unknown, CopilotEnvConfigData> = v.object({
   global: v.fallback(v.optional(GLOBAL_CONFIG_SCHEMA, {}), {}),
   profiles: v.fallback(
@@ -162,7 +161,7 @@ export function resolveSettingIn<K extends ConfigKey>(
   };
 }
 
-/** A stored value is what `unset` can revert: anything resolved from either map. */
+/** What `unset` can revert. */
 export function isStoredSource(source: SettingSource): boolean {
   return source === "profile" || source === "global";
 }
@@ -214,7 +213,6 @@ export function isStoredValueInert(
 
 // --- writes ------------------------------------------------------------------------------
 
-/** Which map a `set`/`unset` lands in. */
 export type SettingTarget = { kind: "global" } | { kind: "profile"; profile: Profile };
 
 function applyPatch(map: Record<string, unknown>, patch: Record<string, unknown>): void {
@@ -471,9 +469,8 @@ export class CopilotEnvConfig {
     });
   }
 
-  /** The `set`/`unset` write: the key's scope decides the map (settingTarget), so the
-   *  rule sits at the one mutation point. `value` null deletes. Returns where it landed for the
-   *  caller to say. */
+  /** The `set`/`unset` write: the key's scope decides the map, so the rule sits at this one
+   *  mutation point. `value` null deletes; the caller reports where it landed. */
   assign(
     def: ConfigKeyDef,
     value: ConfigValue | null,

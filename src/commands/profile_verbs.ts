@@ -278,7 +278,6 @@ export function registerProfileCommand(program: Command, rawProfile: string | nu
     return runAuth({ ...authArgs(opts), profile: rawProfile ?? undefined });
   });
 
-  /** The face the preference verbs run as: this profile's view of the store. */
   const view = (): ConfigView => ({ kind: "profile", profile: minted() });
 
   verb(

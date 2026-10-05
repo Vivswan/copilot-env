@@ -94,10 +94,6 @@ const defaultVerifier: ProvenanceVerifier = async (tag, bundleJson, required) =>
   return await verifyReleaseProvenance(tag, bundleJson, required);
 };
 
-// What each stage hands the next; applyUpdate nests the calls, so the order is fixed there:
-//   download -> Downloaded -> verify -> Verified -> attest -> Attested
-//   -> stage -> Staged -> provision -> Provisioned -> commit -> (migrate, GC)
-
 interface Downloaded {
   /** The downloaded binary, still in the temp directory. */
   readonly path: string;
@@ -139,7 +135,6 @@ interface Provisioned {
   readonly versionName: string;
 }
 
-/** Where to fetch a release file from: a local directory or a URL prefix. */
 type DownloadSource =
   | { kind: "directory"; path: string }
   | { kind: "url"; base: string };
@@ -175,7 +170,6 @@ async function fetchReleaseFile(source: DownloadSource, name: string, dest: stri
   await res.body.pipeTo(file.writable);
 }
 
-/** Stage 1: pull this platform's binary and the release manifest into `dir`. */
 async function download(tag: string, dir: string): Promise<Downloaded> {
   const target = currentReleaseTarget();
   if (!target) {
@@ -199,8 +193,6 @@ async function download(tag: string, dir: string): Promise<Downloaded> {
   };
 }
 
-/** Stage 2: hash what actually landed and refuse anything the release manifest
- *  does not vouch for. */
 async function verify(downloaded: Downloaded): Promise<Verified> {
   const expected = expectedDigest(downloaded.checksums, downloaded.asset);
   const actual = await fileSha256(downloaded.path);
@@ -371,21 +363,18 @@ export function previewUpdate(
 }
 
 export interface ApplyUpdateOptions {
-  /** Where progress/warnings go (default: the global stdout consola). */
   logger?: Logger;
   /** Send the children's stdout to stderr so migration output cannot pollute stdout. The
    *  preflight sets this: an autoupdate inside `agent start` is stderr-only end to end. */
   childStdoutToStderr?: boolean;
-  /** The install root to update. Defaults to the live one. */
   root?: string;
   /** Verify the release's build provenance, or skip it -- decided by the caller
    *  (see ProvenanceDecision), never defaulted here. */
   provenance: ProvenanceDecision;
 }
 
-/** The one update implementation, shared by `agent update` (src/commands/update.ts) and the
- *  autoupdate preflight (./preflight.ts); callers own the up-to-date / `--check` /
- *  dev-checkout gates and run it inside withUpdateLock's held branch. */
+/** Callers own the up-to-date / `--check` / dev-checkout gates and run this inside withUpdateLock's
+ *  held branch. */
 export async function applyUpdate(
   current: string,
   target: Release,
@@ -399,8 +388,6 @@ export async function applyUpdate(
   const top = installStateRoot(root);
   const versionName = versionDirName(target.tag);
   refuseAlreadyCurrent(top, versionName);
-  // The version-dir name `current` points at now -- the rollback candidate the GC keeps -- or
-  // null (first versioned update).
   const previous = readCurrentVersionName(top);
   const versionRoot = versionRootPath(top, versionName);
 
@@ -437,7 +424,7 @@ export async function applyUpdate(
   // update` would see "up to date" and never retry; failing here would strand the install.
   runPostFlipMigrations(top, provisioned.binary, current, target.tag, stdio, logger);
 
-  // GC keeps the new version plus ONE previous (the rollback candidate).
+  // The previous version stays as the rollback candidate.
   const keep = new Set(previous === null ? [versionName] : [versionName, previous]);
   removeVersionDirsExcept(top, keep);
   // The bootstrap binary a Windows install could not unlink while it was the running image.

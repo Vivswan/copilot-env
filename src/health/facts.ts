@@ -48,12 +48,10 @@ export interface ProfileSlotFacts {
  *  every consumer re-combining the raw reads. A foreign responder is runtime.identity's verdict,
  *  so it is its own state, never an "orphan": the two checks cannot double-warn. */
 export type PortState =
-  /** Nothing reachable on the port. */
   | { kind: "down" }
   /** Something answers, but no agent routes to the port (both agents direct); its occupant is
    *  not ours to judge. */
   | { kind: "unrouted" }
-  /** The port is held by the daemon we track. */
   | { kind: "tracked" }
   /** The responder is NOT copilot-api (no x-trace-id): a foreign listener. */
   | { kind: "foreign" }
@@ -94,7 +92,6 @@ export interface DaemonProbeFacts {
   portState: PortState;
 }
 
-/** A probed daemon's outcome record (the `probed` arm of DaemonProbe). */
 export type DaemonProbed = { kind: "probed" } & DaemonProbeFacts;
 
 /** THE row gate: per-daemon rows render exactly for `probed` targets, so a row can never
@@ -134,7 +131,6 @@ export type NamedRuntimeTarget = RuntimeTargetCommon & {
   profile: ProfileName;
   /** The credential store slot (one snapshot; see ProfileSlotFacts). */
   slot: ProfileSlotFacts;
-  /** The isolated daemon home exists on disk. */
   homeExists: boolean;
   probe: DaemonProbe;
 };
@@ -268,7 +264,6 @@ export type LiveProbeFacts =
  *                  daemon key, or a store that could not be read */
 export type BakedCredentialFreshness = "fresh" | "stale" | "unchecked";
 
-/** Codex wiring facts: the home being inspected plus the wiring contract status. */
 export type CodexFacts = CodexWiringStatus & {
   home: string;
   directAuth: CodexDirectAuthFacts;
@@ -288,7 +283,6 @@ export type CodexFacts = CodexWiringStatus & {
   bakedCredential?: BakedCredentialFreshness;
 };
 
-/** Claude wiring facts: the home + settings.json contract + gh-auth (for direct). */
 export type ClaudeFacts = ClaudeWiringStatus & {
   home: string;
   settingsPath: string;
@@ -311,7 +305,6 @@ export interface CodexHostFacts {
   supported: boolean;
   /** The per-host CODEX_HOME path (~/.codex/hosts/<hostname>). */
   hostHome: string;
-  /** That directory exists on disk. */
   exists: boolean;
   /** Its real-path config.toml selects the managed provider (codexHostFarm's predicate). */
   wired: boolean;
@@ -386,9 +379,7 @@ export type AuthFacts =
   & (
     | {
       profile: null;
-      /** The recorded auth provider (`copilot` | `gh-cli` | `gh-token` | `gh-env`), or null. */
       provider: AuthProvider | null;
-      /** Named profiles, keyed by validated name. */
       profiles: Record<ProfileName, ProfileAuthFacts>;
       /** The `identity` config pin (integration_identity.ts), or null when probing. */
       pinnedIntegrationId: string | null;

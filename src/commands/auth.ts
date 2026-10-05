@@ -495,14 +495,12 @@ function settleGhCliAccount(
     case "found":
       return { ghUser: account.login, activeLogin: null };
     case "unproven":
-      // A look gh never answered: the miss is final.
       throw ghCliMiss(pinned, account.login);
     case "absent":
       break;
     default:
       return assertNever(pinned);
   }
-  // A pin the user chose is final too; only a sole login falls back to gh's active account.
   if (account.kind === "pinned") throw ghCliMiss(pinned, account.login);
   const plain = look(null);
   switch (plain.kind) {
@@ -710,7 +708,6 @@ function noSuchProfileHint(profile: ProfileName): string {
     `\`agent profile ${profile} add --direct|--proxy\``;
 }
 
-/** Null when nothing resolves; the reason has already been reported and the exit code set. */
 function resolveOrReport(profile: Profile): string | null {
   const { token, reason } = new Credential(undefined, profile).resolveWithReason();
   if (token === null) {

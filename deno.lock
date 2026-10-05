@@ -14,7 +14,7 @@
     "jsr:@std/path@^1.1.6": "1.1.6",
     "jsr:@std/semver@^1.0.8": "1.0.8",
     "jsr:@std/testing@^1.0.21": "1.0.21",
-    "npm:@copilotkit/aimock@1.41.0": "1.41.0",
+    "npm:@copilotkit/aimock@1.43.0": "1.43.0",
     "npm:@jeffreycao/copilot-api@^2.6.19": "2.6.19",
     "npm:@modelcontextprotocol/client@2": "2.1.0",
     "npm:@modelcontextprotocol/client@^2.1.0": "2.1.0",
@@ -206,8 +206,8 @@
         "sisteransi"
       ]
     },
-    "@copilotkit/aimock@1.41.0": {
-      "integrity": "sha512-hduXWDo0vI3ZyidIcb+BP1CsquVOOwqaRPUY3E3tvi4EV6nyndTuw0RNrIa4fPTh56EAozhIQDEmjKULY8MJHQ==",
+    "@copilotkit/aimock@1.43.0": {
+      "integrity": "sha512-V8D8cjSMtAR4rHaD2ulp3DR/ZguXQjDNOqwKDNvjb/OJL/KR1I0SDf5xpRCd+TYKjhmf9fM8Xpg3QBKPmV9Kmw==",
       "bin": true
     },
     "@fastify/busboy@3.2.2": {
@@ -1501,7 +1501,7 @@
       "jsr:@std/fs@^1.0.24",
       "jsr:@std/semver@^1.0.8",
       "jsr:@std/testing@^1.0.21",
-      "npm:@copilotkit/aimock@1.41.0",
+      "npm:@copilotkit/aimock@1.43.0",
       "npm:@jeffreycao/copilot-api@^2.6.19",
       "npm:@modelcontextprotocol/client@2",
       "npm:@modelcontextprotocol/client@^2.1.0",

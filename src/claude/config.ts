@@ -409,7 +409,6 @@ function applyManagedCredential(
   envTable(doc)[AUTH_TOKEN_ENV] = credential.token;
 }
 
-/** The write-report clause that says how the credential rides. */
 function credentialDetail(
   credential: CredentialWiring,
   mode: ManagedAgentMode,
@@ -533,11 +532,8 @@ function prepareWebSearchPair(
   return { before: NO_STEP, commit: strip.commit, after: () => void remove() };
 }
 
-/**
- * Re-derive the web-search pair for the current default wiring: direct applies it (per
- * `claude.wire-mcp`), proxy or none takes it back, a foreign settings.json is never touched.
- * `agent profile mcp --remove` stores `claude.wire-mcp false` before running this, which makes it a strip.
- */
+/** `agent profile mcp --remove` stores `claude.wire-mcp false` before running this, which makes it a
+ *  strip. */
 export function syncDefaultWebSearch(claudeHome = resolveClaudeHome()): void {
   const settingsPath = settingsPathFor(claudeHome);
   // The default slot's recorded mode decides whether the pair is APPLIED (direct); whether it is
@@ -559,12 +555,7 @@ type ClaudeWriteRequest = ManagedWrite & {
   profile?: Profile;
 };
 
-/**
- * The write: the managed env, credential carrier, and web-search pair over the settings file,
- * landed through the facade (a dry run previews it there). A named profile's file is launched via
- * `claude --settings`. Throws on malformed settings, an unresolvable proxy port, or an unwritable
- * home.
- */
+/** A named profile's file is launched via `claude --settings`. */
 export function configureClaudeConfig(claudeHome: string, request: ClaudeWriteRequest): void {
   const profile = request.profile ?? null;
   // read(), not resolve(): no `gh` spawn (runClaude already resolved and fail-fasted; this
@@ -696,7 +687,6 @@ export function removeClaudeProfile(
   }
 }
 
-/** What removeClaudeDefaultWiring left behind, for the caller to sequence on. */
 interface ClaudeDefaultWiringRemoval {
   /** The strip could not land (file unreadable, malformed, or unwritable), so the ledger still owns
    *  a deny here. While it stands the MCP registration must stay too: never a denied builtin with
@@ -763,10 +753,9 @@ export const CLAUDE_ENDPOINT_SMOKE: EndpointSmoke = {
   cliFallback: (body) => newestClaudeModel(parseCatalogModels(body)),
 };
 
-/** Writes a throwaway direct config and runs `claude -p --model <catalog pick>` against it
- *  (src/agents/live_probe.ts); with no claude CLI on the machine the endpoint smoke judges the
- *  credential instead. False means the caller writes proxy. `credential` is the probe subject's:
- *  the resolver command, or a named profile's token baked. */
+/** With no claude CLI on the machine the endpoint smoke judges the credential instead. False means
+ *  the caller writes proxy. `credential` is the probe subject's: the resolver command, or a named
+ *  profile's token baked. */
 export function detectClaudeDirect(
   direct: DirectWiring,
   ghToken: string | null,
@@ -825,11 +814,10 @@ export function claudeAdapter(): AgentAdapter {
   };
 }
 
-/** Read-only, from copilot-env's own state: the slot's recorded mode (the default's, or the named
- *  profile's) and the profile's resolved port, never reserving one; the settings file is an output
- *  and is not read. Shared by `agent profile env` and the launch verb. Direct, or nothing wired: a
- *  loopback URL in the shell is ours to clear whatever its port or path (a stale one on an old port
- *  must still read as ours); anything else is the user's. */
+/** The port is peeked (copilotApiResolvePort), never reserved, and the settings file is an output
+ *  here, never read. Direct, or nothing wired: a loopback URL in the shell is ours to clear whatever
+ *  its port or path (a stale one on an old port must still read as ours); anything else is the
+ *  user's. */
 export function managedClaudeBaseUrl(profile: Profile): ManagedEnvValue {
   const mode = new CopilotEnvState().readProfileSlot(profile).mode;
   if (mode === "proxy") return { value: proxyLoopbackOrigin(copilotApiResolvePort(profile)) };

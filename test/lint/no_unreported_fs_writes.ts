@@ -157,7 +157,6 @@ const FS_READ_NAMES = new Set([
   "unwatchFile",
 ]);
 
-/** The Deno namespace's mutation entry points. */
 const DENO_WRITE_NAMES = new Set([
   "writeFile",
   "writeFileSync",
@@ -301,7 +300,6 @@ const HANDLE_MESSAGE = "open a file for writing through src/utils/fs_facade.ts (
 const SPAWN_MESSAGE = "a child process that mutates the filesystem (rm, mv, cp, del, ...) is a " +
   "write the seam never sees; do it through src/utils/fs_facade.ts";
 
-/** The text of a string literal or an expression-free template literal, else null. */
 function literalText(node: Deno.lint.Node): string | null {
   if (node.type === "Literal" && typeof node.value === "string") return node.value;
   if (node.type === "TemplateLiteral" && node.expressions.length === 0) {
@@ -310,13 +308,11 @@ function literalText(node: Deno.lint.Node): string | null {
   return null;
 }
 
-/** A command's name as typed: the last path segment, without a Windows extension, lowercased. */
 function commandName(text: string): string {
   const base = text.trim().split(/[\\/]/).pop() ?? "";
   return base.replace(/\.(exe|cmd|bat|com)$/i, "").toLowerCase();
 }
 
-/** Whether a shell command line runs a mutating command in any of its segments. */
 function commandLineMutates(line: string): boolean {
   return line.split(/[;&|\n]+/).some((segment) => {
     const word = segment.trim().split(/\s+/)[0] ?? "";
@@ -349,8 +345,6 @@ function denoOptionsWrite(options: Deno.lint.Node | undefined): boolean {
   });
 }
 
-/** Whether a spawn of `command` with `args` runs a mutating command: the command itself, or a
- *  shell handed a command line that does. */
 function spawnMutates(command: Deno.lint.Node, args: Deno.lint.Node | undefined): boolean {
   const text = literalText(command);
   if (text === null) return false;
@@ -363,8 +357,6 @@ function spawnMutates(command: Deno.lint.Node, args: Deno.lint.Node | undefined)
   });
 }
 
-/** Whether `node` names a node:fs module object: a namespace/default/`promises` import
- *  local, or `<local>.promises` off one. */
 function isFsNamespace(node: Deno.lint.Node, locals: ReadonlySet<string>): boolean {
   if (node.type === "Identifier") return locals.has(node.name);
   return node.type === "MemberExpression" && memberName(node) === "promises" &&

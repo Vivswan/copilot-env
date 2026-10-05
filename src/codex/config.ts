@@ -86,7 +86,6 @@ function isTable(value: unknown): value is Doc {
   return isRecord(value) && !(value instanceof Date);
 }
 
-/** The table at `key` of `doc`, made (a leaf in the way replaced, as the writers always did). */
 function tableAt(doc: Doc, key: string): Doc {
   const table = isTable(doc[key]) ? doc[key] : {};
   doc[key] = table;
@@ -133,8 +132,7 @@ function credentialTables(
 }
 
 // The command shape re-runs `auth.command` every `refresh_interval_ms`, so the token tracks the
-// current credential; the static shape carries it in the table. Re-applied on every direct run:
-// managed keys win, user-added keys in the same table survive the merge.
+// current credential.
 function managedDirectProvider(
   credential: CredentialWiring,
   profile: Profile = null,
@@ -211,10 +209,9 @@ const MANAGED_PROVIDER_KEYS: ReadonlySet<string> = new Set([
   "env_key",
 ]);
 
-// Seeded when config.toml is absent OR empty (readCodexToml reads a whitespace-only file as
-// absent). Provider tables and the managed top-level keys
-// (web_search) are absent on purpose: the merge injects the former and the writer force-writes the
-// latter right after loading, so there is nothing to drift.
+// Provider tables and the managed top-level keys (web_search) are absent on purpose: the merge
+// injects the former and the writer force-writes the latter right after loading, so there is
+// nothing to drift.
 function defaultConfig(): Record<string, unknown> {
   return {
     "model_provider": CODEX_PROVIDER_ID,
@@ -223,9 +220,6 @@ function defaultConfig(): Record<string, unknown> {
   };
 }
 
-/** A named profile's `<name>.config.toml` as the writer merges into it: the user's own keys stay,
- *  a missing file starts empty, and a present-but-unparseable one throws like config.toml does
- *  (never clobber what could not be read). */
 function loadProfileConfig(codexHome: string, name: ProfileName): Record<string, unknown> {
   const profilePath = codexProfileConfigPath(codexHome, name);
   const read = readCodexToml(profilePath);
@@ -258,10 +252,8 @@ function readConfigForRemoval(configPath: string): Record<string, unknown> | nul
 }
 
 /**
- * The write: every managed key enforced over config.toml (and a named profile's `<name>.config.toml`),
- * landed through the facade (a dry run previews it there). A named profile's selector lives in
- * `<name>.config.toml`, never at the top level of config.toml, so `codex --profile <name>` and plain
- * `codex` coexist.
+ * A named profile's selector lives in `<name>.config.toml`, never at the top level of config.toml,
+ * so `codex --profile <name>` and plain `codex` coexist.
  */
 export function configureCodexConfig(codexHome: string, request: CodexWriteRequest): void {
   const profile = request.profile ?? null;
@@ -390,8 +382,8 @@ export function configureCodexConfig(codexHome: string, request: CodexWriteReque
   }
 }
 
-/** The request for `profile`'s write. A proxy write PEEKS the profile's port (copilotApiResolvePort)
- *  so computing the text writes nothing; the write reserves it right before it lands. */
+/** A proxy write PEEKS the profile's port (copilotApiResolvePort) so computing the text writes
+ *  nothing; the write reserves it right before it lands. */
 function codexWriteRequest(write: ManagedWrite, profile: Profile): CodexWriteRequest {
   if (write.mode !== "proxy") return { ...write, profile };
   const port = copilotApiResolvePort(profile);
@@ -406,9 +398,9 @@ function codexWriteRequest(write: ManagedWrite, profile: Profile): CodexWriteReq
 
 /**
  * The caller persists CODEX_HOME to state and, for direct, has already resolved the client identity
- * carried in the write (this function never probes). Throws with the cause when the write cannot
- * proceed. `directToken` is that already-resolved credential, so the catalog seed's direct fetch
- * never shells out to the gh-cli provider a second time.
+ * carried in the write (this function never probes). `directToken` is that already-resolved
+ * credential, so the catalog seed's direct fetch never shells out to the gh-cli provider a second
+ * time.
  */
 async function applyCodexConfig(
   codexHome: string,
@@ -632,9 +624,8 @@ function writeCodexProbeConfig(
   }, "Codex probe config");
 }
 
-/** Writes a throwaway direct config and runs `codex exec --model <catalog pick> --sandbox
- *  read-only` against it (src/agents/live_probe.ts); with no codex CLI on the machine the endpoint
- *  smoke judges the credential instead. False means the caller writes proxy. */
+/** With no codex CLI on the machine the endpoint smoke judges the credential instead. False means
+ *  the caller writes proxy. */
 export function detectCodexDirect(
   direct: DirectWiring,
   ghToken: string | null,
@@ -672,7 +663,7 @@ export function codexAdapter(): AgentAdapter {
         configureCodexConfig(effectiveCodexHome(), codexWriteRequest(write, profile));
         return;
       }
-      // The farm derivation decides the home the write lands in (and records it after).
+      // The farm derivation records the home only after the write lands in it.
       await withCodexHostFarm((codexHome) =>
         applyCodexConfig(codexHome, write, options.directToken ?? null, null)
       );

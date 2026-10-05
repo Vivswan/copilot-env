@@ -346,8 +346,6 @@ async function addDefault(
   printGuidance(codex, claude, new CopilotEnvState().read().githubToken !== null, failedAgents);
 }
 
-/** A named profile's credential as the landing wires it: a stored token as it is, a gh-cli slot
- *  through gh (a login that is gone is as good as none). Null when nothing resolves. */
 function resolveProvisioned(
   credential: StoredCredential,
 ): { credential: ProvisionedCredential; token: string } | null {
@@ -603,7 +601,6 @@ export function renderProfileTable(
   }).join("\n");
 }
 
-/** `agent list` and bare `agent profile`: every profile, one row each. */
 export async function listProfiles(): Promise<void> {
   const state = new CopilotEnvState();
   // The default is a profile too: a row as soon as its slot carries anything.
@@ -641,7 +638,6 @@ export async function listProfiles(): Promise<void> {
 
 // --- sync --------------------------------------------------------------------------------------
 
-/** The adapters `--claude` | `--codex` select; no flag is both. */
 function agentsNamed(agent: ManagedAgentId | null): AgentAdapter[] {
   return bothAgents().filter((adapter) => agent === null || adapter.id === agent);
 }
@@ -657,7 +653,6 @@ async function syncDefault(agent: ManagedAgentId | null): Promise<void> {
   if (agent !== "codex") await reconcileClaudeDesktopWiring();
 }
 
-/** A named profile's re-render from its slot, `agents` alone. */
 async function syncNamed(name: ProfileName, agents: readonly AgentAdapter[]): Promise<void> {
   const slot = new CopilotEnvState().readProfileSlot(name);
   if (slot.kind === "partial") throw new Error(partialSlotGap(name, slot));

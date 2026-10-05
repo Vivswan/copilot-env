@@ -9,6 +9,11 @@
 //   `agent profile sync --codex|--claude`, an import naming one agent, a launcher's proxy wire
 //                                                                   -> runAgentConfig (runCodex, runClaude)
 //
+// runAgentConfig on a recorded mode: a re-render that never moves the record or the pair, and a
+// flag naming another mode is refused before any file is written. On no record, or a Direct record
+// whose pair is still incomplete under the pin and host literal in force: the landing, which wires
+// both agents and says so.
+//
 // An `auto` landing probes EVERY run; when the verdict differs from the recorded mode, the caller's
 // `onVerdict` (the CLI's question) says which one lands. A failed write leaves the previous record,
 // and the guidance names the agent that did not move and the repair.

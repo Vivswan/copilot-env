@@ -186,6 +186,7 @@ export function runConfig(
   run()();
 }
 
+/** Where a write landed, appended to the set and unset lines. */
 function targetSuffix(target: SettingTarget): string {
   return target.kind === "global" ? "" : ` (${profileLabel(target.profile)})`;
 }

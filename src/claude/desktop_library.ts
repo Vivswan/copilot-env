@@ -284,6 +284,7 @@ export function removeFile(path: string, detail?: string): void {
 
 // --- app files -----------------------------------------------------------------------
 
+/** The app's process name, for the running scan. */
 const CLAUDE_DESKTOP_PROCESS = "Claude";
 const APP_CONFIG_FILENAME = "claude_desktop_config.json";
 const DEVELOPER_SETTINGS_FILENAME = "developer_settings.json";

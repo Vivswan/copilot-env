@@ -232,7 +232,7 @@ export function recordedModelRows(existing: Record<string, unknown>): DesktopMod
   return parsed;
 }
 
-/** Exported for src/migrations/4.0.9.ts. */
+/** The entry's `copilot-env` MCP row with an argv, or undefined. Exported for src/migrations/4.0.9.ts. */
 export function ownMcpRow(
   doc: Record<string, unknown>,
 ): (Record<string, unknown> & { args: unknown[] }) | undefined {

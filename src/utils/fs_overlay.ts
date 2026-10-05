@@ -221,6 +221,7 @@ export class Overlay {
     return this.names.get(key) ?? key;
   }
 
+  /** The entry's own name as a listing prints it. */
   private basenameOf(key: string): string {
     return WINDOWS ? this.spellings.get(key) ?? basename(key) : basename(key);
   }
@@ -246,6 +247,7 @@ export class Overlay {
     }
   }
 
+  /** Marks what stands at `path` (and below) as the run's own scratch, off the report. */
   hide(path: string): void {
     this.hidden.add(this.key(path, "lstat", false));
   }
@@ -338,6 +340,7 @@ export class Overlay {
 
   // --- the union's bookkeeping -----------------------------------------------------------------
 
+  /** The name a key prints under is the spelling of the first write that touched it. */
   private set(key: string, spelled: string): void {
     if (!this.names.has(key)) this.names.set(key, spelled);
     if (WINDOWS && !this.spellings.has(key)) {

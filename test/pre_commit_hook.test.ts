@@ -1,5 +1,6 @@
-import { chmodSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { fingerprintTree } from "./helpers/dry_run.ts";
 import { ROOT, runSync } from "./helpers/run.ts";
 import { expect, tempDir, test } from "./helpers/testing.ts";
 
@@ -32,7 +33,7 @@ test.skipIf(process.platform === "win32")(
     ] as const;
     for (const [layout, missing] of cases) {
       const { root, bin } = scratch(layout);
-      const before = readdirSync(root, { recursive: true }).sort();
+      const before = fingerprintTree(root);
       const res = runSync("/bin/sh", [HOOK], {
         cwd: root,
         env: { PATH: bin, HOME: root, DENO_INSTALL: join(root, "deno-install") },
@@ -42,7 +43,7 @@ test.skipIf(process.platform === "win32")(
         stdout: "",
         stderr: `pre-commit: ${missing}; ${BOOTSTRAP}\n`,
       });
-      expect(readdirSync(root, { recursive: true }).sort()).toEqual(before);
+      expect(fingerprintTree(root)).toEqual(before);
     }
   },
 );

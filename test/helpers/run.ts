@@ -158,7 +158,8 @@ export function runSync(cmd: string, args: string[], opts: RunOptions = {}): Run
       encoding: "utf-8",
       input: opts.input ?? "",
       maxBuffer: 16 * 1024 * 1024,
-      timeout: opts.timeoutMs ?? 120_000,
+      // On a loaded Windows runner a CLI child has run past two minutes and then finished.
+      timeout: opts.timeoutMs ?? (process.platform === "win32" ? 300_000 : 120_000),
       shell: opts.shell ?? false,
     });
     if (res.error) throw res.error;

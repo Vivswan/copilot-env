@@ -1,8 +1,19 @@
 # Dot-sourced from the PowerShell $PROFILE; the twin of shell/agents.bashrc.
 # It adds only what a subprocess cannot do: eval `agent profile env` into the current session.
 
+# An ISE or embedded host is not a console host, so the edition's console executable stands in.
+function Resolve-AgentHost {
+    param([string]$ProcessPath)
+    $leaf = Split-Path -Leaf $ProcessPath
+    if ($leaf -in 'powershell.exe', 'pwsh.exe', 'pwsh') { return $ProcessPath }
+    if ($PSVersionTable.PSEdition -eq 'Desktop') { return Join-Path $PSHOME 'powershell.exe' }
+    if ($IsWindows) { return Join-Path $PSHOME 'pwsh.exe' }
+    return Join-Path $PSHOME 'pwsh'
+}
+
 $script:AgentsDir = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $script:AgentPs1 = Join-Path $AgentsDir 'bin\agent.ps1'
+$script:AgentHost = Resolve-AgentHost (Get-Process -Id $PID).Path
 
 # DENO_INSTALL is the same override scripts/ensure-deno.ps1 honors, so every entry point
 # looks in one place.
@@ -16,7 +27,7 @@ if ((Test-Path $DenoExe) -and (-not (Get-Command deno -ErrorAction SilentlyConti
 # --- low-level helpers -----------------------------------------------------
 
 function Invoke-Agent {
-    & powershell -NoProfile -ExecutionPolicy Bypass -File $script:AgentPs1 @args
+    & $script:AgentHost -NoProfile -ExecutionPolicy Bypass -File $script:AgentPs1 @args
 }
 
 # `agent profile env` stdout carries only shell directives (src/commands/env.ts; the default

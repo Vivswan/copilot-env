@@ -4,8 +4,6 @@
 //   install.sh    resolve_target()   (POSIX platform -> triple)
 //   install.ps1   Resolve-Target     (Windows platform -> triple)
 
-/** A platform we ship a compiled binary for. `os`/`arch` are the values
- *  `process.platform` / `process.arch` report on it. */
 export interface ReleaseTarget {
   /** The rust-style triple `deno compile --target` takes. */
   triple: string;
@@ -21,16 +19,13 @@ export const RELEASE_TARGETS: readonly ReleaseTarget[] = [
   { triple: "x86_64-pc-windows-msvc", os: "win32", arch: "x64" },
 ];
 
-/** The release-asset name for a target: `copilot-env-<triple>`, `.exe` on
- *  Windows. scripts/compile.ts writes exactly these names into dist/. */
+/** scripts/compile.ts writes exactly these names into dist/. */
 export function releaseAssetName(target: ReleaseTarget): string {
   return target.os === "win32"
     ? `copilot-env-${target.triple}.exe`
     : `copilot-env-${target.triple}`;
 }
 
-/** The target this process is running on, or null when copilot-env ships no
- *  binary for it (the caller decides whether that is fatal). */
 export function currentReleaseTarget(
   platform: string = process.platform,
   arch: string = process.arch,

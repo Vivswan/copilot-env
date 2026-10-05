@@ -37,7 +37,6 @@ export const CLAUDE_LIVE_SCOPES: readonly HealthScope[] = ["full", "claude"];
 /** Section a check renders under (fixed render order lives in report.ts). */
 export type CheckGroup = "bootstrap" | "proxy" | "runtime" | "setup" | "auth" | "codex" | "claude";
 
-/** The identity fields every result of one registered check carries. */
 interface CheckDescriptor {
   readonly label: string;
   readonly group: CheckGroup;
@@ -101,8 +100,7 @@ const CHECK_DESCRIPTORS = {
 
 type RegisteredCheckId = keyof typeof CHECK_DESCRIPTORS;
 
-/** Every check id: the registered table plus the per-CLI family. The strings
- *  are external contracts (`--json` consumers key on them). */
+/** The strings are external contracts (`--json` consumers key on them). */
 export type CheckId = RegisteredCheckId | `setup.cli.${string}`;
 
 /** A fix hint is REQUIRED on warn/fail and unrepresentable on ok (`fix?: never` keeps the
@@ -124,7 +122,6 @@ export type CheckResult = {
   value?: Record<string, unknown>;
 } & CheckOutcome;
 
-/** Shape emitted by `agent health --json`. */
 export interface HealthJson {
   scope: HealthScope;
   /** The profile the run was narrowed to (null = the default/whole environment). */

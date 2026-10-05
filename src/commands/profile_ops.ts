@@ -1,9 +1,6 @@
-// The runtime verbs of `agent profile [<name>] <verb>`: launch, env, proxy-token, mcp, start, stop,
-// health, models, credits, settings, each routed onto the command function that owned the flat
-// `--profile <name>` spelling. Registered from src/commands/profile_verbs.ts, which owns the tree
-// and hands over the name. The top-level `models`, `start`, and `stop` are the default profile's
-// aliases; the top-level `health`, `credits`, and `settings` are the every-profile scope of the
-// same words.
+// The runtime verbs of `agent profile [<name>] <verb>`, registered from src/commands/profile_verbs.ts,
+// which owns the tree and hands over the name. The top-level `models`, `start`, and `stop` are the
+// default profile's aliases; `health`, `credits`, and `settings` are the every-profile scope.
 import type { Command } from "commander";
 import { parseModeFlags } from "../agents/provider_mode.ts";
 import type { ProfileVerb } from "../copilot_api/profile.ts";
@@ -19,8 +16,6 @@ import { runProfileSettings, runSettings, type SettingsArgs } from "./settings.t
 import { parseStartAction, runStart } from "./start.ts";
 import { runStop } from "./stop.ts";
 
-/** What the tree owner (registerProfileCommand) lends the verbs: the name from the word position,
- *  the verb factory, and the stray-word refusal. */
 export interface ProfileOpsContext {
   rawProfile: string | null;
   /** `summary` is the verb's one-line row in the listings; `description` its own help. */
@@ -352,8 +347,6 @@ export function registerDaemonAliases(program: Command): void {
   ).action((opts: Opts) => stopAction(opts, undefined));
 }
 
-/** `agent health`, `agent credits`, `agent settings`: every profile, every distinct account, the
- *  whole store. One profile's scope is the verb of the same name. */
 export function registerEverywhereCommands(program: Command): void {
   addHealthOptions(
     program

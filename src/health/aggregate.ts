@@ -1,4 +1,3 @@
-// Pure aggregation over CheckResult[] -- the primary unit-test surface. No I/O.
 import type { Profile } from "../copilot_api/profile.ts";
 import {
   type CheckResult,

@@ -47,9 +47,6 @@ export function renderReport(
   printWrapped(paint.bold(`copilot-env health - scope: ${scope}`));
   for (const group of GROUP_ORDER) {
     const inGroup = results.filter((r) => r.group === group);
-    // Sections are keyed on (group, profile): default-target (null) checks render under the
-    // plain group label, exactly the historical report, and each named profile's checks get
-    // their own headed section, in evaluation order.
     for (const profile of sectionProfiles(inGroup)) {
       const section = inGroup.filter((r) => r.profile === profile);
       let heading: string;
@@ -70,7 +67,7 @@ export function renderReport(
           printWrapped(`  ${glyph(r.status, paint)} ${r.label}`);
           for (const line of lines) printWrapped(`      ${paint.gray("•")} ${line}`);
         }
-        // The CheckOutcome union: every warn/fail carries a fix, ok never does.
+        // CheckOutcome (src/health/types.ts): every warn/fail carries a fix, ok never does.
         if (r.status !== "ok") printWrapped(`      ${paint.gray(`→ fix: ${r.fix}`)}`);
       }
     }

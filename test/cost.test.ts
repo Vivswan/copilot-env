@@ -444,8 +444,8 @@ const PRICED_BODY = {
 };
 
 /** `fail` rejects with the TypeError shape the real transport throws. Serves `body` to every URL,
- *  the rate card's included: the card then fails to parse and the run prices from the built-in
- *  table, which is the fallback these tests price against. */
+ *  the rate card's included: the card then fails to parse and, with none cached, the run prices
+ *  from the list alone, which is what these tests price against. */
 function fakeFetch(body: unknown, opts: { fail?: boolean } = {}): typeof fetch {
   return ((input: string | URL | Request, init?: RequestInit): Promise<Response> => {
     if (init?.signal?.aborted) return Promise.reject(init.signal.reason);
@@ -860,7 +860,7 @@ test("runtime.timing.pricing is the wait for the price list alone, never the war
 // The card's provenance (source, fetch stamp) sits under `runtime`: a fetched and a cached run
 // over the same logs must otherwise agree, or the cost-metrics check reads its own base twice
 // and calls the inputs unstable.
-test("runCost reads GitHub's card from the stored URL, prices at it, names the card and its day, and falls back to the built-in table in one line when it cannot be read", () =>
+test("runCost reads GitHub's card from the stored URL, prices at it, names the card and its day, and prices from the list alone in one line when it cannot be read and none is cached", () =>
   withCostHome(async ({ claudeRoot }) => {
     const cardUrl = "https://rates.example/models-and-pricing.yml";
     new CopilotEnvConfig().set({ "cost.github-pricing-url": cardUrl });
@@ -880,7 +880,7 @@ test("runCost reads GitHub's card from the stored URL, prices at it, names the c
     expect(fetched.payload.claudeSessions.totalUsd).toBe(0.0006);
     const provenance = fetched.payload.runtime.githubRates;
     expect(provenance?.source).toBe("fetched");
-    const fetchedAt = provenance?.source === "built-in" ? "" : provenance?.fetchedAt ?? "";
+    const fetchedAt = provenance?.fetchedAt ?? "";
     expect(Date.parse(fetchedAt) >= before && Date.parse(fetchedAt) <= Date.now()).toBe(true);
 
     // Inside the day the cache answers, so the garbled card is never read: the footer names the
@@ -901,7 +901,8 @@ test("runCost reads GitHub's card from the stored URL, prices at it, names the c
     expect(withoutRuntime(cached.payload)).toEqual(withoutRuntime(fetched.payload));
 
     // A URL with no cached card that serves something that is not the card: one line names the
-    // problem (never the URL), the built-in table stands in, and the list's own price holds.
+    // problem (never the URL), the list alone prices the run at its own rate, and the JSON names
+    // no card.
     const garbledUrl = "https://rates.example/with-secret-token/garbled.yml";
     new CopilotEnvConfig().set({ "cost.github-pricing-url": garbledUrl });
     const fallback = await jsonRun(
@@ -909,11 +910,11 @@ test("runCost reads GitHub's card from the stored URL, prices at it, names the c
       deps("not a card", garbledUrl),
     );
     expect(fallback.stderr).toContain(
-      'GitHub rate card could not be read today (rate card line 1 is not a "key: value" row field); using built-in rates.',
+      'GitHub rate card could not be read today (rate card line 1 is not a "key: value" row field) and none is cached; priced at OpenRouter rates.',
     );
     expect(fallback.stderr).not.toContain("rates.example");
     expect(fallback.stderr).not.toContain("with-secret-token");
-    expect(fallback.payload.runtime.githubRates).toEqual({ source: "built-in" });
+    expect("githubRates" in fallback.payload.runtime).toBe(false);
     expect(fallback.payload.claudeSessions.totalUsd).toBe(0.0017);
   }));
 

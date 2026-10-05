@@ -1,7 +1,7 @@
 // GitHub's Copilot rate card: the table behind the docs' models-and-pricing page, read from the data
 // file that page renders and cached for a day beside the OpenRouter list (both are PUBLIC data). A
 // card that cannot be fetched or does not parse WHOLE is never priced from: the last good cached
-// card, else the built-in table, prices the run, and the caller says so in one line.
+// card prices the run, else the OpenRouter list alone, and the caller says so in one line.
 
 import { createHash } from "node:crypto";
 import { join } from "node:path";
@@ -39,39 +39,25 @@ export interface GitHubRateCard {
 }
 
 /** Where the card that priced a run came from; `fetchedAtMs` is when GitHub was last read. */
-export type RateCardSource =
-  | { source: "fetched" | "cached"; fetchedAtMs: number }
-  | { source: "built-in" };
-
-export interface LoadedRateCard {
-  card: GitHubRateCard;
-  from: RateCardSource;
-  /** Why today's card was not read (the run then prices from `card`, the last good one); absent
-   *  when it was. */
-  problem?: string;
-  /** Set when a fetched card could not be persisted: the next run fetches again. */
-  cacheWriteError?: string;
+export interface RateCardSource {
+  source: "fetched" | "cached";
+  fetchedAtMs: number;
 }
 
-/** The rates that stand in when no card was ever cached: GitHub's card as read on 2026-09-19 for
- *  the models it prices differently from the OpenRouter list (every other model's card matched the
- *  list that day), plus the long-context tiers, which the list does not carry at all. */
-export const BUILT_IN_RATE_CARD: GitHubRateCard = {
-  rates: new Map([
-    ["openai/gpt-5.6-sol", { input: 4, output: 20, cacheRead: 0.4, cacheCreation: 5 }],
-  ]),
-  longContext: new Map([
-    ["openai/gpt-6-astra", {
-      promptTokens: 272_000,
-      tier: { input: 20, output: 75, cacheRead: 2, cacheCreation: 25 },
-    }],
-    ["openai/gpt-5.6-sol", {
-      promptTokens: 272_000,
-      tier: { input: 8, output: 30, cacheRead: 0.8, cacheCreation: 10 },
-    }],
-  ]),
-  unmapped: [],
-};
+/** `none` when today's card could not be read and no earlier one is cached: the run then prices
+ *  from the OpenRouter list alone. */
+export type LoadedRateCard =
+  | {
+    kind: "card";
+    card: GitHubRateCard;
+    from: RateCardSource;
+    /** Why today's card was not read (the run then prices from `card`, the last good one); absent
+     *  when it was. */
+    problem?: string;
+    /** Set when a fetched card could not be persisted: the next run fetches again. */
+    cacheWriteError?: string;
+  }
+  | { kind: "none"; problem: string };
 
 /** The card's display names and the OpenRouter id each one prices. `null` marks a row for an
  *  offering no id here names (a fast-mode variant): it is neither priced nor reported. A name
@@ -303,10 +289,11 @@ function timeoutError(timeout: AbortSignal): Error | null {
 }
 
 /** A fresh cache answers without the network. Otherwise today's card is fetched and parsed whole;
- *  a fetch or parse failure, a card with fewer models, long-context tiers, or cache-write rates
- *  than the one it replaces, or (with no card to replace) one lacking a mapped model, keeps the
- *  cached card (expired or not), else the built-in table, and names the problem. A cache stamped
- *  in the future (clock moved back) is expired, never fresh. */
+ *  a fetch or parse failure keeps the cached card (expired or not) and names the problem, or names
+ *  it alone when nothing is cached. A card that parses whole is GitHub's current table whatever
+ *  it dropped since: a model it lacks keeps the list's rate, and a rate a row leaves out keeps the
+ *  rate beneath it (the list's under a base row, the base rate under a long-context row). A cache
+ *  stamped in the future (clock moved back) is expired, never fresh. */
 export async function loadGitHubRateCard(
   url: string,
   opts: {
@@ -323,61 +310,23 @@ export async function loadGitHubRateCard(
   const cachePath = rateCardCachePath(canonical, opts.cacheDir ?? usageIndexDir());
   const cached = readRateCardCache(cachePath, urlDigest);
   if (cached !== null) {
-    const ageMs = nowMs - cached.fetchedAtMs;
-    if (ageMs >= 0 && ageMs < ttlMs) {
-      return { card: cached.card, from: { source: "cached", fetchedAtMs: cached.fetchedAtMs } };
-    }
+    const ageMs = nowMs - cached.from.fetchedAtMs;
+    if (ageMs >= 0 && ageMs < ttlMs) return cached;
   }
-  const lastGood: LoadedRateCard = cached === null
-    ? { card: BUILT_IN_RATE_CARD, from: { source: "built-in" } }
-    : { card: cached.card, from: { source: "cached", fetchedAtMs: cached.fetchedAtMs } };
   let card: GitHubRateCard;
   try {
     card = parseRateCard(await fetchRateCardText(canonical, opts.fetchImpl ?? fetch));
-    const fewer = (what: string, now: number, before: number): void => {
-      if (now < before) {
-        throw new Error(`the card maps ${now} ${what}, fewer than the ${before} it did`);
-      }
-    };
-    fewer("models", card.rates.size, lastGood.card.rates.size);
-    fewer("long-context tiers", card.longContext.size, lastGood.card.longContext.size);
-    fewer("cache-write rates", cacheWriteRates(card), cacheWriteRates(lastGood.card));
-    // With no card to shrink against, the bar is the alias map itself, plus the seed's tiers: a
-    // card may add models freely, it may not lack one the map names (a retired model leaves the
-    // map in the same change) or a long-context tier the seed prices. The seed's counts alone are
-    // too small to tell a truncated response from a full one.
-    if (cached === null) {
-      const missing = [
-        ...[...DISPLAY_NAME_IDS.values()]
-          .filter((id): id is string => id !== null && !card.rates.has(id)),
-        ...[...BUILT_IN_RATE_CARD.longContext.keys()]
-          .filter((id) => !card.longContext.has(id))
-          .map((id) => `the long-context tier of ${id}`),
-      ];
-      if (missing.length > 0) {
-        const rest = missing.length - 1;
-        throw new Error(
-          `the card lacks ${missing[0]}${rest > 0 ? ` and ${rest} more` : ""}`,
-        );
-      }
-    }
   } catch (e) {
-    return { ...lastGood, problem: errMessage(e) };
+    const problem = errMessage(e);
+    return cached === null ? { kind: "none", problem } : { ...cached, problem };
   }
   const from: RateCardSource = { source: "fetched", fetchedAtMs: nowMs };
   try {
     writeRateCardCache(cachePath, urlDigest, nowMs, card);
   } catch (e) {
-    return { card, from, cacheWriteError: errMessage(e) };
+    return { kind: "card", card, from, cacheWriteError: errMessage(e) };
   }
-  return { card, from };
-}
-
-/** How many of the card's tiers, base and long-context, price cache writes: cache_write is the one
- *  cell a row may leave out, so it is the one a lost column cannot be told from. */
-function cacheWriteRates(card: GitHubRateCard): number {
-  const tiers = [...card.rates.values(), ...[...card.longContext.values()].map((l) => l.tier)];
-  return tiers.filter((tier) => tier.cacheCreation !== undefined).length;
+  return { kind: "card", card, from };
 }
 
 /** Keyed by the CANONICAL URL, so two spellings of one file share a cache. */
@@ -417,14 +366,15 @@ const CACHE_RECORD_SCHEMA = v.strictObject({
 function readRateCardCache(
   path: string,
   urlDigest: string,
-): { card: GitHubRateCard; fetchedAtMs: number } | null {
+): Extract<LoadedRateCard, { kind: "card" }> | null {
   const read = fs.readTextResult(path);
   if (read.kind !== "text") return null;
   const parsed = v.safeParse(CACHE_RECORD_SCHEMA, parseJsonRecord(read.text));
   if (!parsed.success || parsed.output.url_sha256 !== urlDigest) return null;
   const record = parsed.output;
   return {
-    fetchedAtMs: record.fetched_at_ms,
+    kind: "card",
+    from: { source: "cached", fetchedAtMs: record.fetched_at_ms },
     card: {
       rates: new Map(Object.entries(record.rates)),
       longContext: new Map(

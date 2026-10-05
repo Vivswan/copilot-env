@@ -217,7 +217,7 @@ The server is client-agnostic. Register it in Cursor or any other MCP client by 
 - **OpenRouter's model list** ([`cost.pricing-url`](configuration.md#cost)): the base rate for every model.
 - **GitHub's published Copilot rate card** ([`cost.github-pricing-url`](configuration.md#cost), the data file behind the docs' models-and-pricing page): its rate wins for every model it names, and a Codex request on a model whose card has a long-context tier (the OpenAI and xAI rows) with a prompt over 272K tokens is priced at that tier. The report's footer names the models whose price the card changed and the day it was read.
 
-A card that cannot be read or does not parse whole is never priced from: the last cached card, else the built-in table, prices the run, and one stderr line says so.
+A card that cannot be read or does not parse whole is never priced from: the last cached card, else OpenRouter's list alone, prices the run, and one stderr line says so. A model the card does not name is priced from the list either way.
 
 Re-parsing every log on each run is slow, so the readers keep a usage index.
 

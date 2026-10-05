@@ -116,10 +116,11 @@ export interface CostRuntime {
   indexed: boolean;
   index: IndexStats;
   timing: { walk: number; parse: number; fold: number; pricing: number; total: number };
-  /** Where the GitHub rate card came from; absent when no price list loaded. Under `runtime`
-   *  with the other run facts: a fetched and a cached run price the same, and the fetch stamp
-   *  would otherwise make two runs over one tree differ. */
-  githubRates?: { source: "built-in" } | { source: "fetched" | "cached"; fetchedAt: string };
+  /** Where the GitHub rate card came from; absent when no card priced the run (no price list
+   *  loaded, or today's card unreadable with none cached). Under `runtime` with the other run
+   *  facts: a fetched and a cached run price the same, and the fetch stamp would otherwise make
+   *  two runs over one tree differ. */
+  githubRates?: { source: "fetched" | "cached"; fetchedAt: string };
 }
 
 /** `total` is missing because only the payload's builder can stamp it: it is the last thing
@@ -252,8 +253,9 @@ async function reportCost(
   // could make no progress and its timeout fired the moment the event loop was free again. A fetch
   // failure prices from an expired cache when one exists, and reports tokens only when none does.
   // GitHub's rate card goes over the loaded list (the list and its cache stay as fetched), so it is
-  // read only once a list loaded; a card that could not be read today falls back to the last good
-  // one and says so.
+  // read only once a list loaded; a card that could not be read today falls back to the last cached
+  // one, else to the list alone, and says so.
+  let listed: Map<string, PricingTier> | undefined;
   let priced: PriceList | undefined;
   const pricingWaitStartedAt = now();
   let pricingWaitMs = 0;
@@ -266,7 +268,8 @@ async function reportCost(
     const { list, card } = await loadRates().finally(() => {
       pricingWaitMs = now() - pricingWaitStartedAt;
     });
-    priced = withGitHubRates(list.pricing, card.card, card.from);
+    listed = list.pricing;
+    if (card.kind === "card") priced = withGitHubRates(list.pricing, card.card, card.from);
     if (list.source === "stale-cache") {
       consola.warn(
         `WARNING: could not refresh OpenRouter pricing (${list.fetchError}); using the cached price list from ${
@@ -279,14 +282,18 @@ async function reportCost(
         `WARNING: could not cache the OpenRouter price list (${list.cacheWriteError}); the next run fetches it again.`,
       );
     }
-    if (card.problem !== undefined) {
+    if (card.kind === "none") {
       consola.warn(
-        `GitHub rate card could not be read today (${card.problem}); using ${
-          card.from.source === "built-in" ? "built-in" : `cached ${isoDay(card.from.fetchedAtMs)}`
+        `GitHub rate card could not be read today (${card.problem}) and none is cached; priced at OpenRouter rates.`,
+      );
+    } else if (card.problem !== undefined) {
+      consola.warn(
+        `GitHub rate card could not be read today (${card.problem}); using cached ${
+          isoDay(card.from.fetchedAtMs)
         } rates.`,
       );
     }
-    if (card.cacheWriteError !== undefined) {
+    if (card.kind === "card" && card.cacheWriteError !== undefined) {
       consola.warn(
         `WARNING: could not cache GitHub's rate card (${card.cacheWriteError}); the next run fetches it again.`,
       );
@@ -296,8 +303,9 @@ async function reportCost(
       `WARNING: could not fetch OpenRouter pricing (${errMessage(e)}); reporting tokens only.`,
     );
   }
-  // Tokens only when no list loaded: an empty list prices nothing.
-  const pricing: Map<string, PricingTier> = priced ?? new Map();
+  // Tokens only when no list loaded (an empty list prices nothing); the list alone when no card
+  // priced the run.
+  const pricing: Map<string, PricingTier> = priced ?? listed ?? new Map();
 
   const measured: MeasuredRun = {
     indexed: logs.indexed,
@@ -488,7 +496,7 @@ export function formatBytesCompact(bytes: number): string {
 
 interface ReportOpts {
   pricing: Map<string, PricingTier>;
-  /** The card `pricing` carries GitHub's rates from; absent in a tokens-only run. */
+  /** The card `pricing` carries GitHub's rates from; absent when no card priced the run. */
   rateCard: RateCardSource | undefined;
   window: DaysWindow | undefined;
   perDay: boolean;
@@ -874,20 +882,16 @@ function printCostReport(
     console.log("");
     printWrapped(
       paintFor(colorEnabled()).dim(
-        `  Priced at GitHub's rate card (${describeRateCard(opts.rateCard)}), not OpenRouter's: ${
-          estimate.githubRated.join(", ")
-        }`,
+        `  Priced at GitHub's rate card (fetched ${
+          isoDay(opts.rateCard.fetchedAtMs)
+        }), not OpenRouter's: ${estimate.githubRated.join(", ")}`,
       ),
     );
   }
   console.log("");
 }
 
-/** "fetched 2026-09-19": today, or the day a cached copy was fetched. */
-function describeRateCard(from: RateCardSource): string {
-  return from.source === "built-in" ? "built-in table" : `fetched ${isoDay(from.fetchedAtMs)}`;
-}
-
+/** The UTC calendar day of a timestamp, YYYY-MM-DD. */
 function isoDay(ms: number): string {
   return new Date(ms).toISOString().slice(0, 10);
 }
@@ -1024,9 +1028,10 @@ function completeRuntime(
     index: measured.index,
     timing: { ...measured.timing, total: Math.round(measured.now() - measured.startedAt) },
     ...(rateCard === undefined ? {} : {
-      githubRates: rateCard.source === "built-in"
-        ? { source: rateCard.source }
-        : { source: rateCard.source, fetchedAt: new Date(rateCard.fetchedAtMs).toISOString() },
+      githubRates: {
+        source: rateCard.source,
+        fetchedAt: new Date(rateCard.fetchedAtMs).toISOString(),
+      },
     }),
   };
 }
@@ -1042,7 +1047,7 @@ function buildCostJson(
   perDay: boolean,
   codexSessions: { roots: number; providers: Record<string, Record<string, unknown>> },
   claudeSessions: Record<string, unknown>,
-  /** The card the run priced GitHub-rated models from; absent when no price list loaded. */
+  /** The card the run priced GitHub-rated models from; absent when no card priced the run. */
   rateCard: RateCardSource | undefined,
   measured: MeasuredRun,
 ): Record<string, unknown> {

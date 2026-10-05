@@ -297,10 +297,9 @@ const ONE_MILLION_EACH: UsageTokens = {
   cacheCreation: 1_000_000,
 };
 
-/** The built-in card, as the run applies it when no card was ever fetched. */
-const BUILT_IN: RateCardSource = { source: "built-in" };
+/** Provenance the pricing never reads: a fetched and a cached card price alike. */
+const FETCHED: RateCardSource = { source: "fetched", fetchedAtMs: 1_700_000_000_000 };
 
-/** A card carrying only what the test hands it, so a reprice of the shipped seed moves nothing here. */
 function cardOf(parts: Partial<GitHubRateCard>): GitHubRateCard {
   return { rates: new Map(), longContext: new Map(), unmapped: [], ...parts };
 }
@@ -322,7 +321,7 @@ test("withGitHubRates prices gpt-5.6-sol at GitHub's card, leaves the list and e
     "claude-fable-5.1",
     ONE_MILLION_EACH,
   ]]);
-  const estimate = estimateCost({ byModel: usage }, withGitHubRates(list, card, BUILT_IN));
+  const estimate = estimateCost({ byModel: usage }, withGitHubRates(list, card, FETCHED));
   expect(estimate.perModel["gpt-5.6-sol"]).toEqual({
     pricingReference: "openai/gpt-5.6-sol",
     inputCostUsd: 4,
@@ -340,14 +339,14 @@ test("withGitHubRates prices gpt-5.6-sol at GitHub's card, leaves the list and e
   expect(list.get("openai/gpt-5.6-sol")?.input).toBe(2);
   // The card stands on its own: a list without the model still prices it.
   expect(
-    estimateCost({ byModel: usage }, withGitHubRates(new Map(), card, BUILT_IN)).unpriced,
+    estimateCost({ byModel: usage }, withGitHubRates(new Map(), card, FETCHED)).unpriced,
   ).toEqual(["claude-fable-5.1"]);
   // A card that agrees with the list changes no price, so it names no model: the footer is about
   // prices the card moved.
   const agreeing = cardOf({
     rates: new Map([["anthropic/claude-fable-5.1", list.get("anthropic/claude-fable-5.1")!]]),
   });
-  expect(estimateCost({ byModel: usage }, withGitHubRates(list, agreeing, BUILT_IN)).githubRated)
+  expect(estimateCost({ byModel: usage }, withGitHubRates(list, agreeing, FETCHED)).githubRated)
     .toEqual([]);
 });
 
@@ -380,7 +379,7 @@ test("withGitHubRates merges a card tier bucket by bucket and reads a float-ulp 
     "gpt-5.6-luna",
     ONE_MILLION_EACH,
   ]]);
-  const estimate = estimateCost({ byModel: usage }, withGitHubRates(list, card, BUILT_IN));
+  const estimate = estimateCost({ byModel: usage }, withGitHubRates(list, card, FETCHED));
   // Gemini's cache writes stay priced at the list's rate rather than becoming unpriced.
   expect(estimate.unpriced).toEqual([]);
   expect(estimate.perModel["gemini-3.6-flash"]?.cacheCreationCostUsd).toBeCloseTo(0.9, 10);
@@ -407,7 +406,7 @@ test("estimateCost bills an OpenAI long-context share at its tier and an Anthrop
       }],
     ]),
     card,
-    BUILT_IN,
+    FETCHED,
   );
   const total = { input: 1_000_000, output: 100_000, cacheRead: 2_000_000, cacheCreation: 0 };
   const long = { input: 400_000, output: 40_000, cacheRead: 1_000_000, cacheCreation: 0 };
@@ -422,6 +421,42 @@ test("estimateCost bills an OpenAI long-context share at its tier and an Anthrop
   // fable: the same share, and no tier to move it to.
   expect(perModel["claude-fable-5.1"]?.estimatedCostUsd).toBeCloseTo(10 + 0.1 * 50 + 2 * 0.25, 10);
   // The tier is GitHub's rate too: the footer names astra, and not fable.
+  expect(githubRated).toEqual(["gpt-6-astra"]);
+});
+
+test("estimateCost bills a rate the long-context tier leaves out at the card's base rate for the model, not the list's", () => {
+  const card = cardOf({
+    rates: new Map([["openai/gpt-6-astra", {
+      input: 10,
+      output: 50,
+      cacheRead: 1,
+      cacheCreation: 5,
+    }]]),
+    longContext: new Map([["openai/gpt-6-astra", {
+      promptTokens: 272_000,
+      tier: { input: 20, output: 75, cacheRead: 2 },
+    }]]),
+  });
+  const pricing = withGitHubRates(
+    new Map<string, PricingTier>([
+      ["openai/gpt-6-astra", { input: 10, output: 50, cacheRead: 1, cacheCreation: 2.5 }],
+    ]),
+    card,
+    FETCHED,
+  );
+  const writes = { input: 0, output: 0, cacheRead: 0, cacheCreation: 1_000_000 };
+  const { perModel, githubRated } = estimateCost({
+    byModel: new Map([["gpt-6-astra", writes]]),
+    longContext: { byModel: new Map([["gpt-6-astra", { ...writes, cacheCreation: 400_000 }]]) },
+  }, pricing);
+  expect(perModel["gpt-6-astra"]).toEqual({
+    pricingReference: "openai/gpt-6-astra",
+    inputCostUsd: 0,
+    outputCostUsd: 0,
+    cacheReadCostUsd: 0,
+    cacheCreationCostUsd: 5,
+    estimatedCostUsd: 5,
+  });
   expect(githubRated).toEqual(["gpt-6-astra"]);
 });
 

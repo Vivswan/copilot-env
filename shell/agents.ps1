@@ -33,11 +33,13 @@ function Import-CopilotEnv {
 }
 
 # `agent profile env` is the ONLY output this file ever evals, so a new subcommand never touches
-# this wrapper. The refresh is not -Quiet: a failed refresh should be visible.
+# this wrapper. The refresh is not -Quiet: a failed refresh should be visible, but the command's
+# own success is what the caller sees, so the refresh's exit status does not stay behind.
 function agent {
     Invoke-Agent @args
     if ($LASTEXITCODE -ne 0) { return }
     Import-CopilotEnv
+    $global:LASTEXITCODE = 0
 }
 
 # --- shell-startup side effects --------------------------------------------

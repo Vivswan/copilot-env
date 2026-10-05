@@ -483,7 +483,8 @@ test.skipIf(process.platform !== "win32")(
 
 // The rc files locate `bin/agent` from their own path, so each copy is staged in a scratch
 // `shell/` beside a fake agent. The failing mode's 99 is a count no run of evals reaches, so an
-// eval of a failed refresh's output is unmistakable.
+// eval of a failed refresh's output is unmistakable. `fail` is a command that exits with its own
+// status, 13, which no refresh exit shares.
 const FAKE_AGENT_SH = `#!/bin/sh
 echo "fake agent stderr: $*" >&2
 if [ "$1" = profile ] && [ "$2" = env ]; then
@@ -495,6 +496,8 @@ if [ "$1" = profile ] && [ "$2" = env ]; then
   echo "export COPILOT_FAKE_ARGS='$*'"
   echo "unset COPILOT_FAKE_STALE"
   echo 'fake_launcher() { echo "fake launcher ran"; }'
+elif [ "$1" = fail ]; then
+  exit 13
 else
   echo "fake agent stdout: $*"
 fi
@@ -509,6 +512,8 @@ if ($args.Count -ge 2 -and $args[0] -eq 'profile' -and $args[1] -eq 'env') {
   "\`$env:COPILOT_FAKE_ARGS = '$($args -join ' ')'"
   "Remove-Item -LiteralPath Env:COPILOT_FAKE_STALE -ErrorAction SilentlyContinue"
   "function global:fake_launcher { 'fake launcher ran' }"
+} elseif ($args[0] -eq 'fail') {
+  exit 13
 } else {
   "fake agent stdout: $($args -join ' ')"
 }
@@ -531,31 +536,52 @@ const onPath = (exe: string): boolean =>
 // zsh, not on the first macOS login shell that sources it.
 for (const shell of ["bash", "zsh"]) {
   test.skipIf(process.platform === "win32" || !onPath(shell))(
-    `agents.bashrc under ${shell} evals \`agent profile env\` silently at source time and audibly after every \`agent\` call, and evals nothing from a refresh that failed`,
+    `agents.bashrc under ${shell} evals \`agent profile env\` silently at source time and audibly ` +
+      "after every `agent` call, evals nothing from a failed resolution, whether it failed at " +
+      "source time or on a refresh, reports the command's own status whether the refresh or the " +
+      "command failed, and leaves the user's own variables alone",
     () => {
       const staged = stageRc("agents.bashrc", "agent", FAKE_AGENT_SH);
+      // `_env` is a name a user's own rc plausibly holds; the rc's temporaries live in its
+      // reserved `_COPILOT_` namespace, so sourcing must not assign or unset it.
       const proc = runSync(shell, [
         "-c",
         [
+          "_env=keep",
           'source "$1"',
-          'echo "after source: $COPILOT_FAKE_REFRESHES $COPILOT_FAKE_ARGS stale=${COPILOT_FAKE_STALE-unset}"',
+          'echo "after source: $COPILOT_FAKE_REFRESHES $COPILOT_FAKE_ARGS stale=${COPILOT_FAKE_STALE-unset} _env=${_env-unset}"',
           "fake_launcher",
           "agent hello",
           'echo "after agent: $COPILOT_FAKE_REFRESHES"',
           "export COPILOT_FAKE_REFRESH_FAILS=1",
           "agent again",
-          'echo "after failed refresh: $COPILOT_FAKE_REFRESHES"',
+          'echo "after failed refresh: $COPILOT_FAKE_REFRESHES status=$?"',
+          "agent fail",
+          'echo "after failed command: $COPILOT_FAKE_REFRESHES status=$?"',
         ].join("\n"),
         shell,
         staged.rc,
       ], { env: { ...process.env, HOME: home, COPILOT_FAKE_STALE: "1" } });
       expect({ exitCode: proc.exitCode, stdout: proc.stdout, stderr: proc.stderr }).toEqual({
         exitCode: 0,
-        stdout: "after source: 1 profile env stale=unset\nfake launcher ran\n" +
+        stdout: "after source: 1 profile env stale=unset _env=keep\nfake launcher ran\n" +
           "fake agent stdout: hello\nafter agent: 2\n" +
-          "fake agent stdout: again\nafter failed refresh: 2\n",
+          "fake agent stdout: again\nafter failed refresh: 2 status=0\n" +
+          "after failed command: 2 status=13\n",
         stderr: "fake agent stderr: hello\nfake agent stderr: profile env\n" +
-          "fake agent stderr: again\nfake agent stderr: profile env\n",
+          "fake agent stderr: again\nfake agent stderr: profile env\n" +
+          "fake agent stderr: fail\n",
+      });
+      const failed = runSync(shell, [
+        "-c",
+        'source "$1"\necho "after failed source: ${COPILOT_FAKE_REFRESHES-unset}"',
+        shell,
+        staged.rc,
+      ], { env: { ...process.env, HOME: home, COPILOT_FAKE_REFRESH_FAILS: "1" } });
+      expect({ exitCode: failed.exitCode, stdout: failed.stdout, stderr: failed.stderr }).toEqual({
+        exitCode: 0,
+        stdout: "after failed source: unset\n",
+        stderr: "",
       });
     },
   );
@@ -571,7 +597,10 @@ const PS_DRIVERS = [
 
 for (const { driver: ps, onThisHost } of PS_DRIVERS) {
   test.skipIf(!onThisHost)(
-    `agents.ps1 under ${ps} evals every \`agent profile env\` line, -Quiet at dot-source time and audibly after every \`agent\` call, and evals nothing from a refresh that failed`,
+    `agents.ps1 under ${ps} evals every \`agent profile env\` line, -Quiet at dot-source time and ` +
+      "audibly after every `agent` call, evals nothing from a failed resolution, whether it " +
+      "failed at dot-source time or on a refresh, and reports the command's own status whether " +
+      "the refresh or the command failed",
     () => {
       const staged = stageRc("agents.ps1", "agent.ps1", FAKE_AGENT_PS1);
       const driver = join(staged.root, "driver.ps1");
@@ -585,7 +614,9 @@ for (const { driver: ps, onThisHost } of PS_DRIVERS) {
           '"after agent: $env:COPILOT_FAKE_REFRESHES"',
           "$env:COPILOT_FAKE_REFRESH_FAILS = '1'",
           "agent again",
-          '"after failed refresh: $env:COPILOT_FAKE_REFRESHES"',
+          '"after failed refresh: $env:COPILOT_FAKE_REFRESHES status=$LASTEXITCODE"',
+          "agent fail",
+          '"after failed command: $env:COPILOT_FAKE_REFRESHES status=$LASTEXITCODE"',
         ].join("\n"),
       );
       let path = process.env.PATH ?? "";
@@ -605,11 +636,27 @@ for (const { driver: ps, onThisHost } of PS_DRIVERS) {
           exitCode: 0,
           stdout: "after source: 1 profile env --format powershell stale=[]\nfake launcher ran\n" +
             "fake agent stdout: hello\nafter agent: 2\n" +
-            "fake agent stdout: again\nafter failed refresh: 2\n",
+            "fake agent stdout: again\nafter failed refresh: 2 status=0\n" +
+            "after failed command: 2 status=13\n",
           stderr: "fake agent stderr: hello\nfake agent stderr: profile env --format powershell\n" +
-            "fake agent stderr: again\nfake agent stderr: profile env --format powershell\n",
+            "fake agent stderr: again\nfake agent stderr: profile env --format powershell\n" +
+            "fake agent stderr: fail\n",
         },
       );
+      const failedDriver = join(staged.root, "failed.ps1");
+      writeFileSync(
+        failedDriver,
+        '. $args[0]\n"after failed source: [$env:COPILOT_FAKE_REFRESHES]"\n',
+      );
+      const failed = runSync(ps, [
+        "-NoProfile",
+        "-NonInteractive",
+        "-File",
+        failedDriver,
+        staged.rc,
+      ], { env: { ...process.env, HOME: home, PATH: path, COPILOT_FAKE_REFRESH_FAILS: "1" } });
+      expect({ exitCode: failed.exitCode, stdout: lf(failed.stdout), stderr: lf(failed.stderr) })
+        .toEqual({ exitCode: 0, stdout: "after failed source: []\n", stderr: "" });
     },
   );
 }

@@ -1,12 +1,23 @@
 #!/bin/sh
-# Wired by scripts/setup-env.sh (.ps1 on Windows) through core.hooksPath; deno-native, so no
-# node. The same gate as the `check` job in .github/workflows/checks.yml.
+# Wired by scripts/setup-env.sh (.ps1 on Windows) through core.hooksPath. Deno's own checks
+# only: shellcheck and PSScriptAnalyzer are separately installed tools, so the `check` job
+# in .github/workflows/checks.yml runs those.
+#
+# A hook installs nothing: a missing deno or node_modules fails here, naming the one-time
+# bootstrap, instead of being fetched by the first task.
 set -e
 # The one-time deno install dir is only a FALLBACK: a deno already on PATH wins.
 PATH="$PATH:${DENO_INSTALL:-$HOME/.deno}/bin"
 export PATH
+bootstrap="run scripts/setup-env.sh (scripts/setup-env.ps1 on Windows) once"
+if ! command -v deno > /dev/null 2>&1; then
+    echo "pre-commit: deno is not installed; $bootstrap" >&2
+    exit 1
+fi
+if [ ! -d node_modules ]; then
+    echo "pre-commit: node_modules is missing; $bootstrap" >&2
+    exit 1
+fi
 deno task typecheck
 deno task test
 deno task lint
-deno task lint:sh
-deno task lint:ps

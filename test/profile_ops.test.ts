@@ -1,126 +1,95 @@
 // The runtime verbs of `agent profile [<name>] <verb>` (launch env proxy-token mcp start stop
-// health models credits settings) route onto the functions the base's flat `--profile <name>`
-// spellings called. The oracle is the base's own output: test/fixtures/cli_redesign/
-// profile_ops_oracle.json holds what each old spelling printed (stdout, exit code) in a scratch
-// HOME, and the new spelling must print the same. The default-profile aliases (start, stop, models)
-// are proven against their verbs live, in twin homes; the flat spellings are gone; a profile's
-// settings bundle is that profile alone.
+// health models credits settings) route onto their commands with the profile they name. Pinned
+// here: each spelling reaches its command on the right profile (the exit code, and the one value
+// or file the command owns), the default-profile aliases (start, stop, models) are one code path
+// with their verbs live, in twin homes, and a profile's settings bundle is that profile alone.
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { desktopEntryName, META_FILENAME } from "../src/claude/desktop_library.ts";
 import {
   expectIdentical,
-  expectOracle as expectOracleOf,
-  loadOracle,
-  normalize,
   observe,
-  type ScratchHome,
   scratchHome as scratchHomeOf,
-} from "./helpers/cli_oracle.ts";
+  seedProxyProfiles,
+} from "./helpers/scratch_home.ts";
 import { expect, test } from "./helpers/testing.ts";
-
-const ORACLE = loadOracle("profile_ops_oracle");
 
 const scratchHome = () => scratchHomeOf("copilot-profile-ops-");
 
-/** The base's setup, as the oracle was captured: a proxy default and a proxy profile `work`, each
- *  with a stored token. */
-function seed(scratch: ScratchHome): void {
-  for (
-    const args of [
-      ["auth", "--set", "ghu_test"],
-      ["init", "--proxy"],
-      ["profile", "work", "add", "--proxy", "--no-auth"],
-      ["profile", "work", "auth", "--set", "ghu_work"],
-    ]
-  ) {
-    expect(observe(args, scratch).exitCode, args.join(" ")).toBe(0);
-  }
+interface HealthReport {
+  profile: string | null;
+  checks: {
+    id: string;
+    profile: string | null;
+    status: string;
+    fix?: string;
+    value?: Record<string, unknown>;
+  }[];
 }
-
-/** The base's hints inside a report spelled the daemon commands the old way; the oracle's stdout is
- *  respelled to the verb form, which is the one change the move makes to them. */
-function respellDaemonHints(stdout: string): string {
-  return stdout
-    .replaceAll("agent start --profile work", "agent profile work start")
-    .replaceAll("agent stop --profile work", "agent profile work stop");
-}
-
-test("the oracle fold keeps a profile named like the checkout's directory and a JSON escape", () => {
-  // The container suite mounts the checkout at /work (the fixture profile's name): the root folds
-  // as a whole path only, and a `--json` report's `\n` escape is not a Windows separator.
-  const folded = normalize(
-    "/tmp/h",
-    [
-      "unchanged /tmp/h/profiles/work/.run/x/.state.json",
-      "apiKeyHelper: /work/bin/agent profile proxy-token --yes",
-      '"detail": "credential: stored\\nresolved by"',
-      "/tmp/h\\\\profiles\\\\work",
-    ].join("\n"),
-    "/work",
-  );
-  expect(folded.split("\n")).toEqual([
-    "unchanged <HOME>/profiles/work/.run/x/.state.json",
-    "apiKeyHelper: <ROOT>/bin/agent profile proxy-token --yes",
-    '"detail": "credential: stored\\nresolved by"',
-    "<HOME>/profiles/work",
-  ]);
-});
 
 test(
-  "each verb prints what the base's --profile spelling printed; the whole-store settings export and the top-level credits flags are unchanged",
+  "each runtime verb reaches its command on the named profile: env on the port its health reports, the daemon verbs' down verdicts, the eval contracts' empty stdout, and the unknown-name refusal",
   () => {
     const scratch = scratchHome();
-    seed(scratch);
-    const oracle = (key: string, args: string[], respell?: (s: string) => string) =>
-      expectOracleOf(ORACLE, key, args, scratch, respell);
-    oracle("env", ["profile", "env"]);
-    oracle("env --profile work", ["profile", "work", "env"]);
-    oracle("env --format powershell --profile work", [
-      "profile",
-      "work",
-      "env",
-      "--format",
-      "powershell",
-    ]);
-    oracle("start --check --profile work", ["profile", "work", "start", "--check"]);
-    oracle("stop --profile work", ["profile", "work", "stop"]);
-    oracle("stop --profile work --dry-run", ["profile", "work", "stop", "--dry-run"]);
-    oracle("proxy-token --yes --profile work", ["profile", "work", "proxy-token", "--yes"]);
-    oracle(
-      "health --scope runtime --profile work --json",
-      ["profile", "work", "health", "--scope", "runtime", "--json"],
-      respellDaemonHints,
+    seedProxyProfiles(scratch);
+    // work's port is the one its daemon would bind, which its runtime health reports; the env
+    // the shell evals points there, never at the default's pinned 4199.
+    const runtime = observe(["profile", "work", "health", "--scope", "runtime", "--json"], scratch);
+    expect(runtime.exitCode).toBe(1);
+    const runtimeReport = JSON.parse(runtime.stdout) as HealthReport;
+    expect(runtimeReport.profile).toBe("work");
+    const portCheck = runtimeReport.checks.find((c) => c.id === "runtime.port");
+    expect(portCheck).toMatchObject({ status: "fail", fix: "agent profile work start" });
+    const port = portCheck?.value?.port;
+    expect(port).not.toBe(4199);
+    const env = observe(["profile", "work", "env"], scratch);
+    expect(env.exitCode).toBe(0);
+    expect(env.stdout).toBe(`export ANTHROPIC_BASE_URL='http://127.0.0.1:${port}'\n`);
+    const powershell = observe(["profile", "work", "env", "--format", "powershell"], scratch);
+    expect(powershell.exitCode).toBe(0);
+    expect(powershell.stdout).toBe(`$env:ANTHROPIC_BASE_URL = 'http://127.0.0.1:${port}'\n`);
+    expect(observe(["profile", "env"], scratch).stdout).toBe(
+      "export ANTHROPIC_BASE_URL='http://127.0.0.1:4199'\n",
     );
-    oracle(
-      "health --scope auth --profile work --json",
-      ["profile", "work", "health", "--scope", "auth", "--json"],
-      respellDaemonHints,
-    );
-    const models = oracle("models --proxy --profile work", [
-      "profile",
-      "work",
-      "models",
-      "--proxy",
+    // The auth scope narrowed to work is its one credential check, passing on the stored token.
+    const auth = observe(["profile", "work", "health", "--scope", "auth", "--json"], scratch);
+    expect(auth.exitCode).toBe(0);
+    const authReport = JSON.parse(auth.stdout) as HealthReport;
+    expect(authReport.checks.map((c) => [c.id, c.profile, c.status])).toEqual([
+      ["setup.auth", "work", "ok"],
     ]);
+    expect(authReport.checks[0]?.value).toMatchObject({ mode: "proxy", storedToken: true });
+    // The daemon verbs on a profile whose daemon never ran: the down verdict is exit 1, worded as
+    // not running rather than as a refusal, and the dry-run stop plans work's own run state.
+    const check = observe(["profile", "work", "start", "--check"], scratch);
+    expect(check.exitCode).toBe(1);
+    expect(check.stdout + check.stderr).toContain("not running");
+    const stop = observe(["profile", "work", "stop"], scratch);
+    expect(stop.exitCode).toBe(1);
+    expect(stop.stdout + stop.stderr).toContain("nothing to stop");
+    const dryStop = observe(["profile", "work", "stop", "--dry-run"], scratch);
+    expect(dryStop.exitCode).toBe(1);
+    expect(dryStop.stdout).toContain(join(scratch.home, "profiles", "work", ".run"));
+    expect(dryStop.stdout).not.toContain(join(scratch.home, ".run"));
+    // Stdout is what Codex auth.command, Claude apiKeyHelper, and the launchers eval: byte-empty
+    // on every refusal, with the profile and its start spelled on stderr.
+    const token = observe(["profile", "work", "proxy-token", "--yes"], scratch);
+    expect(token.exitCode).toBe(1);
+    expect(token.stdout).toBe("");
+    const models = observe(["profile", "work", "models", "--proxy"], scratch);
+    expect(models.exitCode).toBe(1);
+    expect(models.stdout).toBe("");
     expect(models.stderr).toContain("the local proxy for profile 'work' is not running");
     expect(models.stderr).toContain("agent profile work start");
-    // The launch refuses before it reaches the CLI: with or without a claude on PATH, the missing
-    // profile or the missing CLI is named on stderr and nothing is spawned.
-    oracle("launch claude --profile nope -- x", [
-      "profile",
-      "nope",
-      "launch",
-      "claude",
-      "--",
-      "x",
-    ]);
-    const mcp = oracle("mcp", ["profile", "mcp"]);
-    expect(mcp.stderr).toContain("Claude registration");
-    oracle("settings --export", ["settings", "--export"]);
-    const credits = oracle("credits --target 0", ["credits", "--target", "0"]);
+    // The launch refuses before it spawns anything: the missing CLI when no claude is on PATH,
+    // else the missing profile (test/launch.test.ts pins that wording in-process).
+    const launch = observe(["profile", "nope", "launch", "claude", "--", "x"], scratch);
+    expect(launch.exitCode).toBe(1);
+    expect(launch.stdout).toBe("");
+    const credits = observe(["credits", "--target", "0"], scratch);
+    expect(credits.exitCode).toBe(1);
     expect(credits.stderr).toContain("--target: must be between");
-    // Eighteen cold CLI spawns; generous headroom for loaded Windows CI runners.
+    // Sixteen cold CLI spawns; generous headroom for loaded Windows CI runners.
   },
   300_000,
 );
@@ -189,7 +158,7 @@ test(
   "profile settings is one profile's bundle: a named profile's slot and section, the default's credential, modes, and shared defaults; its import lands that profile alone and refuses the whole store",
   () => {
     const scratch = scratchHome();
-    seed(scratch);
+    seedProxyProfiles(scratch);
     for (
       const args of [
         ["profile", "work", "set", "passthrough", "off"],

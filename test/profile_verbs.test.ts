@@ -1,40 +1,21 @@
-// `agent profile [<name>] <verb>` is routing onto the functions main's flat spellings called. The
-// oracle is main's own output: test/fixtures/cli_redesign/main_oracle.json holds what each old
-// spelling printed (stdout, exit code) in a scratch HOME, and the new spelling must print the same.
-// verbs_oracle.json is the same kind of pin for the verbs' own output, captured when the tree only
-// routed onto the flat commands' bodies: with the bodies folded under the verbs, each verb still
-// names the same files in the same order. The kept aliases (`agent init`, `agent auth`, `agent
-// identity`) are proven against their verbs live, in twin homes. The verbs are reserved names,
-// pinned at the CLI.
+// `agent profile [<name>] <verb>` routes onto one function per verb, and the kept aliases
+// (`agent init`, `agent auth`, `agent identity`, `agent sync`) are the default profile's verbs.
+// Pinned here: each spelling reaches its command with the right profile and flags (the exit code,
+// the file or value the command owns), an alias is one code path with its verb live, in twin
+// homes, and the verbs are reserved names, refused at the CLI.
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { changedPaths } from "./helpers/dry_run.ts";
 import {
   expectIdentical,
-  expectOracle as expectOracleOf,
-  loadFixture,
-  loadOracle,
   observe,
-  type Oracle,
-  type ScratchHome,
   scratchHome as scratchHomeOf,
+  seedProxyProfiles,
   treeContents,
-} from "./helpers/cli_oracle.ts";
+} from "./helpers/scratch_home.ts";
 import { expect, test } from "./helpers/testing.ts";
 
-const ORACLE = loadOracle("main_oracle");
-
-/** The verbs' own oracle: the commands that seed the scratch state, then what each verb printed
- *  for it. Only stdout the CLI writes itself (plans, key/value lines): a consola line's prefix
- *  differs between the CI reporter and the local one. */
-const VERBS_ORACLE = loadFixture("verbs_oracle") as { seed: string[][]; observed: Oracle };
-
 const scratchHome = () => scratchHomeOf("copilot-profile-verbs-");
-
-/** The new spelling prints what main's old spelling printed. */
-function expectOracle(oracleKey: string, args: string[], scratch: ScratchHome) {
-  return expectOracleOf(ORACLE, oracleKey, args, scratch);
-}
 
 test(
   "the verbs are reserved words, a flag before the verb is refused, and `help <verb>` works",
@@ -72,8 +53,11 @@ test(
   "no name is the default profile: bare `agent profile` lists, auth reads the default slot, show names it, del refuses",
   () => {
     const scratch = scratchHome();
-    expectOracle("auth --set", ["profile", "auth", "--set", "ghu_test"], scratch);
-    expectOracle("auth --get", ["profile", "auth", "--get"], scratch);
+    expect(observe(["profile", "auth", "--set", "ghu_test"], scratch).exitCode).toBe(0);
+    // stdout is the token line alone: it is what a caller pipes.
+    const token = observe(["profile", "auth", "--get"], scratch);
+    expect(token.exitCode).toBe(0);
+    expect(token.stdout).toBe("ghu_test\n");
 
     const show = observe(["profile", "show"], scratch);
     expect(show.exitCode).toBe(0);
@@ -180,42 +164,84 @@ test(
 );
 
 test(
-  "the verbs with their bodies folded under them print what the routing-only tree printed: the same files in the same order, the same rows",
+  "a wiring verb's dry run names the files its scope would touch and no other, and writes nothing: the agent flags, a name, and the default's two spellings",
   () => {
     const scratch = scratchHome();
-    for (const args of VERBS_ORACLE.seed) {
-      expect(observe(args, scratch).exitCode, args.join(" ")).toBe(0);
+    seedProxyProfiles(scratch);
+    const settings = join(scratch.home, ".claude", "settings.json");
+    const workSettings = join(scratch.home, ".claude", "settings-work.json");
+    const config = join(scratch.home, ".codex", "config.toml");
+    const workConfig = join(scratch.home, ".codex", "work.config.toml");
+    const store = join(scratch.home, "state.json");
+    const files = [settings, workSettings, config, workConfig, store];
+    // A named profile's codex wiring is its own toml AND its selection into config.toml; its
+    // Claude wiring is its own settings file alone.
+    const rows: [string[], string[]][] = [
+      [["profile", "sync", "--dry-run"], [settings, config]],
+      [["profile", "sync", "--claude", "--dry-run"], [settings]],
+      [["profile", "sync", "--codex", "--dry-run"], [config]],
+      [["profile", "work", "sync", "--dry-run"], [workSettings, config, workConfig]],
+      [["sync", "--dry-run"], [settings, config, workSettings, workConfig]],
+      [["profile", "work", "add", "--proxy", "--dry-run"], [
+        store,
+        workSettings,
+        config,
+        workConfig,
+      ]],
+      [["profile", "add", "--proxy", "--dry-run"], [store, settings, config]],
+    ];
+    const before = treeContents(scratch.home);
+    for (const [args, named] of rows) {
+      const proc = observe(args, scratch);
+      expect(proc.exitCode, args.join(" ")).toBe(0);
+      expect(
+        files.filter((path) => proc.stdout.includes(path)),
+        args.join(" "),
+      ).toEqual(files.filter((path) => named.includes(path)));
     }
-    for (const key of Object.keys(VERBS_ORACLE.observed)) {
-      expectOracleOf(VERBS_ORACLE.observed, key, key.split(" "), scratch);
-    }
-    // Fifteen cold CLI spawns; generous headroom for loaded Windows CI runners.
+    // `agent init` is the default's add, --dry-run included.
+    expect(observe(["init", "--proxy", "--dry-run"], scratch).stdout).toBe(
+      observe(["profile", "add", "--proxy", "--dry-run"], scratch).stdout,
+    );
+    expect(treeContents(scratch.home)).toEqual(before);
+    // Thirteen cold CLI spawns; generous headroom for loaded Windows CI runners.
   },
   240_000,
 );
 
 test(
-  "the tree prints what main's deleted spellings printed: the checks, the resolver, a named profile",
+  "a named profile's verbs read that profile's slot and files, never the default's: check, auth, get, show, and the agent-flag sync",
   () => {
     const scratch = scratchHome();
     expect(observe(["auth", "--set", "ghu_test"], scratch).exitCode).toBe(0);
-    expectOracle("init --proxy", ["profile", "add", "--proxy"], scratch);
-    expectOracle("claude --check", ["profile", "check", "--claude"], scratch);
-    expectOracle("codex --check", ["profile", "check", "--codex"], scratch);
-    // The old one-shot add is two commands now: the mode, then the credential that wires.
-    expectOracle(
-      "profile --add work",
-      ["profile", "work", "add", "--proxy", "--no-auth"],
-      scratch,
+    expect(observe(["profile", "add", "--proxy"], scratch).exitCode).toBe(0);
+    // The default's per-agent check reads the file the add just wrote: proxy, on the pinned
+    // port, on the launcher's exit-code contract (proxy is 2).
+    const claudeDefault = observe(["profile", "check", "--claude"], scratch);
+    expect(claudeDefault.exitCode).toBe(2);
+    expect(claudeDefault.stdout).toContain("Claude provider mode: proxy");
+    expect(claudeDefault.stdout).toContain("ANTHROPIC_BASE_URL: http://127.0.0.1:4199");
+    const codexDefault = observe(["profile", "check", "--codex"], scratch);
+    expect(codexDefault.exitCode).toBe(2);
+    expect(codexDefault.stdout).toContain("Codex provider mode: proxy");
+    expect(codexDefault.stdout).toContain(
+      `config.toml: ${join(scratch.home, ".codex", "config.toml")}`,
     );
+    // The old one-shot add is two commands now: the mode, then the credential that wires.
+    expect(observe(["profile", "work", "add", "--proxy", "--no-auth"], scratch).exitCode).toBe(0);
     expect(observe(["profile", "work", "auth", "--set", "ghu_work"], scratch).exitCode).toBe(0);
     expect(existsSync(join(scratch.home, ".claude", "settings-work.json"))).toBe(true);
-    expectOracle("profile --check work", ["profile", "work", "check"], scratch);
+    // The slot check prints the recorded mode on the same exit-code contract.
+    const slot = observe(["profile", "work", "check"], scratch);
+    expect(slot.exitCode).toBe(2);
+    expect(slot.stdout).toContain("profile 'work': proxy");
     // The agent flags on a named profile: one agent's file, read as the launcher reads it.
     const claude = observe(["profile", "work", "check", "--claude"], scratch);
     expect(claude.exitCode).toBe(2);
     expect(claude.stdout).toContain("Claude provider mode: proxy");
-    expect(claude.stdout).toContain("settings-work.json: <HOME>/.claude/settings-work.json");
+    expect(claude.stdout).toContain(
+      `settings-work.json: ${join(scratch.home, ".claude", "settings-work.json")}`,
+    );
     const codex = observe(["profile", "work", "check", "--codex"], scratch);
     expect(codex.exitCode).toBe(2);
     expect(codex.stdout).toContain("Codex provider mode: proxy");
@@ -235,12 +261,19 @@ test(
     expect([...changedPaths(codexBack, treeContents(scratch.home))]).toEqual([
       relative(scratch.home, claudeFile),
     ]);
-    expectOracle("auth --get --profile work", ["profile", "work", "auth", "--get"], scratch);
-    expectOracle(
-      "config --get identity --profile work",
-      ["profile", "work", "get", "identity"],
-      scratch,
-    );
+    // Each named read is work's slot: its own token, and the identity nobody pinned reads as the
+    // registry's default.
+    const token = observe(["profile", "work", "auth", "--get"], scratch);
+    expect(token.exitCode).toBe(0);
+    expect(token.stdout).toBe("ghu_work\n");
+    const identity = observe(["profile", "work", "get", "identity"], scratch);
+    expect(identity.exitCode).toBe(0);
+    expect(identity.stdout).toBe("auto\n");
+    const show = observe(["profile", "work", "show"], scratch);
+    expect(show.exitCode).toBe(0);
+    for (const line of ["profile 'work'", "mode: proxy", "provider: gh-token", "daemon: down"]) {
+      expect(show.stdout).toContain(line);
+    }
     // A named profile's preference write previews through the verb untouched: the plan prints and
     // the store stays as it was.
     const before = treeContents(scratch.home);
@@ -248,7 +281,7 @@ test(
     expect(planned.exitCode).toBe(0);
     expect(planned.stdout).toContain("DRY RUN: nothing was written");
     expect(treeContents(scratch.home)).toEqual(before);
-    // Fifteen cold CLI spawns; generous headroom for loaded Windows CI runners.
+    // Sixteen cold CLI spawns; generous headroom for loaded Windows CI runners.
   },
   240_000,
 );

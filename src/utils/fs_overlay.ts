@@ -54,7 +54,6 @@ interface OverlayWrite {
   secret?: boolean;
 }
 
-/** What a lookup meets: the run's own entry (the volume's stats) or the disk's. */
 type Seen = { kind: "own"; stats: EntryStats } | { kind: "disk"; stats: Stats };
 
 /** The kernel's bound on a chain of links. */
@@ -173,7 +172,7 @@ export class Overlay {
 
   // --- the report's view -------------------------------------------------------------------------
 
-  /** Every row with what the run holds there, in first-touch order. */
+  /** First-touch order, which the report relies on. */
   *entries(): IterableIterator<[string, OverlayEntry]> {
     for (const key of this.rows) yield [key, this.entryAt(key)];
   }
@@ -222,7 +221,6 @@ export class Overlay {
     return this.names.get(key) ?? key;
   }
 
-  /** The entry's own name as a listing prints it. */
   private basenameOf(key: string): string {
     return WINDOWS ? this.spellings.get(key) ?? basename(key) : basename(key);
   }
@@ -238,7 +236,6 @@ export class Overlay {
     }
   }
 
-  /** Whether the volume holds an entry at `path` (a link counts, unfollowed). */
   private volHas(path: string): boolean {
     try {
       this.vol.lstatSync(path);
@@ -249,7 +246,6 @@ export class Overlay {
     }
   }
 
-  /** Marks what stands at `path` (and below) as the run's own scratch, off the report. */
   hide(path: string): void {
     this.hidden.add(this.key(path, "lstat", false));
   }
@@ -342,7 +338,6 @@ export class Overlay {
 
   // --- the union's bookkeeping -----------------------------------------------------------------
 
-  /** The name a key prints under is the spelling of the first write that touched it. */
   private set(key: string, spelled: string): void {
     if (!this.names.has(key)) this.names.set(key, spelled);
     if (WINDOWS && !this.spellings.has(key)) {
@@ -352,7 +347,6 @@ export class Overlay {
     this.rows.add(key);
   }
 
-  /** `key` is planned gone: its row stays (or joins), and nothing of the run's below it survives. */
   private markGone(key: string, spelled: string): void {
     if (!this.names.has(key)) this.names.set(key, spelled);
     this.fresh.delete(key);
@@ -507,7 +501,6 @@ export class Overlay {
     }
   }
 
-  /** The disk's names (none under a fresh directory), plus the volume's, minus the tombstones. */
   readdir(path: string): string[] {
     const key = this.key(path, "scandir");
     const seen = this.view(key, "scandir", path);
@@ -531,7 +524,7 @@ export class Overlay {
     return [...listed.values()].sort();
   }
 
-  /** Each name with its own kind (a link is the link), as `readdir` with file types lists them. */
+  /** A link is the link, as node's `readdir` with file types lists it. */
   readdirEntries(path: string): DirEntry[] {
     return this.readdir(path).map((name) => {
       const stats = this.stat(join(path, name), false);
@@ -544,7 +537,6 @@ export class Overlay {
     });
   }
 
-  /** The target text of the link at `path`, planned or on the disk; a non-link is EINVAL. */
   readlink(path: string): string {
     const key = this.key(path, "readlink", false);
     const seen = this.view(key, "readlink", path, false);
@@ -837,7 +829,7 @@ export class Overlay {
     return out;
   }
 
-  /** The secret declarations of `from` join `to`'s (a moved or copied file keeps its redaction). */
+  /** A moved or copied file keeps its redaction. */
   private carrySecrets(from: string, to: string): void {
     const keys = this.secrets.get(from);
     if (keys !== undefined) {
@@ -849,7 +841,7 @@ export class Overlay {
   }
 }
 
-/** Whether `path` is a strict descendant of `dir` (both resolved). */
+/** `path` and `dir` are canonical keys. */
 function isBelow(path: string, dir: string): boolean {
   for (let cur = dirname(path);; cur = dirname(cur)) {
     if (cur === dir) return true;

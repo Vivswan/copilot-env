@@ -122,12 +122,7 @@ function ownedLineIndexes(lines: string[]): { skip: Set<number>; leftBehind: str
   return { skip, leftBehind };
 }
 
-/**
- * Strip owned blocks from rc/profile content, each bounded by its own extent (see
- * blockExtent) plus the blank line the block prepends and the ONE separating blank it
- * appends. Pure: `leftBehind` reports the lines an unclosed marker refused to claim.
- * Exported for tests only.
- */
+/** Exported for tests only. */
 export function stripBlocks(content: string): { content: string; leftBehind: string[] } {
   const lines = content.split("\n");
   const { skip, leftBehind } = ownedLineIndexes(lines);
@@ -266,8 +261,8 @@ export function ownedShellTargets(): string[] {
   });
 }
 
-/** Strip the owned blocks from exactly `files` (an uninstall plan's ownedShellTargets),
- *  with the restart hint when anything went; a dry run's plan stands in for the hint. */
+/** `files` is an uninstall plan's ownedShellTargets. A dry run's plan stands in for the
+ *  restart hint. */
 export function removeShellIntegrationFrom(files: readonly string[]): void {
   if (removeFrom([...files]) && !fs.dryRunActive()) {
     consola.info(process.platform === "win32" ? "Restart PowerShell." : "Restart your shell.");
@@ -390,12 +385,8 @@ export function rcFiles(remove: boolean): string[] {
   return [join(home, shell === "zsh" ? ".zshrc" : ".bashrc")];
 }
 
-/**
- * Shell rc/profile files to INSPECT for owned blocks (read-only) on this platform:
- * existing POSIX rc files, or the Windows `$PROFILE` candidates (both the
- * current-host and all-hosts profiles, so a `--all-hosts` wiring is still seen).
- * Used by `agent health` to report shell-integration wiring without mutating anything.
- */
+/** The files `agent health` inspects for owned blocks: both Windows profiles, so a
+ *  `--all-hosts` wiring is still seen. */
 export function shellTargetFiles(): string[] {
   if (process.platform !== "win32") return rcFiles(true);
   return [

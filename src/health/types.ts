@@ -103,16 +103,14 @@ type RegisteredCheckId = keyof typeof CHECK_DESCRIPTORS;
 /** The strings are external contracts (`--json` consumers key on them). */
 export type CheckId = RegisteredCheckId | `setup.cli.${string}`;
 
-/** A fix hint is REQUIRED on warn/fail and unrepresentable on ok (`fix?: never` keeps the
- *  property readable as undefined without narrowing), so neither the renderer nor the --json
- *  builder needs a fix-presence guard. */
+/** `fix?: never` keeps the property readable as undefined without narrowing, so neither the
+ *  renderer nor the --json builder needs a fix-presence guard. */
 export type CheckOutcome =
   | { status: "ok"; detail: string; fix?: never }
   | { status: "warn" | "fail"; detail: string; fix: string };
 
-/** `id` is a stable machine-readable key; `scopes` lists every scope the check participates in
- *  (every check includes "full"); `profile` names the runtime target (null = the default target;
- *  environment-wide checks are always null); `value` carries structured data for `--json`. */
+/** `scopes` always includes "full"; `profile` names the runtime target (null = the default
+ *  target; environment-wide checks are always null); `value` carries structured data for `--json`. */
 export type CheckResult = {
   id: CheckId;
   label: string;

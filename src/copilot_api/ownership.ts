@@ -71,7 +71,7 @@ export class OwnershipLedger {
     return v.parse(LEDGER_SCHEMA, isRecord(map) ? map : {})[LEDGER_KEYS[kind]];
   }
 
-  /** Mutates the map under the store's one lock; a map the mutation leaves empty is dropped from the file. */
+  /** Under the store's one lock. */
   private update(mutate: (map: Record<string, unknown>) => void): void {
     this.store.update((doc) => {
       const map = ensureDict(doc, LEDGER_MAP);
@@ -96,8 +96,8 @@ export class OwnershipLedger {
     });
   }
 
-  /** No write fires when nothing records the path, so steady-state sweeps stay write-free; the
-   *  list is re-read under the lock, so a record() landing in between is kept. */
+  /** The early return keeps steady-state sweeps write-free; the list is re-read under the lock,
+   *  so a record() landing in between is kept. */
   release(kind: OwnedArtifactKind, artifactPath: string): void {
     if (!this.ownedPaths(kind).includes(artifactPath)) return;
     const key = LEDGER_KEYS[kind];

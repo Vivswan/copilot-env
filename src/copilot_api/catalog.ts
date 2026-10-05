@@ -20,7 +20,6 @@ import { copilotApiResolvePort } from "./port.ts";
 import type { Profile } from "./profile.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 
-/** Where the catalog comes from: upstream Copilot (direct) or the running local proxy. */
 export type CatalogSource = "direct" | "proxy";
 
 /**

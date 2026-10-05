@@ -290,9 +290,8 @@ export function removeBootstrapBinary(paths: readonly string[]): void {
   }
 }
 
-/** Best-effort per entry: a version still running a process (Windows) stays until a later
- *  update. The update flow keeps the new version plus exactly one previous, the rollback
- *  candidate. */
+/** The update flow keeps the new version plus the previous one, when there was one, as the
+ *  rollback candidate. */
 export function removeVersionDirsExcept(top: string, keep: ReadonlySet<string>): void {
   let entries: string[];
   try {
@@ -397,8 +396,8 @@ export type InstallPlan =
     versionName: string;
     versionRoot: string;
     writes: FileWrite[];
-    /** The compiled binary to place into the version root; null when it is already there, or
-     *  when no standalone binary is running (a dev process aimed at a foreign root has none). */
+    /** Null when the binary is already in the version root, or when no standalone binary is
+     *  running (a dev process aimed at a foreign root has none). */
     binary: { from: string; to: string } | null;
     /** The commit step (pointCurrentAt). */
     currentLink: { path: string; target: string };
@@ -537,7 +536,6 @@ function planMaterialization(root: string, sourceRoot: string): Materialization 
   return { writes };
 }
 
-/** A dev run has no binary to contribute. */
 function defaultBinarySource(): string | null {
   if (!isStandaloneBinary()) return null;
   return denoRuntime()?.execPath() ?? null;

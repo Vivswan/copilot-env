@@ -126,7 +126,6 @@ export function postPairingCloseFromScan(scan: AppScan): { quit: boolean; warn: 
   return { quit: false, warn: RUNNING_SCAN_UNPROVEN_WARN };
 }
 
-/** Shared by the Windows running and installed looks. */
 const PS_PROCESS_SCAN = processScanScript(APP_NAME);
 
 // The per-platform primitives: PowerShell scans and signals on Windows (nothing they start
@@ -153,7 +152,6 @@ export async function installedState(): Promise<AppScan> {
   return appScanFromExit(await runCaptured("open", ["-Ra", APP_NAME]));
 }
 
-/** Three-state look at whether the app is currently running (see AppScan). */
 export function runningState(): Promise<AppScan> {
   return appRunning(APP_NAME);
 }
@@ -371,7 +369,6 @@ export async function runCodexMobile(): Promise<void> {
   } finally {
     process.off("SIGINT", onSignal);
     process.off("SIGTERM", onSignal);
-    // Always put the managed provider back, even if the user aborts the prompt.
     restore();
     if (backupWritten) {
       try {

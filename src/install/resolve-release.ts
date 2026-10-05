@@ -1,6 +1,6 @@
 // The one source of "which release to install / update to", read from the GitHub Releases REST
-// API. Callers: `agent update` and the autoupdate preflight. install.sh / install.ps1 resolve
-// `latest` themselves: they run before anything of ours is on disk.
+// API. install.sh / install.ps1 resolve `latest` themselves: they run before anything of ours is
+// on disk.
 //
 // The lookup is anonymous on purpose: the stored credential exists to reach Copilot, and a token
 // exported in the shell may belong to another account. The anonymous limit (60/hour/IP) covers a
@@ -112,7 +112,6 @@ export async function resolveTarget(
   if (text === null) return null; // offline / API errored after retries
   const releases = parseReleasesJson(text);
   if (releases.length === 0) return null;
-  // No cooldown: the newest (the first after sorting).
   return cooldownDays === null
     ? releases[0] ?? null
     : pickAged(releases, Date.now() / 1000, cooldownDays);

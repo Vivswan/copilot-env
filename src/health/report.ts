@@ -56,7 +56,6 @@ export function renderReport(
       if (profile === null) {
         heading = GROUP_LABEL[group];
       } else if (group === "runtime") {
-        // The Runtime section names the daemon kind: `Runtime - profile 'p' (proxy)`.
         const mode = profileModes.get(profile) ?? null;
         heading = `${GROUP_LABEL[group]} - profile '${profile}' (${mode ?? "no mode"})`;
       } else {
@@ -66,10 +65,8 @@ export function renderReport(
       for (const r of section) {
         const lines = r.detail.split("\n");
         if (lines.length <= 1) {
-          // Single fact -> one row: `ok label: value`.
           printWrapped(`  ${glyph(r.status, paint)} ${r.label}: ${lines[0] ?? ""}`);
         } else {
-          // Multiple facts -> a label row, then each fact as a `-` sub-item.
           printWrapped(`  ${glyph(r.status, paint)} ${r.label}`);
           for (const line of lines) printWrapped(`      ${paint.gray("•")} ${line}`);
         }

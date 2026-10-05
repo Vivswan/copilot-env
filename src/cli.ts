@@ -95,17 +95,13 @@ program.configureHelp(HELP_STYLES);
 // Commander renders help groups in first-appearance order, so `init` and `profile` come first.
 registerInitCommand(program);
 const profile = registerProfileCommand(program, invocation.profile);
-// The default profile's `auth`, `identity`, and `models`, one row after the other.
 registerAuthCommand(program);
 registerIdentityCommand(program);
 registerModelsCommand(program);
 registerListCommand(program);
 registerSyncCommand(program);
-// The default profile's `start` and `stop`, then the every-profile `health`, `credits`, and
-// `settings`.
 registerDaemonAliases(program);
 registerEverywhereCommands(program);
-// config, cost, codex-mobile, update, shell, install, uninstall, migrate.
 registerMachineCommands(program);
 
 // The root help lists the profile verbs too, right after the `profile` row, one row per verb as

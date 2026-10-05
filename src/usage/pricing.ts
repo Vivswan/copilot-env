@@ -458,7 +458,6 @@ function longContextTierFor(book: PriceList | null, reference: string): PricingT
     : undefined;
 }
 
-/** `tier` with `over`'s rates in place of its own, bucket by bucket, where `over` has one. */
 function overTier(tier: PricingTier, over: PricingTier): PricingTier {
   return {
     input: over.input ?? tier.input,
@@ -468,7 +467,6 @@ function overTier(tier: PricingTier, over: PricingTier): PricingTier {
   };
 }
 
-/** Each bucket summed over its parts, each part's tokens at that part's tier. */
 function blendedCost(reference: string, parts: readonly [UsageTokens, PricingTier][]): ModelCost {
   const bucket = (
     tokens: (u: UsageTokens) => number,

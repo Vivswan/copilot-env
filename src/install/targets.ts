@@ -42,7 +42,6 @@ export function currentReleaseTarget(
  *  platform's binary, and the launcher shims hardcode this name. The `bin/agent`(`.ps1`) shim
  *  beside it IS the `agent` alias. */
 export const INSTALLED_BINARY_POSIX = "copilot-env";
-/** Windows twin of `INSTALLED_BINARY_POSIX`. */
 export const INSTALLED_BINARY_WINDOWS = "copilot-env.exe";
 
 export function installedBinaryName(platform: string = process.platform): string {

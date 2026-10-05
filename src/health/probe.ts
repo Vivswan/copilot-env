@@ -462,7 +462,6 @@ export async function gatherFacts(
   if (RUNTIME_SCOPES.includes(scope)) {
     jobs.push(
       (async () => {
-        // Exactly the addressed target: the default daemon, or the narrowed profile's.
         const target: RuntimeTarget = profile === null
           ? await gatherDefaultTarget(scope, deps)
           : await gatherNamedTarget(profile, scope, deps);
@@ -484,8 +483,6 @@ export async function gatherFacts(
             fresh: nodeModulesFresh(),
           },
         };
-        // The float's resolved-version record (null when it has never resolved here), with
-        // whether its cache directory is still on disk.
         const record = readResolvedVersionRecord(resolveRootHome());
         const resolved = record === null ? null : { ...record, cached: fs.exists(record.denoDir) };
         // The version that would actually RUN, in the daemon entry's own precedence: the float's
@@ -692,7 +689,6 @@ export async function gatherFacts(
           look: deps.commandLook(c.command),
         }));
         facts.tools = { node: deps.commandLook("node"), npm: deps.commandLook("npm") };
-        // The per-host farm on disk (path, present, wired), from its one predicate.
         const farm = codexHostFarm();
         facts.codexHost = {
           supported: process.platform !== "win32",

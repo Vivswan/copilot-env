@@ -19,7 +19,6 @@ export function parseChecksums(text: string): Checksums {
   return entries;
 }
 
-/** The expected digest for `name`, or a throw naming what the manifest lacked. */
 export function expectedDigest(checksums: Checksums, name: string): string {
   const digest = checksums.get(name);
   if (!digest) throw new Error(`checksums.txt has no entry for ${name}`);

@@ -3,7 +3,6 @@
 // pure aggregation/evaluation layers import only from here.
 import type { ProfileName } from "../copilot_api/profile.ts";
 
-/** Worst-to-best diagnostic outcome for a single check. */
 export type CheckStatus = "ok" | "warn" | "fail";
 
 /** Which diagnostic surface a `agent health` run targets. Declaration order doubles as the
@@ -100,7 +99,6 @@ const CHECK_DESCRIPTORS = {
   "claude.live": { label: "Claude live prompt", group: "claude", scopes: CLAUDE_SCOPES },
 } as const satisfies Record<string, CheckDescriptor>;
 
-/** A check id registered in the descriptor table. */
 type RegisteredCheckId = keyof typeof CHECK_DESCRIPTORS;
 
 /** Every check id: the registered table plus the per-CLI family. The strings
@@ -146,8 +144,6 @@ export interface HealthJson {
   }[];
 }
 
-/** The identity fields of a registered check, from the single descriptor table
- *  (the one source of each id's label/group/scopes). */
 export function meta(id: RegisteredCheckId): {
   id: RegisteredCheckId;
   label: string;

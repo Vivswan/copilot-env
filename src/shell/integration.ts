@@ -1,4 +1,3 @@
-// Cross-platform shell/profile integration writer for the `agent` wrapper block.
 import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
@@ -10,8 +9,7 @@ import { PROJECT_ROOT } from "../utils/root.ts";
 import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
 import * as fs from "../utils/fs_facade.ts";
 
-// `agent shell` owns wiring the copilot-env integration into the
-// user's shell startup -- the logic install.sh / install.ps1 used to duplicate.
+// `agent shell` owns wiring the copilot-env integration into the user's shell startup.
 // File wiring is done here in TS for BOTH platforms; we only shell out to tiny
 // `powershell -Command` one-liners for the two Windows-only needs TS can't cover
 // (resolve the (OneDrive-redirectable) Documents folder, toggle execution policy).
@@ -137,7 +135,6 @@ export function stripBlocks(content: string): { content: string; leftBehind: str
   return { content: lines.filter((_, idx) => !skip.has(idx)).join("\n"), leftBehind };
 }
 
-/** True if any line of `content` is exactly `marker` (CR-tolerant). */
 export function hasMarker(content: string, marker: string): boolean {
   return content.split("\n").some((l) => lineIs(l, marker));
 }
@@ -220,11 +217,6 @@ function warnLeftBehind(file: string, lines: readonly string[]): void {
   }
 }
 
-/**
- * Wire (or refresh) the integration block. It is upserted IN PLACE, so re-running is
- * byte-idempotent and a stale (pre-`shell/`-move) path migrates without moving the block
- * or reordering the rest of the file.
- */
 function wireBlocks(files: string[], mainBlock: string): void {
   for (const file of files) {
     const original = fs.exists(file) ? fs.readText(file) : "";
@@ -396,7 +388,6 @@ function rcCandidates(): string[] {
   return [".bashrc", ".zshrc"].map((f) => join(home, f));
 }
 
-/** Existing ~/.bashrc + ~/.zshrc; for wiring, fall back to one named for $SHELL. */
 export function rcFiles(remove: boolean): string[] {
   const home = absolutePathEnv(CI_RC_DIR_ENV) ?? homedir();
   const existing = rcCandidates().filter((p) => fs.exists(p));
@@ -453,7 +444,6 @@ type WindowsProfileTarget =
   | { paths: string[]; source: "system" }
   | { paths: string[]; source: "redirected" };
 
-/** Resolve this run's `$PROFILE` target: the machine's own, or the seam's throwaway tree. */
 export function windowsProfileTarget(allHosts: boolean): WindowsProfileTarget {
   const override = absolutePathEnv(CI_PS_DOCUMENTS_DIR_ENV);
   const name = allHosts ? PS_PROFILE_ALL_HOSTS : PS_PROFILE_CURRENT_HOST;

@@ -8,19 +8,16 @@ import {
   type HealthScope,
 } from "./types.ts";
 
-/** Narrow an arbitrary string to a HealthScope (for `--scope` validation). */
 export function isHealthScope(s: string): s is HealthScope {
   return (HEALTH_SCOPES as readonly string[]).includes(s);
 }
 
-/** Keep only checks that participate in `scope`, preserving input order. */
 export function filterByScope(results: CheckResult[], scope: HealthScope): CheckResult[] {
   return results.filter((r) => r.scopes.includes(scope));
 }
 
 const RANK: Record<CheckStatus, number> = { ok: 0, warn: 1, fail: 2 };
 
-/** Worst status across `results` by precedence fail > warn > ok ("ok" if empty). */
 export function worstStatus(results: CheckResult[]): CheckStatus {
   let worst: CheckStatus = "ok";
   for (const r of results) {
@@ -29,7 +26,6 @@ export function worstStatus(results: CheckResult[]): CheckStatus {
   return worst;
 }
 
-/** Exit code policy: 1 iff any check failed; warnings alone exit 0. */
 export function exitCodeFor(results: CheckResult[]): 0 | 1 {
   return results.some((r) => r.status === "fail") ? 1 : 0;
 }

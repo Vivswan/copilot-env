@@ -112,12 +112,10 @@ export async function runAgentConfig(
   return recorded;
 }
 
-/** `agent profile sync --claude`: runAgentConfig over claudeAdapter. */
 export async function runClaude(action: AgentRunAction): Promise<void> {
   await runAgentConfig(claudeAdapter(), action);
 }
 
-/** `agent profile sync --codex`: runAgentConfig over codexAdapter. */
 export async function runCodex(action: AgentRunAction): Promise<void> {
   await runAgentConfig(codexAdapter(), action);
 }

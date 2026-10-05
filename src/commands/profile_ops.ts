@@ -315,7 +315,6 @@ export function registerProfileOps(ctx: ProfileOpsContext): void {
 
 // --- the top level -------------------------------------------------------------------------------
 
-/** `agent models`: the default profile's verb, as its own command. */
 export function registerModelsCommand(program: Command): void {
   addModelsOptions(
     program
@@ -329,7 +328,6 @@ export function registerModelsCommand(program: Command): void {
   ).action((opts: Opts) => modelsAction(opts, undefined));
 }
 
-/** `agent start` and `agent stop`: the default profile's verbs, as their own commands. */
 export function registerDaemonAliases(program: Command): void {
   addStartOptions(
     program

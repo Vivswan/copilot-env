@@ -1,7 +1,6 @@
 // What every Commander registration shares, in one place: the options bag Commander hands an
 // action, the one wording of `--dry-run`, and the one-value-per-line help of a choice flag.
 
-/** Commander hands action callbacks an options bag of mixed-typed values. */
 export type Opts = Record<string, unknown>;
 
 /** The one wording of `--dry-run` on every writing command (the plan is src/commands/dry_run.ts). */

@@ -105,7 +105,6 @@ export const BUNDLED_ONLY_ASSETS = ["copilot-env.config", ".dvmrc", "deno.json"]
  *  contract; never rename. */
 export const INSTALL_ROOT_ENV = "COPILOT_ENV_INSTALL_ROOT";
 
-/** The version-dir name for a release: `v3.5.7` (tolerates a leading v). */
 export function versionDirName(version: string): string {
   return `v${stripV(version)}`;
 }
@@ -190,7 +189,6 @@ function readCurrentTargetPath(top: string): string | null {
   }
 }
 
-/** The version-dir NAME `current` points at, or null (no link, or unreadable). */
 export function readCurrentVersionName(top: string): string | null {
   const target = readCurrentTargetPath(top);
   if (target === null) return null;
@@ -489,7 +487,6 @@ function collectAssetCopies(sourceRoot: string, root: string, dir: string): File
   return copies;
 }
 
-/** The refusals every installed-mode target must clear. */
 function guardInstalledTarget(root: string): void {
   // The root is DERIVED (from the binary's location, or the COPILOT_ENV_INSTALL_ROOT override)
   // and the writes and removals aim at it, so an unsafe target is refused before anything is
@@ -511,7 +508,6 @@ function guardInstalledTarget(root: string): void {
   }
 }
 
-/** Verifies the embedded assets, then lays out the copies, per-version shims, and manifest. */
 function planMaterialization(root: string, sourceRoot: string): Materialization {
   // Every embedded asset is verified present first, the bundled-only ones included: those are
   // read out of the VFS in-process and never copied.
@@ -549,14 +545,13 @@ function planMaterialization(root: string, sourceRoot: string): Materialization 
   return { writes };
 }
 
-/** Null when this process is not a standalone binary: a dev run has no binary to contribute. */
+/** A dev run has no binary to contribute. */
 function defaultBinarySource(): string | null {
   if (!isStandaloneBinary()) return null;
   return denoRuntime()?.execPath() ?? null;
 }
 
-/** Exported for tests; `runInstall` is the composed entry point. `root`/`sourceRoot` default to
- *  the live install root and the embedded asset source; `binarySource` to the running binary. */
+/** Exported for tests; `runInstall` is the composed entry point. */
 export function buildInstallPlan(
   options: InstallOptions,
   root: string = PROJECT_ROOT,

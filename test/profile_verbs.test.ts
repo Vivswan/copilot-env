@@ -5,7 +5,7 @@
 // homes, and the verbs are reserved names, refused at the CLI.
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
-import { changedPaths } from "./helpers/dry_run.ts";
+import { changedPaths, plannedPaths } from "./helpers/dry_run.ts";
 import {
   expectIdentical,
   observe,
@@ -173,7 +173,6 @@ test(
     const config = join(scratch.home, ".codex", "config.toml");
     const workConfig = join(scratch.home, ".codex", "work.config.toml");
     const store = join(scratch.home, "state.json");
-    const files = [settings, workSettings, config, workConfig, store];
     // A named profile's codex wiring is its own toml AND its selection into config.toml; its
     // Claude wiring is its own settings file alone.
     const rows: [string[], string[]][] = [
@@ -194,10 +193,8 @@ test(
     for (const [args, named] of rows) {
       const proc = observe(args, scratch);
       expect(proc.exitCode, args.join(" ")).toBe(0);
-      expect(
-        files.filter((path) => proc.stdout.includes(path)),
-        args.join(" "),
-      ).toEqual(files.filter((path) => named.includes(path)));
+      // The whole plan, so a file planned outside the scope fails as surely as one missing from it.
+      expect(plannedPaths(proc.stdout).sort(), args.join(" ")).toEqual([...named].sort());
     }
     // `agent init` is the default's add, --dry-run included.
     expect(observe(["init", "--proxy", "--dry-run"], scratch).stdout).toBe(

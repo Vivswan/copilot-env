@@ -11,6 +11,7 @@ import {
   observe,
   scratchHome as scratchHomeOf,
   seedProxyProfiles,
+  treeContents,
 } from "./helpers/scratch_home.ts";
 import { expect, test } from "./helpers/testing.ts";
 
@@ -72,20 +73,36 @@ test(
     expect(dryStop.stdout).toContain(join(scratch.home, "profiles", "work", ".run"));
     expect(dryStop.stdout).not.toContain(join(scratch.home, ".run"));
     // Stdout is what Codex auth.command, Claude apiKeyHelper, and the launchers eval: byte-empty
-    // on every refusal, with the profile and its start spelled on stderr.
+    // on every refusal. The headless refusal says nothing on stderr either, so the proof that the
+    // spelling reached work's resolver (a flag Commander rejects also exits 1 with an empty stdout)
+    // is the resolver's one side effect: the heartbeat on work's run state, and no other file moves.
+    const workRunState = [...treeContents(scratch.home).keys()].find((path) =>
+      path.startsWith(join("profiles", "work", ".run")) && path.endsWith(".state.json")
+    );
+    if (workRunState === undefined) throw new Error("work has no run state to stamp");
+    const beforeToken = treeContents(scratch.home);
+    const askedAt = Date.now();
     const token = observe(["profile", "work", "proxy-token", "--yes"], scratch);
     expect(token.exitCode).toBe(1);
     expect(token.stdout).toBe("");
+    const afterToken = treeContents(scratch.home);
+    const touched = [...new Set([...beforeToken.keys(), ...afterToken.keys()])]
+      .filter((path) => afterToken.get(path) !== beforeToken.get(path));
+    expect(touched).toEqual([workRunState]);
+    const heartbeat = JSON.parse(afterToken.get(workRunState) ?? "{}") as { lastEnsureAt?: number };
+    expect(heartbeat.lastEnsureAt).toBeGreaterThanOrEqual(askedAt);
     const models = observe(["profile", "work", "models", "--proxy"], scratch);
     expect(models.exitCode).toBe(1);
     expect(models.stdout).toBe("");
     expect(models.stderr).toContain("the local proxy for profile 'work' is not running");
     expect(models.stderr).toContain("agent profile work start");
     // The launch refuses before it spawns anything: the missing CLI when no claude is on PATH,
-    // else the missing profile (test/launch.test.ts pins that wording in-process).
+    // else the missing profile (test/launch.test.ts pins that wording in-process). Either refusal
+    // is the launch's own, so the spelling reached it rather than Commander.
     const launch = observe(["profile", "nope", "launch", "claude", "--", "x"], scratch);
     expect(launch.exitCode).toBe(1);
     expect(launch.stdout).toBe("");
+    expect(launch.stderr).toMatch(/'claude' is not installed|profile 'nope' does not exist/);
     const credits = observe(["credits", "--target", "0"], scratch);
     expect(credits.exitCode).toBe(1);
     expect(credits.stderr).toContain("--target: must be between");

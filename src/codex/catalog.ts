@@ -16,7 +16,7 @@ import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { codexConfigPath } from "./paths.ts";
-import { stringify } from "smol-toml";
+import { stringify } from "../utils/toml.ts";
 import { type CatalogSource, fetchRawModels } from "../copilot_api/catalog.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { CopilotEnvState } from "../copilot_api/env_state.ts";

@@ -2,7 +2,6 @@
 // temporarily removes the managed `model_provider`, walks the user through pairing in the app, then
 // restores it. There is no Linux Codex app, so it is gated to macOS/Windows.
 import { setTimeout as sleep } from "node:timers/promises";
-import { parse, stringify } from "smol-toml";
 import {
   appRunning,
   type AppScan,
@@ -15,6 +14,7 @@ import { runCaptured, withPowershellChildEnv } from "../utils/command.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { isRecord } from "../utils/json.ts";
 import { createStderrLogger, prompt } from "../utils/logger.ts";
+import { parseToml, stringify } from "../utils/toml.ts";
 import { inspectCatalogFile } from "./catalog.ts";
 import { effectiveCodexHome } from "./host.ts";
 import { CODEX_PROVIDER_ID, codexConfigPath } from "./paths.ts";
@@ -40,8 +40,7 @@ function ensureNoForcedOpenaiAuth(doc: Record<string, unknown>): void {
 
 export function readTopLevelString(configToml: string, key: string): string | null {
   try {
-    const doc = parse(configToml);
-    const value = isRecord(doc) ? doc[key] : undefined;
+    const value = parseToml(configToml)[key];
     return typeof value === "string" ? value : null;
   } catch {
     return null;
@@ -51,7 +50,7 @@ export function readTopLevelString(configToml: string, key: string): string | nu
 /** The Copilot-patched `model_catalog_json` goes with the provider: during pairing the app runs the
  *  real OpenAI provider, whose limits the patched catalog would misstate. */
 export function stripModelProvider(configToml: string): string {
-  const doc = parse(configToml) as Record<string, unknown>;
+  const doc = parseToml(configToml);
   delete doc.model_provider;
   delete doc.model_catalog_json;
   ensureNoForcedOpenaiAuth(doc);
@@ -63,7 +62,7 @@ export function restoreModelProvider(
   provider: string,
   modelCatalogJson: string | null = null,
 ): string {
-  const doc = parse(configToml) as Record<string, unknown>;
+  const doc = parseToml(configToml);
   doc.model_provider = provider;
   if (modelCatalogJson !== null) doc.model_catalog_json = modelCatalogJson;
   ensureNoForcedOpenaiAuth(doc);

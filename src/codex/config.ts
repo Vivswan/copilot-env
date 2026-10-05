@@ -2,7 +2,6 @@
 // the local proxy. By default no credential is baked (`auth.command` resolves it at fetch time);
 // with `static-key` covering Codex the value rides as a static `http_headers.Authorization` and
 // no `auth` table is written.
-import { parse } from "smol-toml";
 import {
   type AgentAdapter,
   type CredentialWiring,
@@ -36,6 +35,7 @@ import { isRecord } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import { agentAuthGetArgs, agentLauncherCommand, proxyTokenCommand } from "../utils/root.ts";
 import { printKeyValue, printWrapped } from "../utils/table.ts";
+import { isTomlTable, parseToml } from "../utils/toml.ts";
 import {
   type CatalogFileVerdict,
   generateCodexModelCatalog,
@@ -79,15 +79,8 @@ type CodexModeRequest =
 
 type Doc = Record<string, unknown>;
 
-/** A table the writer descends into. Anything else is a leaf, a Date included: smol-toml parses a
- *  TOML datetime into a Date subclass, and writing keys onto it would emit the datetime again with
- *  the managed keys silently gone. */
-function isTable(value: unknown): value is Doc {
-  return isRecord(value) && !(value instanceof Date);
-}
-
 function tableAt(doc: Doc, key: string): Doc {
-  const table = isTable(doc[key]) ? doc[key] : {};
+  const table = isTomlTable(doc[key]) ? doc[key] : {};
   doc[key] = table;
   return table;
 }
@@ -474,7 +467,7 @@ function checkCodexConfig(): void {
     if (status.providerMode === "direct" && read.kind === "text") {
       printKeyValue(
         "service_tier",
-        serviceTierDetail(parse(read.text) as Record<string, unknown>),
+        serviceTierDetail(parseToml(read.text)),
       );
     }
     process.exitCode = providerModeExitCode(status.providerMode);

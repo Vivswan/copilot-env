@@ -2,21 +2,21 @@
 // POLICY (throw, skip, seed a default) stays a small visible switch. "unparseable" is distinct so
 // write paths can refuse to clobber a config that exists but could not be read: a hand-edit typo
 // must never cost the user their config.toml.
-import { parse, stringify } from "smol-toml";
 import { errMessage } from "../utils/error.ts";
 import { isEnoent } from "../utils/fs.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { dottedKey, isRecord } from "../utils/json.ts";
+import { isTomlTable, parseToml, stringify } from "../utils/toml.ts";
 
 export type CodexTomlRead =
   | { kind: "absent" }
   | { kind: "ok"; doc: Record<string, unknown> }
   | { kind: "unparseable"; error: string };
 
-// Only TOML's own insignificant whitespace (spaces, tabs, LF/CRLF) counts as blank. NOT
-// String.trim(): trim also eats a BOM, NBSP, or lone CR, all of which smol-toml REJECTS, and a
-// rejected file must read as "unparseable" (refuse to clobber), never as "absent".
-const BLANK_TOML = /^(?:[ \t\n]|\r\n)*$/;
+// Blank is TOML's own insignificant whitespace (spaces, tabs, LF/CRLF) after the one leading BOM
+// parseToml also drops. NOT String.trim(): trim also eats an NBSP or a lone CR, which the parser
+// rejects, and a rejected file must read as "unparseable" (refuse to clobber), never as "absent".
+const BLANK_TOML = /^\ufeff?(?:[ \t\n]|\r\n)*$/;
 
 /** ENOENT reads as "absent"; any other filesystem error (EISDIR, permission, I/O) THROWS raw, so a
  *  caller cannot mistake an unreadable config for a missing one. An empty or whitespace-only file
@@ -33,7 +33,7 @@ export function readCodexToml(path: string): CodexTomlRead {
   }
   if (BLANK_TOML.test(text)) return { kind: "absent" };
   try {
-    return { kind: "ok", doc: parse(text) as Record<string, unknown> };
+    return { kind: "ok", doc: parseToml(text) };
   } catch (e) {
     // smol-toml quotes the offending source line in its message, which for a static-key config can
     // be the bearer itself; callers log this diagnostic.
@@ -56,7 +56,7 @@ export function codexBearerLeaf(providerId: string): string {
 export function codexBearerLeaves(doc: Record<string, unknown>): string[] {
   const leaves: string[] = [];
   const walk = (value: unknown, path: readonly string[]): void => {
-    if (!isRecord(value) || value instanceof Date) return;
+    if (!isTomlTable(value)) return;
     for (const [key, child] of Object.entries(value)) {
       if (key === "http_headers" && isRecord(child)) {
         for (const header of Object.keys(child)) {

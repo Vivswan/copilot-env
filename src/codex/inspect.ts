@@ -2,7 +2,6 @@
 // so `agent health`, `agent profile check --codex`, and the mode decision (src/agents/wiring.ts)
 // share one classification instead of shell/TOML copies. The writer imports the constants it shares
 // with the reader from here.
-import { parse } from "smol-toml";
 import { type AgentProviderMode, MANAGED_MODE_DETAIL } from "../agents/provider_mode.ts";
 import { DEFAULT_COPILOT_API_BASE, isDirectBaseUrl } from "../copilot_api/integration_identity.ts";
 import { matchesProxyOrigin } from "../copilot_api/port.ts";
@@ -11,6 +10,7 @@ import { assertNever } from "../utils/assert.ts";
 import type { TextReadResult } from "../utils/fs_facade.ts";
 import { isRecord, sameStrings } from "../utils/json.ts";
 import { agentAuthGetArgs, agentLauncherCommand, proxyTokenCommand } from "../utils/root.ts";
+import { parseToml } from "../utils/toml.ts";
 import { codexProviderId } from "./paths.ts";
 
 // OPENAI_API_KEY is the same OpenAI-wire name `env.ts` exports; the inspector reports whether the
@@ -69,13 +69,13 @@ export function bakedCodexToken(
   profile: Profile = null,
 ): string | null {
   if (configToml.kind !== "text") return null;
-  let doc: unknown;
+  let doc: Record<string, unknown>;
   try {
-    doc = parse(configToml.text);
+    doc = parseToml(configToml.text);
   } catch {
     return null;
   }
-  const providers = isRecord(doc) ? doc.model_providers : undefined;
+  const providers = doc.model_providers;
   const table = isRecord(providers) ? providers[codexProviderId(profile)] : undefined;
   if (!isStaticAuthorization(table) || !isRecord(table) || !isRecord(table.http_headers)) {
     return null;
@@ -259,10 +259,10 @@ export function inspectCodexWiring(
     otherReason,
   });
   if (read.kind === "unreadable") return other("read-error", null);
-  let doc: unknown = null;
+  let doc: Record<string, unknown> | null = null;
   if (read.kind === "text") {
     try {
-      doc = parse(read.text);
+      doc = parseToml(read.text);
     } catch {
       return other("malformed", null);
     }
@@ -271,7 +271,7 @@ export function inspectCodexWiring(
   // for the default, `<name>.config.toml`'s for a named profile (`codex --profile <name>`), which
   // Codex refuses as a whole when either file is unparseable. The profile file is judged before
   // config.toml's absence, so a broken one is never hidden behind "no config".
-  let selector: unknown = doc;
+  let selector = doc;
   if (selection.profile !== null) {
     const profileRead = selection.profileToml;
     const configExists = read.kind !== "absent";
@@ -280,7 +280,7 @@ export function inspectCodexWiring(
     }
     if (profileRead.kind === "text") {
       try {
-        selector = parse(profileRead.text);
+        selector = parseToml(profileRead.text);
       } catch {
         return other("profile-malformed", null, configExists);
       }
@@ -288,13 +288,13 @@ export function inspectCodexWiring(
   }
   if (read.kind === "absent") return none(false);
   if (selection.profile !== null && selection.profileToml.kind === "absent") return none(true);
-  const modelProvider = isRecord(selector) && typeof selector.model_provider === "string"
+  const modelProvider = typeof selector?.model_provider === "string"
     ? selector.model_provider
     : null;
   if (modelProvider === null) return none(true);
   if (modelProvider !== providerId) return other("custom", modelProvider);
 
-  const providers = isRecord(doc) ? doc.model_providers : undefined;
+  const providers = doc?.model_providers;
   const table = isRecord(providers) ? providers[providerId] : undefined;
   const tableMode = codexTableMode(table, expectedPort);
   const baseUrl = isRecord(table) && typeof table.base_url === "string" ? table.base_url : null;

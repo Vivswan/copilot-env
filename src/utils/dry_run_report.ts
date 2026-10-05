@@ -9,10 +9,10 @@
 // disk side of the seam; the after-text is the volume's.
 import type { Stats } from "node:fs";
 import { extname, join, sep } from "node:path";
-import { parse as parseToml } from "smol-toml";
 import * as disk from "./fs_disk.ts";
 import type { Overlay, OverlayEntry } from "./fs_overlay.ts";
-import { dottedKey, isRecord, parseJsonRecord } from "./json.ts";
+import { dottedKey, parseJsonRecord } from "./json.ts";
+import { isTomlTable, parseToml } from "./toml.ts";
 
 type FileVerdict = "create" | "rewrite" | "same" | "delete";
 
@@ -159,16 +159,15 @@ function parseDoc(path: string, text: string | null): Doc | null {
   }
 }
 
-/** A Date is a leaf: smol-toml parses a TOML datetime into one. An empty table is no leaf of its
- *  own (a map emptied slot by slot prints only its slots); `empties` collects them for the one
- *  case they print (emptyLeaves). */
+/** An empty table is no leaf of its own (a map emptied slot by slot prints only its slots);
+ *  `empties` collects them for the one case they print (emptyLeaves). */
 function leaves(
   value: unknown,
   prefix: readonly string[],
   out: Map<string, unknown>,
   empties: Set<string>,
 ): void {
-  if (!isRecord(value) || value instanceof Date) {
+  if (!isTomlTable(value)) {
     if (prefix.length > 0) out.set(dottedKey(prefix), value);
     return;
   }

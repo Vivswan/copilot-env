@@ -2,7 +2,7 @@
 // managed write seeds the key): the wiring- and launch-time sync that heals or strips it, and the account-wide
 // sweep that keeps a deleted catalog from leaving a dangling reference in any known Codex home.
 // Best-effort throughout: stderr-only, never throws.
-import { parse, stringify } from "smol-toml";
+import { stringify } from "smol-toml";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { CopilotEnvState } from "../copilot_api/env_state.ts";
 import { OwnershipLedger } from "../copilot_api/ownership.ts";
@@ -11,6 +11,7 @@ import { errMessage } from "../utils/error.ts";
 import { isEnoent } from "../utils/fs.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { createStderrLogger } from "../utils/logger.ts";
+import { parseToml } from "../utils/toml.ts";
 import type { CatalogSource } from "../copilot_api/catalog.ts";
 import {
   catalogBookkeepingAllowed,
@@ -191,7 +192,7 @@ function stripCodexCatalogReferences(
       continue;
     }
     try {
-      const doc = parse(read.text) as Record<string, unknown>;
+      const doc = parseToml(read.text);
       if (doc.model_catalog_json === catalogFile) {
         const { model_catalog_json: _dropped, ...next } = doc;
         fs.writeText(configPath, stringify(next), {

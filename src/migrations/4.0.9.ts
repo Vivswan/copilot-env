@@ -98,14 +98,9 @@ import {
   proxyTokenArgs,
   proxyTokenCommand,
 } from "../utils/root.ts";
+import { isTomlTable } from "../utils/toml.ts";
 import { failIfAny, FENCE_LINES, LAUNCHERS_MARKER, LAUNCHERS_MARKER_END } from "./4.0.0.ts";
 import type { Migration } from "./index.ts";
-
-/** A parsed TOML table is a plain object; smol-toml's date-time scalar is a class instance with no
- *  enumerable keys, so recursing into it would spread it to an empty table. */
-function isTable(value: unknown): value is Record<string, unknown> {
-  return isRecord(value) && Object.getPrototypeOf(value) === Object.prototype;
-}
 
 /** Key-wise, recursing into tables, `over`'s leaves winning: a table's `features.multi_agent`
  *  survives a file that only sets `features.shell_tool`, as Codex itself layers the two. */
@@ -116,7 +111,7 @@ function layer(
   const out = { ...base };
   for (const [key, value] of Object.entries(over)) {
     const under = out[key];
-    out[key] = isTable(under) && isTable(value) ? layer(under, value) : value;
+    out[key] = isTomlTable(under) && isTomlTable(value) ? layer(under, value) : value;
   }
   return out;
 }

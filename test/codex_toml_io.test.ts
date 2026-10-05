@@ -34,18 +34,25 @@ afterEach(() => {
 
 test("readCodexToml: missing and blank read as absent, key-less text as an empty ok document, anything the parser rejects as unparseable", () => {
   // The seed-a-default site (loadOrCreateConfig) treats an absent read like a missing file, so
-  // only content with nothing in it may read absent: a comment-only file is real user text, and a
-  // BOM, NBSP, or lone CR is trim()-blank but rejected by smol-toml; classifying either "absent"
-  // would let a write path clobber a file that exists.
+  // only content with nothing in it may read absent: a comment-only file is real user text, and an
+  // NBSP or lone CR is trim()-blank but rejected by the parser; classifying either "absent" would
+  // let a write path clobber a file that exists. One leading BOM is an encoding mark, not content,
+  // whatever the parser's release does with it: alone it is blank, before TOML it is dropped.
   dir = tempDir("codex-toml-io-");
   const path = join(dir, "config.toml");
-  const cases: { name: string; content: string | null; kind: "absent" | "ok" | "unparseable" }[] = [
+  const cases: {
+    name: string;
+    content: string | null;
+    kind: "absent" | "ok" | "unparseable";
+    doc?: Record<string, unknown>;
+  }[] = [
     { name: "missing", content: null, kind: "absent" },
     { name: "empty", content: "", kind: "absent" },
     { name: "whitespace only", content: "  \n\t\r\n", kind: "absent" },
     { name: "comment only", content: "# my notes\n# more notes\n", kind: "ok" },
     { name: "not TOML", content: 'command = "unbalanced\n', kind: "unparseable" },
-    { name: "BOM", content: "\ufeff", kind: "unparseable" },
+    { name: "BOM only", content: "\ufeff", kind: "absent" },
+    { name: "BOM before TOML", content: "\ufeffkey = 1\n", kind: "ok", doc: { key: 1 } },
     { name: "NBSP", content: "\u00a0", kind: "unparseable" },
     { name: "lone CR", content: "\r", kind: "unparseable" },
     { name: "CR between spaces", content: " \r ", kind: "unparseable" },
@@ -58,10 +65,9 @@ test("readCodexToml: missing and blank read as absent, key-less text as an empty
       expect([c.name, read.kind]).toEqual([c.name, "unparseable"]);
       if (read.kind === "unparseable") expect(read.error.length, c.name).toBeGreaterThan(0);
     } else {
-      // The whole result: an absent read carries nothing else, an ok read the (empty) document.
       expect([c.name, read]).toEqual([
         c.name,
-        c.kind === "absent" ? { kind: "absent" } : { kind: "ok", doc: {} },
+        c.kind === "absent" ? { kind: "absent" } : { kind: "ok", doc: c.doc ?? {} },
       ]);
     }
   }

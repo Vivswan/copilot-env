@@ -35,8 +35,8 @@ function parseScope(scope: string): HealthScope {
   return scope;
 }
 
-/** The report and the exit code, from the results of one or more gathers. `profile` is the
- *  narrowed run's for the JSON header; the every-profile run is the whole environment's (null). */
+/** `profile` is the narrowed run's, for the JSON header; the every-profile run passes null, the
+ *  whole environment's. */
 function report(
   scope: HealthScope,
   results: CheckResult[],
@@ -66,11 +66,9 @@ export async function runHealth(args: HealthArgs): Promise<void> {
   report(scope, evaluateAll(scope, facts), profileModes(facts), args.json, profile);
 }
 
-/** Every profile's checks (`agent health`): the default's run and each named profile's narrowed
- *  run, gathered at once (each probe has its own timeout budget, so ten profiles cost one, not
- *  ten) and folded in profile order, the default first. The rows keep the report's order: every
- *  named profile's runtime block follows the default's, ahead of the default's remaining rows;
- *  each profile's other rows (its credential, its wiring) come after them. */
+/** Every profile's checks (`agent health`), gathered at once: each probe has its own timeout
+ *  budget, so ten profiles cost one, not ten. The splice and the push keep the report's own
+ *  order: runtime rows together, each profile's other rows (its credential, its wiring) after. */
 export async function runHealthEverywhere(args: Omit<HealthArgs, "profile">): Promise<void> {
   const scope = parseScope(args.scope);
   const live = Boolean(args.live);

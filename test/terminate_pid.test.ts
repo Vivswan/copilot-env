@@ -22,8 +22,6 @@ afterEach(() => {
   dir = removeDir(dir);
 });
 
-/** Spawn a child that ignores SIGTERM (so only a SIGKILL can end it) and signals
- *  readiness through a file; returns once the child is provably up. */
 async function spawnTermIgnoringChild(): Promise<Deno.ChildProcess> {
   dir = tempDir("copilot-terminate-");
   const ready = join(dir, "ready");

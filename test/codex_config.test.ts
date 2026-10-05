@@ -71,8 +71,7 @@ function enableCatalog(): void {
   new CopilotEnvConfig().set({ "codex.model-catalog": true });
 }
 
-/** The installed codex's verdict on the generated file, as a fake codex on PATH: true accepts,
- *  false rejects, null proves nothing (unverifiable). */
+/** `null` is a codex whose dump proves nothing (unverifiable). */
 function installedCodex(accepts: boolean | null): FakeCodex {
   return fakeCodexOnPath(dir, { probe: probeFor(accepts) });
 }

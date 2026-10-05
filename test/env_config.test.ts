@@ -995,7 +995,6 @@ test("the keyless get lists one view: PROFILE holds the profile keys and the pro
     lines.slice(lines.findIndex((l) => rowRe.exec(l)?.[1] === key)).slice(0, 3).join("\n");
   const listing = (view: ConfigView): string[] =>
     stdoutOf(() => runConfig({ kind: "get", view })).split("\n");
-  /** One profile's view: the PROFILE banner and nothing of the config view. */
   const profileView = (profile: Profile): string[] => {
     const lines = listing({ kind: "profile", profile });
     const profileAt = lines.findIndex((l) => l.startsWith("PROFILE "));
@@ -1004,7 +1003,6 @@ test("the keyless get lists one view: PROFILE holds the profile keys and the pro
       .toEqual([]);
     return lines.slice(profileAt);
   };
-  /** The config view: SHARED DEFAULTS, then GLOBAL, and no PROFILE. */
   const configView = (): { shared: string[]; global: string[] } => {
     const lines = listing(CONFIG);
     const sharedAt = lines.findIndex((l) => l.startsWith("SHARED DEFAULTS"));

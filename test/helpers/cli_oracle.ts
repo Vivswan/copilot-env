@@ -23,14 +23,12 @@ export interface ScratchHome {
   env: Record<string, string>;
 }
 
-/** `test/fixtures/cli_redesign/<name>.json`, parsed; the caller names its shape. */
 export function loadFixture(name: string): unknown {
   return JSON.parse(
     readFileSync(join(PROJECT_ROOT, "test", "fixtures", "cli_redesign", `${name}.json`), "utf8"),
   );
 }
 
-/** A fixture of spelling -> what it printed. */
 export function loadOracle(name: string): Oracle {
   return loadFixture(name) as Oracle;
 }
@@ -82,7 +80,6 @@ export function normalize(home: string, text: string, root: string = PROJECT_ROO
     );
 }
 
-/** What the outside sees of one spelling: exit code, stdout with the scratch paths normalized. */
 export function observe(
   args: string[],
   scratch: ScratchHome,

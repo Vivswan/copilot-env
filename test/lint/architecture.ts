@@ -148,8 +148,7 @@ export const GENERATED_BEGIN =
   "<!-- BEGIN GENERATED: architecture-map (deno task docs:arch; derived from architecture.json) -->";
 export const GENERATED_END = "<!-- END GENERATED: architecture-map -->";
 
-/** The module map over the DECLARED edges: one node per layer, labelled with the paths it owns.
- *  Layer names are the node ids, so a name must be a mermaid identifier (letters, digits, `_`). */
+/** Over the DECLARED edges, never the import graph. */
 export function renderArchitectureMap(arch: Architecture): string {
   for (const layer of Object.keys(arch.layers)) {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(layer)) {

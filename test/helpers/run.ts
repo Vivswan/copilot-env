@@ -26,7 +26,6 @@ export function importSpecifier(path: string): string {
   return JSON.stringify(pathToFileURL(path).href);
 }
 
-/** The env var a child program's per-test values travel under; see CHILD_VALUES. */
 const CHILD_VALUES_ENV = "COPILOT_ENV_TEST_CHILD_VALUES";
 
 /**
@@ -91,8 +90,7 @@ function harnessEnv(
   };
 }
 
-/** The running test's abort signal, thrown if the deadline already fired. Every spawn
- *  starts here, so a body the deadline abandoned never gets a new child at all. */
+/** Every spawn starts here, so a body the deadline abandoned never gets a new child at all. */
 function liveTestSignal(): AbortSignal | undefined {
   const signal = testAbortSignal();
   if (signal?.aborted) throw signal.reason;

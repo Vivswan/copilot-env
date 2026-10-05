@@ -71,9 +71,6 @@ async function readIndexed<T>(
   }
 }
 
-/** The three-way assertion: no index, a cold index, and a warm index agree, and
- *  the stats say the cold run parsed every candidate whole and the warm run
- *  reused every one without reading a byte. */
 async function assertThreeWaysAgree<T>(
   dir: string,
   read: (reconcile: Reconcile) => Promise<T>,

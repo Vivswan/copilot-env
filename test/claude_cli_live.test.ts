@@ -39,7 +39,7 @@ afterEach(async () => {
   await fake.close();
 });
 
-/** The probe's exact argv against a scratch config dir, under a hermetic env (fakeCliEnv). */
+/** Under a hermetic env (fakeCliEnv): runFakeCli clears the inherited one. */
 function runClaude(scenario: ScenarioName) {
   if (claudePath === null) throw new Error(`${LIVE_ENV} is set but no claude CLI is on PATH`);
   const claudeHome = join(home, ".claude");

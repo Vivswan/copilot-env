@@ -61,22 +61,20 @@ interface ProvenanceStatement {
   subjects: AttestedSubject[];
 }
 
-/** The fail-closed wording, the ONE place it lives: the check could not run, so
- *  the user gets the cause and both ways to proceed without it. */
+/** The fail-closed wording, the ONE place it lives. */
 export function cannotVerifyMessage(tag: string, cause: string): string {
   return `cannot verify the build provenance of ${tag}: ${cause}. ` +
     "To update without provenance verification, re-run with --no-verify, or persist the " +
     `opt-out with '${configSetCommand("update.verify-provenance", "false")}'.`;
 }
 
-/** The mismatch wording: the check ran and the bytes or the signer failed it. Deliberately
- *  silent about the opt-outs. */
+/** The mismatch wording, deliberately silent about the opt-outs. */
 export function verificationFailedMessage(tag: string, detail: string): string {
   return `build provenance verification FAILED for ${tag}: ${detail}. Do not install it.`;
 }
 
-/** Decode a DSSE payload as an in-toto v1 statement carrying SLSA provenance.
- *  Throws the mismatch DETAIL (the caller wraps it with the tag). */
+/** The DSSE payload as an in-toto v1 statement carrying SLSA provenance. Throws the mismatch
+ *  DETAIL; the caller wraps it with the tag. */
 export function parseStatement(payload: Uint8Array): ProvenanceStatement {
   let parsed: unknown;
   try {
@@ -114,7 +112,7 @@ export function parseStatement(payload: Uint8Array): ProvenanceStatement {
   return { predicateType: SLSA_PROVENANCE_V1, subjects };
 }
 
-/** Every required digest must be an attested subject. Throws the mismatch DETAIL. */
+/** Throws the mismatch DETAIL; the caller wraps it with the tag. */
 export function assertSubjectsAttested(
   statement: ProvenanceStatement,
   required: readonly AttestedSubject[],

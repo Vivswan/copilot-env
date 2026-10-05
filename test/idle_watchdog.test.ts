@@ -125,7 +125,6 @@ test("lastActivityMs: picks the most recent signal; absent signals don't count",
   expect(lastActivityMs({ startedAtMs: 100, inferenceMs: 300, ensureAtMs: 200 })).toBe(300);
   expect(lastActivityMs({ startedAtMs: 500, inferenceMs: 300, ensureAtMs: null })).toBe(500);
   expect(lastActivityMs({ inferenceMs: null, ensureAtMs: 200 })).toBe(200);
-  // No signal at all reads as 0 ("no activity recorded").
   expect(lastActivityMs({ inferenceMs: null, ensureAtMs: null })).toBe(0);
 });
 

@@ -75,9 +75,8 @@ function stubIdentityProbe(): void {
   );
 }
 
-/** Isolate a root and return the DEFAULT daemon's home under it (profiles/default,
- *  created on disk) -- what the dry-run plan and the lock/holder staging both
- *  resolve. `dir` is the root. */
+/** The DEFAULT daemon's home (profiles/default under the root, `dir`), created on disk: what the
+ *  dry-run plan and the lock/holder staging both resolve. */
 function tmpHome(): string {
   dir = isolateProxyHome("copilot-lifecycle-");
   return defaultHomeDir();

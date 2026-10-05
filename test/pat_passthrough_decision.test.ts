@@ -30,14 +30,12 @@ test("usePatPassthrough: an explicit force wins; auto is on for a PAT-shaped or 
     { force: true, token: "gho_oauth", on: true },
     { force: false, token: "ghp_pat", on: false },
     { force: false, token: "gho_x", provider: "gh-cli", on: false },
-    // Auto: on for a PAT-shaped token.
     { force: undefined, token: "ghp_pat", on: true },
     { force: undefined, token: "github_pat_x", on: true },
     // A gho_ GitHub-OAuth token can't do the exchange (404) but works directly -> passthrough.
     { force: undefined, token: "gho_oauth", on: true },
     // A non-PAT, non-gho_ token (e.g. ghu_ user-to-server) defaults to the exchange.
     { force: undefined, token: "ghu_user", on: false },
-    // Provider scoping: gh-cli auto-on.
     { force: undefined, token: "gho_oauth", provider: "gh-cli", on: true },
     // The copilot device-flow token is gho_-shaped but does the exchange and rotates, so it is
     // never shimmed.

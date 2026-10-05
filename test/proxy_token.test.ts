@@ -197,7 +197,6 @@ test("resolveProxyToken: each (up, auto-start, --yes, answer, profile) row yield
 
 // --- spawn level: the stdout contract ------------------------------------------
 
-/** A hermetic child env: isolated agent homes, quiet consola. */
 function isolatedEnv(home: string): Record<string, string> {
   return { ...process.env as Record<string, string>, CONSOLA_LEVEL: "5", ...agentHomeEnv(home) };
 }

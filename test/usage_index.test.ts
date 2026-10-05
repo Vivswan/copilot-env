@@ -80,8 +80,7 @@ function open(
 const BASE_TS = Date.UTC(2026, 5, 1);
 const MODEL = "model-x";
 
-/** One fixture line: an id, a timestamp, and `marker` (the text that must never
- *  reach the database). */
+/** `marker` is the text that must never reach the database. */
 function line(n: number, marker: string): string {
   return `line-${n} ts=${BASE_TS + n * 1000} ${marker}\n`;
 }
@@ -181,7 +180,7 @@ function fullStats(expected: Partial<IndexStats>): IndexStats {
   return { ...emptyIndexStats(), ...expected };
 }
 
-/** What a fresh whole parse of `path` yields: the reference every run must match. */
+/** The reference every run must match. */
 function expectedContribution(path: string): ClaudeContribution {
   return parseFrom(path, 0, { v: CONTRIBUTION_VERSION, occurrences: [] }).contribution;
 }
@@ -210,7 +209,6 @@ function storedRows(): StoredRow[] {
   }
 }
 
-/** Overwrite one row's record from a second connection. */
 function rewriteRecord(path: string, record: string): void {
   const db = new DatabaseSync(dbPath());
   try {
@@ -821,7 +819,6 @@ for (const { name, rewrite, reused } of REWRITTEN_RECORDS) {
   });
 }
 
-/** Everything under `path` as SQLite and we left it: directory listings and file bytes. */
 function diskState(path: string): unknown {
   if (!existsSync(path)) return null;
   if (!statSync(path).isDirectory()) return readFileSync(path).toString("hex");

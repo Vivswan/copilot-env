@@ -107,9 +107,9 @@ export interface ScanHit {
 export interface ScanResult {
   bytesRead: number;
   /** Just past the LF of the last COMPLETE line: an unterminated final fragment is never delivered
-   *  or counted, and the next run reads it once the writer terminates it. Every one of 13,798 real
-   *  transcripts and rollouts measured ends in LF, so a permanently unterminated last line does not
-   *  occur in practice. */
+   *  or counted, and the next run reads it once the writer terminates it. Both writers end every
+   *  line they complete in LF, so only an append cut short mid-line leaves a fragment, and that
+   *  fragment is never counted. */
   parsedThrough: number;
   /** Hex of the last `TAIL_PROBE_BYTES` before `parsedThrough`; fewer when it is smaller, empty at
    *  0. */
@@ -230,7 +230,7 @@ export type Reconcile = <S extends UsageSource>(
   parseTail: ParseTail<ContributionOf<S>>,
 ) => ReconcileResult<ContributionOf<S>>;
 
-/** The no-index Reconcile; a failed parse is warned and skipped, reporting no bytes. */
+/** The no-index Reconcile. */
 export const parseEveryCandidate: Reconcile = (_source, walked, parseWhole) => {
   const stats = emptyIndexStats();
   stats.filesSeen = walked.length;

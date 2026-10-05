@@ -44,8 +44,8 @@ export interface VerifyProvenanceOptions {
   cachePath?: string;
 }
 
-/** Resolves with the verified signer identity; rejects with a "cannot verify" or "verification
- *  FAILED" message (attestation.ts owns both wordings). */
+/** Rejects with a "cannot verify" or "verification FAILED" message; attestation.ts owns both
+ *  wordings. */
 export async function verifyReleaseProvenance(
   tag: string,
   bundleJson: string,

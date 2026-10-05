@@ -1120,7 +1120,6 @@ const HOSTS_YML_STATUS = `github.com
 
 type GhRun = (spec: GhSpawnSpec) => { status: number | null; stdout: string; stderr: string };
 
-/** A gh answering every call with `reply`, recording what it was asked. */
 function fakeGh(
   reply: { status: number | null; stdout?: string; stderr?: string },
 ): { run: GhRun; calls: string[] } {

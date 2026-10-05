@@ -120,7 +120,6 @@ export function agentStartCommand(profile: Profile): string {
   return profile === null ? "agent start" : `agent profile ${profile} start`;
 }
 
-/** The `agent stop` command addressed at a profile's own daemon. */
 export function agentStopCommand(profile: Profile): string {
   return profile === null ? "agent stop" : `agent profile ${profile} stop`;
 }

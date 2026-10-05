@@ -584,8 +584,7 @@ function logNowUsing(ctx: FloatContext): void {
   logger.success(`now using ${PROXY_PKG}@${record?.version ?? "unknown"}`);
 }
 
-/** Warms `version`, records it, and announces it; false when the warm failed, and the caller
- *  decides what is kept. */
+/** On a failed warm (false) the caller decides what is kept. */
 function installVersion(ctx: FloatContext, version: string, cooldownSeconds: number): boolean {
   if (denoCacheVersion(ctx, version, cooldownSeconds) !== 0) return false;
   recordFloatResolution(ctx, version);

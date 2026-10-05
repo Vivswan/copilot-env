@@ -24,7 +24,6 @@ export function repoPath(filename: string): string | null {
   return null;
 }
 
-/** `filename` relative to the test tree, or null when it is outside it. */
 export function testTreePath(filename: string): string | null {
   const path = normalize(filename);
   if (path.startsWith(TEST_DIR)) return path.slice(TEST_DIR.length);
@@ -32,7 +31,6 @@ export function testTreePath(filename: string): string | null {
   return null;
 }
 
-/** The member name a MemberExpression reads, for both `a.b` and `a["b"]`. */
 export function memberName(node: Deno.lint.MemberExpression): string | null {
   if (!node.computed && node.property.type === "Identifier") return node.property.name;
   if (

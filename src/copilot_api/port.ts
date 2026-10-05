@@ -98,7 +98,6 @@ export async function checkProxyPort(
   return (await proxyPortFree(port)) ? "free" : "busy";
 }
 
-/** From `start` (the configured default when omitted) up through the range, 50 ports at most. */
 export async function copilotApiFindPort(
   start?: number,
   config: CopilotEnvConfig = new CopilotEnvConfig(),

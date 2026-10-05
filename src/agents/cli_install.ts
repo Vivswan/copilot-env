@@ -18,7 +18,6 @@ import { pickAgedVersion, publishTimesMs, versionLessThan } from "../utils/semve
 import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
 import { MILLISECONDS_PER_DAY } from "../utils/time.ts";
 
-/** Command name, display name, and npm package of each CLI. */
 export const AGENT_CLIS = [
   {
     command: "claude",

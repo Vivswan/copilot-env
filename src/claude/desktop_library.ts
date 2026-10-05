@@ -35,7 +35,6 @@ export type Doc = Record<string, unknown>;
  *  so the suite floor points it at a non-created dir and the whole suite sees no Desktop. */
 export const CLAUDE_DESKTOP_DIR_ENV = "COPILOT_ENV_CI_CLAUDE_DESKTOP_DIR";
 
-/** The environment the app's data dirs derive from, one field per platform. */
 interface DesktopEnv {
   localAppData?: string;
   appData?: string;
@@ -369,8 +368,6 @@ export function readDesktopAppState(): DesktopAppState {
   };
 }
 
-/** The document with its bytes (an empty document and null bytes when the file is absent), or the
- *  reason it could not be one. */
 function loadAppFile(path: string): { raw: string | null; doc: Record<string, unknown> } | string {
   let raw: string | null;
   try {

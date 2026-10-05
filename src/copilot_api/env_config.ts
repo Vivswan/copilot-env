@@ -217,7 +217,6 @@ export function isStoredValueInert(
 /** Which map a `set`/`unset` lands in. */
 export type SettingTarget = { kind: "global" } | { kind: "profile"; profile: Profile };
 
-/** Applies one patch to one map: null, undefined, and a blank string delete; strings are trimmed. */
 function applyPatch(map: Record<string, unknown>, patch: Record<string, unknown>): void {
   for (const [key, value] of Object.entries(patch)) {
     if (value === null || value === undefined) {
@@ -275,7 +274,6 @@ export class CopilotEnvConfig {
     return settingsOf(v.parse(CONFIG_SCHEMA, this.store.load()));
   }
 
-  /** The one precedence rule over this store (resolveSettingIn). */
   resolve<K extends ConfigKey>(
     key: K,
     opts: ResolveOptions<ConfigValueTypes[K]>,

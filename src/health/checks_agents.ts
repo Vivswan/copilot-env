@@ -140,7 +140,6 @@ function directAuthJson(a: CodexDirectAuthFacts): DirectAuthJson {
   }
 }
 
-/** The shared direct-mode auth verdict: ok, or warn carrying its fix. */
 type DirectAuthVerdict =
   | { status: "ok"; authLine: string }
   | { status: "warn"; authLine: string; fix: string };

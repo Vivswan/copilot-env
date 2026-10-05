@@ -10,7 +10,7 @@ import { type ModelListEntry, parseModelList } from "./models.ts";
 const MODELS_TIMEOUT_MS = 5000;
 
 interface FetchModelCatalogOptions {
-  /** The Copilot API host origin; the request goes to `<host>/models`. */
+  /** The Copilot API origin. */
   host: string;
   token: string;
   /** The client identity's headers; Authorization is added here. */

@@ -94,7 +94,6 @@ afterEach(() => {
   resetExitCode();
 });
 
-/** The plan a body would land, with the tree proven untouched by it. */
 async function planOf<T>(root: string, body: () => Promise<T>): Promise<Set<string>> {
   const before = fingerprintTree(root);
   const { changes } = await dryRunChanges(body);
@@ -102,7 +101,6 @@ async function planOf<T>(root: string, body: () => Promise<T>): Promise<Set<stri
   return new Set(changes.map((c) => c.path));
 }
 
-/** The paths a real run of `body` changes under `root`. */
 async function realChanges(root: string, body: () => Promise<unknown>): Promise<Set<string>> {
   const before = fingerprintTree(root);
   await body();

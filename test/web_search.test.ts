@@ -37,7 +37,6 @@ interface CapturedRequest {
   init: RequestInit;
 }
 
-/** A fetch stub that records every call and replies with `response` (or a queue). */
 function fetchStub(responses: Response[]): {
   calls: CapturedRequest[];
   fetchImpl: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;

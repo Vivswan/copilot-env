@@ -121,7 +121,7 @@ async function confirmOrRefuse(question: string, opts: Opts, what: string): Prom
 
 const ONE_MODE = "--direct, --proxy, and --auto are mutually exclusive (a profile has ONE mode)";
 
-/** The three mode flags as the body's AddMode: `auto` for --auto, `unflagged` for none. */
+/** `unflagged` for no mode flag: parseModeFlags answers `auto` to none. */
 function parseAddMode(opts: Opts): AddMode {
   if ([opts.direct, opts.proxy, opts.auto].filter(Boolean).length > 1) throw new Error(ONE_MODE);
   if (opts.auto) return "auto";
@@ -140,7 +140,7 @@ async function confirmModeChange(opts: Opts, rawProfile: string | null): Promise
   await confirmOrRefuse(modeSwitchQuestion(profile, recorded, mode), opts, "switch the mode");
 }
 
-/** The add flags as the body's arguments (Commander stores a `--no-<x>` flag as `<x>: false`). */
+/** Commander stores a `--no-<x>` flag as `<x>: false`. */
 function addArgs(opts: Opts): AddArgs {
   return {
     mode: parseAddMode(opts),
@@ -162,8 +162,7 @@ function agentFlag(opts: Opts): ManagedAgentId | null {
 const PROFILE_VERB_GROUP = "Profile:";
 
 /** The name from the word position is passed on as the string the owning function takes, so both
- *  it and the verb validate the name in one order; a verb that owns its own read mints it.
- *  Returns the `profile` command, whose subcommands are the verbs. */
+ *  it and the verb validate the name in one order; a verb that owns its own read mints it. */
 export function registerProfileCommand(program: Command, rawProfile: string | null): Command {
   const minted = (): Profile => rawProfile === null ? null : parseProfileName(rawProfile);
 
@@ -373,8 +372,8 @@ export function registerProfileCommand(program: Command, rawProfile: string | nu
       return checkProfile(minted(), agent);
     });
 
-  // The runtime verbs (launch env proxy-token mcp start stop health models credits settings),
-  // routed onto their command functions with this name.
+  // The runtime verbs (launch env proxy-token mcp start stop health models credits settings) are
+  // profile_ops.ts's, routed onto their command functions with this name.
   registerProfileOps({
     rawProfile,
     verb,
@@ -383,7 +382,7 @@ export function registerProfileCommand(program: Command, rawProfile: string | nu
   return profile;
 }
 
-/** `agent list`: every profile, one row each (bare `agent profile` prints the same). */
+/** listProfiles prints one row per profile. */
 export function registerListCommand(program: Command): void {
   program
     .command("list")
@@ -395,7 +394,6 @@ export function registerListCommand(program: Command): void {
     .action(() => listProfiles());
 }
 
-/** `agent sync`: every profile's re-render. */
 export function registerSyncCommand(program: Command): void {
   program
     .command("sync")
@@ -481,7 +479,7 @@ function addAuthOptions(cmd: Command): Command {
     .option("--dry-run", "Show what would change; no login runs.");
 }
 
-/** The shared flags as runAuth's arguments; the caller adds `profile`. */
+/** runAuth's arguments less `profile`, which the profile verb adds. */
 function authArgs(opts: Opts): {
   provider?: string;
   set?: string;

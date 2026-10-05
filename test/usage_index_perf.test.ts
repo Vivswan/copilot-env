@@ -32,7 +32,7 @@ function indexBytes(home: string): string {
   return text;
 }
 
-/** The stored paths of the index at `home`, read through a second connection. */
+/** Read through a second connection. */
 function storedPaths(home: string): Set<string> {
   return new Set(storedIndexPaths(indexDbFile(home)));
 }

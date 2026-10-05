@@ -852,7 +852,6 @@ export function codexHomePrefsFor(
   };
 }
 
-/** For a CLI string; undefined when it names no key. */
 export function configKeyDef(key: string): ConfigKeyDef | undefined {
   return CONFIG_REGISTRY.find((d) => d.key === key.trim());
 }
@@ -864,7 +863,6 @@ export function registryEntry(key: ConfigKey): ConfigKeyDef {
   return def;
 }
 
-/** The registry's scope for a key; the two guards below are the same fact as type narrowing. */
 export function configScope(key: ConfigKey): ConfigScope {
   return registryEntry(key).scope;
 }

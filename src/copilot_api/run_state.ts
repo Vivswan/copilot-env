@@ -53,7 +53,6 @@ export class CopilotEnvRunState {
     return v.parse(RUN_STATE_SCHEMA, this.store.load());
   }
 
-  /** A `null` value deletes its key. */
   set(patch: StatePatch): void {
     this.store.update((d) => {
       for (const key of Object.keys(patch) as (keyof StatePatch)[]) {

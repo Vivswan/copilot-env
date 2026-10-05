@@ -127,7 +127,7 @@ for (const scenario of CLAUDE_SCENARIOS) {
 
 // ---------- change between runs ----------
 
-/** The paths stored in the index database at `indexDir` (opened read-only). */
+/** The index database is opened read-only. */
 function storedPaths(indexDir: string): string[] {
   return storedIndexPaths(join(indexDir, USAGE_INDEX_DB_NAME));
 }
@@ -252,7 +252,6 @@ const pricedFetch = ((): Promise<Response> =>
     ),
   )) as typeof fetch;
 
-/** Run `agent cost --json --per-day` with the given flags and return the parsed payload. */
 async function costJson(
   args: { noIndex?: boolean },
   roots: { codex: string[]; claude: string[] },

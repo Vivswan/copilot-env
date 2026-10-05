@@ -286,7 +286,6 @@ export async function decideDefaultMode(
   );
 }
 
-/** The one mode decideDefaultMode landed on every agent. */
 export function probedVerdict(chosen: ReadonlyMap<ManagedAgentId, ManagedMode>): ManagedAgentMode {
   return [...chosen.values()].every((mode) => mode.mode === "direct") ? "direct" : "proxy";
 }

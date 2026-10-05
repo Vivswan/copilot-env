@@ -46,7 +46,6 @@ export function landDesktopHelperScript({ path, body, current }: DesktopHelperSc
   else if (!helperExecutable(path)) fs.chmod(path, 0o755);
 }
 
-/** Read and landed in one step; returns the script's path. */
 export function writeDesktopHelperScript(mode: ProfileMode, profile: Profile): string {
   const helper = readDesktopHelperScript(mode, profile);
   landDesktopHelperScript(helper);

@@ -16,7 +16,6 @@ import { CopilotApiConfig } from "../copilot_api/config.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { installStateRoot, PROJECT_ROOT } from "../utils/root.ts";
 
-/** The autoupdate state directory: `<install>/.autoupdate`. */
 export function autoupdateDir(root: string = PROJECT_ROOT): string {
   return join(installStateRoot(root), ".autoupdate");
 }
@@ -25,7 +24,6 @@ export function autoupdateDir(root: string = PROJECT_ROOT): string {
  *  the account-wide store's, src/copilot_api/state_store.ts). */
 export const AUTOUPDATE_FILENAME = "autoupdate.json";
 
-/** Persistent autoupdate throttle file (JSON): `<install>/.autoupdate/autoupdate.json`. */
 export function autoupdateStateFile(root: string = PROJECT_ROOT): string {
   return join(autoupdateDir(root), AUTOUPDATE_FILENAME);
 }
@@ -51,8 +49,6 @@ export interface AutoupdateData {
   lastResult: string;
 }
 
-// Lenient read schema: absent or ill-typed fields fall back to safe defaults rather
-// than throwing. `lastCheckMs` must be finite (rejects NaN/Infinity).
 const AUTOUPDATE_SCHEMA = v.object({
   lastCheckMs: v.fallback(v.pipe(v.number(), v.finite(), v.minValue(0)), 0),
   lastResult: v.fallback(v.string(), ""),

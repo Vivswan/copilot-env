@@ -188,7 +188,6 @@ export function checkProxyPackage(f: ProxyFacts): CheckResult {
   };
 }
 
-/** Human label for the proxy float cooldown window (seconds, null = unknown). */
 function floatCooldownLabel(seconds: number | null): string {
   if (seconds === null) return "cooldown: unknown";
   if (seconds === 0) return "no cooldown";
@@ -890,14 +889,12 @@ export function checkAutoupdate(f: AutoupdateStatus): CheckResult {
     `last check ${last}`,
     `last result: ${f.lastResult || "(none)"}`,
   ].join("\n");
-  // Surface a recorded self-update error as a warning, but never a hard failure.
   if (f.enabled && f.lastResult.startsWith("error:")) {
     return { ...base, status: "warn", detail, fix: "agent update --auto-status" };
   }
   return { ...base, status: "ok", detail };
 }
 
-/** Build every check applicable to `scope` from the gathered facts. */
 export function evaluateAll(scope: HealthScope, facts: HealthFacts): CheckResult[] {
   const runProfile = facts.profile ?? null;
   const out: CheckResult[] = [];

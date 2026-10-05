@@ -86,7 +86,6 @@ export function syncCodexCatalogReference(): void {
   }
 }
 
-/** False when the ledger cannot be written. */
 function recordCatalogOwnership(configPath: string): boolean {
   try {
     new OwnershipLedger().record("codexCatalog", configPath);

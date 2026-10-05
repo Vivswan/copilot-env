@@ -62,7 +62,6 @@ function verdictOf(column: IdentityHostSurvey, name: string): IdentityVerdict | 
   return column.verdicts.find((v) => v.name === name)?.verdict;
 }
 
-/** Every identity the survey probed, in first-seen order across the hosts. */
 function surveyedNames(survey: IdentitySurvey): string[] {
   return [...new Set(survey.hosts.flatMap((h) => h.verdicts.map((v) => v.name)))];
 }

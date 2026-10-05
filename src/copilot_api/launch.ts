@@ -147,7 +147,6 @@ export async function previewProxyFloor(): Promise<void> {
   judgeProxyFloor();
 }
 
-/** The resolved entry against the floor: fail-closed on an unresolved version or one below it. */
 function judgeProxyFloor(): CopilotApiEntry {
   const entry = resolveCopilotApiEntry();
   const version = entryProxyVersion(entry);
@@ -665,7 +664,6 @@ async function printModelAliases(admin: CopilotAdminClient): Promise<void> {
   consola.info(renderModelAliases(mappings));
 }
 
-/** One row per target model; its aliases wrap inside their own column. */
 export function renderModelAliases(
   mappings: Record<string, string>,
   width: number | null = terminalWidth(),

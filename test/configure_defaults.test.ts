@@ -283,7 +283,6 @@ test("static-key scopes the baked value to the named agent; the other keeps its 
 // could serve nothing, and only the both-agents landing asked for a login (and not for `--proxy`).
 // --- the probe every run: the verdict against the record ----------------------------------------
 
-/** Both fake agents answering the one verdict, tracing into `trace`. */
 function probePair(verdict: boolean, trace: string[]): AgentAdapter[] {
   return [probeAdapter("claude", verdict, trace), probeAdapter("codex", verdict, trace)];
 }

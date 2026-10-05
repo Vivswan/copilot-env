@@ -1002,7 +1002,6 @@ function directWire(profile: Profile = null): DesktopWireOptions {
   };
 }
 
-/** The same wire with the value baked instead of the resolver command. */
 function staticWire(profile: Profile = null): DesktopWireOptions {
   return { ...directWire(profile), credential: { kind: "static", token: "ghu_x" } };
 }

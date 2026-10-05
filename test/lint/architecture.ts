@@ -83,7 +83,6 @@ function owns(paths: readonly string[], file: string): boolean {
   return paths.some((owned) => owned.endsWith("/") ? file.startsWith(owned) : file === owned);
 }
 
-/** The layer owning a repo-relative path, or undefined. */
 function layerOf(arch: Architecture, file: string): string | undefined {
   return Object.entries(arch.layers).find(([, paths]) => owns(paths, file))?.[0];
 }

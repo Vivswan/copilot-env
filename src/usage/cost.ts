@@ -445,7 +445,6 @@ function describeIndexRun(stats: IndexStats): string {
   } read`;
 }
 
-/** GitHub's bill in USD over the requests of `report` that carried one; 0 when none did. */
 function billedUsd(report: ReadonlyUsageReport): number {
   let nanoAiu = 0;
   for (const b of report.billed.values()) nanoAiu += b.nanoAiu;
@@ -884,12 +883,10 @@ function printCostReport(
   console.log("");
 }
 
-/** "fetched 2026-09-19" (today, or the day the cached copy was) or "built-in table". */
 function describeRateCard(from: RateCardSource): string {
   return from.source === "built-in" ? "built-in table" : `fetched ${isoDay(from.fetchedAtMs)}`;
 }
 
-/** The UTC calendar day of a timestamp, YYYY-MM-DD. */
 function isoDay(ms: number): string {
   return new Date(ms).toISOString().slice(0, 10);
 }

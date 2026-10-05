@@ -139,7 +139,6 @@ export type CodexWiringStatus =
       /** A named profile's credential shape must be the managed one addressed at THAT profile
        *  (never a fallback), or the static bearer. */
       providerWired: boolean;
-      /** The managed credential shape the table carries. */
       credential: CodexManagedCredential;
       /** The table carries the managed `auth.command`. Whether a `gh` login is needed is a STORE
        *  question the health probe answers. */

@@ -8,7 +8,6 @@ import { PROJECT_ROOT } from "../utils/root.ts";
  *  without which the proxy dies at module load on Linux. */
 export const NODE_COMPAT_SHIM = "node_compat_preload.ts";
 
-/** Filenames under `src/scripts/`. */
 export const DAEMON_SHIM_FILES = [
   "node_compat_preload.ts",
   "daemon_lock_preload.ts",
@@ -27,7 +26,6 @@ export function shimPath(name: DaemonShimFile): string {
   return join(PROJECT_ROOT, "src", "scripts", name);
 }
 
-/** The float's cache-warm entrypoint list. */
 export function allShimPaths(): string[] {
   return DAEMON_SHIM_FILES.map(shimPath);
 }

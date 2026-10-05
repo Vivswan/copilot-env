@@ -95,7 +95,6 @@ const CREDENTIAL_BEARING_PREFS = [
   "cost.github-pricing-url",
 ] as const satisfies readonly GlobalMapKey[];
 
-/** Whether the bundle carries the redaction marker for `key` instead of a value. */
 function isRedactedPref(config: CopilotEnvConfigData, key: GlobalMapKey): boolean {
   return CREDENTIAL_BEARING_PREFS.some((k) => k === key) && config.global[key] === REDACTED_TOKEN;
 }

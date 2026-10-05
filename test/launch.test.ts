@@ -271,7 +271,6 @@ function seedDefault(mode: "direct" | "proxy"): void {
   );
 }
 
-/** The `next` value of one attribute row of one planned file, or undefined. */
 function plannedValue(changes: FileChange[], path: string, key: string): unknown {
   return changes.find((c) => c.path === path)?.attributes.find((row) => row.key === key)?.next;
 }

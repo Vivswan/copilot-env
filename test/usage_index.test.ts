@@ -235,7 +235,6 @@ function hideFilesTable(hidden: boolean): void {
   }
 }
 
-/** Every byte SQLite left on disk for the index: the database and any sidecar. */
 function rawIndexBytes(): string {
   return indexBytesOnDisk(dbPath());
 }

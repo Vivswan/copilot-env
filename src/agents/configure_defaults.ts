@@ -1,20 +1,8 @@
-// The default profile's writers. The default is a profile: one credential, ONE mode, always both
-// agents, and its record (`mode` in the default slot) plus its Direct pair land here, in
-// commitDefaultWiring, after BOTH agents' writes succeeded (the one other record is the default's
-// `add` with no credential yet, which records the mode alone). It needs BOTH src/codex/ and
-// src/claude/ (the adapters) and the re-render funnel (src/agents/profile_wiring.ts), so it lives in
+// The default profile's writers. The record (`mode` in the default slot) and the Direct pair land in
+// commitDefaultWiring after BOTH agents' writes succeeded; the one other writer of the record is the
+// default's `add` with no credential yet, which records the mode alone. The file needs BOTH adapters
+// (src/codex/, src/claude/) and the re-render funnel (src/agents/profile_wiring.ts), so it lives in
 // src/agents/, not src/commands/.
-//
-//   `agent init`, an import naming both agents
-//       -> configureDefaultAgents: the landing. Both writes, then the record and pair land together;
-//          a failed write leaves the previous record, and the guidance names the agent that did not
-//          move and the repair. An `auto` request probes EVERY run; when the verdict differs from
-//          the recorded mode, the caller's `onVerdict` (the CLI's question) says which one lands.
-//   `agent profile sync --codex`, `agent profile sync --claude`, an import naming one agent, the launchers' proxy wire
-//       -> runAgentConfig. On a recorded mode: a re-render of it that never moves the record or the
-//          pair; a flag naming another mode is refused before any file is written. On NO record, or
-//          a Direct record whose slot holds no pair: the landing, so it wires both agents through
-//          configureDefaultAgents and says so.
 import { codexAdapter } from "../codex/config.ts";
 import { claudeAdapter } from "../claude/config.ts";
 import { Credential } from "../copilot_api/credential.ts";

@@ -129,7 +129,6 @@ function usageTotals(): UsageTotals {
   return { byModel: new Map(), perDay: new Map() };
 }
 
-/** An empty report; every producer fills one through record(). */
 export function usageReport(): UsageReport {
   return { ...usageTotals(), longContext: usageTotals(), billed: new Map() };
 }
@@ -405,7 +404,6 @@ function mergeTotals(into: UsageTotals, from: ReadonlyUsageTotals): void {
   }
 }
 
-/** Every report's billed requests, summed per model. */
 export function mergeBilled(reports: readonly ReadonlyUsageReport[]): Map<string, BilledUsage> {
   const merged = usageReport();
   for (const report of reports) {

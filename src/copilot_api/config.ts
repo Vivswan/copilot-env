@@ -15,7 +15,6 @@ const logger = taggedLogger("copilot_api.config");
 const SECRET_STORE_LEAF =
   /(^|\.)(githubToken|adminApiKey|apiKeys|"cost\.pricing-url"|"cost\.github-pricing-url")$/;
 
-/** The bytes save() lands, keys sorted. */
 function storeText(data: Record<string, unknown>): string {
   return `${stableStringify(data)}\n`;
 }

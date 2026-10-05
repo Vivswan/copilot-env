@@ -15,7 +15,6 @@ import {
 } from "./testing.ts";
 
 export const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
-/** The CLI's entry module, what `agent` runs. */
 export const CLI_ENTRY = join(ROOT, "src", "cli.ts");
 
 /**

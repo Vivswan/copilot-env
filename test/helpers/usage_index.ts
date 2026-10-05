@@ -6,7 +6,6 @@ import { DatabaseSync } from "node:sqlite";
 import { USAGE_INDEX_DB_NAME } from "../../src/usage/index.ts";
 import { USAGE_INDEX_DIR_NAME } from "../../src/copilot_api/paths.ts";
 
-/** The index database under the data home `home`. */
 export function indexDbFile(home: string): string {
   return join(home, USAGE_INDEX_DIR_NAME, USAGE_INDEX_DB_NAME);
 }

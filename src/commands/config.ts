@@ -186,7 +186,6 @@ export function runConfig(
   run()();
 }
 
-/** Where a write landed, for the set/unset lines: empty for the global map. */
 function targetSuffix(target: SettingTarget): string {
   return target.kind === "global" ? "" : ` (${profileLabel(target.profile)})`;
 }
@@ -481,7 +480,6 @@ export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions
     layout(paint.bold(title), stringWidth(title), wrapNote(`(${note})`)).join("\n");
   const groupIndent = " ".repeat(GROUP_INDENT);
 
-  /** One block per group that has a key of `scope`, in CONFIG_GROUPS order. */
   const groupBlocks = (scope: ConfigScope, heading: (group: ConfigGroup) => string): string[] =>
     CONFIG_GROUPS.flatMap((group): string[] => {
       const lines = rows

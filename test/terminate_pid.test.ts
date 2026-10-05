@@ -44,7 +44,6 @@ async function spawnTermIgnoringChild(): Promise<Deno.ChildProcess> {
   return child;
 }
 
-/** A classify seam that records its calls and always answers `verdict`. */
 function classifyStub(verdict: "yes" | "no" | "unknown"): {
   calls: number[];
   classify: (pid: number) => Promise<"yes" | "no" | "unknown">;

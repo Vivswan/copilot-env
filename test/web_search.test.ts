@@ -37,7 +37,6 @@ interface CapturedRequest {
   init: RequestInit;
 }
 
-/** A fetch stub that records every call and replies with `response` (or a queue). */
 function fetchStub(responses: Response[]): {
   calls: CapturedRequest[];
   fetchImpl: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
@@ -134,7 +133,6 @@ const RESPONSES_URL = `${GENERIC_HOST}/responses`;
 const ENTERPRISE = "https://api.enterprise.githubcopilot.com";
 const QUERY = "bun release";
 
-/** A raw direct-catalog body for the alias-resolution tests. */
 function catalogFixture(): unknown {
   return {
     "data": [{ "id": "gpt-6" }, { "id": "gpt-6-mini" }, { "id": "claude-fable-5" }],

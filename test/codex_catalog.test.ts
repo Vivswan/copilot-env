@@ -669,7 +669,6 @@ function generate(body: unknown = GPT55_BODY): Promise<boolean> {
     .then(({ result }) => result);
 }
 
-/** The narration and the write reports of a run, as one stderr text. */
 async function stderrOf(fn: () => Promise<void>): Promise<string> {
   return (await captureChannels(fn, { writeReports: true })).stderr;
 }

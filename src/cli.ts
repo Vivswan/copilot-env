@@ -42,7 +42,7 @@ program
   .helpOption("--help", "Show this help.")
   // Options are read up to the command word and the rest handed on, so a flag `agent profile` and
   // one of its verbs both spell (`--set`, `--dry-run`) reaches the verb. The root's own flags
-  // (`--version`, `--full-help`) then come before the command, as they always have.
+  // (`--version`, `--full-help`) then come before the command.
   .enablePositionalOptions()
   .option("--full-help", "Print help for agent and every subcommand.");
 

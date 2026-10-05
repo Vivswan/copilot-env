@@ -171,7 +171,6 @@ function tierOf(pricing: Record<string, unknown>): PricingTier | null {
   return v.is(TIER_SCHEMA, tier) ? tier : null;
 }
 
-/** `fetchedAtMs` is the cache stamp: when the returned list was fetched. */
 type LoadedPricing =
   | { source: "cache"; pricing: Map<string, PricingTier>; fetchedAtMs: number }
   | {
@@ -182,7 +181,6 @@ type LoadedPricing =
     cacheWriteError?: string;
   }
   | {
-    /** The refresh failed; the caller is pricing against an expired copy. */
     source: "stale-cache";
     pricing: Map<string, PricingTier>;
     fetchedAtMs: number;
@@ -239,7 +237,6 @@ export async function loadPricing(
   return { pricing, source: "fetched", fetchedAtMs: nowMs };
 }
 
-/** Keyed by the CANONICAL URL, so two spellings of one list share a file. */
 export function pricingCachePath(url: string, cacheDir: string): string {
   return join(cacheDir, `pricing-${sha256Hex(canonicalPricingUrl(url)).slice(0, 16)}.json`);
 }
@@ -286,7 +283,6 @@ interface PricingCacheRecord {
   "tiers": Record<string, PricingTier>;
 }
 
-/** A file written for another URL, or one that is not JSON, reads as absent. */
 function readPricingCache(
   path: string,
   urlDigest: string,
@@ -430,9 +426,6 @@ export function estimateCost(usage: UsageToPrice, pricing: Map<string, PricingTi
       unpriced.push(model);
       continue;
     }
-    // The long-context share at its tier and the rest at the base tier, so the model's row shows
-    // one blended cost. A model with no long-context tier is flat at any size; a bucket the tier
-    // leaves out keeps the base rate.
     const over = longContextTierFor(book, reference);
     const long = over === undefined ? undefined : usage.longContext?.byModel.get(model);
     const parts: [UsageTokens, PricingTier][] = over === undefined || long === undefined
@@ -449,8 +442,6 @@ export function estimateCost(usage: UsageToPrice, pricing: Map<string, PricingTi
   return { perModel, totalUsd, unpriced: unpriced.sort(), githubRated: githubRated.sort() };
 }
 
-/** The card's long-context tier for `reference` when the readers' bucket lies within it (see
- *  LONG_CONTEXT_PROMPT_TOKENS); a plain list has none. */
 function longContextTierFor(book: PriceList | null, reference: string): PricingTier | undefined {
   const long = book?.card.longContext.get(reference);
   return long !== undefined && long.promptTokens <= LONG_CONTEXT_PROMPT_TOKENS

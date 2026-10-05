@@ -197,8 +197,6 @@ function snapshotTarget(
   };
 }
 
-/** The reach/pid probes plus (in the full/proxy scopes) the identity request, reconciled into the
- *  target's PortState. */
 async function interrogateDaemon(
   scope: HealthScope,
   deps: ProbeDeps,
@@ -238,8 +236,7 @@ async function interrogateDaemon(
   };
 }
 
-/** Always interrogated, with the configured default port as the fallback: the historical
- *  fast-probe behavior. */
+/** Always interrogated, with the configured default port as the fallback. */
 async function gatherDefaultTarget(
   scope: HealthScope,
   deps: ProbeDeps,
@@ -627,7 +624,7 @@ export async function gatherFacts(
             ...resolution,
             provider: credential.provider,
             profiles: authProfiles(),
-            // The `identity` config pin, or null when unset/`auto`.
+            // The `identity` config key; null when unset or `auto` (src/copilot_api/env_config.ts).
             pinnedIntegrationId: new CopilotEnvConfig().pinnedIntegrationId(null),
           }
           : {

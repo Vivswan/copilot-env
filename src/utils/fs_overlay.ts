@@ -164,7 +164,6 @@ export class Overlay {
   /** Per key, every attribute a write declared secret, kept across the run's later writes to the
    *  same path: a key once declared never prints, whether or not a later writer repeats it. */
   private readonly secrets = new Map<string, Set<string>>();
-  /** The keys a write declared secret as a whole. */
   private readonly secretFiles = new Set<string>();
   /** Keys the run landed under its own scratch (a move or copy into it): the report never names
    *  them, since scratch goes before exit and was never the user's. */
@@ -202,7 +201,6 @@ export class Overlay {
     return mode;
   }
 
-  /** The volume's stats for a planned entry, with the mode the run recorded for it. */
   private ownStats(key: string): EntryStats {
     const stats = this.vol.lstatSync(volPath(key));
     const link = stats.isSymbolicLink();
@@ -216,7 +214,6 @@ export class Overlay {
     };
   }
 
-  /** Whether the run planned or tombstoned `key` itself. */
   touched(key: string): boolean {
     return this.rows.has(foldKey(key));
   }
@@ -452,7 +449,6 @@ export class Overlay {
     }
   }
 
-  /** What the run sees at `key`, or null for nothing. */
   private view(key: string, syscall: string, path: string, follow = true): Seen | null {
     if (this.gone.has(key)) return null;
     if (this.rows.has(key)) return { kind: "own", stats: this.ownStats(key) };
@@ -469,7 +465,6 @@ export class Overlay {
     }
   }
 
-  /** The file at `path` as the run sees it, for a read that decodes or copies its bytes. */
   private fileAt(path: string, syscall: string): { key: string; seen: Seen } {
     const key = this.key(path, syscall);
     const seen = this.view(key, syscall, path);

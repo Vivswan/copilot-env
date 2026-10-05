@@ -52,7 +52,6 @@ export function parseReleasesJson(jsonText: string): Release[] {
   return releases;
 }
 
-/** Newest release aged >= `days`, falling back to the oldest known release. */
 export function pickAged(releases: Release[], nowSeconds: number, days: number): Release | null {
   const cutoff = nowSeconds - days * SECONDS_PER_DAY;
   let oldest: Release | null = null;
@@ -77,8 +76,7 @@ export interface ResolveOptions {
 const sleep = (ms: number): Promise<void> =>
   ms <= 0 ? Promise.resolve() : new Promise((resolve) => setTimeout(resolve, ms));
 
-/** The body text, or null after exhausting attempts. A non-retryable response (401/404) gives up
- *  immediately: retrying would not fix it. */
+/** A non-retryable response (401/404) gives up immediately: retrying would not fix it. */
 async function fetchReleasesText(
   url: string,
   fetchImpl: typeof fetch,
@@ -99,7 +97,6 @@ async function fetchReleasesText(
   return null;
 }
 
-/** Null when offline, the API errors, or no release is eligible. */
 export async function resolveTarget(
   cooldownDays: number | null,
   opts: ResolveOptions = {},

@@ -139,8 +139,7 @@ export function hasMarker(content: string, marker: string): boolean {
   return content.split("\n").some((l) => lineIs(l, marker));
 }
 
-/** The file's dominant line ending: CRLF only when strictly more lines end CRLF than
- *  LF, so a stray CRLF in an LF file (or an empty file) stays LF. */
+/** Strictly more CRLF than LF, so a stray CRLF in an LF file (or an empty file) stays LF. */
 function dominantEol(content: string): "\n" | "\r\n" {
   const crlf = content.match(/\r\n/g)?.length ?? 0;
   const lf = (content.match(/\n/g)?.length ?? 0) - crlf;
@@ -163,8 +162,6 @@ export function upsertBlock(
 ): { content: string; leftBehind: string[] } {
   const lines = content.split("\n");
   const idx = lines.findIndex((l) => lineIs(l, MARKER));
-  // Absent: append at EOF (the block leads with a blank and ends in its separating
-  // blank) in the file's dominant line ending.
   if (idx === -1) {
     return {
       content: content +
@@ -206,8 +203,6 @@ export function upsertBlock(
   };
 }
 
-/** The removal warning for a user line an unclosed marker or duplicate scan refused
- *  to consume -- ONE spelling for the wire (dedupe + launcher strip) and remove paths. */
 function warnLeftBehind(file: string, lines: readonly string[]): void {
   for (const line of lines) {
     consola.warn(
@@ -382,7 +377,6 @@ function absolutePathEnv(name: string): string | null {
 
 // --- POSIX target files -------------------------------------------------------
 
-/** Every POSIX rc file copilot-env may wire, present or not. */
 function rcCandidates(): string[] {
   const home = absolutePathEnv(CI_RC_DIR_ENV) ?? homedir();
   return [".bashrc", ".zshrc"].map((f) => join(home, f));
@@ -421,8 +415,6 @@ const PS_PROFILE_ALL_HOSTS = "profile.ps1";
  *  with PS_PROFILE_DIRS above (WindowsPowerShell = 5.1, PowerShell = 7). */
 const PS_EXES = ["powershell", "pwsh"] as const;
 
-/** Every `<root>/<edition>/<name>` profile path, deduped -- the one spelling of the
- *  layout the resolver produces. */
 function profilePathsUnder(documentRoots: string[], names: string[]): string[] {
   const paths: string[] = [];
   for (const root of documentRoots) {

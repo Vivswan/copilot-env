@@ -38,7 +38,6 @@ function ensureNoForcedOpenaiAuth(doc: Record<string, unknown>): void {
   if (isRecord(table)) table.requires_openai_auth = false;
 }
 
-/** A top-level string of config.toml; null when absent, not a string, or the TOML does not parse. */
 export function readTopLevelString(configToml: string, key: string): string | null {
   try {
     const doc = parse(configToml);
@@ -73,7 +72,6 @@ export function restoreModelProvider(
 
 // --- desktop app control ----------------------------------------------------
 
-/** Contract text, shared by the pre-swap close gate and the post-pairing close. */
 const RUNNING_SCAN_UNPROVEN_WARN =
   `The process scan failed, so it could not prove the ${APP_NAME} app is closed.`;
 
@@ -131,7 +129,6 @@ const PS_PROCESS_SCAN = processScanScript(APP_NAME);
 // The per-platform primitives: PowerShell scans and signals on Windows (nothing they start
 // outlives them, so runPowershell's scratch profile is theirs), open/pgrep/osascript/pkill on macOS.
 
-/** Three-state look at whether the app appears installed (see AppScan). */
 export async function installedState(): Promise<AppScan> {
   if (process.platform === "win32") {
     // Under Stop, a Get-StartApps that cannot run (module missing, restricted host) exits
@@ -177,7 +174,6 @@ async function openApp(): Promise<void> {
   await runCaptured("open", ["-a", APP_NAME]);
 }
 
-/** Graceful quit, polled; the by-name force-quit fires at the deadline. */
 export async function quitApp(): Promise<void> {
   if (process.platform === "win32") {
     await runPowershell(
@@ -211,7 +207,6 @@ export async function quitApp(): Promise<void> {
  *
  *  Both leave the best-effort backup beside config.toml as the recovery. */
 export async function runCodexMobile(): Promise<void> {
-  // Gate other platforms BEFORE touching any config.
   if (process.platform !== "darwin" && process.platform !== "win32") {
     logger.info(
       `The ${APP_NAME} desktop app isn't available on ${process.platform} - \`codex --mobile\` is macOS/Windows only.`,

@@ -179,8 +179,7 @@ export function pointCurrentAt(top: string, versionName: string): void {
   fs.atomicSymlink(target, link);
 }
 
-/** The current link's raw target path (absolute on Windows, `\\?\` stripped),
- *  or null when there is no readable link. */
+/** Targets currentLinkTarget wrote are relative on POSIX and absolute on Windows. */
 function readCurrentTargetPath(top: string): string | null {
   try {
     return stripExtendedLengthPrefix(fs.readlink(currentLinkPath(top)));
@@ -235,7 +234,6 @@ export interface Logger {
   success(message: string): void;
 }
 
-/** The stable PATH entries at `<top>/bin`, dispatching through the `current` link. */
 function topLevelShims(top: string): FileWrite<string>[] {
   return [
     { to: join(top, "bin", "agent"), body: POSIX_CURRENT_SHIM, executable: true },
@@ -282,7 +280,6 @@ export function bootstrapBinaryPaths(top: string): string[] {
   return entries.filter((entry) => entry === liveName).map((entry) => join(binDir, entry));
 }
 
-/** Best-effort: a still-running image refuses deletion and is swept by a later update. */
 export function removeBootstrapBinary(paths: readonly string[]): void {
   for (const path of paths) {
     try {
@@ -325,7 +322,6 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 exec "$HERE/${INSTALLED_BINARY_POSIX}" "$@"
 `;
 
-/** Per-version bin/agent.ps1 (Windows twin of POSIX_SHIM). */
 export const POWERSHELL_SHIM =
   `# copilot-env launcher (installed): dispatch to the compiled agent binary.
 $Here = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -374,7 +370,6 @@ interface ShellWiring {
   allHosts: boolean;
 }
 
-/** One file a plan lands: an embedded asset's bytes, or a shim's or the manifest's text. */
 interface FileWrite<Body extends string | Uint8Array = string | Uint8Array> {
   to: string;
   body: Body;
@@ -405,7 +400,7 @@ export type InstallPlan =
     /** The compiled binary to place into the version root; null when it is already there, or
      *  when no standalone binary is running (a dev process aimed at a foreign root has none). */
     binary: { from: string; to: string } | null;
-    /** The commit step: `<top>/current` linked to `target` (currentLinkTarget). */
+    /** The commit step (pointCurrentAt). */
     currentLink: { path: string; target: string };
     topShims: FileWrite<string>[];
     /** The bootstrap binary at `<top>/bin`, swept once the top shims dispatch through the link. */
@@ -435,7 +430,6 @@ function canonicalizeForGuard(path: string): string | null {
     base = parent;
   }
   try {
-    // The OS's own canonical form (8.3 short names and junctions on Windows).
     base = fs.realpath(base);
   } catch {
     return null;
@@ -509,8 +503,6 @@ function guardInstalledTarget(root: string): void {
 }
 
 function planMaterialization(root: string, sourceRoot: string): Materialization {
-  // Every embedded asset is verified present first, the bundled-only ones included: those are
-  // read out of the VFS in-process and never copied.
   const embedded = [
     ...MATERIALIZED_ASSET_DIRS,
     ...MATERIALIZED_ASSET_FILES,
@@ -744,7 +736,7 @@ export function applyInstallPlan(plan: InstallPlan): void {
   runShellIntegration({ kind: "wire", allHosts: plan.shell.allHosts });
 }
 
-/** Skipped for `--assets-only`, a machine-to-machine step inside `agent update`. */
+/** `--assets-only` is src/autoupdate/apply.ts's internal step, so it gets no first-install epilogue. */
 function printEpilogue(options: InstallOptions): void {
   console.log("");
   if (options.noShellIntegration) {

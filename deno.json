@@ -41,7 +41,7 @@
     "consola": "npm:consola@^3.4.2",
     "memfs": "npm:memfs@4.79.0",
     "semver": "jsr:@std/semver@^1.0.8",
-    "smol-toml": "npm:smol-toml@^1.8.0",
+    "smol-toml": "npm:smol-toml@^1.9.0",
     "undici": "npm:undici@^8.11.2",
     "undici7": "npm:undici@^7.29.1",
     "string-width": "npm:string-width@^8.2.2",

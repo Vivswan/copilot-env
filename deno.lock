@@ -29,7 +29,7 @@
     "npm:commander@15": "15.0.0",
     "npm:consola@^3.4.2": "3.4.2",
     "npm:memfs@4.79.0": "4.79.0",
-    "npm:smol-toml@^1.8.0": "1.8.0",
+    "npm:smol-toml@^1.9.0": "1.9.0",
     "npm:string-width@^8.2.2": "8.2.2",
     "npm:undici@^7.29.1": "7.29.1",
     "npm:undici@^8.11.2": "8.11.2",
@@ -1348,8 +1348,8 @@
     "sisteransi@1.0.5": {
       "integrity": "sha512-bLGGlR1QxBcynn2d5YmDX4MGjlZvy2MRBDRNHLJ8VI6l6+9FUiyTFNJ0IveOSP0bcXgVDPRcfGqA0pjaqUpfVg=="
     },
-    "smol-toml@1.8.0": {
-      "integrity": "sha512-kCZr2V3ch9i00x8zXRhjUNVcjG9ijES5dDudkXvUVCT5QlJNQWElSJdZqyPemffHoLNUYwOcou0Fy+ojN0uHSQ=="
+    "smol-toml@1.9.0": {
+      "integrity": "sha512-hpd+HLON7HdZXqYchMM/+LaTTbdK0AU3NngIJ4KVyWbY9bfQqdL9cD+4yf6dUoU2Ap4VsU0JkQi6FxAI1B2mXQ=="
     },
     "srvx@0.11.22": {
       "integrity": "sha512-LqZxxBDMKuMAZzFzJnDCkFOrs9MZQZr0LvHiO/SuSZVdQaXD7xQ5UWTUxheJrQPve1qk9MG2B/yttUvJxw8egQ==",
@@ -1516,7 +1516,7 @@
       "npm:commander@15",
       "npm:consola@^3.4.2",
       "npm:memfs@4.79.0",
-      "npm:smol-toml@^1.8.0",
+      "npm:smol-toml@^1.9.0",
       "npm:string-width@^8.2.2",
       "npm:undici@^7.29.1",
       "npm:undici@^8.11.2",

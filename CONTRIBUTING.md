@@ -26,4 +26,4 @@ deno task test
 deno task typecheck
 ```
 
-The full task list is in `deno.json`; `.githooks/pre-commit` runs `typecheck`, `test`, `lint`, `lint:sh`, and `lint:ps`.
+The full task list is in `deno.json`. The pre-commit hook runs `typecheck`, `test`, and `lint`, deno's own checks. CI's `check` job adds `lint:sh` and `lint:ps`, which need shellcheck and PSScriptAnalyzer installed.

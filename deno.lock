@@ -44,7 +44,10 @@
       ]
     },
     "@std/async@1.5.1": {
-      "integrity": "c82455dc70cab29a0adf3ac8075db934785bffdd3902af5afcf25d21a74cfd86"
+      "integrity": "c82455dc70cab29a0adf3ac8075db934785bffdd3902af5afcf25d21a74cfd86",
+      "dependencies": [
+        "jsr:@std/data-structures"
+      ]
     },
     "@std/crypto@1.1.0": {
       "integrity": "b8d6d0a6377a32b213af2661ed7bf1062d94feac0c57def5526a8e74a95c3ec8"
@@ -1498,6 +1501,7 @@
   },
   "workspace": {
     "dependencies": [
+      "jsr:@std/async@^1.5.1",
       "jsr:@std/crypto@^1.1.0",
       "jsr:@std/dotenv@~0.225.8",
       "jsr:@std/expect@^1.0.20",

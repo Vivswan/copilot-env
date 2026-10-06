@@ -26,7 +26,7 @@
     # profiles were collected with .NET facade assemblies loaded, so a type
     # that stock 5.1 cannot resolve (e.g. [RuntimeInformation]) can still pass
     # the types rule -- runtime 5.1 coverage comes from the installer guard
-    # tests driving the real powershell.exe (test/installer_pinning.test.ts).
+    # tests driving the real powershell.exe (test/install/installer_pinning.test.ts).
     Rules = @{
         PSUseCompatibleSyntax = @{
             Enable = $true

@@ -1,5 +1,5 @@
 // Golden `agent cost --json` payloads recorded from the pre-index implementation, shared
-// by the recorder (scripts/usage_goldens.ts) and the pinning test (test/usage_golden.test.ts)
+// by the recorder (scripts/usage/goldens.ts) and the pinning test (test/usage/usage_golden.test.ts)
 // so the two agree on the matrix, the paths, the serializer, the digest, and the run.
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -143,7 +143,7 @@ export async function generateGoldenTree(entry: GoldenCase, root: string): Promi
 }
 
 /** SHA-256 over a tree: sorted root-relative paths with forward slashes, each followed by
- *  the file's raw bytes (the recipe test/usage_fixtures.test.ts pins its fixed corpus with). */
+ *  the file's raw bytes (the recipe test/usage/usage_fixtures.test.ts pins its fixed corpus with). */
 export function treeSha256(tree: GeneratedTree): string {
   const entries = tree.files
     .map((f) => ({ rel: path.relative(tree.root, f.path).replaceAll("\\", "/"), path: f.path }))

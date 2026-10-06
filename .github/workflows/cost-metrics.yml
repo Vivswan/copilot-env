@@ -15,7 +15,7 @@ on:
     # the scan); deno.json and deno.lock are, because dependency or permission changes do.
     paths:
       - "src/usage/**"
-      - "scripts/usage_fixtures.ts"
+      - "scripts/usage/fixtures.ts"
       - "test/helpers/usage_fixtures.ts"
       - "test/fixtures/usage/**"
       - "deno.json"

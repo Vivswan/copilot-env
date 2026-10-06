@@ -13,7 +13,7 @@
 // would miss a function stored first; a user property that happens to share a name
 // false-positives loudly, which beats a silent miss.
 //
-// Registered in deno.json, unit-tested in test/temp_dir_lint.test.ts.
+// Registered in deno.json, unit-tested in test/utils/temp_dir_lint.test.ts.
 import { memberName, testTreePath } from "./test_tree.ts";
 
 /** The helper that owns the temp root and the one sanctioned mkdtemp, relative to the test

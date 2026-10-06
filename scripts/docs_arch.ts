@@ -1,7 +1,7 @@
 // `deno task docs:arch`: the module map rendered from architecture.json into the GENERATED region
 // of docs/architecture.md. `--check` exits 1 on drift instead of rewriting, for CI and the page
-// test (test/docs_architecture.test.ts). The map shows the DECLARED edges; the lint
-// (test/architecture.test.ts) keeps the declaration equal to the import graph.
+// test (test/utils/docs_architecture.test.ts). The map shows the DECLARED edges; the lint
+// (test/utils/architecture.test.ts) keeps the declaration equal to the import graph.
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";

@@ -23,7 +23,7 @@ const ACQUIRE_WAIT_MS = 5_000;
 
 /** No release exists on purpose: the OS dropping the lock at death IS the liveness signal, which is
  *  why this uses the tryAcquireFileLock primitive rather than scoped withFileLock
- *  (test/file_lock.test.ts pins this module as the primitive's one production consumer). The knobs
+ *  (test/utils/file_lock.test.ts pins this module as the primitive's one production consumer). The knobs
  *  are for tests. */
 export function acquireDaemonLockForLife(
   home: string,
@@ -76,7 +76,7 @@ export function daemonLockHold(home: string): DaemonLockHold {
       return { kind: "unreadable" };
     default: {
       // Inline exhaustiveness: importing assertNever would widen the daemon shims'
-      // materialized import closure, which test/installer_pinning.test.ts pins.
+      // materialized import closure, which test/install/installer_pinning.test.ts pins.
       const unhandled: never = probe;
       throw new Error(`unreachable: unhandled lock probe ${JSON.stringify(unhandled)}`);
     }

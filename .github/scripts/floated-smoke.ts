@@ -26,7 +26,7 @@ export interface FloatedSmokeEvidence {
 
 /**
  * The first failed check, in assertion order, or null once the daemon ran with the token it was
- * handed. Pure; test/smoke_scripts.test.ts drives it.
+ * handed. Pure; test/copilot_api/smoke_scripts.test.ts drives it.
  *
  * legacy home recreated  -> the spawn stopped pinning COPILOT_API_HOME
  * NotCapable in the log  -> THE regression this job exists for: the real dependency tree

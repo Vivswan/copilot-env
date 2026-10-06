@@ -52,7 +52,7 @@ const START_TIMEOUT_MS = 60_000;
 const JOURNAL_TIMEOUT_MS = 10_000;
 
 /** Inherited variables a child needs to run at all; everything else stays out (the allowlist
- *  scripts/usage_corpus applies), so a developer shell's own agent variables, wrapper hooks,
+ *  scripts/usage/corpus applies), so a developer shell's own agent variables, wrapper hooks,
  *  NODE_OPTIONS or an AIMOCK_* override cannot steer aimock or a CLI under test. */
 const BASE_ENV_KEYS = [
   "PATH",

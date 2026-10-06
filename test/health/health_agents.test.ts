@@ -1,0 +1,1028 @@
+// The environment/runtime checks and the fact gatherer are pinned in health.test.ts,
+// named-profile behaviour in health_profiles.test.ts.
+import { join } from "node:path";
+import type { ClaudeDesktopStatus } from "../../src/claude/desktop_status.ts";
+import { type CodexHostDrift, codexHostDriftLine } from "../../src/codex/host.ts";
+import { parseProfileName } from "../../src/copilot_api/profile.ts";
+import {
+  checkAgentLive,
+  checkClaude,
+  checkClaudeDesktop,
+  checkCodex,
+  checkCodexHost,
+} from "../../src/health/checks_agents.ts";
+import type {
+  ClaudeFacts,
+  CodexDirectAuthFacts,
+  CodexFacts,
+  CodexHostFacts,
+  LiveProbeFacts,
+} from "../../src/health/facts.ts";
+import type { CheckStatus } from "../../src/health/types.ts";
+import { expect, test } from "../helpers/testing.ts";
+
+// --- codex wiring -----------------------------------------------------------
+
+test("codex: not configured is ok; each broken part warns with a precise message", () => {
+  // Shared non-wiring facts; `satisfies` keeps the literal arms narrow so the
+  // spreads below stay inside the discriminated union's proxy/direct variants.
+  const codexExtras = {
+    home: "/c",
+    directAuth: { kind: "found", command: "/bin/gh", ghCommand: "gh auth token" },
+    directUsesToken: false,
+    directNeedsNoGh: false,
+    provider: "gh-cli",
+    otherReason: null,
+  } as const;
+  const wired = {
+    ...codexExtras,
+    configExists: true,
+    providerSelected: true,
+    providerMode: "proxy",
+    modelProvider: "copilot-env",
+    baseUrl: "http://localhost:4141/v1",
+    baseUrlMatches: true,
+    envKeyMatches: true,
+    providerWired: true,
+    credential: "command",
+    envFilePresent: true,
+    envKeyInDotenv: true,
+    envKeyInEnviron: false,
+    tokenAvailable: true,
+  } satisfies CodexFacts;
+  // No config at all -> ok (user never wired Codex): the "none" arm.
+  expect(
+    checkCodex({
+      ...wired,
+      providerMode: "none",
+      configExists: false,
+      modelProvider: null,
+      providerSelected: false,
+      baseUrl: null,
+      baseUrlMatches: false,
+      envKeyMatches: false,
+      providerWired: false,
+      credential: "none",
+    }, null).status,
+  ).toBe("ok");
+  // Fully wired -> ok; the detail names the wiring, the proxy, and the auth.command resolver.
+  const ok = checkCodex(wired, null);
+  expect(ok.status).toBe("ok");
+  expect(ok.detail).toContain("copilot-env");
+  expect(ok.detail).toContain("4141");
+  expect(ok.detail).toContain("provider: proxy");
+  expect(ok.detail.split("\n")).toHaveLength(4);
+  expect(ok.detail).toContain(`config.toml: ${join("/c", "config.toml")}`);
+  expect(ok.detail).toContain("proxy-token resolver");
+  // A foreign model_provider selected: the "other" arm.
+  const foreign = {
+    ...wired,
+    providerMode: "other",
+    modelProvider: "openai",
+    providerSelected: false,
+    baseUrl: null,
+    baseUrlMatches: false,
+    envKeyMatches: false,
+    providerWired: false,
+    credential: "none",
+    otherReason: "custom",
+  } satisfies CodexFacts;
+  expect(checkCodex(foreign, null).detail).toContain("model_provider");
+  expect(checkCodex(foreign, null).detail).toContain(`config.toml: ${join("/c", "config.toml")}`);
+  // The classifier's reason travels into the --json value on every arm.
+  expect(checkCodex(foreign, null).value?.otherReason).toBe("custom");
+  expect(ok.value?.otherReason).toBe(null);
+  // A config.toml the writers REFUSE (malformed/read-error) gets the repair fix,
+  // never the generic `agent init --proxy` re-wire that cannot land.
+  const malformed = checkCodex({ ...foreign, modelProvider: null, otherReason: "malformed" }, null);
+  expect(malformed.status).toBe("warn");
+  expect(malformed.detail).toContain("not valid TOML");
+  expect(malformed.detail).toContain("provider: other");
+  expect(malformed.fix).toBe(
+    `repair ${join("/c", "config.toml")}, then re-run \`agent profile sync --codex\``,
+  );
+  expect(malformed.value?.otherReason).toBe("malformed");
+  const unreadable = checkCodex(
+    { ...foreign, modelProvider: null, otherReason: "read-error" },
+    null,
+  );
+  expect(unreadable.status).toBe("warn");
+  expect(unreadable.detail).toContain("could not be read");
+  expect(unreadable.fix).toBe(
+    `repair ${join("/c", "config.toml")}, then re-run \`agent profile sync --codex\``,
+  );
+  // A named profile's repair re-runs its atomic re-add instead of `agent profile sync --codex`.
+  const namedMalformed = checkCodex(
+    { ...foreign, modelProvider: null, otherReason: "malformed" },
+    parseProfileName("work"),
+  );
+  expect(namedMalformed.status).toBe("warn");
+  expect(namedMalformed.fix).toBe(
+    `repair ${join("/c", "config.toml")}, then re-run \`agent profile work add\``,
+  );
+  // The profile's own file (`codex --profile work` layers it over config.toml) is the one to
+  // repair when IT is the broken one, and every named row names it beside config.toml.
+  const namedFileMalformed = checkCodex(
+    { ...foreign, modelProvider: null, otherReason: "profile-malformed" },
+    parseProfileName("work"),
+  );
+  expect(namedFileMalformed.detail).toContain(
+    `work.config.toml: ${join("/c", "work.config.toml")}`,
+  );
+  expect(namedFileMalformed.detail).toContain("work.config.toml is present but not valid TOML");
+  expect(namedFileMalformed.fix).toBe(
+    `repair ${join("/c", "work.config.toml")}, then re-run \`agent profile work add\``,
+  );
+  // With no config.toml beside it the broken file still owns the repair: `agent profile <name> add`
+  // would refuse that file, so "not wired, re-add" is the wrong fix.
+  expect(
+    checkCodex(
+      { ...foreign, configExists: false, modelProvider: null, otherReason: "profile-malformed" },
+      parseProfileName("work"),
+    ).fix,
+  ).toBe(namedFileMalformed.fix);
+  // base_url points at the wrong port.
+  expect(
+    checkCodex({
+      ...wired,
+      baseUrl: "http://localhost:9999/v1",
+      baseUrlMatches: false,
+      providerWired: false,
+    }, null).detail,
+  ).toContain("base_url");
+  expect(
+    checkCodex({
+      ...wired,
+      baseUrl: "http://localhost:9999/v1",
+      baseUrlMatches: false,
+      providerWired: false,
+    }, null).detail,
+  ).toContain(`config.toml: ${join("/c", "config.toml")}`);
+  // Not fully wired (e.g. the managed proxy auth.command is missing/foreign).
+  const notWired = checkCodex({ ...wired, providerWired: false }, null);
+  expect(notWired.status).toBe("warn");
+  expect(notWired.detail).toContain("not fully wired");
+  expect(notWired.detail).toContain(`config.toml: ${join("/c", "config.toml")}`);
+  // A wired proxy is ok regardless of any env token (the key comes from auth.command).
+  const noEnvToken = checkCodex({ ...wired, envKeyInDotenv: false, tokenAvailable: false }, null);
+  expect(noEnvToken.status).toBe("ok");
+  expect(noEnvToken.detail).toContain("proxy-token resolver");
+
+  // (gh look, recorded provider) -> the direct verdict, its auth line, and the fix it names. A wrong
+  // row hides the account a verdict is about, or offers `gh auth login` for a provider gh cannot serve.
+  const direct = {
+    ...wired,
+    providerMode: "direct",
+    modelProvider: "copilot-env",
+    baseUrl: "https://api.githubcopilot.com",
+    envKeyMatches: false,
+    envKeyInDotenv: false,
+    envKeyInEnviron: false,
+    tokenAvailable: false,
+  } satisfies CodexFacts;
+  const directRows: Array<{
+    name: string;
+    directAuth: CodexFacts["directAuth"];
+    provider?: CodexFacts["provider"];
+    status: CheckStatus;
+    detail: string[];
+    notDetail?: string;
+    fix?: string;
+  }> = [
+    {
+      // An auto slot whose account list could not name the active login still says it is on AUTO
+      // (never a bare "authenticated" that hides the mode).
+      name: "auto, authenticated, login unknown",
+      directAuth: { kind: "found", command: "/bin/gh", ghCommand: "gh auth token" },
+      status: "ok",
+      detail: [
+        "provider: direct",
+        "gh auth: authenticated via /bin/gh (AUTO - follows gh's active account)",
+        `config.toml: ${join("/c", "config.toml")}`,
+      ],
+    },
+    {
+      name: "gh missing",
+      directAuth: { kind: "absent", command: null },
+      status: "warn",
+      detail: ["GitHub CLI not found"],
+      fix: "install gh and run gh auth login",
+    },
+    {
+      name: "auto, unauthenticated",
+      directAuth: {
+        kind: "absent",
+        command: "/bin/gh",
+        ghDetail: "`gh auth token` printed no token",
+      },
+      status: "warn",
+      detail: ["not authenticated"],
+      fix: "gh auth login",
+    },
+    {
+      // A PINNED slot's verdict names its account: the probe ran `gh auth token --user work-bot`,
+      // so "not authenticated" is about that account, not gh's active one (which may be fine).
+      name: "pinned, unauthenticated",
+      directAuth: {
+        kind: "absent",
+        command: "/bin/gh",
+        ghDetail: "`gh auth token --user work-bot` printed no token",
+        ghUser: "work-bot",
+      },
+      status: "warn",
+      detail: ["gh auth: /bin/gh is not authenticated as account 'work-bot'"],
+      fix: "gh auth login",
+    },
+    {
+      // An AUTO slot's ok line names the account it follows (no hidden information).
+      name: "auto, authenticated, login named",
+      directAuth: {
+        kind: "found",
+        command: "/bin/gh",
+        ghCommand: "gh auth token",
+        ghActiveLogin: "octocat",
+      },
+      status: "ok",
+      detail: ["gh auth: authenticated via /bin/gh (AUTO - currently account octocat)"],
+    },
+    {
+      // Non-gh-cli provider with no stored token: gh is NOT a fallback, so the warn points at
+      // `agent auth`, never the gh-specific message (the provider-blind false-OK).
+      name: "copilot provider, no stored token",
+      directAuth: { kind: "found", command: "/bin/gh", ghCommand: "gh auth token" },
+      provider: "copilot",
+      status: "warn",
+      detail: ["no credential resolves"],
+      notDetail: "gh auth:",
+      fix: "agent auth",
+    },
+  ];
+  for (const row of directRows) {
+    const r = checkCodex(
+      { ...direct, directAuth: row.directAuth, provider: row.provider ?? direct.provider },
+      null,
+    );
+    expect({ name: row.name, status: r.status, fix: r.fix }).toEqual({
+      name: row.name,
+      status: row.status,
+      fix: row.fix,
+    });
+    for (const needle of row.detail) expect(r.detail, row.name).toContain(needle);
+    if (row.notDetail !== undefined) expect(r.detail, row.name).not.toContain(row.notDetail);
+  }
+});
+
+// Both agents wired Direct on a gh-cli slot, gh found and authenticated; the direct-auth tests
+// swap in the verdict under test.
+const CODEX_DIRECT = {
+  home: "/c",
+  configExists: true,
+  providerSelected: true,
+  providerMode: "direct",
+  modelProvider: "copilot-env",
+  baseUrl: "https://api.githubcopilot.com",
+  baseUrlMatches: true,
+  envKeyMatches: false,
+  providerWired: true,
+  credential: "command",
+  envFilePresent: false,
+  envKeyInDotenv: false,
+  envKeyInEnviron: false,
+  tokenAvailable: false,
+  otherReason: null,
+  directUsesToken: false,
+  directNeedsNoGh: false,
+  provider: "gh-cli",
+  directAuth: { kind: "found", command: "/bin/gh", ghCommand: "gh auth token" },
+} satisfies CodexFacts;
+const CLAUDE_DIRECT = {
+  home: "/h/.claude",
+  settingsPath: join("/h/.claude", "settings.json"),
+  settingsExists: true,
+  wired: true,
+  credential: "command",
+  helperPath: join("/h/.claude", "copilot-token.sh"),
+  baseUrl: "https://api.githubcopilot.com",
+  baseUrlMatches: false,
+  providerMode: "direct",
+  otherReason: null,
+  directAuth: { kind: "found", command: "/bin/gh", ghCommand: "gh auth token" },
+  directUsesToken: false,
+  provider: "gh-cli",
+} satisfies ClaudeFacts;
+// `gh auth token` spawned but never completed (error / timeout kill).
+const UNPROVEN_TOKEN_CALL = {
+  kind: "unproven",
+  command: "/bin/gh",
+  ghDetail: "`gh auth token` did not complete (ETIMEDOUT)",
+} as const;
+
+test("checkCodex/checkClaude direct: an UNPROVEN gh probe says could-not-check, never a confident verdict", () => {
+  const codexDirect = { ...CODEX_DIRECT, directAuth: UNPROVEN_TOKEN_CALL };
+  const codexUnproven = checkCodex(codexDirect, null);
+  expect(codexUnproven.status).toBe("warn");
+  expect(codexUnproven.detail).toContain(
+    "gh auth: could not check gh authentication " +
+      "(`gh auth token` did not complete (ETIMEDOUT); AUTO - follows gh's active account)",
+  );
+  expect(codexUnproven.detail).not.toContain("is not authenticated");
+  expect(codexUnproven.fix).toBe("re-run `agent health` (the gh check did not run to completion)");
+  // An unproven token probe never discards a discovered AUTO account: the
+  // account list is a separate probe that may have succeeded.
+  const codexUnprovenNamed = checkCodex({
+    ...codexDirect,
+    directAuth: { ...UNPROVEN_TOKEN_CALL, ghActiveLogin: "octocat" },
+  }, null);
+  expect(codexUnprovenNamed.detail).toContain(
+    "gh auth: could not check gh authentication " +
+      "(`gh auth token` did not complete (ETIMEDOUT); AUTO - currently account octocat)",
+  );
+  // The gh LOOKUP itself failed to run: not a proven "GitHub CLI not found".
+  const lookupUnproven = checkCodex({
+    ...codexDirect,
+    directAuth: { kind: "unproven", command: null },
+  }, null);
+  expect(lookupUnproven.status).toBe("warn");
+  expect(lookupUnproven.detail).toContain(
+    "gh auth: could not check for the GitHub CLI (the command probe failed to run)",
+  );
+  expect(lookupUnproven.detail).not.toContain("not found");
+  expect(lookupUnproven.fix).toBe(
+    "re-run `agent health` (the gh check did not run to completion)",
+  );
+  // Same shared verdict on the Claude side.
+  const claudeUnproven = checkClaude({ ...CLAUDE_DIRECT, directAuth: UNPROVEN_TOKEN_CALL }, null);
+  expect(claudeUnproven.status).toBe("warn");
+  expect(claudeUnproven.detail).toContain(
+    "gh auth: could not check gh authentication " +
+      "(`gh auth token` did not complete (ETIMEDOUT); AUTO - follows gh's active account)",
+  );
+  expect(claudeUnproven.detail).not.toContain("is not authenticated");
+  expect(claudeUnproven.fix).toBe("re-run `agent health` (the gh check did not run to completion)");
+});
+
+test("health --json: the directAuth row keeps its flat bytes (authenticated, an unproven marker), never kind", () => {
+  // The report is an external contract: the facts union carries `kind`, the JSON never did, and
+  // its key order is part of the bytes.
+  const rows: { directAuth: CodexDirectAuthFacts; json: string }[] = [
+    {
+      directAuth: { kind: "found", command: "/bin/gh", ghCommand: "gh auth token" },
+      json: '{"command":"/bin/gh","authenticated":true,"ghCommand":"gh auth token"}',
+    },
+    {
+      directAuth: {
+        kind: "found",
+        command: "/bin/gh",
+        ghCommand: "gh auth token --user work-bot",
+        ghUser: "work-bot",
+      },
+      json: '{"command":"/bin/gh","authenticated":true,"ghUser":"work-bot",' +
+        '"ghCommand":"gh auth token --user work-bot"}',
+    },
+    {
+      directAuth: { kind: "absent", command: null },
+      json: '{"command":null,"authenticated":false}',
+    },
+    {
+      directAuth: {
+        kind: "absent",
+        command: "/bin/gh",
+        ghDetail: "`gh auth token` printed no token",
+      },
+      json:
+        '{"command":"/bin/gh","authenticated":false,"ghDetail":"`gh auth token` printed no token"}',
+    },
+    {
+      directAuth: {
+        kind: "absent",
+        command: "/bin/gh",
+        ghDetail: "`gh auth token --user work-bot` printed no token",
+        ghUser: "work-bot",
+      },
+      json: '{"command":"/bin/gh","authenticated":false,"ghUser":"work-bot",' +
+        '"ghDetail":"`gh auth token --user work-bot` printed no token"}',
+    },
+    {
+      directAuth: { ...UNPROVEN_TOKEN_CALL, ghActiveLogin: "octocat" },
+      json: '{"command":"/bin/gh","authenticated":false,"unproven":true,' +
+        '"ghDetail":"`gh auth token` did not complete (ETIMEDOUT)","ghActiveLogin":"octocat"}',
+    },
+    {
+      directAuth: {
+        kind: "unproven",
+        command: "/bin/gh",
+        ghDetail: "`gh auth token --user work-bot` did not complete (ETIMEDOUT)",
+        ghUser: "work-bot",
+      },
+      json: '{"command":"/bin/gh","authenticated":false,"unproven":true,"ghUser":"work-bot",' +
+        '"ghDetail":"`gh auth token --user work-bot` did not complete (ETIMEDOUT)"}',
+    },
+    {
+      directAuth: { kind: "unproven", command: null },
+      json: '{"command":null,"authenticated":false,"unproven":true}',
+    },
+  ];
+  for (const row of rows) {
+    const codex = checkCodex({ ...CODEX_DIRECT, directAuth: row.directAuth }, null);
+    const claude = checkClaude({ ...CLAUDE_DIRECT, directAuth: row.directAuth }, null);
+    expect(JSON.stringify(codex.value?.directAuth), row.json).toBe(row.json);
+    expect(JSON.stringify(claude.value?.directAuth), row.json).toBe(row.json);
+  }
+});
+
+// --- claude wiring ----------------------------------------------------------
+
+test("checkClaude: direct needs gh + managed base URL; proxy/none/other informational", () => {
+  // `satisfies` keeps the literal arm narrow so spreads stay in the union.
+  const direct = {
+    home: "/h/.claude",
+    settingsPath: join("/h/.claude", "settings.json"),
+    settingsExists: true,
+    wired: true,
+    credential: "command",
+    helperPath: join("/h/.claude", "copilot-token.sh"),
+    baseUrl: "https://api.githubcopilot.com",
+    baseUrlMatches: false,
+    providerMode: "direct",
+    otherReason: null,
+    directAuth: { kind: "found", command: "/bin/gh", ghCommand: "gh auth token" },
+    directUsesToken: false,
+    provider: "gh-cli",
+  } satisfies ClaudeFacts;
+  const directOk = checkClaude(direct, null);
+  expect(directOk.status).toBe("ok");
+  expect(directOk.detail).toContain("provider: direct");
+  expect(directOk.detail).toContain("ANTHROPIC_BASE_URL → https://api.githubcopilot.com");
+  expect(directOk.detail).toContain("authenticated via /bin/gh");
+
+  const missingGh = checkClaude(
+    { ...direct, directAuth: { kind: "absent", command: null } },
+    null,
+  );
+  expect(missingGh.status).toBe("warn");
+  expect(missingGh.detail).toContain("GitHub CLI not found");
+  expect(missingGh.fix).toBe("install gh and run gh auth login");
+
+  const unauthed = checkClaude({
+    ...direct,
+    directAuth: {
+      kind: "absent",
+      command: "/bin/gh",
+      ghDetail: "`gh auth token` printed no token",
+    },
+  }, null);
+  expect(unauthed.status).toBe("warn");
+  expect(unauthed.detail).toContain("not authenticated");
+  expect(unauthed.fix).toBe("gh auth login");
+
+  // Non-gh-cli provider with no stored token: gh is NOT a fallback -- warn pointing
+  // at `agent auth`, not the gh-specific message.
+  const noCred = checkClaude({ ...direct, provider: "copilot", directUsesToken: false }, null);
+  expect(noCred.status).toBe("warn");
+  expect(noCred.detail).toContain("no credential resolves");
+  expect(noCred.detail).not.toContain("gh auth:");
+  expect(noCred.fix).toBe("agent auth");
+
+  // Direct helper present but the managed base URL was dropped/altered: warn.
+  const staleBase = checkClaude({ ...direct, baseUrl: null }, null);
+  expect(staleBase.status).toBe("warn");
+  expect(staleBase.detail).toContain("(missing)");
+  expect(staleBase.fix).toBe("agent init --direct");
+
+  // Proxy: proxy-backed via settings.json (localhost base URL matching the resolved port).
+  const proxy = checkClaude({
+    ...direct,
+    helperPath: join("/h/.claude", "copilot-proxy-token.sh"),
+    baseUrl: "http://localhost:4141",
+    baseUrlMatches: true,
+    providerMode: "proxy",
+    directAuth: { kind: "absent", command: null },
+  }, null);
+  expect(proxy.status).toBe("ok");
+  expect(proxy.detail).toContain("provider: proxy");
+  expect(proxy.detail).toContain("ANTHROPIC_BASE_URL → http://localhost:4141");
+  expect(proxy.detail).toContain("apiKeyHelper → ");
+
+  // Proxy but the base URL points at the WRONG port (stale after `config port` changed):
+  // must warn, not read green, with a repoint fix.
+  const proxyStale = checkClaude({
+    ...direct,
+    helperPath: join("/h/.claude", "copilot-proxy-token.sh"),
+    baseUrl: "http://localhost:4141",
+    baseUrlMatches: false,
+    providerMode: "proxy",
+    directAuth: { kind: "absent", command: null },
+  }, null);
+  expect(proxyStale.status).toBe("warn");
+  expect(proxyStale.detail).toContain("does not match the resolved proxy port");
+  // The fix names the deterministic proxy rewire (the bare commands auto-detect
+  // a mode, which is not guaranteed to re-bake the proxy wiring).
+  expect(proxyStale.fix).toContain("agent init --proxy");
+
+  // Never configured: informational; cl defaults it to the proxy.
+  const none = checkClaude({
+    ...direct,
+    wired: false,
+    settingsExists: false,
+    credential: null,
+    helperPath: null,
+    baseUrl: null,
+    providerMode: "none",
+    directAuth: { kind: "absent", command: null },
+  }, null);
+  expect(none.status).toBe("ok");
+  expect(none.detail).toContain("provider: none");
+  expect(none.detail).toContain("not configured");
+
+  // Custom apiKeyHelper the user set -- left alone, reported informationally.
+  const other = checkClaude({
+    ...direct,
+    wired: false,
+    credential: null,
+    helperPath: "/opt/x/helper.sh",
+    baseUrl: null,
+    providerMode: "other",
+    otherReason: "custom",
+  }, null);
+  expect(other.status).toBe("ok");
+  expect(other.detail).toContain("provider: other");
+  expect(other.detail).toContain("not managed");
+
+  // A file that could not be parsed or read warns too: Claude itself will trip
+  // over it, and copilot-env can verify nothing there.
+  const malformed = checkClaude({
+    ...direct,
+    wired: false,
+    credential: null,
+    helperPath: null,
+    baseUrl: null,
+    providerMode: "other",
+    otherReason: "malformed",
+  }, null);
+  expect(malformed.status).toBe("warn");
+  expect(malformed.detail).toContain("not valid JSON");
+  expect(malformed.fix).toContain("repair");
+  const unreadable = checkClaude({
+    ...direct,
+    wired: false,
+    credential: null,
+    helperPath: null,
+    baseUrl: null,
+    providerMode: "other",
+    otherReason: "read-error",
+  }, null);
+  expect(unreadable.status).toBe("warn");
+  expect(unreadable.detail).toContain("could not be read");
+});
+
+test("direct + stored token reports ok with gh absent (no gh requirement)", () => {
+  // Codex: a stored token (directUsesToken, providerWired) is ok even with gh missing.
+  const codexToken: CodexFacts = {
+    home: "/c",
+    configExists: true,
+    providerSelected: true,
+    providerMode: "direct",
+    modelProvider: "copilot-env",
+    baseUrl: "https://api.githubcopilot.com",
+    baseUrlMatches: true,
+    envKeyMatches: true,
+    providerWired: true,
+    credential: "command",
+    envFilePresent: true,
+    envKeyInDotenv: false,
+    envKeyInEnviron: false,
+    tokenAvailable: false,
+    directAuth: { kind: "absent", command: null },
+    directUsesToken: true,
+    directNeedsNoGh: true,
+    otherReason: null,
+  };
+  const codexRes = checkCodex(codexToken, null);
+  expect(codexRes.status).toBe("ok");
+  expect(codexRes.detail).toContain("stored GitHub token");
+  expect(codexRes.detail).not.toContain("GitHub CLI not found");
+
+  // Claude: stored-token resolver, gh absent -> still ok (base URL is right).
+  const claudeToken: ClaudeFacts = {
+    home: "/h/.claude",
+    settingsPath: join("/h/.claude", "settings.json"),
+    settingsExists: true,
+    credential: "command",
+    helperPath: join("/h/.claude", "copilot-token.sh"),
+    baseUrl: "https://api.githubcopilot.com",
+    baseUrlMatches: false,
+    providerMode: "direct",
+    wired: true,
+    otherReason: null,
+    directAuth: { kind: "absent", command: null },
+    directUsesToken: true,
+  };
+  const claudeRes = checkClaude(claudeToken, null);
+  expect(claudeRes.status).toBe("ok");
+  expect(claudeRes.detail).toContain("stored GitHub token");
+  expect(claudeRes.detail).not.toContain("GitHub CLI not found");
+});
+
+test("static-key: a baked credential needs no gh; the proxy detail names the daemon", () => {
+  // Direct static: the store is never consulted (no provider, no gh), so the verdict is the
+  // wiring alone. `satisfies` keeps the arm narrow for the spreads below.
+  const codexDirectStatic = {
+    home: "/c",
+    configExists: true,
+    providerSelected: true,
+    providerMode: "direct",
+    modelProvider: "copilot-env",
+    baseUrl: "https://api.githubcopilot.com",
+    baseUrlMatches: true,
+    envKeyMatches: true,
+    providerWired: true,
+    credential: "static",
+    envFilePresent: false,
+    envKeyInDotenv: false,
+    envKeyInEnviron: false,
+    tokenAvailable: false,
+    directAuth: { kind: "absent", command: null },
+    directUsesToken: false,
+    directNeedsNoGh: true,
+    provider: null,
+    otherReason: null,
+  } satisfies CodexFacts;
+  const codexDirect = checkCodex(codexDirectStatic, null);
+  expect(codexDirect.status).toBe("ok");
+  expect(codexDirect.detail).toContain("static-key");
+  expect(codexDirect.detail).not.toContain("gh auth");
+  // A misaddressed table still warns with the direct re-wire, not a gh fix.
+  const codexUnwired = checkCodex({ ...codexDirectStatic, providerWired: false }, null);
+  expect(codexUnwired.status).toBe("warn");
+  expect(codexUnwired.fix).toBe("agent init --direct");
+  // A baked value the store has moved past warns with the same rewire; "unchecked" only says so.
+  const codexStale = checkCodex({ ...codexDirectStatic, bakedCredential: "stale" }, null);
+  expect(codexStale.status).toBe("warn");
+  expect(codexStale.detail).toContain(
+    "out of step with the store, re-run `agent init --direct`",
+  );
+  expect(codexStale.fix).toBe("agent init --direct");
+  const codexUnchecked = checkCodex({ ...codexDirectStatic, bakedCredential: "unchecked" }, null);
+  expect(codexUnchecked.status).toBe("ok");
+  expect(codexUnchecked.detail).toContain("freshness not checked");
+
+  const codexProxy = checkCodex({
+    ...codexDirectStatic,
+    providerMode: "proxy",
+    baseUrl: "http://localhost:4141/v1",
+    directNeedsNoGh: false,
+  }, null);
+  expect(codexProxy.status).toBe("ok");
+  expect(codexProxy.detail).toContain("`agent start`");
+  expect(codexProxy.detail).not.toContain("proxy-token resolver");
+  // A named profile's daemon is its own: a bare `agent start` would leave it down.
+  const codexProxyWork = checkCodex(
+    {
+      ...codexDirectStatic,
+      providerMode: "proxy",
+      baseUrl: "http://localhost:4555/v1",
+      directNeedsNoGh: false,
+      expectedMode: "proxy",
+    },
+    parseProfileName("work"),
+  );
+  expect(codexProxyWork.detail).toContain("`agent profile work start`");
+
+  const claudeDirectStatic = {
+    home: "/h/.claude",
+    settingsPath: join("/h/.claude", "settings.json"),
+    settingsExists: true,
+    wired: true,
+    credential: "static",
+    helperPath: null,
+    baseUrl: "https://api.githubcopilot.com",
+    baseUrlMatches: false,
+    providerMode: "direct",
+    otherReason: null,
+    directAuth: { kind: "absent", command: null },
+    directUsesToken: false,
+    provider: "gh-cli",
+  } satisfies ClaudeFacts;
+  const claudeDirect = checkClaude(claudeDirectStatic, null);
+  expect(claudeDirect.status).toBe("ok");
+  expect(claudeDirect.detail).toContain("static-key");
+  expect(claudeDirect.detail).not.toContain("gh auth");
+  const claudeStaleBase = checkClaude({ ...claudeDirectStatic, baseUrl: null }, null);
+  expect(claudeStaleBase.status).toBe("warn");
+  expect(claudeStaleBase.fix).toBe("agent init --direct");
+
+  const claudeProxy = checkClaude({
+    ...claudeDirectStatic,
+    providerMode: "proxy",
+    baseUrl: "http://localhost:4141",
+    baseUrlMatches: true,
+  }, null);
+  expect(claudeProxy.status).toBe("ok");
+  expect(claudeProxy.detail).toContain("ANTHROPIC_AUTH_TOKEN");
+  expect(claudeProxy.detail).toContain("`agent start`");
+  expect(claudeProxy.detail).not.toContain("apiKeyHelper");
+  // A proxy key the daemon has re-minted since the wire warns with the proxy rewire.
+  const claudeProxyStale = checkClaude({
+    ...claudeDirectStatic,
+    providerMode: "proxy",
+    baseUrl: "http://localhost:4141",
+    baseUrlMatches: true,
+    bakedCredential: "stale",
+  }, null);
+  expect(claudeProxyStale.status).toBe("warn");
+  expect(claudeProxyStale.fix).toBe("agent init --proxy");
+  const claudeProxyWork = checkClaude(
+    {
+      ...claudeDirectStatic,
+      providerMode: "proxy",
+      baseUrl: "http://localhost:4555",
+      baseUrlMatches: true,
+      expectedMode: "proxy",
+    },
+    parseProfileName("work"),
+  );
+  expect(claudeProxyWork.detail).toContain("`agent profile work start`");
+});
+
+// --- live (--live) checks ---------------------------------------------------
+
+test("checkAgentLive: the probe outcome decides status, fix, detail, and value", () => {
+  const rows: {
+    agent: "codex" | "claude";
+    outcome: LiveProbeFacts;
+    status: CheckStatus;
+    fix?: string;
+    detail?: string;
+    exactDetail?: string;
+    notDetail?: string;
+    value?: Record<string, unknown>;
+  }[] = [
+    { agent: "codex", outcome: { kind: "ok", cli: "/bin/codex" }, status: "ok" },
+    {
+      agent: "codex",
+      outcome: { kind: "failed", cli: "/bin/codex", detail: "exit 1" },
+      status: "warn",
+      fix: "agent profile sync --codex",
+    },
+    // The captured output is surfaced verbatim (a failed probe ALWAYS carries it).
+    {
+      agent: "codex",
+      outcome: {
+        kind: "failed",
+        cli: "/bin/codex",
+        detail: '{"type":"turn.failed","error":{"message":"401 Unauthorized"}}',
+      },
+      status: "warn",
+      detail: "401 Unauthorized",
+      notDetail: "did not answer",
+    },
+    // A proven absence keeps the plain wording, unmarked; a skip off a FAILED look says
+    // could-not-check, never "not installed".
+    {
+      agent: "codex",
+      outcome: { kind: "skipped", reason: "not-installed" },
+      status: "ok",
+      exactDetail: "skipped (codex CLI not installed)",
+      value: { kind: "skipped" },
+    },
+    {
+      agent: "codex",
+      outcome: { kind: "skipped", reason: "look-failed" },
+      status: "ok",
+      exactDetail: "skipped (could not check for the codex CLI - the command probe failed to run)",
+      value: { kind: "skipped", lookFailed: true },
+    },
+    { agent: "claude", outcome: { kind: "ok", cli: "/bin/claude" }, status: "ok" },
+    {
+      agent: "claude",
+      outcome: { kind: "failed", cli: "/bin/claude", detail: "exit 1" },
+      status: "warn",
+      fix: "agent profile sync --claude",
+    },
+    {
+      agent: "claude",
+      outcome: { kind: "failed", cli: "/bin/claude", detail: "API Error: 401 invalid x-api-key" },
+      status: "warn",
+      detail: "401 invalid x-api-key",
+      notDetail: "did not answer",
+    },
+    { agent: "claude", outcome: { kind: "skipped", reason: "not-installed" }, status: "ok" },
+    {
+      agent: "claude",
+      outcome: { kind: "skipped", reason: "look-failed" },
+      status: "ok",
+      exactDetail: "skipped (could not check for the claude CLI - the command probe failed to run)",
+    },
+  ];
+  for (const row of rows) {
+    const name = `${row.agent} ${JSON.stringify(row.outcome)}`;
+    const r = checkAgentLive(row.agent, row.outcome, null);
+    expect(r.status, name).toBe(row.status);
+    if (row.fix !== undefined) expect(r.fix, name).toBe(row.fix);
+    if (row.detail !== undefined) expect(r.detail, name).toContain(row.detail);
+    if (row.exactDetail !== undefined) expect(r.detail, name).toBe(row.exactDetail);
+    if (row.notDetail !== undefined) expect(r.detail, name).not.toContain(row.notDetail);
+    if (row.value !== undefined) expect(r.value, name).toEqual(row.value);
+  }
+});
+
+// --- codex host farm --------------------------------------------------------
+
+test("checkCodexHost: the codex-host key against the disk, every drift warns with `agent profile sync --codex`", () => {
+  const hostHome = "/h/.codex/hosts/box";
+  const configLine = `config.toml: ${join(hostHome, "config.toml")}`;
+  const on: CodexHostFacts = {
+    supported: true,
+    hostHome,
+    exists: true,
+    wired: true,
+    probeError: null,
+    active: true,
+    enabled: true,
+  };
+  // Key on, farm wired and recorded as the active home: the one healthy on-state.
+  const active = checkCodexHost(on);
+  expect(active.status).toBe("ok");
+  expect(active.fix).toBeUndefined();
+  expect(active.detail).toBe(`active per-host CODEX_HOME: ${hostHome}\n${configLine}`);
+  expect(active.value).toEqual({
+    supported: true,
+    hostHome,
+    configFile: join(hostHome, "config.toml"),
+    exists: true,
+    wired: true,
+    probeError: null,
+    active: true,
+    enabled: true,
+  });
+  // Every disagreement is a warn rendering the shared drift line (its wording is pinned
+  // once, in test/codex/codex_host.test.ts) with the command that resolves it.
+  const line = (drift: CodexHostDrift): string => codexHostDriftLine(drift);
+  const drifts: Array<{ facts: CodexHostFacts; summary: string; withConfig: boolean }> = [
+    // On but hand-deleted (nothing on disk), or only half-built (dir without config.toml).
+    {
+      facts: { ...on, exists: false, wired: false },
+      summary: line({ kind: "missing", hostHome }),
+      withConfig: false,
+    },
+    {
+      facts: { ...on, wired: false },
+      summary: line({ kind: "missing", hostHome }),
+      withConfig: true,
+    },
+    // On and wired, but no wiring pass recorded it as the active home yet.
+    {
+      facts: { ...on, active: false },
+      summary: line({ kind: "inactive", hostHome }),
+      withConfig: true,
+    },
+    // Off with OUR wired farm still on disk: the next pass removes it.
+    {
+      facts: { ...on, active: false, enabled: false },
+      summary: line({ kind: "disabled", hostHome }),
+      withConfig: true,
+    },
+  ];
+  for (const { facts, summary, withConfig } of drifts) {
+    const result = checkCodexHost(facts);
+    expect(result.status).toBe("warn");
+    expect(result.fix).toBe("agent profile sync --codex");
+    expect(result.detail).toBe(withConfig ? `${summary}\n${configLine}` : summary);
+  }
+  // Off with something at the path not proven ours NOW (no managed wiring on disk, recorded or
+  // not, probeable or not): no drift, nothing to fix.
+  for (
+    const facts of [
+      { ...on, wired: false, active: false, enabled: false },
+      { ...on, wired: false, probeError: "EACCES", enabled: false },
+      { ...on, exists: false, wired: false, probeError: "EACCES", enabled: false },
+    ]
+  ) {
+    const foreign = checkCodexHost(facts);
+    expect(foreign.status).toBe("ok");
+    expect(foreign.fix).toBeUndefined();
+  }
+  // Not built, not wanted: informational, and the path is not echoed.
+  const unbuilt = checkCodexHost({
+    ...on,
+    exists: false,
+    wired: false,
+    active: false,
+    enabled: false,
+  });
+  expect(unbuilt.status).toBe("ok");
+  expect(unbuilt.fix).toBeUndefined();
+  expect(unbuilt.detail).toBe("not built (optional)");
+  // Windows: no farm is possible, whatever the key says.
+  const unsupported = checkCodexHost({ ...on, supported: false, enabled: false });
+  expect(unsupported.status).toBe("ok");
+  expect(unsupported.detail).toBe("not built (unsupported on Windows)");
+});
+
+// --- claude desktop ---------------------------------------------------------
+
+test("checkClaudeDesktop: a rendered fix is a warn, none is ok; the detail is the rendered lines", () => {
+  // The rendering itself (every arm) is proven over real libraries in claude_desktop.test.ts;
+  // this pins the check's mapping of that rendering onto a health verdict.
+  const inspected = {
+    kind: "inspected" as const,
+    enabled: true,
+    installed: true,
+    helperPaths: [] as string[],
+    libraryDir: "/lib",
+    unlisted: [] as Extract<ClaudeDesktopStatus, { kind: "inspected" }>["unlisted"],
+    owned: [{ name: "copilot-env", path: "/lib/a.json", profile: null }],
+    entries: [] as Extract<ClaudeDesktopStatus, { kind: "inspected" }>["entries"],
+    orphans: [] as Extract<ClaudeDesktopStatus, { kind: "inspected" }>["orphans"],
+    applied: { path: "/lib/a.json", name: "copilot-env" },
+    app: { kind: "read" as const, developerMode: true, deploymentMode: "3p" as const },
+  };
+  const wired = checkClaudeDesktop({
+    ...inspected,
+    entries: [{ profile: null, mode: "direct", verdict: { kind: "wired", path: "/lib/a.json" } }],
+  });
+  expect(wired.status).toBe("ok");
+  expect(wired.detail).toBe(
+    `"copilot-env" (direct) wired at /lib/a.json\napplied in the app: "copilot-env"`,
+  );
+  expect(wired.fix).toBeUndefined();
+  // The `--json` contract: each entry's verdict flattened beside its target.
+  expect(wired.value?.entries).toEqual([
+    { profile: null, mode: "direct", kind: "wired", path: "/lib/a.json" },
+  ]);
+
+  const missing = checkClaudeDesktop({
+    ...inspected,
+    entries: [
+      { profile: null, mode: "direct", verdict: { kind: "wired", path: "/lib/a.json" } },
+      { profile: parseProfileName("work"), mode: "proxy", verdict: { kind: "missing" } },
+    ],
+  });
+  expect(missing.status).toBe("warn");
+  expect(missing.detail).toBe(
+    `"copilot-env" (direct) wired at /lib/a.json\n"copilot-env: work" (proxy) missing\napplied in the app: "copilot-env"`,
+  );
+  expect(missing.fix).toBe("agent profile work add");
+
+  // A profile's helper script left behind with the key off and no library at all: still a
+  // leftover (the default's helper stays with its entry, so it is not one).
+  const helperLeft = checkClaudeDesktop({
+    kind: "no-library",
+    enabled: false,
+    installed: false,
+    helperPaths: ["/root/claude-desktop-token.sh", "/root/claude-desktop-token-work.sh"],
+  });
+  expect(helperLeft.status).toBe("warn");
+  expect(helperLeft.detail).toContain("/root/claude-desktop-token-work.sh");
+  expect(helperLeft.detail).toContain("1 copilot-env leftover remains");
+  expect(helperLeft.fix).toBe("agent profile sync --claude");
+
+  // The rest of the `--json` value contract: each arm's own fields ride along whole.
+  const old = parseProfileName("old");
+  const drift = checkClaudeDesktop({
+    ...inspected,
+    orphans: [{ name: "copilot-env: old", path: "/lib/o.json", profile: old }],
+    unlisted: [{ path: "/lib/gone.json", profile: old }],
+  });
+  expect(drift.value).toEqual({
+    kind: "inspected",
+    enabled: true,
+    installed: true,
+    helperPaths: [],
+    libraryDir: "/lib",
+    owned: [{ name: "copilot-env", path: "/lib/a.json", profile: null }],
+    unlisted: [{ path: "/lib/gone.json", profile: old }],
+    entries: [],
+    orphans: [{ name: "copilot-env: old", path: "/lib/o.json", profile: old }],
+    applied: { path: "/lib/a.json", name: "copilot-env" },
+    app: { kind: "read", developerMode: true, deploymentMode: "3p" },
+  });
+  const unreadable = checkClaudeDesktop({
+    kind: "unreadable",
+    enabled: true,
+    installed: true,
+    helperPaths: [],
+    metaPath: "/lib/_meta.json",
+  });
+  expect(unreadable.value).toEqual({
+    kind: "unreadable",
+    enabled: true,
+    installed: true,
+    helperPaths: [],
+    metaPath: "/lib/_meta.json",
+  });
+  const unjudged = checkClaudeDesktop({
+    kind: "unjudged",
+    enabled: true,
+    installed: true,
+    helperPaths: [],
+    reason: "settings.json malformed",
+  });
+  expect(unjudged.value).toEqual({
+    kind: "unjudged",
+    enabled: true,
+    installed: true,
+    helperPaths: [],
+    reason: "settings.json malformed",
+  });
+});

@@ -1,11 +1,11 @@
 // One layering declaration (architecture.json at the repo root), two readers: the lint
-// (test/architecture.test.ts) and the module map (scripts/docs_arch.ts, spliced into
+// (test/utils/architecture.test.ts) and the module map (scripts/docs_arch.ts, spliced into
 // docs/architecture.md). The lint fails in both directions so the declaration cannot rot:
 //   an import between layers with no declared edge  -> "forbidden import"
 //   a declared edge no file draws                   -> "stale allowance"
 //   a graph file no layer owns                      -> "belongs to no layer"
 //
-// The import graph itself comes from deno (`deno info --json`, test/architecture.test.ts), so an
+// The import graph itself comes from deno (`deno info --json`, test/utils/architecture.test.ts), so an
 // edge is exactly what deno resolves: static, type-only, re-export, side-effect, and
 // string-literal dynamic imports alike. Imports inside one layer are not edges.
 import { readFileSync } from "node:fs";

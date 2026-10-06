@@ -60,7 +60,7 @@ export const MATERIALIZED_ASSET_DIRS = [
 /** Materialized as individual files: the `src/scripts` shims import these, and the sidecar deno
  *  resolves them on real disk in the install root, so a missing one kills the daemon at module
  *  load. The shims' full local import closure OUTSIDE the materialized dirs, pinned
- *  bidirectionally by test/installer_pinning.test.ts. */
+ *  bidirectionally by test/install/installer_pinning.test.ts. */
 export const MATERIALIZED_ASSET_FILES = [
   "src/copilot_api/config.ts",
   "src/copilot_api/config_registry.ts",

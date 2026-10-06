@@ -36,7 +36,7 @@ function excludedDirs(root: string): RegExp {
 /** Regular files (never symlinks, FIFOs or sockets) under `root` as sorted repo-relative posix
  *  paths. `skip` prunes excluded directories before the walk enters them (node's recursive
  *  readdir has no prune and walks node_modules whole; its glob skips dotfiles). Suffixes match
- *  case-insensitively, as Windows filesystems do. Exported for test/lint_shell.test.ts. */
+ *  case-insensitively, as Windows filesystems do. Exported for test/shell/lint_shell.test.ts. */
 export function discoverLintTargets(root: string, kind: LintKind): string[] {
   const { suffixes, always } = DISCOVERY[kind];
   // Resolved once: the walk spells entry paths from the root it is given, and the pattern must

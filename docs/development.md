@@ -58,7 +58,7 @@ Facts the tests rest on, verified against the installed releases:
 
 ### Real CLIs against the fake
 
-`test/claude_cli_live.test.ts` and `test/codex_cli_live.test.ts` run the installed CLIs with the Direct probe's own argv against the fake, in a scratch HOME, and pin the output shapes our probe and health checks parse. On a machine without a binary they skip; CI installs both through `.github/actions/install-agent-clis` and sets `COPILOT_ENV_LIVE_CLIS=1`, which turns a missing binary into a failure.
+`test/health/claude_cli_live.test.ts` and `test/health/codex_cli_live.test.ts` run the installed CLIs with the Direct probe's own argv against the fake, in a scratch HOME, and pin the output shapes our probe and health checks parse. On a machine without a binary they skip; CI installs both through `.github/actions/install-agent-clis` and sets `COPILOT_ENV_LIVE_CLIS=1`, which turns a missing binary into a failure.
 
 The nightly runs through repo-platform's fleet nightly module (`nightly` in `.repo-platform.yml`; the repo-owned `.github/workflows/nightly.yml`). It installs the latest CLI releases and runs only those two files.
 

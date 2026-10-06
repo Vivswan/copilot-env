@@ -1,5 +1,5 @@
 // `deno task compile`: the release binaries and dist/checksums.txt. The --include list is NOT
-// here: deno.json's `compile.include` owns it (test/installer_pinning.test.ts pins it to
+// here: deno.json's `compile.include` owns it (test/install/installer_pinning.test.ts pins it to
 // installer.ts's asset lists), and a CLI --include MERGES with the config's list rather than
 // replacing it, so a second copy would silently union.
 import { fileURLToPath } from "node:url";

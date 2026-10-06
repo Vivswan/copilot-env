@@ -356,7 +356,7 @@ export function parseIntegrationIdPin(raw: string): string {
 }
 
 /** Lives here rather than in src/usage/pricing.ts because this module sits in the daemon shims' import
- *  closure and the usage layer must not (test/installer_pinning.test.ts). */
+ *  closure and the usage layer must not (test/install/installer_pinning.test.ts). */
 export const OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models";
 
 /** The data file behind GitHub's Copilot models-and-pricing docs page: the page renders this list

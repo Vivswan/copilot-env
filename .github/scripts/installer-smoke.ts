@@ -221,7 +221,7 @@ function verifyLauncherWiring(launcher: string): void {
   }
   const envArgs = isWindows ? ["profile", "env", "--format", "powershell"] : ["profile", "env"];
   const emitted = launcherOutput(launcher, envArgs);
-  // The same source constant test/env.test.ts pins verbatim, so the smoke can
+  // The same source constant test/commands/env.test.ts pins verbatim, so the smoke can
   // never assert a spelling the emitter no longer produces.
   const expected = launcherFunctionLines(isWindows);
   const missing = expected.filter((line) => emitted === null || !emitted.includes(line));
@@ -338,7 +338,7 @@ function verifyCompiledHealth(launcher: string): void {
  * Offline.
  *
  *   provisioned copy planted       -> passes on a runner image with no PATH deno; the
- *                                     PATH-vs-provisioned precedence is test/sidecar.test.ts's
+ *                                     PATH-vs-provisioned precedence is test/copilot_api/sidecar.test.ts's
  *   nothing under the daemon home  -> generating the daemon config is part of the proof
  */
 function verifySidecarDaemonSpawn(launcher: string): void {

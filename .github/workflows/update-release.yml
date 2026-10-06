@@ -88,7 +88,7 @@ jobs:
     # that runs `agent update` or `copilot-env migrate` for real: migrations mutate
     # the invoking HOME (agent configs, credential store, shell rc files) and have
     # no dry-run, so on a runner they would rewrite state no assertion here owns.
-    # The update path is covered by test/update_apply.test.ts, which drives it
+    # The update path is covered by test/install/update_apply.test.ts, which drives it
     # against a throwaway root.
     steps:
       - name: Download the uploaded release assets

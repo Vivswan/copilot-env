@@ -1,4 +1,4 @@
-// The profile contract shared by the profiler (scripts/usage_profile.ts) and the generator
+// The profile contract shared by the profiler (scripts/usage/profile.ts) and the generator
 // (usage_fixtures.ts): the strict schema, the closed label sets its record keys may carry, and
 // the quantile table both sides speak. Nothing here reads a file or draws a random number.
 import * as v from "valibot";

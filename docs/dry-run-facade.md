@@ -58,7 +58,7 @@ flowchart LR
 
 The seam is synchronous and node:fs-shaped: the codes on the thrown errors (`ENOENT`, `EEXIST`, `EISDIR`, `ENOTDIR`, `ENOTEMPTY`, `ERR_FS_EISDIR`) are the platform's own, so a caller's catch logic reads the same in both modes.
 
-Demonstrated by: [test/fs_facade.test.ts](../test/fs_facade.test.ts).
+Demonstrated by: [test/utils/fs_facade.test.ts](../test/utils/fs_facade.test.ts).
 
 Two lint rules in `test/lint/no_unreported_fs_writes.ts` keep it the one seam: `no-unreported-fs-writes` refuses a raw node:fs or Deno write anywhere else in `src/`, and `no-raw-fs-reads` refuses a raw read (a file handle included, whatever its flags).
 

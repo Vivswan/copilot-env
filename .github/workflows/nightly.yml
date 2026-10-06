@@ -62,7 +62,7 @@ jobs:
           COPILOT_ENV_LIVE_CLIS: "1"
         run: |
           set -o pipefail
-          timeout --kill-after=30 10m deno test -P=test test/claude_cli_live.test.ts test/codex_cli_live.test.ts 2>&1 \
+          timeout --kill-after=30 10m deno test -P=test test/health/claude_cli_live.test.ts test/health/codex_cli_live.test.ts 2>&1 \
             | tee nightly-evidence/test-log.txt
 
       # The tracking issue links this run; the run carries the evidence.

@@ -2,10 +2,10 @@
 // runtime imports. A `--preload` shim runs inside the proxy daemon, and pulling
 // a CLI module in with it would drag the whole CLI layer into that process --
 // which is why each shim re-declares its env-key/header contracts as local
-// literals (pinned against the CLI constants by test/daemon_env_keys.test.ts).
+// literals (pinned against the CLI constants by test/copilot_api/daemon_env_keys.test.ts).
 //
 // The rule is registered in deno.json so `deno lint` enforces it repo-wide, and
-// unit-tested via Deno.lint.runPlugin in test/daemon_env_keys.test.ts. It scopes
+// unit-tested via Deno.lint.runPlugin in test/copilot_api/daemon_env_keys.test.ts. It scopes
 // itself to SHIM_FILES and no-ops everywhere else; type-only imports are erased
 // at runtime and stay allowed.
 
@@ -23,7 +23,7 @@ function isShimFile(filename: string): boolean {
 }
 
 const WHY =
-  "preload shims stay import-free (a runtime import would drag CLI modules into the daemon process; see test/daemon_env_keys.test.ts)";
+  "preload shims stay import-free (a runtime import would drag CLI modules into the daemon process; see test/copilot_api/daemon_env_keys.test.ts)";
 
 const plugin: Deno.lint.Plugin = {
   name: "copilot-env",

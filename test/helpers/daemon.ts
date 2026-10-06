@@ -118,7 +118,7 @@ export async function killAndAwaitExit(pid: number): Promise<void> {
 
 /**
  * The thrower mimics Deno's NotCapable (name "NotCapable", `code` undefined), what a permission set
- * without --allow-run really throws; test/pid.test.ts pins that shape. Inside `body` every
+ * without --allow-run really throws; test/utils/pid.test.ts pins that shape. Inside `body` every
  * pidLiveness read is "unproven" and every signal fails as it does in the daemon.
  */
 export async function withUnprovablePidProbe(body: () => Promise<void>): Promise<void> {

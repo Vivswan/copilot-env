@@ -910,7 +910,7 @@ test("runCost reads GitHub's card from the stored URL, prices at it, names the c
       deps("not a card", garbledUrl),
     );
     expect(fallback.stderr).toContain(
-      'GitHub rate card could not be read today (rate card line 1 is not a "key: value" row field) and none is cached; priced at OpenRouter rates.',
+      "GitHub rate card could not be read today (the rate card is not a list of rows) and none is cached; priced at OpenRouter rates.",
     );
     expect(fallback.stderr).not.toContain("rates.example");
     expect(fallback.stderr).not.toContain("with-secret-token");

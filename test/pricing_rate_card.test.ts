@@ -105,7 +105,7 @@ const RESHAPED: { name: string; reshape: (text: string) => string; problem: stri
   {
     name: "a column removed",
     reshape: (text) => text.replace(/^ {2}output: .*\n/gm, ""),
-    problem: "the GPT-5 mini row (line 23) has no output price",
+    problem: "the GPT-5 mini row (row 1) has no output price",
   },
   {
     name: "a threshold cell garbled",
@@ -125,7 +125,7 @@ const RESHAPED: { name: string; reshape: (text: string) => string; problem: stri
   {
     name: "a line that is not `key: value`",
     reshape: (text) => text.replace("  provider: openai", "  provider openai"),
-    problem: 'rate card line 24 is not a "key: value" row field',
+    problem: "rate card is not YAML: Cannot read a block mapping entry",
   },
   {
     name: "a long-context row without its default row",
@@ -153,7 +153,19 @@ const RESHAPED: { name: string; reshape: (text: string) => string; problem: stri
     // A repeated key would let the later, valid-looking cell hide the one that is not.
     name: "a repeated field in one row",
     reshape: (text) => text.replace("  input: $4.00\n", "  input: $4000.00\n  input: $4.00\n"),
-    problem: "rate card line 140 repeats input",
+    problem: "rate card is not YAML: Cannot store mapping pair: duplicated key",
+  },
+  {
+    // A file with no rows is not an empty card: that would price every model from the list and
+    // be cached for a day.
+    name: "every row removed",
+    reshape: (text) => text.split(/\n(?=- model:)/)[0]!,
+    problem: "the rate card is not a list of rows",
+  },
+  {
+    name: "an empty list",
+    reshape: () => "[]\n",
+    problem: "the rate card has no rows",
   },
 ];
 

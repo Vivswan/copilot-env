@@ -5,6 +5,7 @@
 
 import { createHash } from "node:crypto";
 import { join } from "node:path";
+import { parse as parseYaml } from "@std/yaml";
 import * as v from "valibot";
 import { canonicalPricingUrl } from "../copilot_api/config_registry.ts";
 import { usageIndexDir } from "../copilot_api/paths.ts";
@@ -96,11 +97,14 @@ const DISPLAY_NAME_IDS: ReadonlyMap<string, string | null> = new Map([
 
 // ---------- the data file ----------
 
-// The file is a YAML list of flat maps, one per row, every scalar on its own line; that is all the
-// grammar read here. Anything else on a non-blank, non-comment line is a reshaped file, and a
-// reshaped file is not priced from.
-const ROW_START = /^- ([a-z_]+): (.*)$/;
-const ROW_FIELD = /^ {2}([a-z_]+): (.*)$/;
+// The file is a YAML list of flat maps of text cells, one per row. Anything else (a cell that is a
+// number or empty, a row without a model, a document that is not a list or an empty one) is a
+// reshaped file, and a reshaped file is not priced from.
+const ROW_SCHEMA = v.objectWithRest({ model: v.string() }, v.string());
+const CARD_SCHEMA = v.pipe(
+  v.array(ROW_SCHEMA, "the rate card is not a list of rows"),
+  v.nonEmpty("the rate card has no rows"),
+);
 const PRICE = /^\$(\d+(?:\.\d+)?)$/;
 /** "<= 272K" (the card spells the first with U+2264) or "> 272K"; a zero size is no threshold. */
 const THRESHOLD = /^(\u2264|>) ?([1-9]\d*)K$/;
@@ -108,52 +112,41 @@ const THRESHOLD = /^(\u2264|>) ?([1-9]\d*)K$/;
 const FOOTNOTE = /\[\^[^\]]*\]/g;
 
 interface Row {
-  line: number;
-  fields: Map<string, string>;
+  /** 1-based position on the card; the YAML reader keeps no line numbers. */
+  position: number;
+  cells: v.InferOutput<typeof ROW_SCHEMA>;
 }
 
-function rows(text: string): Row[] {
-  const out: Row[] = [];
-  let current: Row | null = null;
-  const setField = (row: Row, key: string, raw: string, lineNo: number): void => {
-    if (row.fields.has(key)) throw new Error(`rate card line ${lineNo} repeats ${key}`);
-    row.fields.set(key, unquote(raw, lineNo));
-  };
-  text.split("\n").forEach((rawLine, index) => {
-    const line = rawLine.trimEnd();
-    if (line === "" || line.startsWith("#")) return;
-    const lineNo = index + 1;
-    const start = ROW_START.exec(line);
-    if (start !== null) {
-      current = { line: lineNo, fields: new Map() };
-      out.push(current);
-      setField(current, start[1]!, start[2]!, lineNo);
-      return;
-    }
-    const field = current === null ? null : ROW_FIELD.exec(line);
-    if (field === null) throw new Error(`rate card line ${lineNo} is not a "key: value" row field`);
-    setField(current!, field[1]!, field[2]!, lineNo);
-  });
-  return out;
-}
-
-function unquote(raw: string, line: number): string {
-  const text = raw.trim();
-  const quote = text[0];
-  if (quote !== "'" && quote !== '"') return text;
-  if (text.length < 2 || !text.endsWith(quote)) {
-    throw new Error(`rate card line ${line} has an unterminated quote`);
+function readRows(text: string): Row[] {
+  let data: unknown;
+  try {
+    data = parseYaml(text);
+  } catch (e) {
+    // The YAML error's first line locates the fault; the lines after it quote the file.
+    const [headline] = errMessage(e).split(":\n");
+    throw new Error(`rate card is not YAML: ${headline}`);
   }
-  return text.slice(1, -1);
+  const parsed = v.safeParse(CARD_SCHEMA, data);
+  if (!parsed.success) throw new Error(describeIssue(parsed.issues[0]));
+  return parsed.output.map((cells, index) => ({ position: index + 1, cells }));
 }
 
-/** "the GPT-5.6 Sol row (line 130)": every parse error names its row this way. */
+function describeIssue(issue: v.BaseIssue<unknown>): string {
+  const [index, cell] = (issue.path ?? []).map((step) => step.key);
+  if (index === undefined) return issue.message;
+  const row = `row ${Number(index) + 1}`;
+  if (cell === undefined) return `${row} is not a map of cells`;
+  if (issue.received === "undefined") return `${row} has no ${cell}`;
+  return `${row} has a ${cell} cell that is not text`;
+}
+
+/** "the GPT-5.6 Sol row (row 14)": every parse error names its row this way. */
 function where(row: Row): string {
-  return `the ${row.fields.get("model") ?? "unnamed"} row (line ${row.line})`;
+  return `the ${row.cells.model} row (row ${row.position})`;
 }
 
 function rateOf(row: Row, key: string, required: boolean): number | undefined {
-  const raw = row.fields.get(key);
+  const raw = row.cells[key];
   if (raw === undefined || raw === NOT_APPLICABLE) {
     if (required) throw new Error(`${where(row)} has no ${key} price`);
     return undefined;
@@ -188,8 +181,8 @@ type Placement =
   | { kind: "long"; promptTokens: number };
 
 function placementOf(row: Row): Placement {
-  const threshold = row.fields.get("threshold");
-  const tier = row.fields.get("tier");
+  const threshold = row.cells.threshold;
+  const tier = row.cells.tier;
   if (threshold === undefined && tier === undefined) return { kind: "flat" };
   if (threshold === undefined || tier === undefined) {
     throw new Error(`${where(row)} names a tier without a threshold, or the reverse`);
@@ -218,16 +211,12 @@ function setOnce<T>(into: Map<string, T>, id: string, value: T, row: Row): void 
 /** Every row is read in full before any is mapped, so a reshaped column anywhere in the file fails
  *  the whole parse rather than the rows it happened to touch. */
 export function parseRateCard(text: string): GitHubRateCard {
-  const parsed = rows(text).map((row) => {
-    const model = row.fields.get("model");
-    if (model === undefined) throw new Error(`the row at line ${row.line} has no model`);
-    return {
-      row,
-      name: model.replace(FOOTNOTE, "").trim(),
-      tier: tierOf(row),
-      at: placementOf(row),
-    };
-  });
+  const parsed = readRows(text).map((row) => ({
+    row,
+    name: row.cells.model.replace(FOOTNOTE, "").trim(),
+    tier: tierOf(row),
+    at: placementOf(row),
+  }));
   const rates = new Map<string, PricingTier>();
   const longContext = new Map<string, LongContextTier>();
   const defaultThresholds = new Map<string, number>();

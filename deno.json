@@ -37,6 +37,7 @@
     "@std/expect": "jsr:@std/expect@^1.0.20",
     "@std/fs": "jsr:@std/fs@^1.0.24",
     "@std/testing": "jsr:@std/testing@^1.0.21",
+    "@std/yaml": "jsr:@std/yaml@^1.3.0",
     "commander": "npm:commander@^15.0.0",
     "consola": "npm:consola@^3.4.2",
     "memfs": "npm:memfs@4.79.0",

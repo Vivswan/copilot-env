@@ -5,6 +5,7 @@
 // The lookup is anonymous on purpose: the stored credential exists to reach Copilot, and a token
 // exported in the shell may belong to another account. The anonymous limit (60/hour/IP) covers a
 // lookup that runs once per `--check` or per autoupdate cooldown.
+import { retry } from "@std/async";
 import { SECONDS_PER_DAY } from "../utils/time.ts";
 import { COPILOT_ENV_USER_AGENT } from "../utils/user_agent.ts";
 
@@ -73,28 +74,31 @@ export interface ResolveOptions {
   retryBaseMs?: number;
 }
 
-const sleep = (ms: number): Promise<void> =>
-  ms <= 0 ? Promise.resolve() : new Promise((resolve) => setTimeout(resolve, ms));
-
 /** A non-retryable response (401/404) gives up immediately: retrying would not fix it. */
 async function fetchReleasesText(
   url: string,
   fetchImpl: typeof fetch,
   base: number,
 ): Promise<string | null> {
-  for (let attempt = 1; attempt <= MAX_FETCH_ATTEMPTS; attempt++) {
-    let retryable = true;
-    try {
+  // A non-retryable status returns null from the callback: to `retry` that is a success, so it
+  // comes straight back after one attempt. The old loop had no ceiling on the backoff, so none
+  // here either: the library's default of 60s would refuse any `retryBaseMs` above it.
+  try {
+    return await retry(async () => {
       const res = await fetchImpl(url, { headers: GH });
       if (res.ok) return await res.text();
-      retryable = RETRYABLE_STATUSES.has(res.status);
-    } catch {
-      retryable = true; // network / DNS / connection reset
-    }
-    if (!retryable || attempt === MAX_FETCH_ATTEMPTS) return null;
-    await sleep(base * 2 ** (attempt - 1) + Math.floor(Math.random() * (base + 1)));
+      if (RETRYABLE_STATUSES.has(res.status)) throw new Error(`GitHub API ${res.status}`);
+      return null;
+    }, {
+      maxAttempts: MAX_FETCH_ATTEMPTS,
+      minTimeout: base,
+      maxTimeout: Number.POSITIVE_INFINITY,
+      multiplier: 2,
+      jitter: 1,
+    });
+  } catch {
+    return null; // a thrown fetch (network / DNS / connection reset) or the attempts ran out
   }
-  return null;
 }
 
 export async function resolveTarget(

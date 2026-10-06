@@ -1,120 +1,40 @@
 export const SECONDS_PER_DAY = 24 * 60 * 60;
 export const MILLISECONDS_PER_DAY = SECONDS_PER_DAY * 1000;
-const MILLISECONDS_PER_HOUR = 60 * 60 * 1000;
 
 /** `ms -> "YYYY-MM-DD"`, bound to one timezone. */
 export type DayKey = (ms: number) => string;
 
-const pad = (n: number): string => String(n).padStart(2, "0");
-
-/** The two day computations in one zone: the key a usage row is bucketed under and the midnight
- *  a calendar window starts at. They share one zone so the cutoff can never fall mid-bucket. */
-interface ZoneClock {
-  dayKey: DayKey;
-  /** The first instant of the calendar day `daysBack` days before the one holding `ms`. */
-  startOfDay: (ms: number, daysBack: number) => number;
+/** `ms` on the zone's wall clock. An unknown zone throws RangeError here. */
+function wallClock(ms: number, timeZone: string): Temporal.ZonedDateTime {
+  return Temporal.Instant.fromEpochMilliseconds(ms).toZonedDateTimeISO(timeZone);
 }
 
-/** Date's own accessors: this is the hot path (one call per aggregated usage row) and the half that
- *  follows the process `TZ`. A DST day is not 24 hours here (a 30 minute shift makes it 23.5 or
- *  24.5): the cutoff is a real local midnight. */
-const SYSTEM_CLOCK: ZoneClock = {
-  dayKey: (ms) => {
-    const d = new Date(ms);
-    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-  },
-  startOfDay: (ms, daysBack) => {
-    const d = new Date(ms);
-    return new Date(d.getFullYear(), d.getMonth(), d.getDate() - daysBack).getTime();
-  },
-};
-
-/** A named zone's rules are fixed for the life of the process, so caching by name is safe; the
- *  system zone follows `TZ`, which is why SYSTEM_CLOCK is not in here. */
-const CLOCK_BY_ZONE = new Map<string, ZoneClock>();
-
-const WALL_CLOCK_FIELDS = ["year", "month", "day", "hour", "minute", "second"] as const;
-type WallClock = Record<typeof WALL_CLOCK_FIELDS[number], number>;
-
-/** One Intl formatter per zone, read by named part so field order cannot leak into the key. */
-function intlClock(timeZone: string): ZoneClock {
-  // "en-US" pins a Gregorian, latin-digit calendar whatever the host locale; h23 keeps midnight
-  // "00", never "24". An unknown zone throws RangeError right here, up front.
-  const formatter = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hourCycle: "h23",
-  });
-  const wallClock = (ms: number): WallClock => {
-    const parts = formatter.formatToParts(new Date(ms));
-    const read = (type: Intl.DateTimeFormatPartTypes): number =>
-      Number(parts.find((p) => p.type === type)?.value);
-    return Object.fromEntries(WALL_CLOCK_FIELDS.map((f) => [f, read(f)])) as WallClock;
-  };
-  /** The zone's wall-clock reading of `ms`, as the UTC instant with the same digits. */
-  const wallUtc = (ms: number): number => {
-    const w = wallClock(ms);
-    return Date.UTC(w.year, w.month - 1, w.day, w.hour, w.minute, w.second);
-  };
-  /** To the second the formatter resolves. */
-  const offsetAt = (ms: number): number => wallUtc(ms) - Math.floor(ms / 1000) * 1000;
-  const dayKey: DayKey = (ms) => {
-    const w = wallClock(ms);
-    return `${w.year}-${pad(w.month)}-${pad(w.day)}`;
-  };
-  return {
-    dayKey,
-    startOfDay: (ms, daysBack) => {
-      const w = wallClock(ms);
-      const midnight = Date.UTC(w.year, w.month - 1, w.day - daysBack);
-      // Each offset in force within a day of the target midnight places it at one instant, and
-      // Date takes the earliest that reads at or past it: the first of a repeated midnight, or
-      // where the clock landed when a change skipped it (an hour, or Samoa's whole day). No zone
-      // holds an offset for under an hour, so hourly samples see every offset.
-      const offsets = new Set<number>();
-      for (let t = -MILLISECONDS_PER_DAY; t <= MILLISECONDS_PER_DAY; t += MILLISECONDS_PER_HOUR) {
-        offsets.add(offsetAt(midnight + t));
-      }
-      const readings = [...offsets]
-        .map((offset) => midnight - offset)
-        .filter((instant) => wallUtc(instant) >= midnight);
-      return Math.min(...readings);
-    },
-  };
-}
-
-function clockIn(timeZone?: string): ZoneClock {
-  if (timeZone === undefined) return SYSTEM_CLOCK;
-  const cached = CLOCK_BY_ZONE.get(timeZone);
-  if (cached !== undefined) return cached;
-  const clock = intlClock(timeZone);
-  CLOCK_BY_ZONE.set(timeZone, clock);
-  return clock;
+/** Resolved per call, not once: the process zone follows `TZ`. */
+function zoneOf(timeZone: string | undefined): string {
+  return timeZone ?? Temporal.Now.timeZoneId();
 }
 
 /**
- * JS, never SQLite's `localtime`: the libc zone behind SQLite is cached at first use, while `Date`
- * honors `TZ`. Resolve once and pass the result down; resolved per row, an unknown zone throws
- * inside a reader's per-file catch and silently costs the report its per-day split.
- * test/time.test.ts pins the Intl and Date halves together.
+ * JS, never SQLite's `localtime`: the libc zone behind SQLite is cached at first use, while
+ * Temporal honors `TZ`. Resolve once and pass the result down; resolved per row, an unknown zone
+ * throws inside a reader's per-file catch and silently costs the report its per-day split.
  */
 export function dayKeyIn(timeZone?: string): DayKey {
-  return clockIn(timeZone).dayKey;
+  if (timeZone !== undefined) wallClock(0, timeZone); // rejects an unknown zone now, not at the first row
+  return (ms) => wallClock(ms, zoneOf(timeZone)).toPlainDate().toString();
 }
 
 export function localDayKey(ms: number, timeZone?: string): string {
   return dayKeyIn(timeZone)(ms);
 }
 
-/** Local midnight `daysBack` days before the day holding `ms`, in the named zone or the process
- *  zone, so a calendar cutoff agrees with the per-day split dayKeyIn cuts in the same zone. */
+/** The first instant of a calendar day, so a cutoff agrees with the per-day split dayKeyIn cuts in
+ *  the same zone. A DST day is not 24 hours: the first of a repeated midnight, or where the clock
+ *  landed when a change skipped it (Samoa's whole day, or a half-hour shift's 00:30). */
 export function startOfLocalDay(ms: number, daysBack = 0, timeZone?: string): number {
-  return clockIn(timeZone).startOfDay(ms, daysBack);
+  const zone = zoneOf(timeZone);
+  return wallClock(ms, zone).toPlainDate().subtract({ days: daysBack }).toZonedDateTime(zone)
+    .epochMilliseconds;
 }
 
 /** Once a day: the pacing of every background refresh (the autoupdate preflight, the Codex

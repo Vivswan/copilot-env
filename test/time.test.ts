@@ -26,8 +26,7 @@ test("localDayKey slices the calendar day in the zone it is NAMED, on every plat
 });
 
 test("the named-zone path agrees with the default path for the system's own zone", () => {
-  // localDayKey and startOfLocalDay each have two halves, Date's accessors for the default zone
-  // and an Intl formatter for a named one. If they could disagree, the named-zone assertions
+  // If the named-zone path could disagree with the default path, the named-zone assertions
   // above and in test/cost.test.ts would pin something the production default never does.
   const systemZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   for (
@@ -75,9 +74,6 @@ test("dayKeyIn rejects an unknown zone up front, before any row is bucketed", ()
   // hand back a report whose per-day split had silently vanished.
   expect(() => dayKeyIn("Not/AZone")).toThrow();
   expect(() => dayKeyIn("")).toThrow();
-  // A resolved zone is reusable and stable (the per-zone memo hands back one function).
-  expect(dayKeyIn("UTC")).toBe(dayKeyIn("UTC"));
-  expect(dayKeyIn()).toBe(dayKeyIn(undefined));
 });
 
 test.skipIf(!TZ_PINNABLE)(
@@ -89,11 +85,12 @@ test.skipIf(!TZ_PINNABLE)(
     //   restore by zone name     -> honored
     //   `delete process.env.TZ`  -> every later TZ assignment is ignored
     const savedTz = process.env.TZ ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const key = dayKeyIn(); // kept across the change: the zone resolves per call, not at creation
     try {
       process.env.TZ = "UTC";
-      expect(localDayKey(Date.parse("2026-06-02T01:00:00Z"))).toBe("2026-06-02");
+      expect(key(Date.parse("2026-06-02T01:00:00Z"))).toBe("2026-06-02");
       process.env.TZ = "America/New_York";
-      expect(localDayKey(Date.parse("2026-06-02T01:00:00Z"))).toBe("2026-06-01");
+      expect(key(Date.parse("2026-06-02T01:00:00Z"))).toBe("2026-06-01");
     } finally {
       process.env.TZ = savedTz;
     }

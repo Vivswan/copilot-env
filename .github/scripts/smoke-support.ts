@@ -9,7 +9,7 @@ export const CONTAINER_MARKERS: readonly string[] = ["/.dockerenv", "/run/.conta
 /**
  * Whether the HOME this process sees is throwaway: a container (either marker is a
  * regular file) or a GitHub Actions runner (GITHUB_ACTIONS is exactly "true"). Pure
- * over its inputs; exported for the unit test in test/smoke_scripts.test.ts.
+ * over its inputs; exported for the unit test in test/copilot_api/smoke_scripts.test.ts.
  */
 export function homeIsDisposable(
   githubActions: string | undefined,

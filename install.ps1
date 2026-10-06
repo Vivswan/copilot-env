@@ -70,7 +70,7 @@ if ($PSVersionTable.PSVersion.Major -lt 6) {
 }
 
 # The next line is rewritten to the release tag by .github/scripts/release-assets.ts
-# (byte-exact needle; test/installer_pinning.test.ts guards the match).
+# (byte-exact needle; test/install/installer_pinning.test.ts guards the match).
 $InstallRef = if ($env:COPILOT_ENV_INSTALL_REF) { $env:COPILOT_ENV_INSTALL_REF } else { 'latest' }
 $Repo = 'Vivswan/copilot-env'
 $BinaryName = 'copilot-env.exe'

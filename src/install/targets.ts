@@ -1,6 +1,6 @@
 // Which platforms get a compiled `agent` binary, and what the release asset is called. The ONE
 // source of truth: scripts/compile.ts imports it, and two shell files that cannot are pinned to
-// it by test/installer_pinning.test.ts:
+// it by test/install/installer_pinning.test.ts:
 //   install.sh    resolve_target()   (POSIX platform -> triple)
 //   install.ps1   Resolve-Target     (Windows platform -> triple)
 

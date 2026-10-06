@@ -31,7 +31,7 @@ interface InstallerPin {
 }
 
 // `needle` is the unpinned line byte-exact as it sits in the repo installer; prepare() replaces
-// it with `pinned(tag)` and validate() asserts the result. test/installer_pinning.test.ts pins
+// it with `pinned(tag)` and validate() asserts the result. test/install/installer_pinning.test.ts pins
 // the match at PR time, so an installer reformat fails in CI instead of at release.
 export const INSTALLER_PINS: Record<"install.sh" | "install.ps1", InstallerPin[]> = {
   "install.sh": [
@@ -84,7 +84,7 @@ function main(): void {
   }
 }
 
-// test/installer_pinning.test.ts imports INSTALLER_PINS, so nothing runs on import.
+// test/install/installer_pinning.test.ts imports INSTALLER_PINS, so nothing runs on import.
 if (import.meta.main) {
   try {
     main();

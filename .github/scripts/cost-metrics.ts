@@ -51,7 +51,7 @@ const FAILURE_SUMMARY_LINES = 200;
 const FAILURE_SUMMARY_BYTES = 8 * 1024;
 const DEFAULT_TREE_MB = 1024;
 const DEFAULT_SEED = 1;
-const DEFAULT_FIXTURES_SCRIPT = "scripts/usage_fixtures.ts";
+const DEFAULT_FIXTURES_SCRIPT = "scripts/usage/fixtures.ts";
 /** A child that outlives this has wedged; `deno ci` and a 1 GB scan both finish well inside. */
 const DEFAULT_CHILD_TIMEOUT_MS = 20 * 60 * 1000;
 
@@ -1094,7 +1094,7 @@ async function main(argv: readonly string[]): Promise<number> {
   }
 }
 
-// test/cost_metrics.test.ts imports the pure functions, so nothing runs on import.
+// test/usage/cost_metrics.test.ts imports the pure functions, so nothing runs on import.
 if (import.meta.main) {
   try {
     process.exit(await main(process.argv.slice(2)));

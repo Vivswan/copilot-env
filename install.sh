@@ -6,7 +6,7 @@
 set -eu
 
 # The next line is rewritten to the release tag by .github/scripts/release-assets.ts
-# (byte-exact needle; test/installer_pinning.test.ts guards the match).
+# (byte-exact needle; test/install/installer_pinning.test.ts guards the match).
 INSTALL_REF="${COPILOT_ENV_INSTALL_REF:-latest}"
 REPO="Vivswan/copilot-env"
 BINARY_NAME="copilot-env"

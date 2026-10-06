@@ -233,6 +233,6 @@ export function outcomeOf<T>(fn: () => T): Outcome<T> {
 }
 
 /** Deno honors a runtime `process.env.TZ` on unix only; on Windows the zone comes from the OS.
- *  Guards one test, test/time.test.ts's "the DEFAULT zone honors the process TZ"; every other day
+ *  Guards one test, test/utils/time.test.ts's "the DEFAULT zone honors the process TZ"; every other day
  *  computation names its IANA zone instead. */
 export const TZ_PINNABLE = Deno.build.os !== "windows";

@@ -137,7 +137,7 @@ export function copilotApiArgv(
   ];
 }
 
-// THE daemon signature, pinned by test/daemon_spawn.test.ts. The sweep SIGKILLs what it matches, so every
+// THE daemon signature, pinned by test/copilot_api/daemon_spawn.test.ts. The sweep SIGKILLs what it matches, so every
 // tolerance below biases against false positives: a substring match once killed an agent CLI whose prompt
 // text mentioned copilot-api and start. A match needs a whole daemon-shaped invocation:
 //   runtime (DAEMON_RUNTIMES)  -> from the process table, never argv text
@@ -179,19 +179,19 @@ const DAEMON_CMDLINE_PATTERN =
   `(?:"[^"]*[\\\\/]copilot-api[^"]*"|${ENTRY_TOKEN})\\s+start(?:\\s|$)`;
 const DAEMON_CMDLINE_RE = new RegExp(DAEMON_CMDLINE_PATTERN);
 
-/** Exported for the impostor/orphan fixtures in test/daemon_spawn.test.ts. */
+/** Exported for the impostor/orphan fixtures in test/copilot_api/daemon_spawn.test.ts. */
 export function isDaemonProcess(row: ProcessRow): boolean {
   if (!(DAEMON_RUNTIMES as readonly string[]).includes(row.ucomm)) return false;
   return DAEMON_INVOCATION_RE.test(row.command);
 }
 
-/** Mirrors the PowerShell `-match` scripts so test/daemon_spawn.test.ts pins the interpolated pattern's semantics. */
+/** Mirrors the PowerShell `-match` scripts so test/copilot_api/daemon_spawn.test.ts pins the interpolated pattern's semantics. */
 export function isDaemonCommandLine(command: string): boolean {
   return DAEMON_CMDLINE_RE.test(command);
 }
 
 /** Also bounds the daemon's own drain: daemon_shutdown.ts keeps a separate literal (it loads in the
- *  daemon, which imports no CLI module) and test/daemon_spawn.test.ts pins the two in order. */
+ *  daemon, which imports no CLI module) and test/copilot_api/daemon_spawn.test.ts pins the two in order. */
 export const DAEMON_SIGKILL_GRACE_MS = 2_000;
 
 /** The launch pipeline's one-second wait: after the cleanup sweep, after a spawn before the pid is
@@ -445,7 +445,7 @@ export function daemonPidsFromRows(
 /**
  * The token-argv preload (src/scripts/token_argv_preload.ts) reads this and splices the token onto
  * process.argv as `--github-token`, keeping the secret off the world-readable command line. The
- * preload is import-free and re-declares the value as a literal; test/daemon_env_keys.test.ts pins the two.
+ * preload is import-free and re-declares the value as a literal; test/copilot_api/daemon_env_keys.test.ts pins the two.
  */
 export const DAEMON_GH_TOKEN_ENV = "COPILOT_ENV_DAEMON_GH_TOKEN";
 

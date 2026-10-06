@@ -31,7 +31,7 @@
 // filesystem command (`rm`, `mv`, `cp`, `del`, `Remove-Item`, ...: spawned directly, or as the
 // first word of a shell's command line). A command the rule cannot read (a variable) passes, since
 // a spawn's command is often computed.
-// Registered in deno.json, unit-tested in test/fs_write_lint.test.ts.
+// Registered in deno.json, unit-tested in test/utils/fs_write_lint.test.ts.
 import { isDenoNamespace, memberName, repoPath } from "./test_tree.ts";
 
 const FS_MODULES = new Set(["node:fs", "node:fs/promises"]);

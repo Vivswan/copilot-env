@@ -3,7 +3,7 @@
 // throughout. Import for the side effect before the first sigstore import;
 // src/install/provenance.ts does.
 //
-// Retire when Deno infers the digest itself: the canary in test/node_crypto_digest_shim.test.ts
+// Retire when Deno infers the digest itself: the canary in test/utils/node_crypto_digest_shim.test.ts
 // asserts the unshimmed call still throws, so its failure is the signal to delete this file and its
 // import.
 import crypto from "node:crypto";

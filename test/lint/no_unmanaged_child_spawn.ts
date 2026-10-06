@@ -10,7 +10,7 @@
 // spawn shape instead would miss a command stored in a variable first, and enumerating
 // entry points would miss `import * as cp`. Type imports are erased, so they stay legal.
 //
-// Registered in deno.json, unit-tested in test/child_spawn_lint.test.ts.
+// Registered in deno.json, unit-tested in test/utils/child_spawn_lint.test.ts.
 import { isDenoNamespace, memberName, testTreePath } from "./test_tree.ts";
 
 /** The files that own a sanctioned construction, relative to the test tree: run.ts, the

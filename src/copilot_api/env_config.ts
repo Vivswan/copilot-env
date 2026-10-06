@@ -41,7 +41,7 @@ export type GlobalPatch = { [K in GlobalMapKey]?: ConfigValueTypes[K] | null };
 export type ProfilePatch = { [K in ProfileMapKey]?: ConfigValueTypes[K] | null };
 
 // The preference commands a message may point at, spelled ONCE. The key is typed, so a renamed key
-// cannot leave a stale hint behind, and test/config_key_lint.test.ts refuses a hand-spelled one.
+// cannot leave a stale hint behind, and test/copilot_api/config_key_lint.test.ts refuses a hand-spelled one.
 
 /** The command a key's write or read belongs to: a named profile's own verbs; with no name, a
  *  profile key is the default profile's (`agent profile set`), and a machine key or a shared

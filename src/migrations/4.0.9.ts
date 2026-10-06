@@ -219,7 +219,7 @@ export const v409CodexProfileFiles: Migration = {
 // section. A reader knows only the new shape, so this is the one place the old names exist.
 
 /** Old stored key, its old CLI spelling, new key. Every old key moves; the profile keys land in the
- *  profile sections. Exported so test/config_key_lint.test.ts can refuse the old spellings anywhere
+ *  profile sections. Exported so test/copilot_api/config_key_lint.test.ts can refuse the old spellings anywhere
  *  outside this directory, the one place they legitimately live. */
 export const PREFERENCE_RENAMES: ReadonlyArray<readonly [string, string, ConfigKey]> = [
   ["alphaSearchCodexPriority", "alpha-search-codex-priority", "proxy.alpha-search.codex-priority"],

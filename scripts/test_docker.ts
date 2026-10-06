@@ -2,7 +2,7 @@
 // structural guarantee behind the lifecycle smoke; for the unit suite it adds a Linux-parity run.
 //
 //   deno task test:docker                        full suite (image CMD)
-//   deno task test:docker test/usage.test.ts     selected files
+//   deno task test:docker test/usage/usage.test.ts     selected files
 //   deno task test:docker --lifecycle            daemon lifecycle smoke, in-container
 //   deno task test:docker --floated-lifecycle    the REAL floated proxy, asserted as far as auth
 //                                                (needs the network; no credential required)

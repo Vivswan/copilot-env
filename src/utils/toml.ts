@@ -1,7 +1,7 @@
 // The one importer of smol-toml: the one place copilot-env reads TOML text and says what a parsed
 // table is, so what the repo accepts is its own decision, never whatever the parser's current
 // release happens to do (1.8 rejected a leading BOM and gave tables Object.prototype; 1.9 skips
-// the BOM and gives them a null prototype). test/toml.test.ts keeps every other site out.
+// the BOM and gives them a null prototype). test/utils/toml.test.ts keeps every other site out.
 import { parse } from "smol-toml";
 import { isRecord } from "./json.ts";
 

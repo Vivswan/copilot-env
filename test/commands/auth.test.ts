@@ -14,6 +14,7 @@ import {
 import { type IdentityTableInput, identityTableLines } from "../../src/commands/identity.ts";
 import { runPrintProxyToken } from "../../src/commands/proxy_token.ts";
 import {
+  accountSourceLabel,
   Credential,
   credentialSourceLabel,
   type GhAccountsLook,
@@ -38,8 +39,7 @@ import {
 import {
   COPILOT_OAUTH_CLIENT_ID,
   COPILOT_OAUTH_SCOPE,
-  GITHUB_ACCESS_TOKEN_URL,
-  GITHUB_DEVICE_CODE_URL,
+  GITHUB_GRAPHQL_URL,
   githubDeviceFlowLogin,
   githubLoginLook,
   setGithubLoginFetch,
@@ -80,6 +80,7 @@ function isolate(): { claudeHome: string; codexHome: string } {
     ghu_env_value: "octocat",
     ghu_x: "octocat",
     ghu_new: "octocat",
+    ghu_stored123: "octocat",
   });
   return { claudeHome: homes.claudeHome, codexHome: homes.codexHome };
 }
@@ -229,14 +230,36 @@ test("auth --del, --provider gh-env, and --set land exactly in the store and wri
   }
 });
 
-test("auth --check: a configured provider reports authenticated, exit 0", async () => {
+test("auth --check: a configured provider reports authenticated with its account, exit 0", async () => {
   isolate();
   state().setCredential(null, { kind: "stored", provider: "gh-token", token: "ghu_stored123" });
   const out = await captureStdout(() => runAuth({ check: true }));
-  // The status line is human copy, so only the parenthesized provider identifier is pinned (the
-  // parens keep a longer name like "gh-token-file" from matching); exit 0 is the machine contract.
-  expect(out).toContain("(gh-token)");
+  // The status line is human copy, so only the parenthesized source is pinned; exit 0 is the
+  // machine contract.
+  expect(out).toContain("(gh-token as octocat)");
   expect(process.exitCode).toBe(0);
+  // The account is a label, never a gate: a token GitHub rejects still reports the stored
+  // provider as authenticated (exit 0) and says why the account is missing.
+  state().setCredential(null, { kind: "stored", provider: "gh-token", token: "ghu_unknown" });
+  const unverified = await captureStdout(() => runAuth({ check: true }));
+  expect(unverified).toContain(
+    "(gh-token; account unverified: GitHub rejected it, HTTP 401)",
+  );
+  expect(process.exitCode).toBe(0);
+});
+
+test("auth (bare) on a recorded provider names the account, then the switch hint on its own line", async () => {
+  isolate();
+  state().setCredential(null, { kind: "stored", provider: "gh-token", token: "ghu_stored123" });
+  const err = await captureStderr(() => runAuth({}));
+  const lines = err.split("\n").filter((line) => line.trim() !== "");
+  expect(lines[0]).toContain("Already authenticated (gh-token as octocat).");
+  expect(lines[0]).not.toContain("Switch with");
+  // The logger renders the backticks away; the sentence is what is pinned.
+  expect(lines[1]).toContain(
+    "Switch with agent auth --provider <copilot|gh-cli|gh-token|gh-env>, or clear it with " +
+      "agent auth --del.",
+  );
 });
 
 test("auth (bare) keys idempotency on the RECORDED provider: recorded, nothing runs; none, the flow runs even when gh works", async () => {
@@ -1586,6 +1609,31 @@ test("liveCredentialSourceLabel: an auto slot SAYS auto and lists what it may us
   ).toBe("gh-cli as work-bot");
 });
 
+test("accountSourceLabel: a missed look's raw error text stays bracket-free, and no kind probes the other's source", async () => {
+  const stored = { kind: "stored", provider: "gh-env", token: "ghu_env_value" } as const;
+  const gh = () => {
+    throw new Error("a stored token never probes gh");
+  };
+  // The callers wrap the label in their one paren level, so an OS error's own parens would nest.
+  expect(
+    await accountSourceLabel(
+      stored,
+      gh,
+      () =>
+        Promise.resolve({
+          login: null,
+          detail: "GitHub could not be reached: dns error (os error 2)",
+        }),
+    ),
+  ).toBe("gh-env; account unverified: GitHub could not be reached: dns error, os error 2");
+  // A gh-cli slot's account comes from gh, so it never costs a GitHub call (and works offline).
+  const github = () => {
+    throw new Error("a gh-cli slot must not ask GitHub");
+  };
+  expect(await accountSourceLabel({ kind: "gh-cli", ghUser: "work-bot" }, gh, github))
+    .toBe("gh-cli as work-bot");
+});
+
 test("credentialSourceLabel: a pinned gh account is named, bracket-free", () => {
   // The static half of the read-back label: BRACKET-FREE by contract (the
   // surfaces wrap it in their one paren level; nested brackets are unreadable).
@@ -1636,11 +1684,24 @@ test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
 
 // --- the device flow -----------------------------------------------------------------------------
 
+// GitHub's two device-flow endpoints, where the library's requests leave the program.
+const GITHUB_DEVICE_CODE_URL = "https://github.com/login/device/code";
+const GITHUB_ACCESS_TOKEN_URL = "https://github.com/login/oauth/access_token";
+
 /** GitHub's two device-flow endpoints, answering per `polls` in order (the last answer repeats). */
 function stubDeviceFlow(polls: Array<Record<string, unknown>>): void {
   let poll = 0;
   setGithubLoginFetch((input, init) => {
     const body = JSON.parse(String(init?.body));
+    if (input === GITHUB_GRAPHQL_URL) {
+      // The landed token's account line: the device-flow token reads as octocat's.
+      const token = new Headers(init?.headers).get("authorization")?.replace(/^Bearer /, "");
+      return Promise.resolve(
+        token === "gho_device"
+          ? Response.json({ data: { viewer: { login: "octocat" } } })
+          : new Response('{"message":"Bad credentials"}', { status: 401 }),
+      );
+    }
     if (input === GITHUB_DEVICE_CODE_URL) {
       expect(body).toEqual({ client_id: COPILOT_OAUTH_CLIENT_ID, scope: COPILOT_OAUTH_SCOPE });
       return Promise.resolve(Response.json({
@@ -1667,10 +1728,14 @@ function stubDeviceFlow(polls: Array<Record<string, unknown>>): void {
 
 test("auth --provider copilot lands the device-flow token in the slot and leaves no token file behind", async () => {
   const { claudeHome } = isolate();
-  stubDeviceFlow([{ error: "authorization_pending" }, { access_token: "gho_device" }]);
+  stubDeviceFlow([{ error: "authorization_pending" }, {
+    access_token: "gho_device",
+    scope: "read:user",
+  }]);
   const announced = await captureStderr(() => runAuth({ provider: "copilot" }));
   expect(announced).toContain("https://github.com/login/device");
   expect(announced).toContain("ABCD-EFGH");
+  expect(announced).toContain("Using the device-flow token as octocat.");
   expect(state().read()).toMatchObject({ githubToken: "gho_device", authProvider: "copilot" });
   // The store is the ONLY landing: nothing under the root home or the daemon home carries the token.
   const root = new CopilotApiPaths();
@@ -1680,20 +1745,16 @@ test("auth --provider copilot lands the device-flow token in the slot and leaves
   expect(existsSync(join(claudeHome, "settings.json"))).toBe(false);
 });
 
-test("githubDeviceFlowLogin: waits through slow_down at GitHub's longer interval, and ends on any other refusal", async () => {
+test("githubDeviceFlowLogin: GitHub's refusal surfaces with its own description, not the library's wrapper", async () => {
   isolate();
-  const waits: number[] = [];
-  const sleep = (ms: number) => {
-    waits.push(ms);
-    return Promise.resolve();
-  };
-  const announce = () => {};
-  stubDeviceFlow([{ error: "slow_down" }, { access_token: "gho_late" }]);
-  expect(await githubDeviceFlowLogin({ sleep, announce })).toBe("gho_late");
-  // interval 0 -> 0 ms, then +5 s after slow_down.
-  expect(waits).toEqual([0, 5000]);
-  stubDeviceFlow([{ error: "access_denied", error_description: "The user denied the request." }]);
-  await expect(githubDeviceFlowLogin({ sleep, announce })).rejects.toThrow(
-    "device-flow login failed: The user denied the request.",
+  // The library wraps a refusal as `<description> (<error>, <uri>)` on a RequestError; the user
+  // reads GitHub's sentence alone.
+  stubDeviceFlow([{
+    error: "access_denied",
+    error_description: "The user denied the request.",
+    error_uri: "https://docs.github.com/apps/oauth",
+  }]);
+  await expect(githubDeviceFlowLogin({ announce: () => {} })).rejects.toThrow(
+    /^device-flow login failed: The user denied the request\.$/,
   );
 });

@@ -5,12 +5,12 @@ import { createInterface } from "node:readline";
 import { Writable } from "node:stream";
 import { wireBothAgents } from "../agents/profile_wiring.ts";
 import {
+  accountSourceLabel,
   Credential,
   type GhAccountsLook,
   ghAccountsLook,
   ghAuthTokenLook,
   type GhTokenLook,
-  liveCredentialSourceLabel,
 } from "../copilot_api/credential.ts";
 import { stopTrackedProxy } from "../copilot_api/daemon.ts";
 import { configSetCommand, CopilotEnvConfig } from "../copilot_api/env_config.ts";
@@ -322,7 +322,7 @@ export async function chooseGhAccount(
  *  single store write is the only place it lands, so no proxy-side token file exists to drift from
  *  the store. The prompt goes to stderr like every other narration. */
 async function loginWithCopilot(): Promise<string> {
-  return await githubDeviceFlowLogin({
+  const token = await githubDeviceFlowLogin({
     announce: (code) => {
       logger.info(
         `  Open ${cyan(code.verificationUri)} and enter the code ${cyan(code.userCode)} ` +
@@ -330,6 +330,10 @@ async function loginWithCopilot(): Promise<string> {
       );
     },
   });
+  // The same account line as the token providers, so every landing names who it is.
+  const look = await githubLoginLook(token);
+  logger.success(`  Using ${tokenLabel("the device-flow token", token, look)}.`);
+  return token;
 }
 
 /** consola's text prompt echoes input and has no masked variant, and its confirm takes two lines, so
@@ -772,10 +776,10 @@ async function runDel(profile: Profile): Promise<() => void> {
   };
 }
 
-function runCheck(profile: Profile): void {
+async function runCheck(profile: Profile): Promise<void> {
   // The exit code is the machine contract; the status line goes to stdout like its peers `agent
-  // profile check --codex|--claude`. The default output is byte-identical to before profiles existed (flag
-  // and label are empty).
+  // profile check --codex|--claude` and names the account (a label: a missed look never changes
+  // the exit code). The default output has no profile flag or label.
   const credential = new Credential(undefined, profile);
   const { provider, resolves } = credential.status();
   const authCommand = agentAuthCommand(profile);
@@ -789,7 +793,7 @@ function runCheck(profile: Profile): void {
     process.exitCode = 1;
     return;
   }
-  const source = liveCredentialSourceLabel(credential.read()) ?? provider;
+  const source = await accountSourceLabel(credential.read()) ?? provider;
   if (resolves) {
     printWrapped(`authenticated (${source})${label}`);
     process.exitCode = 0;
@@ -913,7 +917,7 @@ export async function runAuth(args: AuthArgs): Promise<void> {
       }
       return;
     case "check":
-      runCheck(action.profile);
+      await runCheck(action.profile);
       return;
     case "identities": {
       const token = resolveOrReport(action.profile);
@@ -963,14 +967,17 @@ async function runAuthenticate(
     const credential = new Credential(undefined, profile);
     const { provider, resolves } = credential.status();
     if (provider !== null && resolves) {
-      const source = liveCredentialSourceLabel(credential.read()) ?? provider;
+      // Names the account like every landing does; the look is a label, never a gate.
+      const source = await accountSourceLabel(credential.read()) ?? provider;
       return () => {
-        // The default wording is an output contract -- keep it byte-identical.
         const auth = agentAuthCommand(profile);
         logger.success(
           `Already authenticated (${source}${
             profile === null ? "" : `, ${profileLabel(profile)}`
-          }). Switch with \`${auth} --provider <${PROVIDER_CHOICES}>\`, or clear it with ` +
+          }).`,
+        );
+        logger.log(
+          `  Switch with \`${auth} --provider <${PROVIDER_CHOICES}>\`, or clear it with ` +
             `\`${auth} --del\`.`,
         );
         noteStaticKeyStale(profile);

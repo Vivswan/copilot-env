@@ -252,11 +252,14 @@ test("auth (bare) on a recorded provider names the account, then the switch hint
   isolate();
   state().setCredential(null, { kind: "stored", provider: "gh-token", token: "ghu_stored123" });
   const err = await captureStderr(() => runAuth({}));
-  const lines = err.split("\n").filter((line) => line.trim() !== "");
+  // The fancy reporter (a TTY) renders the backticks away and the basic one (CI) keeps them and
+  // leads with `[log]`; a set COLUMNS wraps the hint. The two facts pinned read the same under all.
+  const plain = err.replaceAll("`", "");
+  const lines = plain.split("\n").filter((line) => line.trim() !== "");
   expect(lines[0]).toContain("Already authenticated (gh-token as octocat).");
   expect(lines[0]).not.toContain("Switch with");
-  // The logger renders the backticks away; the sentence is what is pinned.
-  expect(lines[1]).toContain(
+  expect(lines[1]?.replace(/^\[log\]/, "").trimStart()).toMatch(/^Switch with /);
+  expect(plain.replace(/\s+/g, " ")).toContain(
     "Switch with agent auth --provider <copilot|gh-cli|gh-token|gh-env>, or clear it with " +
       "agent auth --del.",
   );

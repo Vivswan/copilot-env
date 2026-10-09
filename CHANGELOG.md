@@ -1,5 +1,28 @@
 # Changelog
 
+## [5.0.2](https://github.com/Vivswan/copilot-env/compare/v5.0.1...v5.0.2) (2026-10-09)
+
+
+### Features
+
+* **auth:** every auth surface names the GitHub account ([#468](https://github.com/Vivswan/copilot-env/issues/468)) ([e97553b](https://github.com/Vivswan/copilot-env/commit/e97553bd09d9b596b2f228d235cdbe7974c61068))
+
+
+### Bug Fixes
+
+* **config:** the proxy floor rises to 2.2.2, the first release that writes config.json atomically, so the reader stops retrying ([4d10a2c](https://github.com/Vivswan/copilot-env/commit/4d10a2c03b247ab2cfc5087efeecac5d5b39ccf0))
+* **cost:** price from GitHub's rate card first, OpenRouter for the rest, no built-in table ([#456](https://github.com/Vivswan/copilot-env/issues/456)) ([4ff4d47](https://github.com/Vivswan/copilot-env/commit/4ff4d471746c3ebcb4dac3985f9be676264a481c))
+* **deps:** refresh the lock so the transitive advisories clear ([#467](https://github.com/Vivswan/copilot-env/issues/467)) ([25db7e4](https://github.com/Vivswan/copilot-env/commit/25db7e44859c5d0194687dd5070faea0540e9b72))
+* **hooks:** the pre-commit hook installs nothing and names the bootstrap when a tool is missing ([#438](https://github.com/Vivswan/copilot-env/issues/438)) ([d8f6888](https://github.com/Vivswan/copilot-env/commit/d8f6888b27c2c720ddcbdc24442bff7ca9bb8cca))
+* pre-commit hook only checks, never restages ([#408](https://github.com/Vivswan/copilot-env/issues/408)) ([0c4b871](https://github.com/Vivswan/copilot-env/commit/0c4b8718cb3b967782e2a20fce8c0a2c255d8228))
+* **profile:** reserve prototype and constructor as profile names ([#420](https://github.com/Vivswan/copilot-env/issues/420)) ([6acd248](https://github.com/Vivswan/copilot-env/commit/6acd2483417888c3621a9704668d2dc2b9dc5aaf))
+* **shell:** the bashrc evals nothing when the startup resolution fails, like the PowerShell twin ([#424](https://github.com/Vivswan/copilot-env/issues/424)) ([94680d7](https://github.com/Vivswan/copilot-env/commit/94680d71bf58b7be1014420c162943a8c516f4a4))
+* **shell:** the PowerShell rc re-enters its own host for the nested agent call ([#426](https://github.com/Vivswan/copilot-env/issues/426)) ([8bcc719](https://github.com/Vivswan/copilot-env/commit/8bcc719f3f2b8346877cc203b1597d79fb8cfd4c))
+* **shell:** the PowerShell spawn recipe owns PSModulePath for a 5.1 child ([#432](https://github.com/Vivswan/copilot-env/issues/432)) ([719e9c0](https://github.com/Vivswan/copilot-env/commit/719e9c06c302f5ce3baa7e80edcdd011dcee0b53))
+* **toml:** a leading BOM is encoding noise and a table is any object but a datetime, whatever smol-toml hands back ([#453](https://github.com/Vivswan/copilot-env/issues/453)) ([eb93090](https://github.com/Vivswan/copilot-env/commit/eb93090b35b2f7af66fe2205c37e46c0c32c8ce5))
+* **transfer:** the import confirmation lists the apply's own change set, not a hand-kept mirror ([95aff96](https://github.com/Vivswan/copilot-env/commit/95aff9627299e010f7ea9beff12ba18cf6edc1a5))
+* **windows:** the PowerShell side matches the POSIX side on PATH edits and tokenless release lookup ([#411](https://github.com/Vivswan/copilot-env/issues/411)) ([3f91a4c](https://github.com/Vivswan/copilot-env/commit/3f91a4ce35a4312d709747d96d51e453993917d9))
+
 ## [5.0.1](https://github.com/Vivswan/copilot-env/compare/v5.0.0...v5.0.1) (2026-09-30)
 
 

@@ -23,6 +23,7 @@ import {
   type GhSpawnSpec,
   parseGhAuthStatusAccounts,
 } from "./gh_cli.ts";
+import { type GithubLoginLook, githubLoginLook } from "./github_login.ts";
 import { type Profile, profileLabel } from "./profile.ts";
 
 interface CredentialStatus {
@@ -357,4 +358,19 @@ export function liveCredentialSourceLabel(
     return `gh-cli on auto${parts.length === 0 ? "" : `: ${parts.join("; ")}`}`;
   }
   return credentialSourceLabel(credential);
+}
+
+/** The read-back label WITH the account (`gh-token as octocat`). The account is a LABEL, never a
+ *  gate: a missed look says why and the status it decorates stands. BRACKET-FREE like its peers,
+ *  so a miss's raw error text (`dns error (os error 2)`) has its parens turned into commas here. */
+export async function accountSourceLabel(
+  credential: StoredCredential,
+  look: () => GhAccountsLook = ghAccountsLook,
+  loginLook: (token: string) => Promise<GithubLoginLook> = githubLoginLook,
+): Promise<string | null> {
+  if (credential.kind !== "stored") return liveCredentialSourceLabel(credential, look);
+  const who = await loginLook(credential.token);
+  if (who.login !== null) return `${credential.provider} as ${who.login}`;
+  const detail = who.detail.replace(/\s*\(/g, ", ").replace(/\)/g, "");
+  return `${credential.provider}; account unverified: ${detail}`;
 }

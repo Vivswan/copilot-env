@@ -3,6 +3,7 @@
 // so the two agree on the matrix, the paths, the serializer, the digest, and the run.
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { zstdDecompressSync } from "node:zlib";
 import path from "node:path";
 import * as v from "valibot";
 import { SHA256_HEX_SCHEMA } from "../../src/copilot_api/config_registry.ts";
@@ -142,8 +143,9 @@ export async function generateGoldenTree(entry: GoldenCase, root: string): Promi
   return { tree, delta: entry.split ? plantSplitLines(tree) : null };
 }
 
-/** SHA-256 over a tree: sorted root-relative paths with forward slashes, each followed by
- *  the file's raw bytes (the recipe test/usage/usage_fixtures.test.ts pins its fixed corpus with). */
+/** SHA-256 over a tree: sorted root-relative paths with forward slashes, each followed by the
+ *  file's bytes, a `.zst` member's decompressed (zstd encoders differ per runtime; the readers see
+ *  only the inflated content). The recipe test/usage/usage_fixtures.test.ts pins its corpus with. */
 export function treeSha256(tree: GeneratedTree): string {
   const entries = tree.files
     .map((f) => ({ rel: path.relative(tree.root, f.path).replaceAll("\\", "/"), path: f.path }))
@@ -151,7 +153,11 @@ export function treeSha256(tree: GeneratedTree): string {
   const hash = createHash("sha256");
   for (const entry of entries) {
     hash.update(`${entry.rel}\n`);
-    hash.update(readFileSync(entry.path));
+    hash.update(
+      entry.rel.endsWith(".zst")
+        ? zstdDecompressSync(readFileSync(entry.path))
+        : readFileSync(entry.path),
+    );
   }
   return hash.digest("hex");
 }

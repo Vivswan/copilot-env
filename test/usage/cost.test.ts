@@ -62,7 +62,7 @@ import {
   writeRollout,
   writeTranscript,
 } from "../helpers/session_fixtures.ts";
-import { expect, tempDir, test } from "../helpers/testing.ts";
+import { expect, removeDir, tempDir, test } from "../helpers/testing.ts";
 import { indexDbFile, storedIndexPaths } from "../helpers/usage_index.ts";
 
 function usage(partial: Partial<ModelUsage>): ModelUsage {
@@ -507,16 +507,26 @@ function recordingFetch(
   return { fetch: fetchImpl, urls };
 }
 
-/** `open` reads the WAL sidecar: SQLite keeps it beside the file until the last connection closes. */
+/** `open` reads the WAL sidecar's CONTENT: a connection leaves frames there until its close
+ *  checkpoints and truncates it; the empty file itself may stay (bun's sqlite leaves it, deno's
+ *  removed it), so presence alone says nothing. */
 interface IndexSnapshot {
   open: boolean;
   paths: string[];
 }
 
+function walHoldsFrames(wal: string): boolean {
+  try {
+    return statSync(wal).size > 0;
+  } catch {
+    return false;
+  }
+}
+
 function snapshotIndex(home: string): IndexSnapshot {
   const dbFile = indexDbFile(home);
   if (!existsSync(dbFile)) return { open: false, paths: [] };
-  return { open: existsSync(`${dbFile}-wal`), paths: storedIndexPaths(dbFile) };
+  return { open: walHoldsFrames(`${dbFile}-wal`), paths: storedIndexPaths(dbFile) };
 }
 
 /** Answers only once the index is closed with `parsedPath` stored. The readers store it and
@@ -565,7 +575,7 @@ async function withCostHome(body: (ctx: CostHome) => Promise<void>): Promise<voi
     await body({ home: process.env.COPILOT_API_HOME, claudeRoot });
   } finally {
     process.env.COPILOT_API_HOME = savedHome;
-    rmSync(dir, { recursive: true, force: true });
+    removeDir(dir); // retries the EBUSY bun's sqlite leaves for a beat after close() on Windows
   }
 }
 

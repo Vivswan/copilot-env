@@ -3,8 +3,8 @@
 // UTC day); a raised snapshot, an extra count, and a moved timestamp each break that match.
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
-import { relative } from "node:path";
 import { zstdDecompressSync } from "node:zlib";
+import { relative } from "node:path";
 import { discoverClaudeSessionRoots, readClaudeSessions } from "../../src/usage/claude_sessions.ts";
 import { discoverCodexSessionRoots, readCodexSessions } from "../../src/usage/codex_sessions.ts";
 import { parseEveryCandidate } from "../../src/usage/contribution.ts";
@@ -109,7 +109,9 @@ function linesOf(tree: GeneratedTree, source: "codex" | "claude", needle: string
 }
 
 test("generateUsageTree writes the pinned bytes, and the readers return exactly its ledger", async () => {
-  // The cross-OS pin: one seed, one digest over every file's relative path and bytes.
+  // The cross-OS pin: one seed, one digest over every file's relative path and bytes. A `.zst`
+  // member is hashed decompressed: every zstd encoder (deno's, bun's, the next runtime's) emits
+  // its own bytes for the same input, and the readers see only the inflated content.
   const pinnedRoot = tempDir("usage-fixtures-");
   const pinned = await generateUsageTree({ root: pinnedRoot, mb: 1, seed: 7, days: 5 });
   const hash = createHash("sha256");
@@ -117,7 +119,11 @@ test("generateUsageTree writes the pinned bytes, and the readers return exactly 
     .map((f) => ({ rel: relative(pinnedRoot, f.path).replaceAll("\\", "/"), path: f.path }))
     .sort((a, b) => (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0))) {
     hash.update(`${entry.rel}\n`);
-    hash.update(readFileSync(entry.path));
+    hash.update(
+      entry.rel.endsWith(".zst")
+        ? zstdDecompressSync(readFileSync(entry.path))
+        : readFileSync(entry.path),
+    );
   }
   expect(hash.digest("hex")).toBe(PINNED_CORPUS_DIGEST);
 

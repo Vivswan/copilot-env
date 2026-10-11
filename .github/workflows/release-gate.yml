@@ -73,20 +73,7 @@ jobs:
           bun run build
           (cd dist && sha256sum -c checksums.txt)
 
-      # scripts/compile.ts already fails the step above when a target does not compile. What only
-      # this step catches is a zero-exit compile that left a stub or a truncated artifact (a bun
-      # runtime that failed to embed, a download cut short): the size floor and the host's --help
-      # run expose both. The expected names come from the targets' one source of truth
-      # (src/utils/targets.ts), since checksums.txt lists only what compile wrote.
+      # The size floor and the host's --help run live in release-assets.ts (assert-assets): a
+      # zero-exit compile that left a stub or a truncated artifact is what they catch.
       - name: Prove every release asset exists and the host's runs
-        run: |
-          set -euo pipefail
-          assets="$(bun -e 'import { RELEASE_TARGETS, releaseAssetName } from "./src/utils/targets.ts"; console.log(RELEASE_TARGETS.map(releaseAssetName).join("\n"));')"
-          host="$(bun -e 'import { currentReleaseTarget, releaseAssetName } from "./src/utils/targets.ts"; const t = currentReleaseTarget(); if (t === null) throw new Error("no release target for this runner"); console.log(releaseAssetName(t));')"
-          for asset in $assets; do
-            size="$(stat -c %s "dist/$asset")"
-            echo "dist/$asset: $size bytes"
-            [ "$size" -gt 10000000 ] || { echo "::error::dist/$asset is $size bytes, not a compiled binary"; exit 1; }
-          done
-          chmod +x "dist/$host"
-          "./dist/$host" --help
+        run: bun .github/scripts/release-assets.ts assert-assets

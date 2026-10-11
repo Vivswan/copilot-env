@@ -16,7 +16,7 @@ TypeScript port of the original Python `copilot-api` helper. Runs on Linux, macO
 - **Typed preferences**: `agent config` gets and sets every knob under one precedence rule everywhere.
 - **Web search on Direct**: Claude Code's builtin WebSearch is replaced by copilot-env's MCP `web_search` tool.
 - **Cost reporting**: estimated spend from the proxy usage DBs plus the Codex and Claude session logs.
-- **Controlled floating**: the proxy floats to the newest cooldown-aged release; every other dependency is pinned via `deno.lock`.
+- **Controlled floating**: the proxy floats to the newest cooldown-aged release; every other dependency is pinned via `bun.lock`.
 
 ## Requirements
 
@@ -56,7 +56,7 @@ The [docs index](docs/README.md) lists every page by task. Start with [Getting s
 git clone https://github.com/Vivswan/copilot-env.git
 cd copilot-env
 bash scripts/setup-env.sh
-deno task test
+bun run test
 ```
 
 [Development](docs/development.md) covers the tasks and the env init; [CONTRIBUTING.md](CONTRIBUTING.md) covers how to submit a change; [AGENTS.md](AGENTS.md) holds the rules.

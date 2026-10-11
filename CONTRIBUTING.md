@@ -15,17 +15,19 @@ Thanks for contributing. Setup and checks are here; the conventions are in [AGEN
 ```bash
 git clone https://github.com/<your-fork>/copilot-env.git
 cd copilot-env
-bash scripts/setup-env.sh   # scripts/setup-env.ps1 on Windows: deno, the locked deps, the git hooks
+bash scripts/setup-env.sh   # scripts/setup-env.ps1 on Windows: the locked deps and the git hooks
 ```
+
+The toolchain (Bun) and the daemon's Deno sidecar are described on the [development page](docs/development.md).
 
 ## Checks
 
 ```bash
-deno task check       # lint --fix + fmt
-deno task test
-deno task typecheck
+bun run check       # biome: lint --fix + format
+bun run test        # or: bun run test test/usage/usage.test.ts
+bun run typecheck
 ```
 
-The full task list is in `deno.json`. The pre-commit hook runs `typecheck`, `test`, and `lint`, deno's own checks. CI's `check` job adds `lint:sh` and `lint:ps`, which need shellcheck and PSScriptAnalyzer installed.
+The full script list is in `package.json` (`bun run` with no name prints it). The pre-commit hook runs `typecheck`, `test`, and `lint`. CI's `check` job adds `lint:sh` and `lint:ps`, which need shellcheck and PSScriptAnalyzer installed.
 
 `release-gate.yml` holds only the checks required before a release that run nowhere on a PR or a push to main. Its one job, `release-assets`, is the five-target build with checksums, the release-assets prepare and validate with the installer syntax checks, and the asset presence with the host `--help`; `ci.yml` runs it on the release PR and a dispatch, `nightly.yml` every night. Every other check runs on every PR.

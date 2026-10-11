@@ -41,7 +41,7 @@ copilot-env wires the Codex and Claude CLIs to GitHub Copilot, either through a 
 - **A personal utility, not a product**: no backwards compatibility except `src/migrations/` (one-time fix-ups run after `agent update` or a reinstall); no compatibility shims or legacy-state adoption in read sites; no production hardening. Delete old surfaces outright; a flag removal is a plain `feat:`/`fix:`.
 - **String literals are external contracts** (model ids, JSON keys, env var names, log markers): never rename them in a refactor.
 - **ASCII source**: non-ASCII only inside string literal text.
-- **Layering**: command files (`src/commands/`) validate, orchestrate, and render; the domain layers never import them. `src/scripts/` holds only things that run as their own process or via `deno run --preload`, never CLI handlers.
+- **Layering**: command files (`src/commands/`) validate, orchestrate, and render; the domain layers never import them. `src/scripts/` holds only things that run as their own process or as the daemon's `--preload` shims under the Deno sidecar, never CLI handlers.
 
 ### Decisions a reader would otherwise reverse
 
@@ -54,7 +54,7 @@ copilot-env wires the Codex and Claude CLIs to GitHub Copilot, either through a 
 - **`agent config` is the typed preference store** with a single key registry (`src/copilot_api/config_registry.ts`). Every read site applies explicit flag/env > stored config > built-in default.
 - **`agent update` proves origin and fails closed** (Sigstore provenance, `src/install/provenance.ts`). The installer is trust-on-first-use: verifying against the same release it was fetched from would be circular.
 - **Claude Desktop wiring is state driven** (`src/agents/claude_desktop.ts`): every pass re-derives from the `claude.desktop` key and the ownership ledger, and a sweep never removes an entry it does not own.
-- **`--dry-run` is the same code path on an overlay, never a second one** (`src/utils/fs_facade.ts` is the seam). A raw node:fs or Deno call in `src/` fails lint. [docs/dry-run-facade.md](docs/dry-run-facade.md) owns the mechanism.
+- **`--dry-run` is the same code path on an overlay, never a second one** (`src/utils/fs_facade.ts` is the seam). A raw node:fs call in `src/` outside the facade fails lint. [docs/dry-run-facade.md](docs/dry-run-facade.md) owns the mechanism.
 - **The usage index is a pre-index, never a result cache.** Every `agent cost` report folds fresh from the files that exist now and must equal the full parse.
 - **Migrations** (`src/migrations/`): one file per from-version. Delete a step once its fix is re-derivable; the format it read goes with it, never into a reader.
 - **One env init**: every agent/dev environment and fresh worktree runs `scripts/setup-env.sh` (`.ps1` on Windows).

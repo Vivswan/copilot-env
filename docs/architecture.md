@@ -200,7 +200,7 @@ Demonstrated by: [test/copilot_api/env_config.test.ts](../test/copilot_api/env_c
 
 ```mermaid
 flowchart TD
-  assets[("the binary's embedded assets<br>materialized: the bin and shell payloads, the daemon shims<br>read in place: deno.json, .dvmrc, copilot-env.config")]
+  assets[("the binary's embedded assets<br>materialized: the bin and shell payloads, the daemon shims<br>read in place: deno.json and copilot-env.config, the proxy version bounds and the sidecar deno pin")]
   releases[["GET https://api.github.com/repos/Vivswan/copilot-env/releases?per_page=100"]]
   download[["https://github.com/Vivswan/copilot-env/releases/download/{tag}: copilot-env-{triple} (.exe on Windows), checksums.txt, attestation.json"]]
   tuf[["https://tuf-repo-cdn.sigstore.dev: the Sigstore trust root"]]
@@ -280,7 +280,7 @@ Demonstrated by: [test/commands/launch.test.ts](../test/commands/launch.test.ts)
 
 ## The module map
 
-Each node is one layer, labelled with the paths it owns; an arrow means the layer imports the other. Rendered from `architecture.json` by `deno task docs:arch` (`--check` fails on drift), and the lint in `test/utils/architecture.test.ts` keeps that declaration equal to the import graph under `src/`:
+Each node is one layer, labelled with the paths it owns; an arrow means the layer imports the other. Rendered from `architecture.json` by `bun run docs:arch` (`--check` fails on drift), and the lint in `test/utils/architecture.test.ts` keeps that declaration equal to the import graph under `src/`:
 
 | Lint message                                                                     | What to do                                                                 |
 | -------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |

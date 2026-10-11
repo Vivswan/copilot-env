@@ -230,4 +230,4 @@ copilot-env loads local defaults from root `.env` when running its TypeScript en
 - `COPILOT_API_MIN_RELEASE_AGE=<seconds>`: the cooldown window (`0` = no cooldown). Beats the `daemon.release-cooldown` config key.
 - `COPILOT_CREDITS_TARGET=<credits>`: the monthly credits `agent credits` paces against. Beats the `cost.credits-target` config key; `agent credits --target` beats both for one run.
 
-Without a pin, the proxy float reads npm publish times, picks the newest version at least the cooldown window old, and clamps it to the bounds in `copilot-env.config`. The window is the env var, else `daemon.release-cooldown`, else the 7-day default that tracks `deno.json`'s `minimumDependencyAge`.
+Without a pin, the proxy float reads npm publish times, picks the newest version at least the cooldown window old, and clamps it to the bounds in `copilot-env.config`. The window is the env var, else `daemon.release-cooldown`, else the 7-day default that tracks `minimumReleaseAge` under `[install]` in `bunfig.toml`.

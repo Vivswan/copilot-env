@@ -8,20 +8,22 @@ order: 6
 
 How to drive the CLI from a checkout and where the repository's own rules live. Users install a release instead ([getting started](getting-started.md#install)); `agent update` refuses to overwrite a checkout unless you pass `--force`.
 
-Deps install into the checkout (`deno install --frozen`); the proxy floats into the copilot-env data home on the first `agent start`, the same as a release.
+Deps install into the checkout (`bun install --frozen-lockfile`); the proxy floats into the copilot-env data home on the first `agent start`, the same as a release.
 
 ```bash
 git clone https://github.com/Vivswan/copilot-env.git
 cd copilot-env
-bash scripts/setup-env.sh   # one-shot env/worktree init (deno install --frozen)
+bash scripts/setup-env.sh   # one-shot env/worktree init (bun install --frozen-lockfile, the git hooks)
 ./bin/agent --help          # or: powershell -File bin\agent.ps1 --help
 ```
 
-- **Tasks:** run `deno task` for the list (typecheck, test, bench, lint, check). They are defined in `deno.json`.
+- **Tasks:** run `bun run` for the list (typecheck, test, bench, lint, check). They are the `scripts` of `package.json`; the toolchain is Bun at the version in `.bun-version`.
+- **Tests:** `bun run test` is `scripts/run_tests.ts`, which runs one bun process per test file. Name files to run a subset: `bun run test test/usage/usage.test.ts`.
+- **The sidecar:** the proxy daemon runs under a Deno sidecar the binary downloads, pinned by `SIDECAR_DENO_VERSION` in `copilot-env.config`. A checkout installs no deno; the CI jobs that start the daemon put that pin on the runner through `.github/actions/setup-sidecar-deno`.
 - **Env init:** `scripts/setup-env.sh` (`setup-env.ps1` on Windows) is the single initializer. The Copilot coding agent and Codespaces / Dev Containers both run it.
 - **Checks before a push:** the tasks and the pre-commit hook are listed in [CONTRIBUTING.md](../CONTRIBUTING.md).
 - **Rules and decisions:** the conventions, the hard rules, and the decisions a reader would otherwise reverse (the proxy float, one credential, atomic profiles) live in [`AGENTS.md`](../AGENTS.md).
-- **Layering:** the layers, the edges they draw, and the decisions as diagrams are on the [architecture page](architecture.md); `architecture.json` declares the edges and `deno task test` fails on any import it does not declare.
+- **Layering:** the layers, the edges they draw, and the decisions as diagrams are on the [architecture page](architecture.md); `architecture.json` declares the edges and `bun run test` fails on any import it does not declare.
 
 ## Test fakes
 
@@ -34,7 +36,7 @@ Two loopback fakes let the suite and CI run with no Copilot credential and no ne
 
 ### The fake model endpoint
 
-[aimock](https://github.com/CopilotKit/aimock) (`npm:@copilotkit/aimock`, pinned in `deno.json`, zero runtime deps) behind a thin front. aimock's request and stream shapes are validated daily against the real vendors by its own drift job (the `test-drift.yml` workflow in CopilotKit/aimock).
+[aimock](https://github.com/CopilotKit/aimock) (`@copilotkit/aimock`, pinned in `package.json`, zero runtime deps) behind a thin front. aimock's request and stream shapes are validated daily against the real vendors by its own drift job (the `test-drift.yml` workflow in CopilotKit/aimock).
 
 The front serves the one route aimock lacks in Copilot's shape, the root `/models` catalog with the picker fields both smoke pickers read, and proxies everything else byte for byte. The real `claude` and `codex` binaries talk to it over `ANTHROPIC_BASE_URL` / a Codex provider `base_url`.
 
@@ -64,7 +66,7 @@ The nightly runs through repo-platform's fleet nightly module (`nightly` in `.re
 
 A red night opens or refreshes one `nightly-failure` issue naming the run; the next green night closes it. It gates no merge, but an open nightly issue blocks release-please releases until fixed or overridden (repo-platform docs/nightly.md, docs/tracking-issues.md).
 
-What a red means: usually a claude or codex release changed the shape our probe parses; an install or `deno ci` failure reads red too. Read the run's `nightly-evidence` artifact (the CLI versions and the test log; present once the test step ran), then fix the parser or record the change.
+What a red means: usually a claude or codex release changed the shape our probe parses; an install or `bun install` failure reads red too. Read the run's `nightly-evidence` artifact (the CLI versions and the test log; present once the test step ran), then fix the parser or record the change.
 
 - The header comment of `.github/workflows/nightly.yml` lists what each red job points at.
 

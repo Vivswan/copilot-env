@@ -66,6 +66,7 @@ import { writeProfileSettings } from "../../src/commands/launch.ts";
 import { CopilotApiPaths } from "../../src/copilot_api/paths.ts";
 import { CopilotEnvState } from "../../src/copilot_api/env_state.ts";
 import { setIntegrationProbeFetch } from "../../src/copilot_api/integration_identity.ts";
+import type { ProbeFetch } from "../../src/copilot_api/integration_identity.ts";
 import { CopilotEnvConfig } from "../../src/copilot_api/env_config.ts";
 import type { Profile } from "../../src/copilot_api/profile.ts";
 import { DEFAULT_COPILOT_API_BASE } from "../../src/copilot_api/integration_identity.ts";
@@ -91,7 +92,7 @@ afterEach(() => {
   restoreEnv();
   resetExitCode();
   setIntegrationProbeFetch(null);
-  globalThis.fetch = REAL_FETCH;
+  globalThis.fetch = REAL_FETCH as unknown as typeof fetch;
 });
 
 /** chmod-based fault injection needs POSIX permissions that bind (not root). */
@@ -105,7 +106,7 @@ function isolateWithDesktop(): { library: string } {
   return { library: desktopLibraryDirUnder(dataDir) };
 }
 
-function catalogFetch(ids: { id: string; window?: number; name?: string }[]): typeof fetch {
+function catalogFetch(ids: { id: string; window?: number; name?: string }[]): ProbeFetch {
   const body = {
     data: ids.map((m) => ({
       id: m.id,
@@ -136,7 +137,7 @@ function stubDiscoveryFetch(): string[] {
     return url.startsWith("https://")
       ? catalogFetch(CATALOG)(input)
       : Promise.reject(new Error("offline"));
-  }) as typeof fetch;
+  }) as unknown as typeof fetch;
   return seen;
 }
 
@@ -1900,16 +1901,16 @@ test("call sites reconcile the whole library: init, agent sync, the launcher's p
     credential: { kind: "stored", provider: "gh-token", token: "ghp_work" },
     mode: "proxy",
   });
-  globalThis.fetch = () => {
+  globalThis.fetch = (() => {
     throw new Error("discovery ran on the hot path");
-  };
+  }) as unknown as typeof fetch;
   let synced = "";
   try {
     synced = await captureAllWrites(async () => {
       await syncNamedProfiles();
     });
   } finally {
-    globalThis.fetch = online;
+    globalThis.fetch = online as unknown as typeof fetch;
   }
   expect(synced).not.toContain("discovery ran on the hot path");
   expect(synced).not.toContain("Claude Desktop is ready"); // the quiet pass says nothing
@@ -1928,14 +1929,14 @@ test("call sites reconcile the whole library: init, agent sync, the launcher's p
     return Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 }));
   });
   // The control's upsert also runs model discovery: offline here, so no entry rows to compare.
-  globalThis.fetch = () => Promise.reject(new Error("offline"));
+  globalThis.fetch = (() => Promise.reject(new Error("offline"))) as unknown as typeof fetch;
   try {
     await captureAllWrites(() => reconcileClaudeDesktopWiring({ quiet: true }));
     expect(probes).toBe(0);
     await captureAllWrites(() => reconcileClaudeDesktopWiring());
     expect(probes).toBeGreaterThan(0);
   } finally {
-    globalThis.fetch = online;
+    globalThis.fetch = online as unknown as typeof fetch;
     setIntegrationProbeFetch(null);
   }
   new CopilotEnvState().deleteProfile(WORK);
@@ -1979,10 +1980,10 @@ test("the reconcile re-discovers the default entry only when it is missing or st
   // A managed proxy default: the adapter write wires the entry (offline: no model rows).
   const realFetch = globalThis.fetch;
   let modelFetches = 0;
-  globalThis.fetch = () => {
+  globalThis.fetch = (() => {
     modelFetches++;
     return Promise.reject(new Error("offline"));
-  };
+  }) as unknown as typeof fetch;
   try {
     new CopilotEnvState().recordDefaultMode("proxy"); // the default this re-render renders
     await captureAllWrites(() => runClaude({ kind: "configure", mode: "proxy" }));

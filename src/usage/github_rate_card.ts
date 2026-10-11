@@ -15,6 +15,7 @@ import { parseJsonRecord } from "../utils/json.ts";
 import { MILLISECONDS_PER_DAY } from "../utils/time.ts";
 import { COPILOT_ENV_USER_AGENT } from "../utils/user_agent.ts";
 import type { PricingTier } from "./pricing.ts";
+import type { ProbeFetch } from "../copilot_api/integration_identity.ts";
 
 const FETCH_TIMEOUT_MS = 10_000;
 const CACHE_TTL_MS = MILLISECONDS_PER_DAY;
@@ -252,7 +253,7 @@ export function parseRateCard(text: string): GitHubRateCard {
 
 /** Errors are fixed text (plus a numeric HTTP status), never the transport's: a custom URL may carry
  *  credentials. */
-async function fetchRateCardText(url: string, fetchImpl: typeof fetch): Promise<string> {
+async function fetchRateCardText(url: string, fetchImpl: ProbeFetch): Promise<string> {
   const timeout = AbortSignal.timeout(FETCH_TIMEOUT_MS);
   let res: Response;
   try {
@@ -289,7 +290,7 @@ export async function loadGitHubRateCard(
     cacheDir?: string;
     nowMs?: number;
     ttlMs?: number;
-    fetchImpl?: typeof fetch;
+    fetchImpl?: ProbeFetch;
   } = {},
 ): Promise<LoadedRateCard> {
   const nowMs = opts.nowMs ?? Date.now();

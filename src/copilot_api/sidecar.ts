@@ -17,6 +17,7 @@ import { readSidecarDenoVersion } from "../utils/project_config.ts";
 import { isStableVersion, versionLessThan } from "../utils/semver.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { resolveRootHome } from "./paths.ts";
+import type { ProbeFetch } from "./integration_identity.ts";
 
 /** Set by the compiled launcher. */
 export const SIDECAR_DENO_ENV = "COPILOT_ENV_SIDECAR_DENO";
@@ -169,7 +170,7 @@ export const DENO_LATEST_URL = "https://dl.deno.land/release-latest.txt";
 
 /** A malformed 200 body fails inside the same wrapper as a dead endpoint, so every arm carries the
  *  recovery guidance a deno-less machine needs. */
-export async function fetchLatestDenoVersion(fetchLike: typeof fetch = fetch): Promise<string> {
+export async function fetchLatestDenoVersion(fetchLike: ProbeFetch = fetch): Promise<string> {
   try {
     const response = await fetchLike(DENO_LATEST_URL);
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -191,7 +192,7 @@ export async function fetchLatestDenoVersion(fetchLike: typeof fetch = fetch): P
 export async function fetchReleaseSha256(
   version: string,
   target: DenoReleaseTarget,
-  fetchLike: typeof fetch = fetch,
+  fetchLike: ProbeFetch = fetch,
 ): Promise<string> {
   const url = `${denoReleaseUrl(version, target)}.sha256sum`;
   const response = await fetchLike(url);
@@ -225,7 +226,7 @@ interface UnzipRunResult {
 }
 
 interface SidecarDownloadSeams {
-  fetchLike?: typeof fetch;
+  fetchLike?: ProbeFetch;
   runner?: (command: string, args: string[]) => UnzipRunResult | Promise<UnzipRunResult>;
   platform?: string;
   arch?: string;

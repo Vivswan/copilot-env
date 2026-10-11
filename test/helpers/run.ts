@@ -92,6 +92,8 @@ export interface SpawnChildOptions<
   stdin?: In;
   stdout?: Out;
   stderr?: Err;
+  /** Bun's own: the argv is handed to CreateProcess as written, for a prequoted cmd.exe line. */
+  windowsVerbatimArguments?: boolean;
 }
 
 /** The one async child spawn under test/: reaching a child-process API anywhere else is a lint
@@ -138,20 +140,6 @@ export function runScript(entry: string, args: string[] = [], opts: RunOptions =
 
 export function runCli(args: string[], opts: RunOptions = {}): RunResult {
   return runScript(CLI_ENTRY, args, opts);
-}
-
-/** `source` written to a file under a fresh temp dir and run with `--preload shim` ahead of it,
- *  the way launchDaemon loads the shims (src/copilot_api/process.ts); `args` follow the target on
- *  its argv. */
-export function runWithPreload(
-  shim: string,
-  source: string,
-  opts: RunOptions & { args?: string[] } = {},
-): RunResult {
-  const target = join(tempDir("preload-target-"), "target.ts");
-  writeFileSync(target, source);
-  const { args = [], ...run } = opts;
-  return runSync(process.execPath, [...bunRunArgs("--preload", shim), target, ...args], run);
 }
 
 /** Where `name` lives as seen from `fromDir`: the resolver's own answer, so a package an isolated

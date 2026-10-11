@@ -17,6 +17,7 @@ import { PROJECT_ROOT } from "../../src/utils/root.ts";
 import { runSync } from "../helpers/run.ts";
 import { afterEach, expect, test } from "../helpers/testing.ts";
 import { envSnapshot, isolateAgentHomes } from "../helpers/env.ts";
+import type { ProbeFetch } from "../../src/copilot_api/integration_identity.ts";
 
 // Opted in: the test RUNS, and a missing codex is a failure (CI installs it right
 // before), never a skip that lets the gate pass vacuously.
@@ -45,14 +46,14 @@ function fixtureBodyFor(bundledSlugs: Set<string>): { data: Model[]; overlaid: s
   const overlaid = [...bundledSlugs].find((slug) => /^gpt-\d/.test(slug));
   if (overlaid === undefined) throw new Error("this Codex bundles no numbered gpt model");
   const entry: Model = {
-    "id": overlaid,
-    "name": overlaid,
-    "model_picker_enabled": true,
-    "supported_endpoints": ["/responses"],
-    "capabilities": {
-      "type": "chat",
-      "limits": { "max_context_window_tokens": OVERLAY_WINDOW, "max_prompt_tokens": 922_000 },
-      "supports": { "parallel_tool_calls": true },
+    id: overlaid,
+    name: overlaid,
+    model_picker_enabled: true,
+    supported_endpoints: ["/responses"],
+    capabilities: {
+      type: "chat",
+      limits: { max_context_window_tokens: OVERLAY_WINDOW, max_prompt_tokens: 922_000 },
+      supports: { parallel_tool_calls: true },
     },
   };
   return { data: [...FIXTURE_BODY.data, entry], overlaid };
@@ -110,9 +111,10 @@ live(
     const fixtureModels: Map<string, CopilotCatalogModel> = parseCopilotModels(fixture);
     expect(fixtureModels.get(FIXTURE_ONLY)?.codexServable).toBe(true);
     const realFetch = globalThis.fetch;
-    globalThis.fetch =
-      (() =>
-        Promise.resolve(new Response(JSON.stringify(fixture), { status: 200 }))) as typeof fetch;
+    globalThis.fetch = (() =>
+      Promise.resolve(
+        new Response(JSON.stringify(fixture), { status: 200 }),
+      )) as unknown as typeof fetch;
     try {
       expect(await generateCodexModelCatalog("direct", "gho_fixture")).toBe(true);
     } finally {
@@ -125,7 +127,7 @@ live(
     // (1) Positive direction through the CLI: a config referencing the file parses, and
     // the dump is OUR catalog -- the bundled models plus the servable numbered-gpt
     // fixture models this Codex does not bundle (derived, never a pinned list).
-    writeFileSync(join(scratchHome, "config.toml"), stringify({ "model_catalog_json": file }));
+    writeFileSync(join(scratchHome, "config.toml"), stringify({ model_catalog_json: file }));
     const accepted = codexDebugModels(codexPath, scratchHome);
     expect(accepted.exitCode, accepted.stderr).toBe(0);
     expect(slugsOf(accepted.stdout)).toEqual(slugsOf(generated));
@@ -141,14 +143,14 @@ live(
     writeFileSync(
       broken,
       JSON.stringify({
-        "models": ours.map((m) => {
+        models: ours.map((m) => {
           const rest: Model = { ...m };
           delete rest.truncation_policy;
           return rest;
         }),
       }),
     );
-    writeFileSync(join(scratchHome, "config.toml"), stringify({ "model_catalog_json": broken }));
+    writeFileSync(join(scratchHome, "config.toml"), stringify({ model_catalog_json: broken }));
     expectCatalogRejection(codexDebugModels(codexPath, scratchHome));
     writeFileSync(broken, "not a catalog");
     expectCatalogRejection(codexDebugModels(codexPath, scratchHome));

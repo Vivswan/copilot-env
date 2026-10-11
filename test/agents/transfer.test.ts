@@ -44,6 +44,7 @@ import {
   DEFAULT_COPILOT_API_BASE,
   setIntegrationProbeFetch,
 } from "../../src/copilot_api/integration_identity.ts";
+import type { ProbeFetch } from "../../src/copilot_api/integration_identity.ts";
 import { OwnershipLedger } from "../../src/copilot_api/ownership.ts";
 import {
   claudeDesktopStatus,
@@ -57,7 +58,7 @@ import {
 } from "../../src/claude/desktop_library.ts";
 import { resolveRootHome } from "../../src/copilot_api/paths.ts";
 import { parseProfileName, type ProfileName } from "../../src/copilot_api/profile.ts";
-import { type FileChange } from "../../src/utils/dry_run.ts";
+import type { FileChange } from "../../src/utils/dry_run.ts";
 import { renderDryRun } from "../../src/utils/dry_run_report.ts";
 import { afterEach, beforeEach, expect, test } from "../helpers/testing.ts";
 import { type AgentHomes, envSnapshot, isolateAgentHomes, resetExitCode } from "../helpers/env.ts";
@@ -1470,7 +1471,7 @@ test("a config-only import of claude-desktop false sweeps a PROMISED Desktop ent
   // Control: with the key still on, a whole-library reconcile keeps the promised entry
   // (its upsert re-runs proxy model discovery, so the fetch is stubbed offline).
   const realFetch = globalThis.fetch;
-  globalThis.fetch = () => Promise.reject(new Error("offline"));
+  globalThis.fetch = (() => Promise.reject(new Error("offline"))) as unknown as typeof fetch;
   try {
     await captureStderr(() => reconcileClaudeDesktopWiring());
   } finally {
@@ -1506,7 +1507,7 @@ test("a config-only import of claude-desktop true restores the DEFAULT Desktop e
   // The import carries only the preference: no adapter write runs, so the reconcile
   // itself must upsert the default entry (fetch stubbed: proxy discovery is offline).
   const realFetch = globalThis.fetch;
-  globalThis.fetch = () => Promise.reject(new Error("offline"));
+  globalThis.fetch = (() => Promise.reject(new Error("offline"))) as unknown as typeof fetch;
   try {
     const bundle = parseSettingsBundle(rawBundle({ config: configOf({ "claude.desktop": true }) }));
     await captureStderr(async () => {
@@ -1533,7 +1534,7 @@ test("the confirmation names the Desktop entry file the apply then creates", asy
   const library = installDesktop(homes);
   new CopilotEnvState().recordDefaultMode("proxy");
   const realFetch = globalThis.fetch;
-  globalThis.fetch = () => Promise.reject(new Error("offline"));
+  globalThis.fetch = (() => Promise.reject(new Error("offline"))) as unknown as typeof fetch;
   try {
     // A config-only import: the reconcile upserts the default's entry, which does not exist yet.
     const plan = planImport(parseSettingsBundle(rawBundle({ config: configOf({}) })));
@@ -1577,7 +1578,7 @@ test("preview then apply: the apply issues no request or scan the preview paid, 
   globalThis.fetch = (() => {
     fetches++;
     return Promise.resolve(Response.json(catalog));
-  }) as typeof fetch;
+  }) as unknown as typeof fetch;
   setIntegrationProbeFetch(() => {
     probes++;
     return Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 }));

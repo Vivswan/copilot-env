@@ -15,6 +15,7 @@ import { runCli } from "../helpers/run.ts";
 import { expect, tempDir, test } from "../helpers/testing.ts";
 import { writeClaudeSettings, writeCodexConfigToml } from "../helpers/fixtures.ts";
 import { agentHomeEnv } from "../helpers/env.ts";
+import type { ProbeFetch } from "../../src/copilot_api/integration_identity.ts";
 
 // HOME/USERPROFILE are isolated too: the codex host-farm and shell probes resolve through the home
 // directory, so a developer machine with a built farm or a wired rc file would leak into the
@@ -1123,7 +1124,7 @@ test("cli.ts cost prices at the stored pricing-url when the flag is omitted and 
   );
   // Two days old: expired, so the run refreshes (fails at 127.0.0.1:9) and falls back
   // to the cached copy; the two URLs carry different prompt rates.
-  const priced = (prompt: string): typeof fetch =>
+  const priced = (prompt: string): ProbeFetch =>
     (() =>
       Promise.resolve(
         new Response(
@@ -1135,7 +1136,7 @@ test("cli.ts cost prices at the stored pricing-url when the flag is omitted and 
           }),
           { status: 200 },
         ),
-      )) as typeof fetch;
+      )) as ProbeFetch;
   const seed = {
     cacheDir: join(home, USAGE_INDEX_DIR_NAME),
     nowMs: Date.now() - 2 * MILLISECONDS_PER_DAY,

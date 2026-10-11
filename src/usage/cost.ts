@@ -33,7 +33,7 @@ import {
   loadPricing,
   type ModelCost,
   nanoAiuToUsd,
-  PriceList,
+  type PriceList,
   type PricingTier,
   roundUsd,
   withGitHubRates,
@@ -54,6 +54,7 @@ import {
   usageReport,
   type UsageRequest,
 } from "./usage.ts";
+import type { ProbeFetch } from "../copilot_api/integration_identity.ts";
 
 const SOURCES_INTRO =
   "Note: three sources -- the proxy DBs (proxied traffic) plus Codex session logs and Claude transcripts " +
@@ -89,7 +90,7 @@ const DEFAULT_SESSION_ROOTS: SessionRootDiscovery = {
 /** Tests inject a fetch and their own session roots, because the default discovery sweeps the real
  *  Codex and Claude homes. */
 export interface CostDeps {
-  fetchImpl?: typeof fetch;
+  fetchImpl?: ProbeFetch;
   sessionRoots?: SessionRootDiscovery;
   /** The clock every `runtime.timing` figure is read from, in ms. */
   now?: () => number;
@@ -213,7 +214,7 @@ interface CostRun {
   pricingUrl: string;
   /** The stored `cost.github-pricing-url` key, else the built-in. */
   rateCardUrl: string;
-  fetchImpl: typeof fetch | undefined;
+  fetchImpl: ProbeFetch | undefined;
 }
 
 async function reportCost(

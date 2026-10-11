@@ -29,6 +29,7 @@ import {
 } from "../helpers/session_fixtures.ts";
 import { afterEach, expect, tempDir, test } from "../helpers/testing.ts";
 import { storedIndexPaths } from "../helpers/usage_index.ts";
+import type { ProbeFetch } from "../../src/copilot_api/integration_identity.ts";
 
 const dirs: string[] = [];
 
@@ -250,7 +251,7 @@ const pricedFetch = ((): Promise<Response> =>
       }),
       { status: 200, headers: { "Content-Type": "application/json" } },
     ),
-  )) as typeof fetch;
+  )) as ProbeFetch;
 
 async function costJson(
   args: { noIndex?: boolean },

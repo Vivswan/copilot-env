@@ -28,6 +28,7 @@ import {
   test,
 } from "../helpers/testing.ts";
 import { envSnapshot } from "../helpers/env.ts";
+import type { ProbeFetch } from "../../src/copilot_api/integration_identity.ts";
 
 const PIN = "2.9.5";
 // sha256("hello"), the classic test vector -- the fake download below serves "hello".
@@ -253,17 +254,17 @@ describe("denoReleaseTarget", () => {
 describe("latest-release resolution", () => {
   function fetchServing(routes: Record<string, string | { status: number }>): {
     calls: string[];
-    fetchLike: typeof fetch;
+    fetchLike: ProbeFetch;
   } {
     const calls: string[] = [];
-    const fetchLike: typeof fetch = ((url: string | URL | Request) => {
+    const fetchLike: ProbeFetch = ((url: string | URL | Request) => {
       const key = String(url);
       calls.push(key);
       const route = routes[key];
       if (route === undefined) return Promise.resolve(new Response(null, { "status": 404 }));
       if (typeof route === "string") return Promise.resolve(new Response(route));
       return Promise.resolve(new Response(null, { "status": route.status }));
-    }) as typeof fetch;
+    }) as ProbeFetch;
     return { calls, fetchLike };
   }
 
@@ -312,10 +313,10 @@ describe("unzipCommand", () => {
 describe("downloadSidecar", () => {
   function fakeFetch(body: string | null, status = 200) {
     const calls: string[] = [];
-    const fetchLike: typeof fetch = ((url: string | URL | Request) => {
+    const fetchLike: ProbeFetch = ((url: string | URL | Request) => {
       calls.push(String(url));
       return Promise.resolve(new Response(body, { "status": status }));
-    }) as typeof fetch;
+    }) as ProbeFetch;
     return { calls, fetchLike };
   }
 
@@ -423,7 +424,7 @@ describe("ensureSidecar", () => {
   // A fetch from any rung above "absent" would be a live network call on every `agent start`.
   test("an env override or a PATH deno answers with no download", async () => {
     const mustNotFetch = ((): Promise<Response> =>
-      Promise.reject(new Error("must not fetch"))) as unknown as typeof fetch;
+      Promise.reject(new Error("must not fetch"))) as ProbeFetch;
     const rows: {
       label: string;
       override?: string;
@@ -454,7 +455,7 @@ describe("ensureSidecar", () => {
     const latest = "2.11.3";
     const target = "x86_64-unknown-linux-gnu";
     const calls: string[] = [];
-    const fetchLike: typeof fetch = ((url: string | URL | Request) => {
+    const fetchLike: ProbeFetch = ((url: string | URL | Request) => {
       const key = String(url);
       calls.push(key);
       if (key === DENO_LATEST_URL) return Promise.resolve(new Response(`v${latest}\n`));
@@ -465,7 +466,7 @@ describe("ensureSidecar", () => {
         return Promise.resolve(new Response("hello"));
       }
       return Promise.resolve(new Response(null, { "status": 404 }));
-    }) as typeof fetch;
+    }) as ProbeFetch;
     const bin = await ensureSidecar(dir, {
             "findDeno": () => null,
       "platform": "linux",

@@ -49,8 +49,7 @@ const WEEK_SECONDS = 604800;
 
 const CONFIG: ProjectConfig = {
   "proxyMinVersion": "1.10.0",
-  "proxyMaxVersion": null,
-};
+  "proxyMaxVersion": null, "sidecarDenoVersion": "2.9.7" };
 
 const MIN_RELEASE_AGE_ENV = "COPILOT_API_MIN_RELEASE_AGE";
 const VERSION_ENV = "COPILOT_API_VERSION";
@@ -202,7 +201,7 @@ describe("selectProxyVersion", () => {
   // One registry document, one window, one cooldown -> one selection. The reason fragment
   // names the branch taken, so a clamp that answers the right version for the wrong reason
   // (or the floor reached by fallback instead of by clamp) still fails its row.
-  const FLOOR_30: ProjectConfig = { "proxyMinVersion": "1.10.30", "proxyMaxVersion": null };
+  const FLOOR_30: ProjectConfig = { "proxyMinVersion": "1.10.30", "proxyMaxVersion": null, "sidecarDenoVersion": "2.9.7" };
   const rows: {
     name: string;
     doc: unknown;
@@ -261,7 +260,7 @@ describe("selectProxyVersion", () => {
     {
       "name": "an aged release above the ceiling clamps DOWN to the ceiling",
       "doc": registryDoc({ "1.10.29": 8, "1.10.30": 8 }),
-      "config": { "proxyMinVersion": "1.10.0", "proxyMaxVersion": "1.10.29" },
+      "config": { "proxyMinVersion": "1.10.0", "proxyMaxVersion": "1.10.29", "sidecarDenoVersion": "2.9.7" },
       "cooldownSeconds": WEEK_SECONDS,
       "expected": {
         "kind": "resolved",
@@ -575,7 +574,7 @@ describe("floatProxy", () => {
     const floor = fakeDeno();
     await floatProxy({
       ...deps(offlineFetch().fetchLike, floor.runner, WEEK_SECONDS),
-      "config": { "proxyMinVersion": "1.10.30", "proxyMaxVersion": null },
+      "config": { "proxyMinVersion": "1.10.30", "proxyMaxVersion": null, "sidecarDenoVersion": "2.9.7" },
     });
     const cache = proxyCacheCalls(floor.calls);
     expect(cache).toHaveLength(1);

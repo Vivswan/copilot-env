@@ -16,7 +16,7 @@ import { refreshCodexCatalogAndSync } from "../../src/codex/catalog_reference.ts
 import { codexConfigPath } from "../../src/codex/paths.ts";
 import { CI_NO_LIVE_LOOKUPS_ENV, codexUserAgent } from "../../src/codex/user_agent.ts";
 import { runDryRun } from "../../src/commands/dry_run.ts";
-import { directClientHeaders } from "../../src/copilot_api/integration_identity.ts";
+import { directClientHeaders, type ProbeFetch } from "../../src/copilot_api/integration_identity.ts";
 import { CopilotEnvConfig } from "../../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../../src/copilot_api/env_state.ts";
 import { OwnershipLedger } from "../../src/copilot_api/ownership.ts";
@@ -645,7 +645,7 @@ async function withCopilot<T>(
     sent.push(init?.headers);
     if (body === null) return Promise.reject(new Error("offline"));
     return Promise.resolve(new Response(JSON.stringify(body), { status: 200 }));
-  }) as typeof fetch;
+  }) as unknown as typeof fetch;
   try {
     return { result: await fn(), sent };
   } finally {
@@ -819,7 +819,7 @@ test("past the refresh deadline the catalog is still written, but neither the ac
   globalThis.fetch = (() => {
     skewMs = 60_000;
     return Promise.resolve(new Response(JSON.stringify(GPT55_BODY), { status: 200 }));
-  }) as typeof fetch;
+  }) as unknown as typeof fetch;
   let said = "";
   try {
     said = await stderrOf(() => refreshCodexCatalogAndSync("direct"));

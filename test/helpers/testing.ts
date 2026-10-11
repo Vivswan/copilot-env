@@ -5,7 +5,7 @@
 //   runSync in flight -> cannot be interrupted: spawnSync blocks the thread the deadline timer
 //                        runs on (RunOptions.timeoutMs)
 
-import { afterAll, it } from "bun:test";
+import { afterAll, expect as bunExpect, it, type Matchers } from "bun:test";
 import "./node_env.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { lstatSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
@@ -16,7 +16,17 @@ import { CLAUDE_DESKTOP_DIR_ENV } from "../../src/claude/desktop_library.ts";
 import { CI_NO_LIVE_LOOKUPS_ENV } from "../../src/codex/user_agent.ts";
 import { CI_PS_DOCUMENTS_DIR_ENV, CI_RC_DIR_ENV } from "../../src/shell/integration.ts";
 
-export { afterEach, beforeEach, describe, expect } from "bun:test";
+export { afterEach, beforeEach, describe } from "bun:test";
+
+/**
+ * bun:test types `toEqual`/`toBe`/`toContain` against the RECEIVED value's type, so a table row
+ * expecting a partial shape, a union, or a branded string fails to compile at the assertion rather
+ * than at the value. The assertion keeps bun's runtime and its asymmetric matchers; only the
+ * expected side is unknown, as @std/expect typed it.
+ */
+type LooseExpect = (<T>(actual: T, customFailMessage?: string) => Matchers<unknown>) &
+  typeof bunExpect;
+export const expect: LooseExpect = bunExpect as LooseExpect;
 
 // --- the temp root -----------------------------------------------------------------
 //

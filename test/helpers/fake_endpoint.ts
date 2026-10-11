@@ -204,6 +204,7 @@ export async function runFakeCli(
   const spec = verbatimCliSpawn(cli, args);
   const child = spawnChild(spec.shell ? "cmd.exe" : spec.file, {
     args: spec.shell ? ["/d", "/s", "/c", [spec.file, ...spec.args].join(" ")] : spec.args,
+    windowsVerbatimArguments: spec.shell,
     cwd: home,
     env: fakeCliEnv(home, spec.binDir, extra),
     clearEnv: true,

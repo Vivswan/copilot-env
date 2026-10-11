@@ -8,6 +8,7 @@
 import { retry } from "@std/async";
 import { SECONDS_PER_DAY } from "../utils/time.ts";
 import { COPILOT_ENV_USER_AGENT } from "../utils/user_agent.ts";
+import type { ProbeFetch } from "../copilot_api/integration_identity.ts";
 
 // per_page=100 reads every release in one page (this repo will not exceed that for years), so
 // cooldown selection sees the whole eligible set, not just the first 30.
@@ -70,14 +71,14 @@ const MAX_FETCH_ATTEMPTS = 4;
 const RETRY_BASE_MS = 400;
 
 export interface ResolveOptions {
-  fetchImpl?: typeof fetch;
+  fetchImpl?: ProbeFetch;
   retryBaseMs?: number;
 }
 
 /** A non-retryable response (401/404) gives up immediately: retrying would not fix it. */
 async function fetchReleasesText(
   url: string,
-  fetchImpl: typeof fetch,
+  fetchImpl: ProbeFetch,
   base: number,
 ): Promise<string | null> {
   // A non-retryable status returns null from the callback: to `retry` that is a success, so it

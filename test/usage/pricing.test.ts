@@ -17,6 +17,7 @@ import {
   withGitHubRates,
 } from "../../src/usage/pricing.ts";
 import { expect, tempDir, test } from "../helpers/testing.ts";
+import type { ProbeFetch } from "../../src/copilot_api/integration_identity.ts";
 
 // The ONE serialized-USD precision: 4 decimal places, half-up, applied only at
 // cost.ts's --json boundary; in-memory estimates stay exact so sums reconcile.
@@ -494,7 +495,7 @@ function openRouterBody(id: string, promptPerToken: string): unknown {
 function fakeFetch(
   body: unknown,
   opts: { fail?: boolean } = {},
-): { fetch: typeof fetch; calls: number } {
+): { fetch: ProbeFetch; calls: number } {
   const state = {
     calls: 0,
     fetch: ((input: string | URL | Request, init?: RequestInit): Promise<Response> => {
@@ -509,7 +510,7 @@ function fakeFetch(
           headers: { "Content-Type": "application/json" },
         }),
       );
-    }) as typeof fetch,
+    }) as ProbeFetch,
   };
   return state;
 }
@@ -881,7 +882,7 @@ test("the flag and the stored key share one URL rule: https only, canonical befo
     const recording = ((input: string | URL | Request) => {
       requested = String(input);
       return net.fetch(input);
-    }) as typeof fetch;
+    }) as ProbeFetch;
     await fetchPricing(loud, recording);
     expect(requested).toBe(quiet);
 
@@ -928,7 +929,7 @@ test("loadPricing never echoes the URL in its errors", () =>
       const e = new Error(`boom ${secretUrl}`);
       e.name = secretUrl;
       return Promise.reject(e);
-    }) as typeof fetch;
+    }) as ProbeFetch;
     await expect(loadPricing(secretUrl, { cacheDir, nowMs: now, fetchImpl: named.fetch })).rejects
       .toThrow(/^pricing request failed$/);
 
@@ -938,11 +939,11 @@ test("loadPricing never echoes the URL in its errors", () =>
     denied.fetch = (() =>
       Promise.resolve(
         new Response("nope", { status: 401, statusText: `Unauthorized ${secretUrl}` }),
-      )) as typeof fetch;
+      )) as ProbeFetch;
     await expect(loadPricing(secretUrl, { cacheDir, nowMs: now, fetchImpl: denied.fetch })).rejects
       .toThrow(/^pricing request returned HTTP 401$/);
     const html = fakeFetch(null);
-    html.fetch = (() => Promise.resolve(new Response("<html>", { status: 200 }))) as typeof fetch;
+    html.fetch = (() => Promise.resolve(new Response("<html>", { status: 200 }))) as ProbeFetch;
     await expect(loadPricing(secretUrl, { cacheDir, nowMs: now, fetchImpl: html.fetch })).rejects
       .toThrow("pricing response was not valid JSON");
 

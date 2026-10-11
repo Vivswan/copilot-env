@@ -13,6 +13,7 @@ import { MILLISECONDS_PER_DAY } from "../utils/time.ts";
 import { isRecord, parseJsonRecord } from "../utils/json.ts";
 import { COPILOT_ENV_USER_AGENT } from "../utils/user_agent.ts";
 import type { GitHubRateCard, RateCardSource } from "./github_rate_card.ts";
+import type { ProbeFetch } from "../copilot_api/integration_identity.ts";
 
 const FETCH_TIMEOUT_MS = 10_000;
 const PER_MILLION = 1_000_000;
@@ -117,7 +118,7 @@ export function nanoAiuToUsd(nanoAiu: number): number {
  *  transport's, because a custom --pricing-url may carry credentials. */
 export async function fetchPricing(
   url: string = OPENROUTER_MODELS_URL,
-  fetchImpl: typeof fetch = fetch,
+  fetchImpl: ProbeFetch = fetch,
 ): Promise<Map<string, PricingTier>> {
   const canonical = canonicalPricingUrl(url);
   const timeout = AbortSignal.timeout(FETCH_TIMEOUT_MS);
@@ -196,7 +197,7 @@ export async function loadPricing(
     cacheDir?: string;
     nowMs?: number;
     ttlMs?: number;
-    fetchImpl?: typeof fetch;
+    fetchImpl?: ProbeFetch;
   } = {},
 ): Promise<LoadedPricing> {
   const nowMs = opts.nowMs ?? Date.now();

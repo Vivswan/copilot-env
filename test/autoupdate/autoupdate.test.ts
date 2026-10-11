@@ -9,6 +9,7 @@ import { isDue, MILLISECONDS_PER_DAY } from "../../src/utils/time.ts";
 import { packageVersion } from "../../src/utils/version.ts";
 import { afterEach, expect, removeDir, tempDir, test } from "../helpers/testing.ts";
 import { envSnapshot } from "../helpers/env.ts";
+import type { ProbeFetch } from "../../src/copilot_api/integration_identity.ts";
 
 const restoreEnv = envSnapshot();
 let dir = "";
@@ -127,7 +128,7 @@ test("runPreflight honors the auto-update key and ignores a legacy enabled field
         { status: 200 },
       ),
     );
-  }) as typeof fetch;
+  }) as unknown as typeof fetch;
   try {
     // The lock seam keeps the run off the install root's real update lock.
     await runPreflight({
@@ -152,7 +153,7 @@ test("runPreflight honors the auto-update key and ignores a legacy enabled field
   const concurrent = { lastCheckMs: now - 1, lastResult: "updated v9.9.9" };
   globalThis.fetch = (() => {
     throw new Error("the under-lock recheck must not reach the network");
-  }) as typeof fetch;
+  }) as unknown as typeof fetch;
   try {
     await runPreflight({
       nowMs: now,

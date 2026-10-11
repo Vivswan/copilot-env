@@ -13,8 +13,7 @@ let dir = "";
 
 const CONFIG: ProjectConfig = {
   "proxyMinVersion": "1.10.0",
-  "proxyMaxVersion": "1.10.30",
-};
+  "proxyMaxVersion": "1.10.30", "sidecarDenoVersion": "2.9.7" };
 
 function writeProxyPackage(root: string, versionJson: string): void {
   const pkgDir = join(root, "node_modules", "@jeffreycao", "copilot-api");

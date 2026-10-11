@@ -804,7 +804,6 @@ const CONFIG_REGISTRY_LITERAL = [
 
 type RegistryEntry = (typeof CONFIG_REGISTRY_LITERAL)[number];
 
-/** Exported only for the @ts-expect-error pin tests. */
 type TotalOverConfigKeys<Pin extends { [K in ConfigKey]: K }> = Pin;
 
 /** Every ConfigValueTypes key is optional in the stores, so a key omitted from the registry would

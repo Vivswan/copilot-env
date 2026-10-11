@@ -139,10 +139,6 @@ export function effectiveCodexHome(): string {
   return resolveCodexHome().home;
 }
 
-function effectiveCodexHomeFor(prefs: CodexHomePrefs): string {
-  return resolveCodexHome(prefs).home;
-}
-
 /** `$CODEX_HOME` unless it is OUR farm export (POSIX only; Windows never has a farm), else
  *  `~/.codex`. `prefs` names the root the farm export is judged against: the settings-import plan
  *  passes the bundle's, so its line and the apply's write agree. */
@@ -708,7 +704,7 @@ export function knownCodexHomes(): { homes: string[]; complete: boolean } {
   } catch {
     complete = false;
   }
-  const homes = new Set<string>([effectiveCodexHomeFor(prefs)]);
+  const homes = new Set<string>([resolveCodexHome(prefs).home]);
   // The default home resolves via homedir(); the farm root via its creator's contract
   // (codexFarmHostsDir on homeDir, process.env.HOME first). They can differ (HOME set on Windows),
   // so BOTH are swept; the Set dedupes the common case. A `codex.home` root is a third: its own

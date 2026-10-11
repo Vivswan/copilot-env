@@ -40,12 +40,6 @@ const PROXY_VERSION_ENV = "COPILOT_API_VERSION";
 const MIN_RELEASE_AGE_ENV = "COPILOT_API_MIN_RELEASE_AGE";
 const SEMVER_RE = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/;
 
-/** bunfig.toml's `[install] minimumReleaseAge`: the floor `bun install` itself applies, so the
- *  float never selects a proxy younger than the checkout's own dependencies may be. */
-function defaultReleaseCooldownSeconds(): number {
-  return readInstallMinimumReleaseAge();
-}
-
 /** The full document: its `time` map carries the publish times the cooldown needs; the abbreviated
  *  install doc lacks it. */
 const PROXY_REGISTRY_URL = `https://registry.npmjs.org/${PROXY_PKG.replaceAll("/", "%2F")}`;
@@ -76,8 +70,10 @@ export function resolveMinimumReleaseAgeSeconds(): number {
     return Number.parseInt(raw, 10);
   }
   // Strict config read, like the version pin: a stored cooldown must not be shortened to the
-  // default by an unreadable store.
-  return new CopilotEnvConfig().storedReleaseCooldownSeconds() ?? defaultReleaseCooldownSeconds();
+  // default by an unreadable store. The default is bunfig.toml's `[install] minimumReleaseAge`,
+  // the floor `bun install` itself applies, so the float never selects a proxy younger than the
+  // checkout's own dependencies may be.
+  return new CopilotEnvConfig().storedReleaseCooldownSeconds() ?? readInstallMinimumReleaseAge();
 }
 
 function formatReleaseAge(seconds: number): string {
@@ -285,10 +281,8 @@ export function writeDaemonConfig(rootHome: string): void {
   fs.writeText(daemonConfigFile(rootHome), renderDaemonConfig(), { secretKeys: [] });
 }
 
-/** `dependencies` is the test seam; the default is the embedded manifest's. An aliased entry
- *  (`"@std/semver": "npm:@jsr/std__semver@^1"`) already names its package: the alias is the map key and
- *  the specifier is taken as written. */
-function renderDaemonConfig(dependencies: Record<string, string> = packageDependencies()): string {
+function renderDaemonConfig(): string {
+  const dependencies = packageDependencies();
   if (dependencies[PROXY_PKG] === undefined) {
     throw new Error(
       `package.json does not list ${PROXY_PKG} under dependencies, so no import map can name the proxy`,

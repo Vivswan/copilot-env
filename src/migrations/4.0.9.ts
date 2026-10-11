@@ -895,7 +895,6 @@ function renameOf({ from, to }: ProfileMove): { from: ProfileName; to: ProfileNa
   return from !== null && to !== null && from !== to ? { from, to } : null;
 }
 
-/** The first `<base>-<n>` no artifact uses. Exported for the migration test. */
 function freeProfileName(base: ProfileName, taken: (name: string) => boolean): ProfileName {
   for (let n = 1; ; n++) {
     const candidate = `${base}-${n}`;

@@ -300,8 +300,8 @@ test("withFileLockSync refuses an async fn BEFORE its body runs, and a thenable-
   expect(ran).toBe(false); // rejected up front: not even the pre-await prefix ran
   expect(existsSync(path)).toBe(false); // and no lock was taken for it
 
-  // @ts-expect-error the compile-time exclusion flags it too; this pins the RUNTIME guard
   expect(() =>
+    // @ts-expect-error the compile-time exclusion flags it too; this pins the RUNTIME guard
     withFileLockSync(path, { staleMs: 10_000, waitMs: 0 }, () => Promise.resolve(1)),
   ).toThrow("use withFileLock");
   expect(existsSync(path)).toBe(false); // the misuse still released the scope's lock

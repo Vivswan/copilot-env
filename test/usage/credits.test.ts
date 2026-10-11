@@ -62,7 +62,7 @@ describe("parseCopilotCredits", () => {
         {
           ...BODY,
           quota_snapshots: {
-            premium_interactions: { entitlement: 5, credits_used: 1e400 },
+            premium_interactions: { entitlement: 5, credits_used: Number.POSITIVE_INFINITY },
           },
         },
         "credits_used",
@@ -84,7 +84,8 @@ describe("fetchCopilotCredits", () => {
       return Promise.resolve(new Response(JSON.stringify(BODY), { status: 200 }));
     });
     expect(ok).toEqual(CREDITS);
-    expect((seen?.headers as Record<string, string>).Authorization).toBe("token tok");
+    const headers = seen?.headers as Record<string, string> | undefined;
+    expect(headers?.Authorization).toBe("token tok");
     await expect(
       fetchCopilotCredits("tok", () => Promise.resolve(new Response("", { status: 401 }))),
     ).rejects.toThrow("returned 401");

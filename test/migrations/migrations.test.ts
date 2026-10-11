@@ -745,7 +745,12 @@ function captureConsola(level: "warn" | "info"): { lines: string[]; restore: () 
   consola[level] = ((...args: unknown[]) => {
     lines.push(args.map(String).join(" "));
   }) as typeof consola.warn;
-  return { lines, restore: () => void (consola[level] = original) };
+  return {
+    lines,
+    restore: () => {
+      consola[level] = original;
+    },
+  };
 }
 
 function warningsDuring(run: () => void, level: "warn" | "info" = "warn"): string[] {

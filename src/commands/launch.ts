@@ -267,7 +267,7 @@ function rejectMissingCli(cli: LaunchAction["kind"]): void {
         `'${cli}' is not installed. Run 'agent shell --clis' to install the agent CLIs.`,
       );
     default:
-      return assertNever(cliLook);
+      assertNever(cliLook);
   }
 }
 

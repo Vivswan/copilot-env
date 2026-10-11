@@ -50,7 +50,6 @@ import {
   type ProfileSlot,
   type StoredCredential,
 } from "../../src/copilot_api/env_state.ts";
-import type { ProbeFetch } from "../../src/copilot_api/integration_identity.ts";
 import {
   DEFAULT_COPILOT_API_BASE,
   setIntegrationProbeFetch,

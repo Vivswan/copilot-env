@@ -4,7 +4,6 @@ import { UPDATE_LOCK_POLICY } from "../../src/autoupdate/lock.ts";
 import { runPreflight } from "../../src/autoupdate/preflight.ts";
 import { AutoupdateState, autoupdateDir, autoupdateStateFile } from "../../src/autoupdate/state.ts";
 import { CopilotEnvConfig } from "../../src/copilot_api/env_config.ts";
-import type { ProbeFetch } from "../../src/copilot_api/integration_identity.ts";
 import { type LockOutcome, withFileLock } from "../../src/utils/file_lock.ts";
 import { isDue, MILLISECONDS_PER_DAY } from "../../src/utils/time.ts";
 import { packageVersion } from "../../src/utils/version.ts";

@@ -11,7 +11,6 @@ import {
 } from "../../src/codex/catalog.ts";
 import { CI_NO_LIVE_LOOKUPS_ENV } from "../../src/codex/user_agent.ts";
 import { CopilotEnvConfig } from "../../src/copilot_api/env_config.ts";
-import type { ProbeFetch } from "../../src/copilot_api/integration_identity.ts";
 import { CopilotApiPaths } from "../../src/copilot_api/paths.ts";
 import { childEnvWithPath, cliSpawn, resolveCommand } from "../../src/utils/command.ts";
 import { PROJECT_ROOT } from "../../src/utils/root.ts";

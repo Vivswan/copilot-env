@@ -18,10 +18,7 @@ import { CI_NO_LIVE_LOOKUPS_ENV, codexUserAgent } from "../../src/codex/user_age
 import { runDryRun } from "../../src/commands/dry_run.ts";
 import { CopilotEnvConfig } from "../../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../../src/copilot_api/env_state.ts";
-import {
-  directClientHeaders,
-  type ProbeFetch,
-} from "../../src/copilot_api/integration_identity.ts";
+import { directClientHeaders } from "../../src/copilot_api/integration_identity.ts";
 import { OwnershipLedger } from "../../src/copilot_api/ownership.ts";
 import { CopilotApiPaths } from "../../src/copilot_api/paths.ts";
 import { withDryRun } from "../../src/utils/dry_run.ts";

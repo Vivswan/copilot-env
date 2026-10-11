@@ -79,7 +79,7 @@ function warnMissing(command: string, name: string): void {
       );
       return;
     default:
-      return assertNever(look);
+      assertNever(look);
   }
 }
 
@@ -405,7 +405,7 @@ function installCli(
     case "absent":
       break;
     default:
-      return assertNever(look);
+      assertNever(look);
   }
   // npm's version bounds the install whether or not the command is on PATH (its bin dir may not
   // be).
@@ -462,7 +462,7 @@ function installCli(
         `${cli.name} was installed but '${cli.command}' is still unavailable. Open a new shell and rerun 'agent shell --clis'.`,
       );
     default:
-      return assertNever(verify);
+      assertNever(verify);
   }
 }
 

@@ -1,10 +1,9 @@
 // Every spawn is gated on the running test's abort signal (testing.ts): a body the deadline
 // abandoned keeps executing, and its next spawn would otherwise land inside a later test.
 import { spawnSync } from "node:child_process";
-import { writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { ISOLATE_ROOT, TEST_ROOT_ENV, tempDir, testAbortSignal } from "./testing.ts";
+import { ISOLATE_ROOT, TEST_ROOT_ENV, testAbortSignal } from "./testing.ts";
 
 export const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 /** What the `agent` binary runs (scripts/compile.ts compiles this module). */

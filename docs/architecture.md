@@ -141,33 +141,34 @@ Demonstrated by: [test/copilot_api/profiles.e2e.test.ts](../test/copilot_api/pro
 flowchart LR
   registry[["GET https://registry.npmjs.org/@jeffreycao%2Fcopilot-api"]]
   prefs[("~/.local/share/copilot-env/state.json (global and profiles.<name>: the settings)")]
-  float["src/proxy_float.ts<br>floatProxy() selectProxyVersion() writeResolvedVersionRecord() readResolvedVersionRecord()"]
-  shims["src/copilot_api/shims.ts<br>DAEMON_SHIM_FILES shimPath() allShimPaths()"]
-  spawn["src/copilot_api/process.ts<br>DaemonSpec daemonArgv() daemonEnvironment() launchDaemon()"]
-  preloads["src/scripts/node_compat_preload.ts<br>src/scripts/daemon_lock_preload.ts<br>src/scripts/token_argv_preload.ts<br>src/scripts/daemon_runtime_preload.ts<br>src/scripts/copilot_host_preload.ts<br>src/scripts/client_headers_preload.ts<br>src/scripts/pat_passthrough_preload.ts<br>src/scripts/idle_watchdog_preload.ts<br>src/scripts/log_mute_preload.ts"]
-  cache[("~/.local/share/copilot-env/deno/cache<br>the daemon's DENO_DIR")]
+  float["src/proxy_float.ts<br>floatProxy() selectProxyVersion() renderProxyManifest() renderDaemonBunfig() writeResolvedVersionRecord() readResolvedVersionRecord()"]
+  shims["src/copilot_api/shims.ts<br>DAEMON_SHIM_FILES DAEMON_SHIM_DEPENDENCIES shimPath()"]
+  spawn["src/copilot_api/process.ts<br>DaemonSpec resolveCopilotApiEntry() daemonArgv() daemonEnvironment() launchDaemon()"]
+  preloads["src/scripts/daemon_lock_preload.ts<br>src/scripts/token_argv_preload.ts<br>src/scripts/daemon_runtime_preload.ts<br>src/scripts/copilot_host_preload.ts<br>src/scripts/client_headers_preload.ts<br>src/scripts/pat_passthrough_preload.ts<br>src/scripts/idle_watchdog_preload.ts<br>src/scripts/log_mute_preload.ts"]
+  cache[("~/.local/share/copilot-env/bun/cache<br>bun's download cache for the proxy home")]
   record[("~/.local/share/copilot-env/proxy/resolved-version.json")]
-  pcfg[("copilot-env.config and deno.json, embedded in the binary: PROXY_MIN_VERSION, PROXY_MAX_VERSION, the import map")]
-  dcfg[("~/.local/share/copilot-env/proxy/deno.json and deno.lock, ~/.local/share/copilot-env/.npmrc<br>the daemon's import map, its transitive pins, trust-policy=no-downgrade")]
-  daemonproc[["the daemon: deno run --config ... --preload ... npm:@jeffreycao/copilot-api@{version}, COPILOT_API_HOME={the profile's daemon home}"]]
+  pcfg[("copilot-env.config, bunfig.toml and package.json, embedded in the binary: PROXY_MIN_VERSION, PROXY_MAX_VERSION, the default cooldown, the shims' dependency ranges")]
+  phome[("~/.local/share/copilot-env/proxy: package.json, bun.lock, bunfig.toml, node_modules<br>the proxy at the resolved version plus the shims' dependencies; the lock pins the transitive tree; [install] minimumReleaseAge is the cooldown")]
+  daemonproc[["the daemon: process.execPath run --no-env-file --no-install --preload ... node_modules/@jeffreycao/copilot-api/dist/main.js start, BUN_BE_BUN=1, cwd and NODE_PATH in the proxy home, COPILOT_API_HOME={the profile's daemon home}"]]
   registry -->|"reads versions and publish times"| float
   prefs -->|"reads proxy-version, release-cooldown"| float
-  pcfg -->|"reads the version bounds, and imports plus compilerOptions for the daemon's config"| float
-  shims -->|"every shim, warmed into the cache"| float
-  float -->|"writes the import map and a marked .npmrc once, deno cache pins the lock"| dcfg
-  float -->|"deno cache: the package and the shims"| cache
-  float -->|"writes the version and its DENO_DIR"| record
-  record -->|"reads the daemon's entry"| spawn
-  dcfg -->|"reads --config"| spawn
+  pcfg -->|"reads the version bounds, the default cooldown, and the dependency ranges"| float
+  shims -->|"the dependencies every shim imports"| float
+  float -->|"writes package.json and bunfig.toml, then bun install writes the lock and node_modules"| phome
+  float -->|"BUN_INSTALL_CACHE_DIR"| cache
+  float -->|"writes the version and the time"| record
+  record -->|"reads the daemon's version"| spawn
+  phome -->|"reads the installed package's bin"| spawn
   shims -->|"the subset DaemonSpec derives"| spawn
   spawn -->|"--preload, in order"| preloads
-  spawn -->|"launchDaemon(): COPILOT_ENV_ROOT_HOME, COPILOT_ENV_DAEMON_KEEP_PORT, --cached-only"| daemonproc
+  spawn -->|"launchDaemon(): COPILOT_ENV_ROOT_HOME, COPILOT_ENV_DAEMON_KEEP_PORT"| daemonproc
   preloads -->|"run inside it before the package's entry"| daemonproc
 ```
 
-- **We never patch the package:** every shim wraps a runtime seam (`globalThis.fetch`, undici's global dispatcher, `fs.createWriteStream`, `process.argv`) and touches none of copilot-api's files, so none of them pins the floated version.
-- **`--cached-only` at spawn gives no second chance,** which is why the float warms the cache; every spawn carries the token, host, and client-header shims, since a launch without a credential is refused.
-- **The secret-carrying shims stay import-free** (`test/lint/no_shim_imports.ts`): a runtime import would drag CLI modules into the daemon process.
+- **The daemon runs from the binary itself:** `process.execPath` spawned as a bun CLI (`BUN_BE_BUN=1` in the child's environment; without it a compiled binary would re-run its own entry). A checkout's execPath is bun already. Nothing else is downloaded.
+- **We never patch the package:** every shim wraps a runtime seam (`globalThis.fetch`, `Bun.serve`, `fs.createWriteStream`, `process.argv`) and touches none of copilot-api's files, so none of them pins the floated version. One seam has no bun form: the /responses WebSocket handshake (copilot-api's `WebSocket` from bun's built-in undici is the native class), which runs under the proxy's own identity.
+- **`--no-install` at spawn gives no second chance,** which is why the float installs the shims' dependencies beside the proxy; every spawn carries the token, host, and client-header shims, since a launch without a credential is refused.
+- **The secret-carrying shims stay import-free** (`biome/no_shim_imports.grit`): a runtime import would drag CLI modules into the daemon process.
 
 Demonstrated by: [test/copilot_api/proxy_float.e2e.test.ts](../test/copilot_api/proxy_float.e2e.test.ts), [test/copilot_api/daemon_spawn.e2e.test.ts](../test/copilot_api/daemon_spawn.e2e.test.ts), [test/copilot_api/daemon_env_keys.test.ts](../test/copilot_api/daemon_env_keys.test.ts).
 
@@ -200,7 +201,7 @@ Demonstrated by: [test/copilot_api/env_config.test.ts](../test/copilot_api/env_c
 
 ```mermaid
 flowchart TD
-  assets[("the binary's embedded assets<br>materialized: the bin and shell payloads, the daemon shims<br>read in place: deno.json and copilot-env.config, the proxy version bounds and the sidecar deno pin")]
+  assets[("the binary's embedded assets<br>materialized: the bin and shell payloads, the daemon shims<br>read in place: copilot-env.config and bunfig.toml, the proxy version bounds and the default cooldown")]
   releases[["GET https://api.github.com/repos/Vivswan/copilot-env/releases?per_page=100"]]
   download[["https://github.com/Vivswan/copilot-env/releases/download/{tag}: copilot-env-{triple} (.exe on Windows), checksums.txt, attestation.json"]]
   tuf[["https://tuf-repo-cdn.sigstore.dev: the Sigstore trust root"]]

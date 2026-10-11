@@ -19,7 +19,7 @@ bash scripts/setup-env.sh   # one-shot env/worktree init (bun install --frozen-l
 
 - **Tasks:** run `bun run` for the list (typecheck, test, bench, lint, check). They are the `scripts` of `package.json`; the toolchain is Bun at the version in `.bun-version`.
 - **Tests:** `bun run test` is `scripts/run_tests.ts`, which runs one bun process per test file. Name files to run a subset: `bun run test test/usage/usage.test.ts`. `bun run test:unit` runs the unit files alone ([below](#unit-tests-and-e2e-tests)).
-- **The sidecar:** the proxy daemon runs under a Deno sidecar the binary downloads, pinned by `SIDECAR_DENO_VERSION` in `copilot-env.config`. A checkout installs no deno; the CI jobs that start the daemon put that pin on the runner through `.github/actions/setup-sidecar-deno`.
+- **The daemon:** the proxy daemon runs on the same bun as the CLI: a checkout spawns the `bun` it runs under, a release spawns its own binary as a bun CLI (`BUN_BE_BUN=1`). Nothing else is downloaded; the float installs the proxy with `bun install` into the data home.
 - **Env init:** `scripts/setup-env.sh` (`setup-env.ps1` on Windows) is the single initializer. The Copilot coding agent and Codespaces / Dev Containers both run it.
 - **Checks before a push:** the tasks and the pre-commit hook are listed in [CONTRIBUTING.md](../CONTRIBUTING.md).
 - **Rules and decisions:** the conventions, the hard rules, and the decisions a reader would otherwise reverse (the proxy float, one credential, atomic profiles) live in [`AGENTS.md`](../AGENTS.md).
@@ -30,7 +30,7 @@ bash scripts/setup-env.sh   # one-shot env/worktree init (bun install --frozen-l
 A test file is one of two kinds, told apart by its name:
 
 - `<name>.test.ts` is a unit test: it runs in this process and touches nothing outside the suite's temp root. `bun run test:unit` runs these, and so does the pre-commit hook.
-- `<name>.e2e.test.ts` is a realistic test: it spawns a process (the CLI, the daemon, bun, deno, biome), opens a listener, sets up a home-shaped sandbox (`isolateAgentHomes` or `agentHomeEnv` from `test/helpers/env.ts`), or needs a real CLI, the proxy, or the network. A file with both kinds of tests is e2e. CI runs these; `bun run test` runs both kinds.
+- `<name>.e2e.test.ts` is a realistic test: it spawns a process (the CLI, the daemon, bun, biome), opens a listener, sets up a home-shaped sandbox (`isolateAgentHomes` or `agentHomeEnv` from `test/helpers/env.ts`), or needs a real CLI, the proxy, or the network. A file with both kinds of tests is e2e. CI runs these; `bun run test` runs both kinds.
 
 The launcher refuses to run an `*.e2e.test.ts` file unless `GITHUB_ACTIONS=true` or `CI=true` is set or `--e2e` is passed. The refusal is one line on stderr, exit 2, naming the count of e2e files selected, the two markers, the flag, and `bun run test:unit`. A file named outright obeys the same rule, and must match `**/*.test.ts` at all: any other name is refused rather than handed to `bun test` unexamined.
 

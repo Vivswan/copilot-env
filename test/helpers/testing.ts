@@ -124,8 +124,9 @@ onTeardown(() => {
 //
 // Every env var that steers a real agent-state path is repointed under the process's root, so a
 // test with no harness of its own still cannot touch the developer's `~/.codex`, `~/.claude`,
-// `~/.claude.json`, copilot-api home, or shell rc files. HOME stays REAL: each path has its own
-// override, which is what makes it redirectable without HOME.
+// `~/.claude.json`, copilot-api home, or shell rc files. HOME is not retargeted here: bun resolves
+// os.homedir() once at startup, so the process must START under a scratch HOME, which
+// scripts/run_tests.ts gives every child and test/helpers/home_guard.ts refuses to run without.
 const SANDBOX_HOME = join(ISOLATE_ROOT, "sandbox");
 mkdirSync(SANDBOX_HOME);
 process.env.COPILOT_API_HOME = join(SANDBOX_HOME, "copilot-api");

@@ -3,4 +3,4 @@ auto = "disable"
 minimumReleaseAge = 604800
 
 [test]
-preload = ["./test/helpers/node_env.ts"]
+preload = ["./test/helpers/home_guard.ts", "./test/helpers/node_env.ts"]

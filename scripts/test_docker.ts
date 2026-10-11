@@ -115,8 +115,10 @@ if (first === "--lifecycle") {
   command = ["bun", ".github/scripts/floated-smoke.ts", ...rest];
 } else {
   runArgs.push("--network=none");
+  // The container's HOME is the throwaway one, so the *.e2e.test.ts files run here as in CI; the
+  // image's CMD carries the same opt-in for the whole suite.
   if (first !== undefined) {
-    command = ["bun", "run", "test", first, ...rest];
+    command = ["bun", "run", "test", "--e2e", first, ...rest];
   } else {
     command = [];
   }

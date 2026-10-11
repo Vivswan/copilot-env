@@ -40,4 +40,4 @@ COPY --chown=bun:bun . .
 # dependency tree (which `bun install` never resolves) must be cached while there is a network.
 RUN bun scripts/warm-proxy-cache.ts
 
-CMD ["bun", "run", "test"]
+CMD ["bun", "run", "test", "--e2e"]

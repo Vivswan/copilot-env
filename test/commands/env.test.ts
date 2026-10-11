@@ -70,7 +70,7 @@ function childEnvLines(env: Record<string, string | undefined>, profile?: string
   const script = `import{runEnv}from${
     importSpecifier(join(ROOT, "src/commands/env.ts"))
   };runEnv(${CHILD_VALUES});`;
-  const result = runSync(Deno.execPath(), ["eval", script], {
+  const result = runSync(process.execPath, ["-e", script], {
     env: { ...process.env, ...env, ...childValuesEnv({ "format": "posix", "profile": profile }) },
   });
   if (result.exitCode !== 0) throw new Error(`child env failed: ${result.stderr}`);

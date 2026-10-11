@@ -1,6 +1,6 @@
 // The fake model endpoint the REAL claude and codex CLIs (and our own Direct smoke,
 // src/copilot_api/endpoint_smoke.ts) run against with no network and no credential: aimock
-// (npm:@copilotkit/aimock, pinned in deno.json; zero runtime deps, MIT) behind a thin front.
+// (@copilotkit/aimock, pinned in package.json; zero runtime deps, MIT) behind a thin front.
 //
 // Hand-rolling the SSE emitter was weighed and dropped: aimock's Anthropic and OpenAI shapes are
 // validated daily against the real vendors by its own drift job (.github/workflows/test-drift.yml
@@ -36,11 +36,11 @@
 // body, status) with the front's own entries for the catalog route. aimock REDACTS credential
 // header values (`authorization`, `x-api-key` read "[REDACTED]"), so a test asserts their
 // presence there and their value only on a catalog entry, which the front journals in full.
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, request as httpRequest } from "node:http";
 import { join } from "node:path";
 import { isRecord } from "../../src/utils/json.ts";
-import { denoRunArgs, ROOT, spawnChild } from "./run.ts";
+import { bunRunArgs, resolvePackageDir, ROOT, spawnChild } from "./run.ts";
 
 /** The header aimock matches a fixture's `context` against, exact string match. */
 export const SCENARIO_HEADER = "X-AIMock-Context";
@@ -77,15 +77,13 @@ const BASE_ENV_KEYS = [
   "USERNAME",
 ];
 
-/** A complete child env: the allowlist above from this process, then `extra` over it. Every
- *  child (aimock, the CLIs) is a deno or node process that would otherwise ask dl.deno.land for
- *  its latest release on start; DENO_NO_UPDATE_CHECK is forced so the fake stays offline. */
+/** A complete child env: the allowlist above from this process, then `extra` over it. */
 export function hermeticEnv(extra: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
     if (value !== undefined && BASE_ENV_KEYS.includes(key.toUpperCase())) out[key] = value;
   }
-  return { ...out, DENO_NO_UPDATE_CHECK: "1", ...extra };
+  return { ...out, ...extra };
 }
 
 type ScenarioSpec =
@@ -270,20 +268,22 @@ function flatHeaders(req: IncomingMessage): Record<string, string> {
   return out;
 }
 
-/** The pinned aimock specifier from deno.json, so the pin lives in one place. */
-function aimockSpecifier(): string {
-  const config = JSON.parse(Deno.readTextFileSync(join(ROOT, "deno.json"))) as {
-    imports: Record<string, string>;
+/** aimock's `llmock` entry, read from the installed package's own bin map rather than a path
+ *  restated here, so a release that moves it fails by name. */
+function llmockEntry(): string {
+  const dir = resolvePackageDir("@copilotkit/aimock", ROOT);
+  const { bin } = JSON.parse(readFileSync(join(dir, "package.json"), "utf8")) as {
+    bin?: Record<string, string>;
   };
-  const pinned = config.imports["@copilotkit/aimock"];
-  if (pinned === undefined) throw new Error("deno.json does not pin @copilotkit/aimock");
-  return `${pinned}/llmock`;
+  const entry = bin?.llmock;
+  if (entry === undefined) throw new Error("@copilotkit/aimock declares no llmock bin");
+  return join(dir, entry);
 }
 
 /** Resolves with the port once aimock prints its listening line on either stream. A child that
  *  exits first (a bad fixture path, a refused flag) rejects at once with what it printed, never
  *  after the start timeout. Exported for its own test. */
-export async function awaitListening(child: Deno.ChildProcess): Promise<number> {
+export async function awaitListening(child: Bun.Subprocess): Promise<number> {
   const marker = /listening on http:\/\/127\.0\.0\.1:(\d+)/;
   let settled = false;
   const printed = { stdout: "", stderr: "" };
@@ -311,15 +311,17 @@ export async function awaitListening(child: Deno.ChildProcess): Promise<number> 
         if (printed[name].length > 65_536) printed[name] = printed[name].slice(-4_096);
       }
     };
-    const drained = Promise.all([scan(child.stdout, "stdout"), scan(child.stderr, "stderr")])
-      .catch(() => {});
+    const drained = Promise.all([
+      scan(child.stdout as ReadableStream<Uint8Array>, "stdout"),
+      scan(child.stderr as ReadableStream<Uint8Array>, "stderr"),
+    ]).catch(() => {});
     // An exit closes both pipes; the drain settles first so the message carries what they held.
-    child.status.then((status) =>
+    child.exited.then((code) =>
       drained.then(() =>
         settle(() =>
           reject(
             new Error(
-              `aimock exited with code ${status.code} before listening: ${
+              `aimock exited with code ${code} before listening: ${
                 (printed.stderr || printed.stdout).trim().slice(0, 400)
               }`,
             ),
@@ -344,10 +346,10 @@ export async function startFakeModelEndpoint(
 ): Promise<FakeModelEndpoint> {
   const fixturesPath = join(dir, "fixtures.json");
   writeFileSync(fixturesPath, `${JSON.stringify(fixtureFile(scenarios), null, 2)}\n`);
-  const child = spawnChild(Deno.execPath(), {
+  const child = spawnChild(process.execPath, {
     args: [
-      ...denoRunArgs("--preload", join(ROOT, "test", "helpers", "exit_with_parent_preload.ts")),
-      aimockSpecifier(),
+      ...bunRunArgs("--preload", join(ROOT, "test", "helpers", "exit_with_parent_preload.ts")),
+      llmockEntry(),
       "--port",
       "0",
       "--fixtures",
@@ -360,9 +362,9 @@ export async function startFakeModelEndpoint(
     env: hermeticEnv({}),
     clearEnv: true,
     // Never written; the preload reads it for the EOF alone.
-    stdin: "piped",
-    stdout: "piped",
-    stderr: "piped",
+    stdin: "pipe",
+    stdout: "pipe",
+    stderr: "pipe",
   });
   let aimockPort: number;
   try {
@@ -464,13 +466,10 @@ export async function startFakeModelEndpoint(
   };
 }
 
-/** Kill aimock and release its stdin pipe. A child that already exited throws on kill. */
-async function stopChild(child: Deno.ChildProcess): Promise<void> {
-  try {
-    child.kill();
-  } catch {
-    // already gone
-  }
-  await child.status;
-  await child.stdin.close();
+/** Kill aimock and release its stdin pipe. */
+async function stopChild(child: Bun.Subprocess): Promise<void> {
+  child.kill();
+  await child.exited;
+  const stdin = child.stdin;
+  if (stdin !== null && typeof stdin === "object" && "end" in stdin) await stdin.end();
 }

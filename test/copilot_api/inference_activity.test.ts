@@ -10,7 +10,8 @@ import {
   persistedInferenceMs,
   resetInferenceActivityForTests,
 } from "../../src/copilot_api/inference_activity.ts";
-import { denoRunArgs, importSpecifier, resolvePackageDir, ROOT, runSync } from "../helpers/run.ts";
+import { importSpecifier, resolvePackageDir, ROOT, runSync } from "../helpers/run.ts";
+import { denoRunArgs, sidecarDeno, sidecarTest } from "../helpers/deno_sidecar.ts";
 import { afterEach, expect, test } from "../helpers/testing.ts";
 import { envSnapshot, isolateProxyHome } from "../helpers/env.ts";
 
@@ -143,12 +144,12 @@ await server.shutdown();
 console.log(JSON.stringify(out));
 `;
 
-test("the preloaded observer marks inference POSTs through a real Deno.serve, not GETs", () => {
+sidecarTest("the preloaded observer marks inference POSTs through a real Deno.serve, not GETs", () => {
   tmpHome();
   const target = join(dir, "target.ts");
   writeFileSync(target, TARGET_SCRIPT);
   const before = Date.now();
-  const res = runSync(Deno.execPath(), [...denoRunArgs("--preload", PRELOAD), target], {
+  const res = runSync(sidecarDeno(), [...denoRunArgs("--preload", PRELOAD), target], {
     env: { ...process.env, COPILOT_API_HOME: dir },
   });
   if (res.exitCode !== 0) throw new Error(`preloaded target failed: ${res.stderr}`);

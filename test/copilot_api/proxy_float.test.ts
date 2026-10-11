@@ -36,6 +36,7 @@ import { MILLISECONDS_PER_DAY } from "../../src/utils/time.ts";
 import { afterEach, beforeEach, describe, expect, removeDir, test } from "../helpers/testing.ts";
 import { PROXY_CACHE_FIXTURE } from "../../scripts/warm-proxy-cache.ts";
 import { ROOT, runSync } from "../helpers/run.ts";
+import { sidecarDeno, sidecarTest } from "../helpers/deno_sidecar.ts";
 import { envSnapshot, isolateProxyHome } from "../helpers/env.ts";
 
 // resolved-version.json records each float; it is the freshness oracle that
@@ -1056,9 +1057,9 @@ describe("the floated spawn executes", () => {
   // fixture is genuine float output built by scripts/warm-proxy-cache.ts while the container
   // image still has a network, which keeps this offline and deterministic. In CI and the
   // container the fixture always exists; a checkout without it (build one with
-  // `deno run -A scripts/warm-proxy-cache.ts`) reports this test ignored, never passed.
+  // `bun scripts/warm-proxy-cache.ts`) reports this test ignored, never passed.
   const record = readResolvedVersionRecord(PROXY_CACHE_FIXTURE);
-  test.skipIf(record === null)(
+  (record === null ? test.skipIf(true) : sidecarTest)(
     "a real floated install actually launches the proxy, with no node_modules",
     () => {
       if (record === null) throw new Error("unreachable: the fixture gate skipped this test");
@@ -1069,7 +1070,7 @@ describe("the floated spawn executes", () => {
 
       // Merged over our own environment, as daemonEnvironment does in production: a child
       // stripped of PATH/HOME would test something the daemon never does.
-      const result = runSync(Deno.execPath(), copilotApiArgv(["--help"], [], entry), {
+      const result = runSync(sidecarDeno(), copilotApiArgv(["--help"], [], entry), {
         env: { ...process.env, ...copilotApiEnv(entry) },
         timeoutMs: 120_000,
       });

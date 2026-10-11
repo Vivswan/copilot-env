@@ -111,9 +111,9 @@ test("usage_profile requires --out and refuses a path inside the repository befo
   const missing = runScript(script, [], { env });
   expect(missing.exitCode).toBe(1);
   expect(missing.stderr).toContain("--out FILE is required");
-  expect(missing.stderr).toContain("Usage: deno task usage:profile --out FILE");
+  expect(missing.stderr).toContain("Usage: bun run usage:profile --out FILE");
 
-  // The committed fixture's own path, relative to the checkout the way `deno task` runs it, and
+  // The committed fixture's own path, relative to the checkout the way `bun run` runs it, and
   // the checkout root itself: both refused before the first log is read.
   for (const target of [join("test", "fixtures", "usage", "profile.json"), "."]) {
     const inside = runScript(script, ["--out", target], { env, cwd: ROOT });

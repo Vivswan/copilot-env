@@ -12,7 +12,8 @@ import { CopilotApiPaths } from "../../src/copilot_api/paths.ts";
 import { parseProfileName, type Profile } from "../../src/copilot_api/profile.ts";
 import { agentHomeEnv, envSnapshot } from "../helpers/env.ts";
 import { writeRunState } from "../helpers/fixtures.ts";
-import { importSpecifier, ROOT, runCli, runScript, spawnChild } from "../helpers/run.ts";
+import { sidecarTest, spawnDenoChild } from "../helpers/deno_sidecar.ts";
+import { importSpecifier, ROOT, runCli, runScript } from "../helpers/run.ts";
 import { afterEach, expect, removeDir, tempDir, test } from "../helpers/testing.ts";
 
 const WORK = parseProfileName("work");
@@ -208,11 +209,7 @@ async function stageDecoyDaemon(
 ): Promise<{ teardown: () => Promise<void> }> {
   const decoy = join(home, "copilot-api-decoy.mjs");
   writeFileSync(decoy, "setTimeout(() => {}, 30_000);\n");
-  const daemon = spawnChild(Deno.execPath(), {
-    args: ["run", decoy, "start"],
-    stdout: "null",
-    stderr: "null",
-  });
+  const daemon = spawnDenoChild({ args: [decoy, "start"], stdout: "ignore", stderr: "ignore" });
   const { server, port } = await new Promise<{ server: Server; port: number }>(
     (resolve, reject) => {
       const srv = createServer();
@@ -237,7 +234,7 @@ async function stageDecoyDaemon(
       } catch {
         // already gone
       }
-      await daemon.status;
+      await daemon.exited;
     },
   };
 }
@@ -246,7 +243,9 @@ async function stageDecoyDaemon(
 // Claude apiKeyHelper, and the launchers' eval consume, so the prompt and the refusal live on
 // stderr. The key lives in the default daemon home's config.json. The happy row needs a POSIX decoy
 // daemon, so it skips on Windows.
-test(
+// The `up` rows stage a decoy daemon, a deno process (the classifier gates on the runtime's
+// executable name), so the whole table needs the sidecar deno.
+sidecarTest(
   "spawned proxy-token: stdout is exactly the key line or nothing; prompts and refusals are stderr",
   async () => {
     const rows: Array<{

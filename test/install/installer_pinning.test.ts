@@ -37,7 +37,6 @@ import { tsFilesUnder as srcFiles } from "../helpers/tree.ts";
 
 const installSh = readFileSync(join(ROOT, "install.sh"), "utf8");
 const installPs1 = readFileSync(join(ROOT, "install.ps1"), "utf8");
-const compileTs = readFileSync(join(ROOT, "scripts", "compile.ts"), "utf8");
 
 describe("release-assets.ts pin needles", () => {
   // The release pipeline rewrites these installer lines by byte-exact needle and nothing runs
@@ -99,23 +98,11 @@ describe("compile targets match the installers", () => {
   });
 });
 
-describe("compile.include matches what the binary actually needs", () => {
-  // Every embedded asset has exactly one fate, and every fate needs its entry embedded.
+describe("the embedded assets' fates", () => {
+  // scripts/compile.ts embeds the three fate lists themselves, so the only way an asset can be
+  // wrong is to sit in two of them.
   //   MATERIALIZED_*  -> written to the install root; something outside this process opens it by path
   //   BUNDLED_ONLY_*  -> read in-process through ASSET_ROOT, never written
-  //   entry, no fate  -> dead weight in all five binaries
-  //   fate, no entry  -> missing exactly when first needed
-  const needed = [...MATERIALIZED_ASSET_DIRS, ...MATERIALIZED_ASSET_FILES, ...BUNDLED_ONLY_ASSETS];
-  // A CLI --include MERGES with deno.json's list instead of replacing it, so a second copy in
-  // scripts/compile.ts would silently union rather than fail.
-  const compileInclude: string[] = JSON.parse(
-    readFileSync(join(ROOT, "deno.json"), "utf8"),
-  ).compile?.include ?? [];
-
-  test("compile.include is exactly the union of the fates", () => {
-    expect([...compileInclude].sort()).toEqual([...needed].sort());
-  });
-
   test("the fates are disjoint", () => {
     // A path in two fates would be materialized AND read from the VFS, i.e. two
     // copies that can disagree after an update; a file already inside a
@@ -129,23 +116,12 @@ describe("compile.include matches what the binary actually needs", () => {
     }
   });
 
-  test("scripts/compile.ts does not carry a second include list", () => {
-    // Comments may mention --include; no executable line may pass it.
-    const code = compileTs.split("\n").filter((line) => !line.trim().startsWith("//"));
-    expect(code.some((line) => line.includes("--include"))).toBe(false);
-  });
-
-  test("the compile task's module graph loads under the task's own permissions", () => {
-    // The task grants no env permission; a module on the graph that reads the environment at
-    // import (the ansi helpers once did) fails every release build at "Compile this tree's host
-    // binary". `--help` loads every module and exits before anything is compiled.
-    const task: string = JSON.parse(readFileSync(join(ROOT, "deno.json"), "utf8")).tasks.compile;
-    const [bin, ...args] = task.split(/\s+/);
-    expect(bin).toBe("deno");
-    expect(args.some((arg) => arg.startsWith("--allow-env"))).toBe(false);
-    const res = runSync(Deno.execPath(), [...args, "--help"]);
-    expect(res.stderr).not.toContain("NotCapable");
-    expect(res.stdout).toContain("Usage: deno task compile");
+  test("the build script's module graph loads before anything is compiled", () => {
+    // A module on the graph that throws at import fails every release build at "Compile this
+    // tree's host binary", after the PR merged green. `--help` loads every module and exits before
+    // anything is compiled.
+    const res = runScript(join(ROOT, "scripts", "compile.ts"), ["--help"]);
+    expect(res.stdout, res.stderr).toContain("Usage: bun run build");
     expect(res.exitCode).toBe(0);
   });
 });
@@ -177,8 +153,8 @@ describe("bundled-only assets are never read through PROJECT_ROOT", () => {
 
   test("a VFS holding exactly the bundled-only assets satisfies every run-time reader", () => {
     // The converse guard: an asset a reader takes from ASSET_ROOT at run time (the daemon's
-    // import map, the sidecar's Deno pin, the project config) that left BUNDLED_ONLY_ASSETS
-    // breaks every compiled install while `deno test` stays green on the checkout copy.
+    // import map, the sidecar's version pin, the project config) that left BUNDLED_ONLY_ASSETS
+    // breaks every compiled install while the suite stays green on the checkout copy.
     const vfs = tempDir("ce-vfs-");
     const home = tempDir("ce-vfs-home-");
     try {
@@ -187,7 +163,7 @@ describe("bundled-only assets are never read through PROJECT_ROOT", () => {
       }
       const readers: Record<string, (root: string) => unknown> = {
         "daemon import map": (root) => writeDaemonConfig(home, root),
-        "Deno version pin": readDvmrcPin,
+        "sidecar version pin": readDvmrcPin,
         "project config": readProjectConfig,
       };
       for (const [name, read] of Object.entries(readers)) {
@@ -264,7 +240,9 @@ describe("installers mirror the binary's checkout refusal markers", () => {
 describe("installer checkout guard refuses before mutating, proceeds on legacy roots", () => {
   // The real installer scripts against throwaway roots, fed by a directory download source:
   // the guard's point is ordering, so it must fire before the bin write touches the root.
-  const skipWin = test.skipIf(Deno.build.os === "windows");
+  const skipWin = test.skipIf(process.platform === "win32");
+  /** What a marker-only root (no .git) carries: the first marker the binary refuses on. */
+  const MARKER = CHECKOUT_MARKERS[0];
 
   /** Sorted relative paths + content hashes: byte-level proof a root was not touched. */
   function snapshotTree(dir: string, prefix = ""): string[] {
@@ -288,7 +266,7 @@ describe("installer checkout guard refuses before mutating, proceeds on legacy r
     if (target === null) throw new Error("no release target for this platform");
     const dir = tempDir("ce-guard-dl-");
     const asset = releaseAssetName(target);
-    const body = Deno.build.os === "windows"
+    const body = process.platform === "win32"
       ? "not a real executable\n"
       : '#!/usr/bin/env bash\ntouch "$0.invoked"\nexit 0\n';
     writeFileSync(join(dir, asset), body);
@@ -319,7 +297,7 @@ describe("installer checkout guard refuses before mutating, proceeds on legacy r
     extraArgs: string[] = [],
   ): ReturnType<typeof runSync> {
     const extra = { "COPILOT_ENV_DOWNLOAD_BASE": downloadDir, "CI": "1", ...extraEnv };
-    if (Deno.build.os === "windows") {
+    if (process.platform === "win32") {
       return withPowershellChildEnv("powershell", (env) =>
         runSync("powershell", [
           "-NoProfile",
@@ -366,7 +344,7 @@ describe("installer checkout guard refuses before mutating, proceeds on legacy r
       "COPILOT_ENV_NO_EXEC_SHELL": undefined,
     };
     // BSD script (macOS) takes the command as trailing argv; util-linux takes one -c string.
-    const res = Deno.build.os === "darwin"
+    const res = process.platform === "darwin"
       ? runSync("script", ["-q", "/dev/null", ...command], { env })
       : runSync("script", ["-qec", command.map((a) => `'${a}'`).join(" "), "/dev/null"], { env });
     return { res, reloaded: existsSync(`${shell}.ran`) };
@@ -394,7 +372,7 @@ describe("installer checkout guard refuses before mutating, proceeds on legacy r
 
   /** install.sh exits 2 on a refusal; install.ps1's exit code is only known to be non-zero. */
   function expectRefused(res: ReturnType<typeof runSync>, why: string): void {
-    if (Deno.build.os === "windows") expect(res.exitCode, why).not.toBe(0);
+    if (process.platform === "win32") expect(res.exitCode, why).not.toBe(0);
     else expect(res.exitCode, why).toBe(2);
   }
 
@@ -421,16 +399,16 @@ describe("installer checkout guard refuses before mutating, proceeds on legacy r
 
   test("the installer proceeds on a marker-only root (no .git) and hands off to the binary", () => {
     const downloadDir = makeDownloadDir();
-    const root = makeRoot("deno.json", "none");
+    const root = makeRoot(MARKER, "none");
     try {
       const res = runInstaller(root, downloadDir);
       const why = evidence(res, root);
       // The installer sweeps nothing itself (it hands off to `agent install`), so the root's own
       // files must survive the handoff.
       expect(existsSync(join(root, "node_modules")), why).toBe(true);
-      expect(existsSync(join(root, "deno.json")), why).toBe(true);
+      expect(existsSync(join(root, MARKER)), why).toBe(true);
       expect(existsSync(join(root, "bin", installedBinaryName())), why).toBe(true);
-      if (Deno.build.os === "windows") {
+      if (process.platform === "win32") {
         // The stand-in .exe cannot run, so the non-zero exit proves the handoff was attempted
         // and the mutations above prove the guard let the marker-only root through.
         expect(res.exitCode, why).not.toBe(0);
@@ -477,7 +455,7 @@ describe("installer checkout guard refuses before mutating, proceeds on legacy r
 
   test("the installer refuses a bad argument before any other work", () => {
     // An empty download directory keeps a regressed run off the network: it fails at the local copy.
-    const win = Deno.build.os === "windows";
+    const win = process.platform === "win32";
     const refused: { args: string[]; reason: string }[] = [
       { args: win ? ["-Yes", "-No"] : ["--yes", "--no"], reason: "conflict" },
       // A flag where --dir's value should be is a missing value, not a path named "--yes";
@@ -510,7 +488,7 @@ describe("installer checkout guard refuses before mutating, proceeds on legacy r
     ];
     try {
       for (const row of rows) {
-        const root = makeRoot("deno.json", "none");
+        const root = makeRoot(MARKER, "none");
         try {
           const { res, reloaded } = runInstallerOnTty(root, downloadDir, row.args);
           const why = `${row.args.join(" ") || "(no flag)"}\n${evidence(res, root)}`;
@@ -533,7 +511,7 @@ describe("installer checkout guard refuses before mutating, proceeds on legacy r
     // The installer keeps only a lexical pre-check (the canonical one is in the binary); it
     // must still stop the worst spellings before the first network call or write. The empty
     // download source keeps a regressed run off the network: it fails at the local copy.
-    const win = Deno.build.os === "windows";
+    const win = process.platform === "win32";
     const home = (win ? process.env.USERPROFILE : process.env.HOME) ?? "";
     expect(home.length).toBeGreaterThan(0);
     const unsafe = win
@@ -577,14 +555,14 @@ describe("installer checkout guard refuses before mutating, proceeds on legacy r
   // PowerShell 7's own module directory: prepended onto a 5.1 child's
   // PSModulePath (what a pwsh parent does), its Core-edition in-box modules
   // shadow 5.1's and cannot load there, so autoload of Get-FileHash dies.
-  const ps7Modules = Deno.build.os === "windows"
+  const ps7Modules = process.platform === "win32"
     ? join(process.env.ProgramFiles ?? "C:\\Program Files", "PowerShell", "7", "Modules")
     : "";
   // Off CI a machine without pwsh 7 genuinely cannot host the poison; on CI a
   // missing directory must fail the test below instead, or a runner-image
   // change would silently retire this coverage.
   const winWithPwsh7 = test.skipIf(
-    Deno.build.os !== "windows" || (!existsSync(ps7Modules) && !process.env.CI),
+    process.platform !== "win32" || (!existsSync(ps7Modules) && !process.env.CI),
   );
 
   winWithPwsh7("install.ps1 shields itself from a pwsh-poisoned PSModulePath", () => {
@@ -606,7 +584,7 @@ describe("installer checkout guard refuses before mutating, proceeds on legacy r
     expect(probe.stderr, probeWhy).toContain("Get-FileHash");
 
     const downloadDir = makeDownloadDir();
-    const root = makeRoot("deno.json", "none");
+    const root = makeRoot(MARKER, "none");
     try {
       const res = runInstaller(root, downloadDir, { "PSModulePath": poisoned });
       const why = evidence(res, root);
@@ -617,33 +595,13 @@ describe("installer checkout guard refuses before mutating, proceeds on legacy r
   });
 });
 
-describe("the install task spawns what it is allowed to run", () => {
-  // The task's --allow-run list and scripts/install_local.ts's spawn set are two hand-kept
-  // spellings of one contract; a drift is a permission prompt or denial at run time.
-  const installLocal = readFileSync(join(ROOT, "scripts", "install_local.ts"), "utf8");
-
-  test("--allow-run covers exactly the spawned commands", () => {
-    const denoJson = JSON.parse(readFileSync(join(ROOT, "deno.json"), "utf8")) as {
-      tasks: Record<string, string>;
-    };
-    const allow = denoJson.tasks.install?.match(/--allow-run=(\S+)/)?.[1]?.split(",") ?? [];
-    const spawned = [...installLocal.matchAll(/run\(\s*\n?\s*"([^"]+)"/g)].map((m) => m[1]);
-    expect(new Set(spawned)).toEqual(new Set(allow));
-    // The --force path additionally reads env + home and deletes the install
-    // root; a dropped flag is a hard denial at run time.
-    for (const flag of ["--allow-env", "--allow-read", "--allow-write", "--allow-sys=homedir"]) {
-      expect(denoJson.tasks.install).toContain(flag);
-    }
-  });
-});
-
 // POSIX only: the stand-ins are shell scripts found through PATH, which Windows' spawn does not
-// honour for `deno` and `powershell`.
-describe("the install task's arguments", () => {
-  const skipWin = test.skipIf(Deno.build.os === "windows");
+// honour for `bun` and `powershell`.
+describe("the install script's arguments", () => {
+  const skipWin = test.skipIf(process.platform === "win32");
   const task = join(ROOT, "scripts", "install_local.ts");
 
-  /** Stand-ins for the task's two spawns, first on PATH: `deno` (the compile) and `bash` (the
+  /** Stand-ins for the script's two spawns, first on PATH: `bun` (the build) and `bash` (the
    *  installer) each record their argv, one per line, instead of building or installing. */
   function standIns(): {
     env: Record<string, string | undefined>;
@@ -651,7 +609,7 @@ describe("the install task's arguments", () => {
     remove: () => void;
   } {
     const bin = tempDir("ce-task-bin-");
-    for (const name of ["deno", "bash"]) {
+    for (const name of ["bun", "bash"]) {
       const record = join(bin, `${name}.argv`);
       writeFileSync(join(bin, name), `#!/bin/sh\nprintf '%s\\n' "$@" > '${record}'\n`, {
         mode: 0o755,
@@ -687,7 +645,7 @@ describe("the install task's arguments", () => {
         const why = `${args.join(" ")}\n${res.stderr}`;
         expect(res.exitCode, why).toBe(2);
         expect(res.stderr, why).toContain(reason);
-        expect(stubs.argvOf("deno"), why).toBeNull();
+        expect(stubs.argvOf("bun"), why).toBeNull();
       } finally {
         stubs.remove();
       }
@@ -703,7 +661,7 @@ describe("the install task's arguments", () => {
       try {
         const res = runScript(task, ["--dir", "./local-install", "--yes"], { env: stubs.env });
         expect(res.exitCode, res.stderr).toBe(0);
-        expect(stubs.argvOf("deno")?.slice(0, 2), res.stderr).toEqual(["task", "compile"]);
+        expect(stubs.argvOf("bun")?.slice(0, 2), res.stderr).toEqual(["run", "build"]);
         expect(stubs.argvOf("bash"), res.stderr).toEqual([
           join(ROOT, "install.sh"),
           "--dir",

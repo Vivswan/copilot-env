@@ -1,7 +1,7 @@
 // The one MCP harness for every stdio-server suite: a credential env var scrubbed here is
 // scrubbed for all of them, so no test can pick up an ambient credential and reach the network.
 import { agentHomeEnv } from "./env.ts";
-import { CLI_ENTRY, denoRunArgs, ROOT, spawnChild } from "./run.ts";
+import { bunRunArgs, CLI_ENTRY, ROOT, spawnChild } from "./run.ts";
 import { expect, removeDir, tempDir } from "./testing.ts";
 
 let dirs: string[] = [];
@@ -40,11 +40,11 @@ export interface JsonRpcMessage {
 /** Drives the server over newline-delimited JSON-RPC: the stdio MCP framing has no
  *  Content-Length headers. */
 export class McpClient {
-  private readonly proc: Deno.ChildProcess;
+  private readonly proc: Bun.Subprocess;
   private readonly decoder = new TextDecoder();
   private readonly encoder = new TextEncoder();
   private readonly reader: ReadableStreamDefaultReader<Uint8Array>;
-  private readonly writer: WritableStreamDefaultWriter<Uint8Array>;
+  private readonly writer: Bun.FileSink;
   private exit: number | null = null;
   private buffer = "";
   readonly stdoutLines: string[] = [];
@@ -52,12 +52,12 @@ export class McpClient {
   /** `agent profile [<name>] mcp --serve <args>`: a named profile's server resolves that profile's
    *  credential and never falls back to the default's. */
   constructor(args: string[] = [], profile?: string) {
-    // clearEnv matters: mcpEnv() scrubs the credential trio by DELETING keys, and
-    // Deno.Command merges `env` over the inherited environment by default, which
-    // would quietly restore an ambient GH_TOKEN.
-    this.proc = spawnChild(Deno.execPath(), {
+    // clearEnv matters: mcpEnv() scrubs the credential trio by DELETING keys, and spawnChild
+    // merges `env` over this process's environment otherwise, which would quietly restore an
+    // ambient GH_TOKEN.
+    this.proc = spawnChild(process.execPath, {
       args: [
-        ...denoRunArgs(),
+        ...bunRunArgs(),
         CLI_ENTRY,
         "profile",
         ...(profile === undefined ? [] : [profile]),
@@ -68,15 +68,15 @@ export class McpClient {
       cwd: ROOT,
       clearEnv: true,
       env: mcpEnv(),
-      stdin: "piped",
-      stdout: "piped",
-      // An unread deno pipe would backpressure a chatty server into a deadlock.
-      stderr: "null",
+      stdin: "pipe",
+      stdout: "pipe",
+      // An unread pipe would backpressure a chatty server into a deadlock.
+      stderr: "ignore",
     });
-    this.reader = this.proc.stdout.getReader();
-    this.writer = this.proc.stdin.getWriter();
-    this.proc.status.then((status) => {
-      this.exit = status.code;
+    this.reader = (this.proc.stdout as ReadableStream<Uint8Array>).getReader();
+    this.writer = this.proc.stdin as Bun.FileSink;
+    this.proc.exited.then((code) => {
+      this.exit = code;
     });
   }
 
@@ -90,9 +90,13 @@ export class McpClient {
     const payload = new Uint8Array(bytes.length + 1);
     payload.set(bytes);
     payload[bytes.length] = 0x0a;
-    // Fire-and-forget: the writer queues in order, and a write refused by an
-    // already-exited server surfaces on the read side, not here.
-    this.writer.write(payload).catch(() => {});
+    // Fire-and-forget: the sink queues in order, and a write refused by an already-exited server
+    // surfaces on the read side, not here.
+    try {
+      this.writer.write(payload);
+    } catch {
+      // the server already exited
+    }
   }
 
   private send(msg: Record<string, unknown>): void {
@@ -135,8 +139,12 @@ export class McpClient {
 
   /** A client disconnect, as the server sees it. */
   async closeAndWait(): Promise<number> {
-    await this.writer.close().catch(() => {});
-    return (await this.proc.status).code;
+    try {
+      await this.writer.end();
+    } catch {
+      // already closed by the server's exit
+    }
+    return await this.proc.exited;
   }
 
   kill(): void {

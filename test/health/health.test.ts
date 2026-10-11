@@ -658,12 +658,12 @@ test("runtime port + pid verdicts over the probe states of a default target", ()
     if (row.port) assertVerdict(`${row.name} port`, runPort(row.target), row.port);
     if (row.pid) assertVerdict(`${row.name} pid`, runPid(row.target), row.pid);
     if (row.exitCode !== undefined) {
-      expect(exitCodeFor(evaluateAll("runtime", { runtimes: [row.target] })), row.name).toBe(
+      expect<number>(exitCodeFor(evaluateAll("runtime", { runtimes: [row.target] })), row.name).toBe(
         row.exitCode,
       );
     }
     if (row.fullExitCode !== undefined) {
-      expect(exitCodeFor(evaluateAll("full", { runtimes: [row.target] })), row.name).toBe(
+      expect<number>(exitCodeFor(evaluateAll("full", { runtimes: [row.target] })), row.name).toBe(
         row.fullExitCode,
       );
     }

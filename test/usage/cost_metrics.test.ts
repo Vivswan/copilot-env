@@ -6,7 +6,7 @@ import {
   deltaCell,
   renderWindowTable,
 } from "../../.github/scripts/cost-metrics.ts";
-import { ROOT, runSync } from "../helpers/run.ts";
+import { ROOT, runScript } from "../helpers/run.ts";
 import { expect, tempDir, test } from "../helpers/testing.ts";
 
 const BASE = {
@@ -108,7 +108,7 @@ test("the verdict step exits 1 on a recorded differs, 0 on a match, and 0 on a d
   const verdict = (recorded: string) => {
     const dir = tempDir("cost-metrics-verdict-");
     writeFileSync(join(dir, "verdict"), `${recorded}\n`);
-    return runSync(Deno.execPath(), ["run", "--allow-read", script, "verdict", "--in", dir]);
+    return runScript(script, ["verdict", "--in", dir]);
   };
   expect(verdict("match").exitCode).toBe(0);
   expect(verdict("intended").exitCode).toBe(0);

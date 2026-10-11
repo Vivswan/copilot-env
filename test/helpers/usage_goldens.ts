@@ -66,7 +66,7 @@ const GeneratorParamsSchema = v.strictObject({
 });
 type GeneratorParams = v.InferOutput<typeof GeneratorParamsSchema>;
 
-export function generatorParams(mb: number, seed: number, adversarial: boolean): GeneratorParams {
+function generatorParams(mb: number, seed: number, adversarial: boolean): GeneratorParams {
   return { mb, seed, adversarial, days: DEFAULT_DAYS, end: DEFAULT_END };
 }
 
@@ -356,7 +356,7 @@ const RUNTIME_KEY = "runtime";
  *  NOTE_SENTINEL on every side of a compare, so a rewording never fails a golden while a missing
  *  or renamed key does. */
 export const NOTE_KEY = "note";
-export const NOTE_SENTINEL = "<note: wording not compared>";
+const NOTE_SENTINEL = "<note: wording not compared>";
 
 export function parseCostPayload(stdout: string, what: string): Record<string, unknown> {
   let parsed: unknown;
@@ -420,8 +420,9 @@ export function usageTreeEnv(root: string): Record<string, string> {
 
 const RUN_ENV_KEYS = [...Object.keys(usageTreeEnv("")), "COPILOT_ENV_ROOT_HOME", "TZ"] as const;
 
-/** Whether Date's local-day arithmetic can be pinned to UTC here: deno honors a runtime
- *  `TZ` on unix only, so on Windows this asks whether the host already runs in UTC. */
+/** Whether Date's local-day arithmetic can be pinned to UTC here: a runtime `TZ` is honored on
+ *  unix only (the zone comes from the OS on Windows), so this probes whether setting it moves
+ *  the offset, which on Windows asks whether the host already runs in UTC. */
 export function utcPinnable(): boolean {
   const saved = process.env.TZ ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
   try {

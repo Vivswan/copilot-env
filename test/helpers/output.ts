@@ -1,5 +1,6 @@
-// consola writes through process.stdout/stderr.write, while deno's console.log/error write to
-// the runtime's own streams, so a capture must patch both layers.
+// consola writes through process.stdout/stderr.write, while the runtime's console.log/error
+// write to its own streams (bun and deno alike bypass process.stdout.write), so a capture must
+// patch both layers.
 import { consola } from "consola";
 import { deferWriteReports, flushWriteReports } from "../../src/utils/report_write.ts";
 

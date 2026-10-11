@@ -1652,7 +1652,7 @@ test(
       expect(defaultEntry.managedMcpServers[0]?.args).toEqual(
         agentLauncherCommand(mcpServeArgs(null)).args,
       );
-      // Each move is reported once: the reporter's line (Deno.stderr, so it is deferred and read
+      // Each move is reported once: the reporter's line (raw stderr, so it is deferred and read
       // back), never a second narration line through consola.
       deferWriteReports();
       const run = await captureChannels(() => moveProfilesToVerbTree());

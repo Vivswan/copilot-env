@@ -48,10 +48,6 @@ afterEach(() => {
   restoreEnv();
 });
 
-function runtimeExecPath(): string | undefined {
-  return (globalThis as { Deno?: { execPath(): string } }).Deno?.execPath();
-}
-
 function plantSidecar(rootHome: string, version: string, platform = "linux"): string {
   const bin = sidecarBinPath(rootHome, version, platform);
   mkdirSync(join(rootHome, "deno", version), { recursive: true });
@@ -109,8 +105,6 @@ describe("the sidecar ladder", () => {
     const neverProbed = (): never => {
       throw new Error("PATH must not be probed under an override");
     };
-    // The suite runs under `deno test`, so the runtime fast path is live.
-    const live = runtimeExecPath() ?? "(not under deno)";
     const absent = { error: "no usable deno binary" };
 
     const rows: {
@@ -148,11 +142,6 @@ describe("the sidecar ladder", () => {
           value: { "kind": "override", "denoBin": parseAbsolutePath("/opt/deno/bin/deno") },
         },
         resolved: { value: "/opt/deno/bin/deno" },
-      },
-      {
-        label: "without an override, the running Deno's own binary is used",
-        state: { value: { "kind": "dev", "denoBin": parseAbsolutePath(live) } },
-        resolved: { value: live },
       },
       {
         label: "a checkout's own deno outranks a PATH deno: subprocesses match the parent",
@@ -467,19 +456,15 @@ describe("downloadSidecar", () => {
 
 describe("ensureSidecar", () => {
   // A fetch from any rung above "absent" would be a live network call on every `agent start`.
-  test("the running deno, an env override, or a PATH deno answers with no download", async () => {
-    const mustNotFetch = (): Promise<Response> => Promise.reject(new Error("must not fetch"));
+  test("an env override or a PATH deno answers with no download", async () => {
+    const mustNotFetch = ((): Promise<Response> =>
+      Promise.reject(new Error("must not fetch"))) as unknown as typeof fetch;
     const rows: {
       label: string;
       override?: string;
       opts: Omit<Parameters<typeof ensureSidecar>[1], "fetchLike">;
       bin: string;
     }[] = [
-      {
-        label: "running under a real deno is a no-op: our own runtime IS the answer",
-        opts: {},
-        bin: runtimeExecPath() ?? "(not under deno)",
-      },
       {
         label: "an env override wins and still never downloads",
         override: "/opt/deno/bin/deno",

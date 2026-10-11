@@ -24,7 +24,8 @@ import { parseProfileName } from "../../src/copilot_api/profile.ts";
 import type { FileChange } from "../../src/utils/dry_run.ts";
 import { getSanitizedHostname } from "../../src/utils/hostname.ts";
 import { captureChannels } from "../helpers/output.ts";
-import { runCli, spawnChild } from "../helpers/run.ts";
+import { runCli } from "../helpers/run.ts";
+import { sidecarTest, spawnDenoChild } from "../helpers/deno_sidecar.ts";
 import { afterEach, expect, tempDir, test } from "../helpers/testing.ts";
 import { writeClaudeSettings, writeCodexConfigToml, writeRunState } from "../helpers/fixtures.ts";
 import { agentHomeEnv, type AgentHomes, envSnapshot, isolateAgentHomes } from "../helpers/env.ts";
@@ -536,7 +537,11 @@ skipWin("e2e: a proxy-wired Claude launch aborts (exit 1) when the start offer i
   expect(recordedMode(root)).toBe("proxy"); // aborted before the wire: only the fixture's record
 });
 
-skipWin("e2e: with the proxy up, the wire re-syncs Claude and only success records", async () => {
+// A decoy daemon is a deno process (the classifier gates on the runtime's executable name), so the
+// POSIX e2e also needs the sidecar deno.
+const sidecarPosix = process.platform === "win32" ? skipWin : sidecarTest;
+
+sidecarPosix("e2e: with the proxy up, the wire re-syncs Claude and only success records", async () => {
   const root = e2eRoot();
   const bin = fakeCliBin(root, "claude");
   // With no daemon lock (this decoy holds none), proxyStatus falls back to pid classification: the
@@ -545,11 +550,7 @@ skipWin("e2e: with the proxy up, the wire re-syncs Claude and only success recor
   // the same.
   const decoy = join(root, "copilot-api-decoy.mjs");
   writeFileSync(decoy, "setTimeout(() => {}, 30_000);\n");
-  const daemon = spawnChild(Deno.execPath(), {
-    args: ["run", decoy, "start"],
-    stdout: "null",
-    stderr: "null",
-  });
+  const daemon = spawnDenoChild({ args: [decoy, "start"], stdout: "ignore", stderr: "ignore" });
   const { server, port } = await new Promise<{ server: Server; port: number }>(
     (resolve, reject) => {
       const srv = createServer();
@@ -605,7 +606,7 @@ skipWin("e2e: with the proxy up, the wire re-syncs Claude and only success recor
     } catch {
       // already gone
     }
-    await daemon.status;
+    await daemon.exited;
   }
 }, 60_000);
 

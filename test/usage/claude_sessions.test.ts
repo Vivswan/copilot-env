@@ -154,7 +154,7 @@ test("walkClaudeSessions reports every transcript with its candidacy verdict, as
 });
 
 // File symlinks need a privilege on Windows that CI runners do not always hold.
-test.skipIf(Deno.build.os === "windows")(
+test.skipIf(process.platform === "win32")(
   "walkClaudeSessions warns about a transcript it cannot stat and leaves it out",
   async () => {
     const dir = tempDir("claude-sessions-");

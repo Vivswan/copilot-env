@@ -29,19 +29,18 @@ test(
     writeFileSync(
       module,
       [
+        'import { writeFileSync } from "node:fs";',
         `import { tempDir, test } from ${TESTING_MODULE};`,
         'test("leaves a fixture behind and fails", () => {',
-        `  Deno.writeTextFileSync(${CHILD_VALUES}.record, tempDir("copilot-temp-leaked-"));`,
+        `  writeFileSync(${CHILD_VALUES}.record, tempDir("copilot-temp-leaked-"));`,
         '  throw new Error("boom");',
         "});",
         "",
       ].join("\n"),
     );
-    const res = runSync(
-      Deno.execPath(),
-      ["test", "--config", join(ROOT, "deno.json"), "-P=test", module],
-      { env: { ...process.env, ...childValuesEnv({ record }) } },
-    );
+    const res = runSync(process.execPath, ["test", module], {
+      env: { ...process.env, ...childValuesEnv({ record }) },
+    });
     expect(res.exitCode, res.stderr).toBe(1);
     const made = readFileSync(record, "utf8");
     expect(made).toContain("copilot-temp-leaked-");

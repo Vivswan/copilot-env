@@ -1,11 +1,15 @@
-import { fileURLToPath } from "node:url";
-import tempDirPlugin from "../lint/no_unmanaged_temp_dir.ts";
+import {
+  everywhere,
+  lintCases,
+  lintFixtures,
+  repositoryOverrides,
+} from "../helpers/biome_plugin.ts";
 import { expect, test } from "../helpers/testing.ts";
 
-// A no-op rule passes `deno lint` exactly as quietly as a clean tree does, so the rule's
-// teeth and its file scoping are pinned here rather than assumed.
+// A no-op rule passes `biome ci` exactly as quietly as a clean tree does, so the rule's teeth
+// and the scope biome.json gives it are pinned here rather than assumed.
 
-const GUARDED = "test/example.test.ts";
+const PLUGIN = "biome/no_unmanaged_temp_dir.grit";
 
 /** Every API that yields a temp path, listed here on its own so that dropping one from the
  *  rule fails this test instead of shrinking it. */
@@ -14,24 +18,18 @@ const TEMP_PATH_APIS = [
   "mkdtempSync",
   "mkdtempDisposable",
   "mkdtempDisposableSync",
-  "makeTempDir",
-  "makeTempDirSync",
-  "makeTempFile",
-  "makeTempFileSync",
   "tmpdir",
 ];
-
-const lint = (source: string, file = GUARDED): string[] =>
-  Deno.lint.runPlugin(tempDirPlugin, file, source).map((d) => d.message);
 
 // Every route to a temp path draws one diagnostic per banned name it reaches; type imports and
 // unrelated names draw none.
 const SOURCES: [source: string, diagnostics: number][] = [
-  // Every banned name, as a value import; the module does not matter, so the guard cannot
-  // be sidestepped by importing from "fs" or "node:fs/promises" instead of "node:fs".
+  // Every banned name, as a value import; the module does not matter, so the guard cannot be
+  // sidestepped by importing from "fs" or "node:fs/promises" instead of "node:fs".
   ...TEMP_PATH_APIS.flatMap((name): [string, number][] => [
     [`import { ${name} } from "node:fs";`, 1],
     [`import { ${name} } from "fs";`, 1],
+    [`import { ${name} as make } from "node:fs/promises";`, 1],
   ]),
   ['import { existsSync, mkdtempSync, rmSync } from "node:fs";', 1],
   // ... read off a namespace instead of imported by name.
@@ -45,14 +43,8 @@ const SOURCES: [source: string, diagnostics: number][] = [
   ['export { mkdtempSync as makeFixture } from "node:fs";', 1],
   ['export * from "node:fs";', 1],
   ['export * as os from "node:os";', 1],
-  // Deno's own, in every form.
-  ['await Deno.makeTempDir({ prefix: "x-" });', 1],
-  ["Deno.makeTempDirSync();", 1],
-  ["Deno.makeTempFileSync();", 1],
-  ["globalThis.Deno.makeTempFile();", 1],
   // The forms a call-shaped rule would have missed: stored first, then called.
-  ["const make = Deno.makeTempDir; await make();", 1],
-  ["const { makeTempDir } = Deno;", 1],
+  ["const make = fs.mkdtempSync; make();", 1],
   // Type imports and unrelated names are left alone.
   ['import type { mkdtempSync } from "node:fs";', 0],
   ['import { type mkdtempSync, rmSync } from "node:fs";', 0],
@@ -63,29 +55,35 @@ const SOURCES: [source: string, diagnostics: number][] = [
   ['const dir = tempDir("copilot-x-");', 0],
   ['import { mkdirSync, rmSync } from "node:fs";', 0],
   ['import { homedir } from "node:os";', 0],
-  ["Deno.removeSync(dir, { recursive: true });", 0],
+  ["rmSync(dir, { recursive: true });", 0],
 ];
 
 test("no-unmanaged-temp-dir: every route to a temp path is rejected, and nothing else", () => {
-  for (const [source, diagnostics] of SOURCES) {
-    expect(lint(source), source).toHaveLength(diagnostics);
-  }
+  const counts = lintCases(
+    PLUGIN,
+    SOURCES.map(([source]) => source),
+  );
+  expect(SOURCES.map(([source], i) => [source, counts[i]])).toEqual(SOURCES);
 });
 
-test("no-unmanaged-temp-dir: scoped to the test tree, and never to the owning helper", () => {
+test("biome.json scopes the rule to the test tree, minus the helper that owns the root", () => {
   const raw = 'import { mkdtempSync } from "node:fs";';
-  // The REAL absolute spellings deno lint passes, built the way the plugin builds its own
-  // scope: the relative cases below would all still pass if the absolute form matched nothing.
-  const abs = (relative: string): string => fileURLToPath(new URL(relative, import.meta.url));
-  expect(lint(raw, abs("./example.test.ts"))).toHaveLength(1);
-  expect(lint(raw, abs("../helpers/mcp.ts"))).toHaveLength(1);
-  expect(lint(raw, abs("../helpers/testing.ts"))).toEqual([]); // owns the temp root
-
-  expect(lint(raw, "test/helpers/testing.ts")).toEqual([]);
-  // Runtime code and standalone scripts own their own temp paths.
-  expect(lint(raw, "src/install/download.ts")).toEqual([]);
-  expect(lint(raw, "scripts/usage/goldens.ts")).toEqual([]);
-  // Nested test paths and the windows-style separator are still in scope.
-  expect(lint(raw, "test/helpers/mcp.ts")).toHaveLength(1);
-  expect(lint(raw, "test\\usage.test.ts")).toHaveLength(1);
+  const files = {
+    "test/example.test.ts": raw,
+    "test/helpers/mcp.ts": raw,
+    "test/helpers/run.ts": raw,
+    "test/helpers/testing.ts": raw, // owns the temp root
+    // Runtime code and standalone scripts own their own temp paths.
+    "src/install/download.ts": raw,
+    "scripts/usage/goldens.ts": raw,
+  };
+  expect(lintFixtures(files, repositoryOverrides())).toEqual({
+    "test/example.test.ts": 1,
+    "test/helpers/mcp.ts": 1,
+    "test/helpers/run.ts": 1,
+    "test/helpers/testing.ts": 0,
+    "src/install/download.ts": 0,
+    "scripts/usage/goldens.ts": 0,
+  });
+  expect(Object.values(lintFixtures(files, everywhere(PLUGIN)))).toEqual([1, 1, 1, 1, 1, 1]);
 });

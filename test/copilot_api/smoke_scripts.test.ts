@@ -43,12 +43,12 @@ describe("the smokes' disposable-HOME guard", () => {
         {
           script: "lifecycle-smoke.ts",
           line: "::error::lifecycle-smoke.ts mutates the HOME it runs in; " +
-            "use 'deno task test:docker --lifecycle' on a developer machine",
+            "use 'bun run test:docker --lifecycle' on a developer machine",
         },
         {
           script: "floated-smoke.ts",
           line: "::error::floated-smoke.ts floats a real proxy into the HOME it runs in; " +
-            "use 'deno task test:docker --floated-lifecycle' on a developer machine",
+            "use 'bun run test:docker --floated-lifecycle' on a developer machine",
         },
       ];
       for (const { script, line } of smokes) {

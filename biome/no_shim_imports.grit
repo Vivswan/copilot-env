@@ -1,0 +1,22 @@
+// The daemon preload shims (the `src/scripts/*_preload.ts` files biome.json scopes this rule to)
+// stay free of runtime imports: a `--preload` shim runs inside the proxy daemon, and one import
+// would drag the CLI layer into that process, which is why each shim re-declares its env-key
+// and header contracts as local literals (pinned against the CLI constants by
+// test/copilot_api/daemon_env_keys.test.ts). Type-only imports are erased and stay legal; an
+// inline `{ type X }` is a runtime statement under verbatimModuleSyntax and is not.
+// Teeth pinned by test/utils/shim_imports_lint.test.ts.
+language js(typescript)
+
+or {
+  `import $clause from $source` where { not $hit <: `import type $c from $s` },
+  `import $source`,
+  `export * from $source`,
+  `export * as $ns from $source`,
+  `export { $specs } from $source` where { not $hit <: `export type { $sp } from $s` },
+  `import($source)`,
+  // The bare identifier, not a call shape: aliasing or `require?.()` would evade a call
+  // pattern. A property named `require` false-positives loudly, which beats a silent miss.
+  `require`
+} as $hit where {
+  register_diagnostic(span=$hit, message="preload shims stay import-free: a runtime import would drag CLI modules into the daemon process (see test/copilot_api/daemon_env_keys.test.ts)")
+}

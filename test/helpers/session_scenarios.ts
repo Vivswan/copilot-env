@@ -19,7 +19,7 @@ import {
 import { expect } from "./testing.ts";
 
 /** `files`: the session files written, for tests that change one between two reads. */
-export interface ReaderInput {
+interface ReaderInput {
   roots: string[];
   sinceMs?: number;
   timeZone?: string;
@@ -102,7 +102,7 @@ export const CODEX_SCENARIOS: readonly ReaderScenario<CodexReport>[] = [
     },
   },
   // The zone is NAMED rather than pinned through process.env.TZ, so this runs on
-  // Windows too (deno honors the TZ env var on unix only). Asserting the SAME
+  // Windows too (a runtime TZ is honored on unix only). Asserting the SAME
   // event in two zones keeps the teeth on every runner: a reader that ignored the
   // zone, or sliced by UTC, would have to return one key for both, and these differ.
   ...[

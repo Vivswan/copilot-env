@@ -8,7 +8,7 @@ import { StdioClientTransport as StdioTransportV2 } from "@modelcontextprotocol/
 import { Client as ClientV1 } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport as StdioTransportV1 } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { cleanupTmpDirs, mcpEnv } from "../helpers/mcp.ts";
-import { CLI_ENTRY, denoRunArgs } from "../helpers/run.ts";
+import { bunRunArgs, CLI_ENTRY } from "../helpers/run.ts";
 import { afterEach, expect, test } from "../helpers/testing.ts";
 
 afterEach(cleanupTmpDirs);
@@ -16,8 +16,8 @@ afterEach(cleanupTmpDirs);
 /** Spawn parameters shared by both transports (their option shapes coincide). */
 function serverParams() {
   return {
-    command: Deno.execPath(),
-    args: [...denoRunArgs(), CLI_ENTRY, "profile", "mcp", "--serve"],
+    command: process.execPath,
+    args: [...bunRunArgs(), CLI_ENTRY, "profile", "mcp", "--serve"],
     env: mcpEnv(),
     stderr: "pipe" as const,
   };

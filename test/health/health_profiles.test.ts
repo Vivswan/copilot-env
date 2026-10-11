@@ -731,8 +731,8 @@ test("a --live exit 0 counts only when the stream carries the model's answer", a
   // The stream rides an env var: on Windows the argv crosses cmd.exe, where its quotes would break.
   const hookStopped = await runLiveCli({
     ...claudeLiveLaunch("/h", null),
-    cli: Deno.execPath(),
-    args: ["eval", "console.log(process.env.HOOK_STOP_STREAM)"],
+    cli: process.execPath,
+    args: ["-e", "console.log(process.env.HOOK_STOP_STREAM)"],
     env: { HOOK_STOP_STREAM: CLAUDE_HOOK_STOP },
   });
   expect(hookStopped.kind).toBe("failed");
@@ -743,8 +743,8 @@ test("a --live exit 0 counts only when the stream carries the model's answer", a
   // not the counters the one-line event opens with.
   const apiError = await runLiveCli({
     ...claudeLiveLaunch("/h", null),
-    cli: Deno.execPath(),
-    args: ["eval", "console.log(process.env.API_ERROR_STREAM); Deno.exit(1)"],
+    cli: process.execPath,
+    args: ["-e", "console.log(process.env.API_ERROR_STREAM); process.exit(1)"],
     env: {
       API_ERROR_STREAM: '{"type":"system","subtype":"init"}\n' +
         '{"duration_api_ms":0,"total_cost_usd":0,"usage":{"input_tokens":0},"is_error":true,' +
@@ -765,8 +765,8 @@ test("a named Claude live probe scrubs ANTHROPIC_BASE_URL; the default scrubs no
   try {
     const probe = (omitEnv: readonly string[]) => {
       const launch: LiveLaunch = {
-        cli: Deno.execPath(),
-        args: ["eval", "process.exit(process.env.ANTHROPIC_BASE_URL ? 1 : 0)"],
+        cli: process.execPath,
+        args: ["-e", "process.exit(process.env.ANTHROPIC_BASE_URL ? 1 : 0)"],
         env: { CLAUDE_CONFIG_DIR: tempDir("copilot-health-profiles-") },
         omitEnv,
         answered: () => true,

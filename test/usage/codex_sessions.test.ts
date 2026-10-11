@@ -170,7 +170,7 @@ test("walkCodexSessions reports every rollout with its candidacy verdict, in fol
 });
 
 // File symlinks need a privilege on Windows that CI runners do not always hold.
-test.skipIf(Deno.build.os === "windows")(
+test.skipIf(process.platform === "win32")(
   "walkCodexSessions warns about a rollout it cannot stat and leaves it out",
   async () => {
     const dir = tempDir("codex-sessions-");

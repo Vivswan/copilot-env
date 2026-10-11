@@ -37,15 +37,13 @@ import {
   writeDaemonConfig,
   writeResolvedVersionRecord,
 } from "../../src/proxy_float.ts";
+import { CHILD_VALUES, childValuesEnv, importSpecifier, ROOT } from "../helpers/run.ts";
 import {
-  CHILD_VALUES,
-  childValuesEnv,
-  denoRunArgs,
-  importSpecifier,
-  ROOT,
-  runSync,
-  spawnChild,
-} from "../helpers/run.ts";
+  runDenoScript,
+  sidecarDeno,
+  sidecarTest,
+  spawnDenoChild,
+} from "../helpers/deno_sidecar.ts";
 import { afterEach, beforeEach, expect, tempDir, test } from "../helpers/testing.ts";
 import { envSnapshot, isolateProxyHome } from "../helpers/env.ts";
 import { FAKE_DAEMON_CREDENTIAL, FAKE_DAEMON_HOST, until } from "../helpers/daemon.ts";
@@ -378,11 +376,11 @@ test("copilotApiArgv runs any proxy subcommand through the same entry and permis
 
 // --- the launched binary ---------------------------------------------------------------
 
-test("launchDaemon spawns exactly the spec's denoBin, never a re-derived one", async () => {
-  // Under `deno test` a re-derived resolveDenoBin() is the REAL deno, so only a COPY at a different
-  // path makes this discriminating.
+sidecarTest("launchDaemon spawns exactly the spec's denoBin, never a re-derived one", async () => {
+  // A re-derived resolveDenoBin() can land on the PATH deno, so only a COPY at a different path
+  // makes this discriminating.
   const sidecar = join(dir, process.platform === "win32" ? "sidecar-deno.exe" : "sidecar-deno");
-  copyFileSync(Deno.execPath(), sidecar);
+  copyFileSync(sidecarDeno(), sidecar);
   if (process.platform !== "win32") chmodSync(sidecar, 0o755);
   const entryFile = join(dir, "report-exec-path.ts");
   writeFileSync(entryFile, "console.log('EXEC:' + Deno.execPath());\n");
@@ -652,7 +650,7 @@ test("impostor argv that merely mentions copilot-api and start survives the swee
 
 const SHUTDOWN_MODULE = importSpecifier(join(ROOT, "src", "copilot_api", "daemon_shutdown.ts"));
 
-test("a wedged drain still exits: the deadline is what keeps `agent stop` able to stop us", () => {
+sidecarTest("a wedged drain still exits: the deadline is what keeps `agent stop` able to stop us", () => {
   // A SIGTERM listener REPLACES deno's terminate-on-signal, and `agent stop` sends a single SIGTERM
   // with no SIGKILL escalation, so a shutdown() that never settles must not keep the daemon alive.
   dir = tempDir("copilot-shutdown-");
@@ -666,14 +664,14 @@ test("a wedged drain still exits: the deadline is what keeps `agent stop` able t
       "await shutdownDaemon(0);\n" +
       "console.log('UNREACHABLE');\n",
   );
-  const res = runSync(Deno.execPath(), [...denoRunArgs(), target], { timeoutMs: 30_000 });
+  const res = runDenoScript(target, [], { timeoutMs: 30_000 });
   expect(res.exitCode).toBe(0);
   expect(res.stdout).not.toContain("UNREACHABLE"); // the path never returns
   // It waited the full drain window (small margin for timer coarseness).
   expect(Number(res.stdout.trim())).toBeGreaterThanOrEqual(DRAIN_DEADLINE_MS - 100);
 });
 
-test.skipIf(Deno.build.os === "windows")(
+(process.platform === "win32" ? test.skipIf(true) : sidecarTest)(
   "SIGTERM drains an IN-FLIGHT request before the daemon exits",
   async () => {
     // Windows has no deliverable SIGTERM, so the drain is a POSIX contract. The request must be
@@ -708,18 +706,18 @@ test.skipIf(Deno.build.os === "windows")(
         ");\n" +
         "server.finished.then(() => console.log('DRAINED'));\n",
     );
-    // Deno.Command, not node's child_process: only this reports the real wait status
-    // (node's compat layer echoes the signal it SENT, so a clean exit reads as killed).
-    const child = spawnChild(Deno.execPath(), {
-      args: [...denoRunArgs(), target],
+    // Bun.spawn reports the real wait status (exit code and signal apart), so a clean exit after
+    // the SIGTERM is distinguishable from a death by that signal.
+    const child = spawnDenoChild({
+      args: [target],
       env: childValuesEnv({ release }),
-      stdout: "piped",
-      stderr: "piped",
+      stdout: "pipe",
+      stderr: "pipe",
     });
     let stdout = "";
     let stdoutOpen = true;
     const decoder = new TextDecoder();
-    const reader = child.stdout.getReader();
+    const reader = (child.stdout as ReadableStream<Uint8Array>).getReader();
     const pump = (async () => {
       for (;;) {
         const { value, done } = await reader.read();
@@ -760,7 +758,8 @@ test.skipIf(Deno.build.os === "windows")(
       expect(response.status).toBe(200);
       expect(body).toBe("drained-ok");
 
-      expect(await child.status).toEqual({ success: true, code: 0, signal: null });
+      expect(await child.exited).toBe(0);
+      expect(child.signalCode).toBeNull();
       await pump;
       // Drained through the shared path, not severed by deno's default terminate.
       expect(stdout).toContain("DRAINED");
@@ -768,7 +767,7 @@ test.skipIf(Deno.build.os === "windows")(
       // An assertion that threw before the request was consumed would otherwise hold the
       // connection -- and the child -- open.
       await inFlight?.then((r) => r.body?.cancel(), () => {});
-      await child.stderr.cancel();
+      await (child.stderr as ReadableStream<Uint8Array>).cancel();
     }
   },
 );

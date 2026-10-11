@@ -439,21 +439,22 @@ test("probeDirectWorks runs a catalog-free first hop whatever the catalog says: 
 test("probeDirectWorks spawns the CLI from inside the throwaway home, never the caller's cwd", async () => {
   // Both CLIs read project-level config from the working directory (a repo's .claude/settings.json,
   // codex project trust), so a probe run from the caller's cwd would judge that project's wiring.
-  // The "CLI" is deno itself, running a script the config writer dropped into the home; it exits 0
+  // The "CLI" is bun itself, running a script the config writer dropped into the home; it exits 0
   // only when the process cwd IS that home (realpaths: macOS tmp dirs live behind a symlink).
   const script = "cwd_check.mts";
   const descriptor: ProbeDescriptor = {
-    cli: "deno",
+    cli: "bun",
     homeEnvVar: "CLAUDE_CONFIG_DIR",
     updateCommand: "claude update",
-    args: (_prompt, home) => ["run", "--allow-read", join(home, script)],
+    args: (_prompt, home) => ["run", join(home, script)],
   };
   const ok = await probeDirectWorks(
     descriptor,
     (home) =>
       writeFileSync(
         join(home, script),
-        "Deno.exit(Deno.realPathSync(Deno.cwd()) === Deno.realPathSync(import.meta.dirname) ? 0 : 3);\n",
+        'import { realpathSync } from "node:fs";\n' +
+          "process.exit(realpathSync(process.cwd()) === realpathSync(import.meta.dirname) ? 0 : 3);\n",
       ),
     fakeSmoke(),
     { findCommand: () => ({ kind: "found", path: process.execPath }) },
@@ -490,19 +491,19 @@ test.skipIf(process.platform === "win32")(
 // --- probeDirectWorks: env sanitization -------------------------------------
 
 test("the real probe child never sees a provider variable the parent shell exported", async () => {
-  // The env the probe builds omits the provider families (pinned by the test below), but on Deno
-  // spawnSync merges the parent's variables back into the child whatever `env` says (2.9.6,
-  // verified): a shell ANTHROPIC_BASE_URL at a running proxy would answer the Claude smoke
-  // prompt and mint a Direct verdict the proxy earned. Only a REAL child can see that.
+  // The env the probe builds omits the provider families (pinned by the test below), but what the
+  // runtime's spawn hands the child is its own semantics (deno once merged the parent's variables
+  // back in whatever `env` said): a shell ANTHROPIC_BASE_URL at a running proxy would answer the
+  // Claude smoke prompt and mint a Direct verdict the proxy earned. Only a REAL child can see that.
   const restoreEnv = envSnapshot();
   process.env.ANTHROPIC_BASE_URL = "http://127.0.0.1:4141";
   process.env.OPENAI_BASE_URL = "http://127.0.0.1:4141/v1";
   const script = "env_check.mts";
   const descriptor: ProbeDescriptor = {
-    cli: "deno",
+    cli: "bun",
     homeEnvVar: "CLAUDE_CONFIG_DIR",
     updateCommand: "claude update",
-    args: (_prompt, home) => ["run", "--allow-env", join(home, script)],
+    args: (_prompt, home) => ["run", join(home, script)],
   };
   try {
     const ok = await probeDirectWorks(
@@ -510,7 +511,7 @@ test("the real probe child never sees a provider variable the parent shell expor
       (home) =>
         writeFileSync(
           join(home, script),
-          'Deno.exit(Deno.env.has("ANTHROPIC_BASE_URL") || Deno.env.has("OPENAI_BASE_URL") ? 3 : 0);\n',
+          'process.exit("ANTHROPIC_BASE_URL" in process.env || "OPENAI_BASE_URL" in process.env ? 3 : 0);\n',
         ),
       fakeSmoke(),
       { findCommand: () => ({ kind: "found", path: process.execPath }) },

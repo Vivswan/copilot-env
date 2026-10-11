@@ -1,0 +1,81 @@
+// A test may not build its own child process. The per-test deadline (test/helpers/testing.ts)
+// abandons a timed-out body instead of cancelling it, so a child it spawned runs on alongside
+// the tests that follow; test/helpers/run.ts is the suite's one process boundary, and
+// `spawnChild` there registers every child for abort teardown. biome.json scopes the rule to
+// test/ minus run.ts and testing.ts.
+//
+// The ban is on REACHING a child-process API at all: `Bun.spawn` / `Bun.spawnSync` under any
+// spelling (a member read, a computed member, `globalThis.Bun`, a destructuring of Bun), and
+// any value import of node:child_process. Matching a call shape would miss a function stored in
+// a variable first; enumerating entry points would miss `import * as cp`. Type-only imports are
+// erased and stay legal. Teeth pinned by test/utils/child_spawn_lint.test.ts.
+language js(typescript)
+
+or {
+  `Bun.$m` where {
+    $m <: or {
+      `spawn`,
+      `spawnSync`
+    }
+  },
+  `globalThis.Bun.$m` where {
+    $m <: or {
+      `spawn`,
+      `spawnSync`
+    }
+  },
+  `Bun[$m]` where {
+    $m <: or {
+      `"spawn"`,
+      `"spawnSync"`
+    }
+  },
+  `globalThis.Bun[$m]` where {
+    $m <: or {
+      `"spawn"`,
+      `"spawnSync"`
+    }
+  },
+  JsVariableDeclarator(id=JsObjectBindingPattern(properties=$props), initializer=JsInitializerClause(expression=or {
+    `Bun`,
+    `globalThis.Bun`
+  })) where {
+    $props <: contains or {
+      JsObjectBindingPatternShorthandProperty(identifier=$id) where {
+        $id <: or {
+          `spawn`,
+          `spawnSync`
+        }
+      },
+      JsObjectBindingPatternProperty(member=$id) where {
+        $id <: or {
+          `spawn`,
+          `spawnSync`,
+          `"spawn"`,
+          `"spawnSync"`
+        }
+      }
+    }
+  },
+  `import $clause from $source` where {
+    $source <: or {
+      `"node:child_process"`,
+      `"child_process"`
+    },
+    not $hit <: `import type $c from $s`
+  },
+  `import $source` where {
+    $source <: or {
+      `"node:child_process"`,
+      `"child_process"`
+    }
+  },
+  `import($source)` where {
+    $source <: or {
+      `"node:child_process"`,
+      `"child_process"`
+    }
+  }
+} as $hit where {
+  register_diagnostic(span=$hit, message="build child processes with spawnChild (test/helpers/run.ts), which registers the child for abort teardown -- one made here outlives a timed-out test and runs on alongside the tests that follow")
+}

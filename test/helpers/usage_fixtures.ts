@@ -26,7 +26,7 @@ import {
 } from "./usage_profile_contract.ts";
 
 export const FIXTURES_DIR = fileURLToPath(new URL("../fixtures/usage/", import.meta.url));
-export const PROFILE_PATH = path.join(FIXTURES_DIR, "profile.json");
+const PROFILE_PATH = path.join(FIXTURES_DIR, "profile.json");
 const TEMPLATES_DIR = path.join(FIXTURES_DIR, "templates");
 const MEGABYTE = 1024 * 1024;
 

@@ -1,13 +1,22 @@
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { daemonClientHeaders } from "../../src/copilot_api/integration_identity.ts";
 import { isCopilotApiHost } from "../../src/scripts/client_headers_preload.ts";
-import { CHILD_VALUES, childValuesEnv, ROOT, runWithPreload } from "../helpers/run.ts";
+import { runWithDenoPreload, sidecarTest } from "../helpers/deno_sidecar.ts";
+import {
+  CHILD_VALUES,
+  childValuesEnv,
+  importSpecifier,
+  resolvePackageDir,
+  ROOT,
+} from "../helpers/run.ts";
 import { expect, test } from "../helpers/testing.ts";
 import { freePort } from "../helpers/net.ts";
 
 // Importing the preload without its env var set installs nothing, so the exported helpers are
 // unit-tested directly; the wiring (fetch AND undici's WebSocket, Copilot hosts only) runs as a
-// real `--preload` subprocess against local servers, the way launchDaemon loads it.
+// real `--preload` subprocess under the sidecar deno against local servers, the way launchDaemon
+// loads it.
 const SHIM = join(ROOT, "src", "scripts", "client_headers_preload.ts");
 const UA = "codex_exec/1.2.3";
 /** The undici lines the preload must serve: the 7 the floated proxy ships today and the 8 it
@@ -31,8 +40,16 @@ async function runPreloaded(
   undici: (typeof UNDICI_LINES)[number],
 ): Promise<{ http: Seen; ws: Seen; other: Seen }> {
   const [pinned, other] = [await freePort(), await freePort()];
+  // By file URL into the checkout's node_modules: the target lives under the temp root, where a
+  // bare specifier has no package.json to resolve against (and bun answers "undici" with its own
+  // built-in, so the package dir is walked to, not resolved).
+  const undiciDir = resolvePackageDir(undici, ROOT);
+  const undiciMain = (JSON.parse(readFileSync(join(undiciDir, "package.json"), "utf8")) as {
+    main: string;
+  }).main;
+  const undiciEntry = importSpecifier(join(undiciDir, undiciMain));
   const source = [
-    `import { WebSocket as UndiciWebSocket } from "${undici}";`,
+    `import { WebSocket as UndiciWebSocket } from ${undiciEntry};`,
     `const values = ${CHILD_VALUES};`,
     "const seen = (req) => ({",
     '  ua: req.headers.get("user-agent"),',
@@ -63,7 +80,7 @@ async function runPreloaded(
     "console.log(JSON.stringify({ http, ws, other }));",
     "await Promise.all(servers.map((s) => s.shutdown()));",
   ].join("\n");
-  const res = runWithPreload(SHIM, source, {
+  const res = runWithDenoPreload(SHIM, source, {
     env: {
       ...process.env,
       ...childValuesEnv({ pinned, other }),
@@ -76,7 +93,7 @@ async function runPreloaded(
 }
 
 for (const undici of UNDICI_LINES) {
-  test(`the daemon sends the resolved identity on fetch AND ${undici}'s WebSocket to its Copilot host, and nothing else changes`, async () => {
+  sidecarTest(`the daemon sends the resolved identity on fetch AND ${undici}'s WebSocket to its Copilot host, and nothing else changes`, async () => {
     const proxyOwn: Seen = { ua: "node", id: "vscode-chat", intent: "conversation-agent" };
     // The codex identity: the codex User-Agent and NO integration id, whatever copilot-api set.
     const codex = await runPreloaded(daemonClientHeaders(UA, null), undici);

@@ -5,8 +5,8 @@
 //   a declared edge no file draws                   -> "stale allowance"
 //   a graph file no layer owns                      -> "belongs to no layer"
 //
-// The import graph itself comes from deno (`deno info --json`, test/utils/architecture.test.ts), so an
-// edge is exactly what deno resolves: static, type-only, re-export, side-effect, and
+// The import graph itself is read from syntax (test/helpers/syntax.ts, by test/utils/architecture.test.ts),
+// so an edge is every specifier a file names: static, type-only, re-export, side-effect, and
 // string-literal dynamic imports alike. Imports inside one layer are not edges.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -165,7 +165,7 @@ export function renderArchitectureMap(arch: Architecture): string {
 }
 
 /** `page` with the body between the two markers replaced by a mermaid fence of `map` (blank
- *  lines around it, as `deno fmt` lays out a fence), in the page's own line ending, so a CRLF
+ *  lines around it, as the formatter lays out a fence), in the page's own line ending, so a CRLF
  *  checkout compares equal to itself; exactly one marker pair, or a throw naming the counts,
  *  since a second pair would be spliced blind. */
 export function spliceGeneratedRegion(page: string, map: string): string {

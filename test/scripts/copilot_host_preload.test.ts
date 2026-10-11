@@ -1,9 +1,11 @@
 import { join } from "node:path";
-import { CHILD_VALUES, childValuesEnv, ROOT, runWithPreload } from "../helpers/run.ts";
-import { expect, test } from "../helpers/testing.ts";
+import { runWithDenoPreload, sidecarTest } from "../helpers/deno_sidecar.ts";
+import { CHILD_VALUES, childValuesEnv, ROOT } from "../helpers/run.ts";
+import { expect } from "../helpers/testing.ts";
 
 // The shim wraps globalThis.fetch when COPILOT_ENV_DAEMON_COPILOT_HOST is set, so it is exercised
-// as a real `--preload` subprocess, the way launchDaemon loads it, against a loopback server that
+// as a real `--preload` subprocess under the sidecar deno, the way launchDaemon loads it, against a
+// loopback server that
 // answers the two GitHub bodies copilot-api reads its host from, the PAT shim's synthetic exchange
 // body (no endpoints at all), and one unrelated path.
 const SHIM = join(ROOT, "src", "scripts", "copilot_host_preload.ts");
@@ -46,7 +48,7 @@ function runPreloaded(host: string | null): string[] {
   };
   delete env[HOST_ENV];
   if (host !== null) env[HOST_ENV] = host;
-  const res = runWithPreload(SHIM, source, { env });
+  const res = runWithDenoPreload(SHIM, source, { env });
   if (res.exitCode !== 0) throw new Error(`target failed: ${res.stderr}`);
   return res.stdout.trim().split("\n");
 }
@@ -55,7 +57,7 @@ function runPreloaded(host: string | null): string[] {
 // in the body moves (a sibling key stays; a body without endpoints, with a non-string api, or that
 // is no object at all passes through) while status and headers stay and other paths pass through;
 // with no pin, no wrap is installed at all.
-test("the pin in the environment decides whether the /copilot_internal/ bodies are rewritten", () => {
+sidecarTest("the pin in the environment decides whether the /copilot_internal/ bodies are rewritten", () => {
   const rows: { pin: string | null; api: string }[] = [
     { pin: PINNED, api: PINNED },
     { pin: null, api: ACCOUNT },

@@ -21,7 +21,7 @@ import * as facade from "../../src/utils/fs_facade.ts";
 import { expect, outcomeOf, tempDir, test } from "../helpers/testing.ts";
 
 let dir = "";
-const WINDOWS = Deno.build.os === "windows";
+const WINDOWS = process.platform === "win32";
 
 /** The thrown code (or the error's name when it carries none), or "ok": the shape both modes are
  *  compared in. */
@@ -336,7 +336,8 @@ test("a mode-only change is a rewrite with no row where the platform can change 
   writeFileSync(script, "#!/bin/sh\n");
   writeFileSync(both, "old\n");
   // Both in-place writes below name 0600 over a 0644 file: the real one is the witness for what
-  // Deno's writeFileSync lands on an existing inode (its chmod after the write), the dry one the pin.
+  // the runtime's writeFileSync lands on an existing inode (its chmod after the write), the dry one
+  // the pin.
   writeFileSync(inplace, "old\n");
   chmodSync(inplace, 0o644);
   writeFileSync(join(dir, "real-inplace"), "old\n");

@@ -25,6 +25,7 @@ import {
   startFakeModelEndpoint,
 } from "./fake_model_endpoint.ts";
 import { spawnChild } from "./run.ts";
+import { outputOf } from "./subprocess.ts";
 
 const FAKE_CLAUDE_TOKEN = "fake-token-claude";
 const FAKE_CODEX_TOKEN = "fake-token-codex";
@@ -47,7 +48,7 @@ const AIMOCK_CUT_OFFSET = 1;
 
 /** Every scenario a test can name. The error bodies are the vendors' envelopes with Copilot's
  *  words where Copilot has its own (the service_tier rejection). */
-export const SCENARIOS = {
+const SCENARIOS = {
   "ok": { kind: "text", text: "OK" },
   "unauthorized": {
     kind: "error",
@@ -155,7 +156,7 @@ export function writeCodexFakeConfig(
  *  allowlist (hermeticEnv), PATH led by the CLI's own bin dir (an npm shim needs node beside it),
  *  a scratch HOME so nothing on the machine is read or written, the CLIs' quiet switches, and
  *  the caller's `extra`. */
-export function fakeCliEnv(
+function fakeCliEnv(
   home: string,
   binDir: string | null,
   extra: Record<string, string>,
@@ -203,22 +204,20 @@ export async function runFakeCli(
   const spec = verbatimCliSpawn(cli, args);
   const child = spawnChild(spec.shell ? "cmd.exe" : spec.file, {
     args: spec.shell ? ["/d", "/s", "/c", [spec.file, ...spec.args].join(" ")] : spec.args,
-    windowsRawArguments: spec.shell,
     cwd: home,
     env: fakeCliEnv(home, spec.binDir, extra),
     clearEnv: true,
-    stdin: "null",
-    stdout: "piped",
-    stderr: "piped",
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
   });
-  const output = child.output();
-  const decoder = new TextDecoder();
+  const output = outputOf(child);
   const finished = await Promise.race([output, sleep(timeoutMs).then(() => null)]);
   if (finished !== null) {
     return {
-      exitCode: finished.code,
-      stdout: decoder.decode(finished.stdout),
-      stderr: decoder.decode(finished.stderr),
+      exitCode: finished.exitCode,
+      stdout: finished.stdout,
+      stderr: finished.stderr,
       timedOut: false,
     };
   }
@@ -231,8 +230,8 @@ export async function runFakeCli(
   const late = await Promise.race([output, sleep(KILL_GRACE_MS).then(() => null)]);
   return {
     exitCode: -1,
-    stdout: late === null ? "" : decoder.decode(late.stdout),
-    stderr: late === null ? "" : decoder.decode(late.stderr),
+    stdout: late === null ? "" : late.stdout,
+    stderr: late === null ? "" : late.stderr,
     timedOut: true,
   };
 }

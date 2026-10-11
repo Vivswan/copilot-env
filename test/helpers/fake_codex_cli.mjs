@@ -8,47 +8,46 @@
 // Every `debug models` spawn is journaled (argv, the real cwd and home, taken while they exist)
 // and the last candidate's bytes are kept, so a test can see what a real codex would have been
 // asked to parse.
+import { appendFileSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+
 const dir = import.meta.dirname;
-const spec = JSON.parse(Deno.readTextFileSync(`${dir}/spec.json`));
+const spec = JSON.parse(readFileSync(`${dir}/spec.json`, "utf8"));
 
 function out(text) {
-  Deno.stdout.writeSync(new TextEncoder().encode(`${text}\n`));
+  process.stdout.write(`${text}\n`);
 }
 
 function fail(message) {
-  Deno.stderr.writeSync(new TextEncoder().encode(`${message}\n`));
-  Deno.exit(1);
+  process.stderr.write(`${message}\n`);
+  process.exit(1);
 }
 
 const DUMP = '{"models":[{"slug":"fake"}]}';
-const args = Deno.args;
+const args = process.argv.slice(2);
 
 if (args[0] === "--version") {
-  if (spec.version === null) Deno.exit(1);
+  if (spec.version === null) process.exit(1);
   out(`codex-cli ${spec.version}`);
-  Deno.exit(0);
+  process.exit(0);
 }
 
 if (args[0] !== "debug" || args[1] !== "models") fail(`fake codex: unexpected ${args.join(" ")}`);
 
-const home = Deno.env.get("CODEX_HOME") ?? "";
-Deno.writeTextFileSync(
+const home = process.env.CODEX_HOME ?? "";
+appendFileSync(
   `${dir}/runs.jsonl`,
-  `${
-    JSON.stringify({ args, cwd: Deno.realPathSync(Deno.cwd()), home: Deno.realPathSync(home) })
-  }\n`,
-  { append: true },
+  `${JSON.stringify({ args, cwd: realpathSync(process.cwd()), home: realpathSync(home) })}\n`,
 );
 
 if (args.includes("--bundled")) {
   if (spec.bundled === null) fail("fake codex: no bundled dump");
   out(spec.bundled);
-  Deno.exit(0);
+  process.exit(0);
 }
 
 let config = "";
 try {
-  config = Deno.readTextFileSync(`${home}/config.toml`);
+  config = readFileSync(`${home}/config.toml`, "utf8");
 } catch {
   // no config at all reads as no reference
 }
@@ -57,11 +56,11 @@ const reference = /^model_catalog_json = ("(?:[^"\\]|\\.)*")$/m.exec(config);
 let candidate = null;
 if (reference !== null) {
   try {
-    candidate = Deno.readTextFileSync(JSON.parse(reference[1]));
+    candidate = readFileSync(JSON.parse(reference[1]), "utf8");
   } catch {
     fail("Error: failed to read model_catalog_json");
   }
-  Deno.writeTextFileSync(`${dir}/seen.json`, candidate);
+  writeFileSync(`${dir}/seen.json`, candidate);
 }
 
 switch (spec.probe) {
@@ -84,14 +83,14 @@ switch (spec.probe) {
     fail("Error: config broken");
     break;
   case "blank-control":
-    if (candidate !== null) Deno.exit(1);
+    if (candidate !== null) process.exit(1);
     out("");
     break;
   case "no-dump":
     out("nothing");
     break;
   case "kill-candidate":
-    if (candidate !== null) Deno.kill(Deno.pid, "SIGTERM");
+    if (candidate !== null) process.kill(process.pid, "SIGTERM");
     out(DUMP);
     break;
   default:

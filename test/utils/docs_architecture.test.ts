@@ -1,13 +1,12 @@
 // The architecture page names real code: every mermaid box that starts a segment with a path
-// names a file that exists and, after it, only symbols that file exports (as `deno doc` reads
-// them); every concept diagram has a `Demonstrated by:` line whose links resolve to a test or a
+// names a file that exists and, after it, only symbols that file exports (as the parser reads
+// them, test/helpers/syntax.ts); every concept diagram has a `Demonstrated by:` line whose links resolve to a test or a
 // smoke scenario; the concept count is pinned; and the GENERATED module map equals a fresh render
 // of architecture.json. Existence only: a caption box is not checked, and a demonstration link is
 // checked to resolve, not to test its claim.
 
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import {
   GENERATED_BEGIN,
   GENERATED_END,
@@ -15,7 +14,8 @@ import {
   renderArchitectureMap,
   spliceGeneratedRegion,
 } from "../lint/architecture.ts";
-import { ROOT, runSync } from "../helpers/run.ts";
+import { ROOT } from "../helpers/run.ts";
+import { exportedNames } from "../helpers/syntax.ts";
 import { expect, test } from "../helpers/testing.ts";
 
 const PAGE = join("docs", "architecture.md");
@@ -124,28 +124,10 @@ function readLabel(label: string): { claims: Claim[]; problems: string[] } {
   return { claims, problems };
 }
 
-interface DenoDoc {
-  nodes: Record<
-    string,
-    { symbols?: { name: string; declarations: { declarationKind: string }[] }[] }
-  >;
-}
-
-/** The exported names of each TypeScript file, as `deno doc --json` reads them: `export { a as b }`
- *  is b, `export * from` carries the target's names, a re-export keeps the exported name. */
-function exportedNames(files: readonly string[]): Map<string, Set<string>> {
-  const byFile = new Map<string, Set<string>>();
-  if (files.length === 0) return byFile;
-  const result = runSync(Deno.execPath(), ["doc", "--json", ...files], { cwd: ROOT });
-  if (result.exitCode !== 0) throw new Error(`deno doc failed: ${result.stderr}`);
-  for (const [url, entry] of Object.entries((JSON.parse(result.stdout) as DenoDoc).nodes)) {
-    const file = relative(ROOT, fileURLToPath(url)).replaceAll("\\", "/");
-    const names = (entry.symbols ?? [])
-      .filter((symbol) => symbol.declarations.some((d) => d.declarationKind === "export"))
-      .map((symbol) => symbol.name);
-    byFile.set(file, new Set(names));
-  }
-  return byFile;
+/** The exported names of each TypeScript file: `export { a as b }` is b, `export * from` carries
+ *  the target's names, a re-export keeps the exported name. */
+function exportsByFile(files: readonly string[]): Map<string, Set<string>> {
+  return new Map(files.map((file) => [file, exportedNames(join(ROOT, file))]));
 }
 
 // --- the tests -------------------------------------------------------------------
@@ -190,7 +172,7 @@ test("every mermaid box names a file that exists and symbols it exports", () => 
         .map((claim) => claim.path),
     ),
   ];
-  const exports = exportedNames(modules);
+  const exports = exportsByFile(modules);
   for (const claim of present) {
     for (const symbol of claim.symbols) {
       if (!claim.path.endsWith(".ts")) {

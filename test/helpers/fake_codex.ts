@@ -1,5 +1,5 @@
 // A `codex` on PATH for the catalog tests, the same fake on every platform: a sh dispatcher and a
-// `.cmd` twin hand the argv to test/helpers/fake_codex_cli.mjs under this process's deno, and a
+// `.cmd` twin hand the argv to test/helpers/fake_codex_cli.mjs under this process's bun, and a
 // failing `npm` beside them keeps the User-Agent's version road off the network. The live-lookup
 // seam is lifted so the production spawns really run; the process memos (the codex path, its
 // version, the probe verdicts by content) are forgotten on every re-script so the new script
@@ -38,7 +38,7 @@ export interface FakeCodexSpec {
 }
 
 /** `cwd` and `home` are real paths, taken while the throwaway home still exists. */
-export interface FakeCodexRun {
+interface FakeCodexRun {
   args: string[];
   cwd: string;
   home: string;
@@ -62,10 +62,10 @@ export function fakeCodexOnPath(dir: string, spec: Partial<FakeCodexSpec> = {}):
   mkdirSync(bin, { recursive: true });
   const cli = join(bin, "fake_codex_cli.mjs");
   writeFileSync(cli, readFileSync(CLI));
-  const deno = Deno.execPath();
-  writeFileSync(join(bin, "codex"), `#!/bin/sh\nexec "${deno}" run -A "${cli}" "$@"\n`);
+  const bun = process.execPath;
+  writeFileSync(join(bin, "codex"), `#!/bin/sh\nexec "${bun}" "${cli}" "$@"\n`);
   chmodSync(join(bin, "codex"), 0o755);
-  writeFileSync(join(bin, "codex.cmd"), `@"${deno}" run -A "${cli}" %*\r\n`);
+  writeFileSync(join(bin, "codex.cmd"), `@"${bun}" "${cli}" %*\r\n`);
   writeFileSync(join(bin, "npm"), "#!/bin/sh\nexit 1\n");
   chmodSync(join(bin, "npm"), 0o755);
   writeFileSync(join(bin, "npm.cmd"), "@echo off\r\nexit 1\r\n");

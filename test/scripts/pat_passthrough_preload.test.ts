@@ -1,9 +1,10 @@
 import { join } from "node:path";
-import { CHILD_VALUES, childValuesEnv, ROOT, runWithPreload } from "../helpers/run.ts";
-import { expect, test } from "../helpers/testing.ts";
+import { runWithDenoPreload, sidecarTest } from "../helpers/deno_sidecar.ts";
+import { CHILD_VALUES, childValuesEnv, ROOT } from "../helpers/run.ts";
+import { expect } from "../helpers/testing.ts";
 
 // The shim reads its token from argv and wraps globalThis.fetch, so it is exercised as a real
-// `--preload` subprocess, the way launchDaemon loads it.
+// `--preload` subprocess under the sidecar deno, the way launchDaemon loads it.
 const SHIM = join(ROOT, "src", "scripts", "pat_passthrough_preload.ts");
 
 // Port 1 is refused, so the outcome is decided without a server:
@@ -31,7 +32,7 @@ function runPreloaded(url: string, token: string | null, inputKind: InputKind): 
     "  console.log('INTERCEPTED:' + b.token + ':' + b.refresh_in);",
     "}",
   ].join("\n");
-  const res = runWithPreload(SHIM, source, {
+  const res = runWithDenoPreload(SHIM, source, {
     env: { ...process.env, ...childValuesEnv({ url }) },
     args: token === null ? [] : ["--github-token", token],
   });
@@ -42,7 +43,7 @@ function runPreloaded(url: string, token: string | null, inputKind: InputKind): 
 // decision lives in launch.ts and `usePatPassthrough`, not in the shim); without a token in argv
 // no wrap is installed, and other URLs always reach the real fetch.
 // Fake-token fixtures stay short and low-entropy so gitleaks' generic rules never match.
-test("the exchange URL with a token in argv is intercepted; anything else passes through", () => {
+sidecarTest("the exchange URL with a token in argv is intercepted; anything else passes through", () => {
   const rows: { url: string; token: string | null; input: InputKind; out: string }[] = [
     { url: EXCHANGE_URL, token: "ghp_test", input: "string", out: "INTERCEPTED:ghp_test:21600" },
     { url: EXCHANGE_URL, token: "ghp_test", input: "url", out: "INTERCEPTED:ghp_test:21600" },

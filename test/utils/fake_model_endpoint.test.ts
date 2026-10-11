@@ -3,11 +3,12 @@
 // listening fails the start at once with its own words, and that aimock dies with the process
 // that started it.
 import { mkdirSync, writeFileSync } from "node:fs";
+import { connect } from "node:net";
 import { join } from "node:path";
 import {
+  bunRunArgs,
   CHILD_VALUES,
   childValuesEnv,
-  denoRunArgs,
   importSpecifier,
   ROOT,
   spawnChild,
@@ -85,11 +86,11 @@ test("the truncate scenario cuts a codex-shaped stream right after its FIRST con
 });
 
 test("a child that exits before listening fails the start at once, naming its exit and output", async () => {
-  const child = spawnChild(Deno.execPath(), {
-    args: ["eval", "console.error('no such fixture file'); Deno.exit(3);"],
-    stdin: "null",
-    stdout: "piped",
-    stderr: "piped",
+  const child = spawnChild(process.execPath, {
+    args: ["-e", "console.error('no such fixture file'); process.exit(3);"],
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
   });
   const started = Date.now();
   await expect(awaitListening(child)).rejects.toThrow(
@@ -104,20 +105,23 @@ test("a child that exits before listening fails the start at once, naming its ex
 const ORPHAN_GRACE_MS = 5_000;
 
 /** Whether anything listens on aimock's port. Read at the socket, not the pid: an orphan that
- *  exited under a pid 1 that reaps nothing (the docker run's `deno task test`) stays a zombie,
+ *  exited under a pid 1 that reaps nothing (the docker run's `bun run test`) stays a zombie,
  *  which a signal-0 probe reads as alive. A refusal is the one answer that means "gone". A reset
  *  is what a listener closing mid-handshake looks like on macOS (Linux refuses instead), so the
  *  poll asks again. Any other failure throws, so it can never pass as gone. */
-async function aimockPort(url: string): Promise<"listening" | "reset" | "refused"> {
-  try {
-    const conn = await Deno.connect({ hostname: "127.0.0.1", port: Number(new URL(url).port) });
-    conn.close();
-    return "listening";
-  } catch (e) {
-    if (e instanceof Deno.errors.ConnectionRefused) return "refused";
-    if (e instanceof Deno.errors.ConnectionReset) return "reset";
-    throw e;
-  }
+function aimockPort(url: string): Promise<"listening" | "reset" | "refused"> {
+  return new Promise((resolve, reject) => {
+    const socket = connect({ host: "127.0.0.1", port: Number(new URL(url).port) });
+    socket.once("connect", () => {
+      socket.destroy();
+      resolve("listening");
+    });
+    socket.once("error", (e: NodeJS.ErrnoException) => {
+      if (e.code === "ECONNREFUSED") resolve("refused");
+      else if (e.code === "ECONNRESET") resolve("reset");
+      else reject(e);
+    });
+  });
 }
 
 test("aimock dies with the process that started it, even one killed outright", async () => {
@@ -138,14 +142,14 @@ test("aimock dies with the process that started it, even one killed outright", a
       "",
     ].join("\n"),
   );
-  const holder = spawnChild(Deno.execPath(), {
-    args: [...denoRunArgs(), program],
+  const holder = spawnChild(process.execPath, {
+    args: [...bunRunArgs(), program],
     env: childValuesEnv({ dir: holderDir }),
-    stdin: "null",
-    stdout: "piped",
-    stderr: "null",
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "ignore",
   });
-  const reader = holder.stdout.getReader();
+  const reader = (holder.stdout as ReadableStream<Uint8Array>).getReader();
   const decoder = new TextDecoder();
   let printed = "";
   let aimock: { pid: number; aimockUrl: string } | undefined;
@@ -163,7 +167,7 @@ test("aimock dies with the process that started it, even one killed outright", a
     expect(await aimockPort(aimock.aimockUrl)).toBe("listening");
 
     holder.kill("SIGKILL");
-    await holder.status;
+    await holder.exited;
     while (!(await reader.read()).done) {
       // the holder's last output, to its EOF
     }

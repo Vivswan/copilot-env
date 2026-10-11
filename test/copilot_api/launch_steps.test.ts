@@ -44,13 +44,14 @@ import {
 } from "../../src/copilot_api/daemon_lock.ts";
 import { releaseFileLock } from "../../src/utils/file_lock.ts";
 import {
+  bunRunArgs,
   CHILD_VALUES,
   childValuesEnv,
-  denoRunArgs,
   importSpecifier,
   ROOT,
   spawnChild,
 } from "../helpers/run.ts";
+import { sidecarTest, spawnDenoChild } from "../helpers/deno_sidecar.ts";
 import { afterEach, describe, expect, removeDir, test } from "../helpers/testing.ts";
 import { defaultHomeDir, envSnapshot, isolateProxyHome } from "../helpers/env.ts";
 import { writeRunState } from "../helpers/fixtures.ts";
@@ -527,7 +528,7 @@ test("planCleanup: a dead tracked pid plans only the tracking clear, orphans enu
   expect(new CopilotEnvRunState().read().pid).toBe(DEAD_PID);
 });
 
-test(
+sidecarTest(
   "planCleanup: a corroborated lock holder is planned for the stop even while tracked (the deferred tracked stop)",
   async () => {
     const home = tmpHome();
@@ -557,7 +558,7 @@ test(
 
 // The corroboration exempts the RECORD this plan clears, never the pid: a second slot tracking
 // the same pid still refuses the holder stop. A pid-equality exemption would pass here.
-test(
+sidecarTest(
   "planCleanup: a holder another slot ALSO tracks is refused, even with this slot's clear planned",
   async () => {
     const home = tmpHome();
@@ -583,14 +584,14 @@ test(
 // A lock-dead tracked pid (never signalled by the tracked stop) recycled onto a live lockless
 // daemon must still reach the orphan sweep: the sweep's keep set is taken after this slot's
 // clear, so the stale record cannot spare it.
-test(
+sidecarTest(
   "planCleanup: a lock-dead tracked pid recycled onto a lockless daemon is still swept",
   async () => {
     const home = tmpHome();
-    const child = spawnChild(Deno.execPath(), {
-      args: [...denoRunArgs(), join(ROOT, "test", "copilot-api-fake.mjs"), "start"],
-      stdout: "null",
-      stderr: "null",
+    const child = spawnDenoChild({
+      args: [join(ROOT, "test", "copilot-api-fake.mjs"), "start"],
+      stdout: "ignore",
+      stderr: "ignore",
     });
     try {
       mkdirSync(home, { recursive: true });
@@ -620,16 +621,16 @@ test(
   30_000,
 );
 
-test(
+sidecarTest(
   "planCleanup: a tracked pre-lock daemon (no lock) plans the argv-gated stop, then the clear",
   async () => {
     const home = tmpHome();
     // The fake proxy WITHOUT the daemon preloads: daemon-shaped argv, no daemon.lock --
     // exactly the "unproven" verdict the argv-gated tracked stop exists for.
-    const child = spawnChild(Deno.execPath(), {
-      args: [...denoRunArgs(), join(ROOT, "test", "copilot-api-fake.mjs"), "start"],
-      stdout: "null",
-      stderr: "null",
+    const child = spawnDenoChild({
+      args: [join(ROOT, "test", "copilot-api-fake.mjs"), "start"],
+      stdout: "ignore",
+      stderr: "ignore",
     });
     try {
       // Wait until the argv scan can actually see the spawn (the plan's identity gate).
@@ -652,7 +653,7 @@ test(
   30_000,
 );
 
-test(
+sidecarTest(
   "cleanupExistingProxies: a live lock holder with NO run state is stopped, and a new daemon re-acquires",
   async () => {
     const home = tmpHome();
@@ -690,7 +691,7 @@ test(
   60_000,
 );
 
-test(
+sidecarTest(
   "cleanupExistingProxies: a DIFFERENT home's live lock holder is untouched by this start",
   async () => {
     const home = tmpHome();
@@ -716,23 +717,17 @@ test(
   60_000,
 );
 
-test(
+sidecarTest(
   "cleanupExistingProxies: a pre-lock daemon (no lock) with lost run state is still swept by argv signature",
   async () => {
     const home = tmpHome();
     const port = await freePort();
     // The fake proxy WITHOUT the daemon preloads -- exactly what a pre-lock release
     // launched: daemon-shaped argv, no daemon.lock.
-    const child = spawnChild(Deno.execPath(), {
-      args: [
-        ...denoRunArgs(),
-        join(ROOT, "test", "copilot-api-fake.mjs"),
-        "start",
-        "--port",
-        String(port),
-      ],
-      stdout: "null",
-      stderr: "null",
+    const child = spawnDenoChild({
+      args: [join(ROOT, "test", "copilot-api-fake.mjs"), "start", "--port", String(port)],
+      stdout: "ignore",
+      stderr: "ignore",
     });
     try {
       // Controls: alive, no lock, nothing tracked, so only the argv-signature sweep can reach it.
@@ -742,7 +737,7 @@ test(
 
       await cleanupUnderLock(null, new CopilotEnvRunState(), () => Promise.resolve([child.pid]));
 
-      await child.status; // the sweep's SIGTERM (TerminateProcess on Windows) ends it
+      await child.exited; // the sweep's SIGTERM (TerminateProcess on Windows) ends it
       expect(pidAlive(child.pid)).toBe(false);
     } finally {
       await killAndAwaitExit(child.pid);
@@ -760,10 +755,10 @@ test(
     const home = tmpHome();
     const script = join(home, "bystander.ts");
     writeFileSync(script, "setInterval(() => {}, 60_000);\n");
-    const child = spawnChild(Deno.execPath(), {
-      args: [...denoRunArgs(), script],
-      stdout: "null",
-      stderr: "null",
+    const child = spawnChild(process.execPath, {
+      args: [...bunRunArgs(), script],
+      stdout: "ignore",
+      stderr: "ignore",
     });
     try {
       let scans = 0;
@@ -783,7 +778,7 @@ test(
   30_000,
 );
 
-test(
+sidecarTest(
   "cleanupExistingProxies: the tracked-pid path still stops a tracked daemon and clears state",
   async () => {
     const home = tmpHome();
@@ -839,8 +834,10 @@ test("cleanupExistingProxies: a lock THIS process holds is never signalled (self
 // tests below are POSIX-only. Their holder scripts are named copilot-api-* and given `start`:
 // the argv signature classifyDaemonPid needs before an untracked holder is signalled.
 const DAEMON_LOCK_SPECIFIER = importSpecifier(join(ROOT, "src", "copilot_api", "daemon_lock.ts"));
+/** The holder fixtures trap SIGTERM, which Windows cannot deliver, and run under the sidecar. */
+const posixSidecarTest = process.platform === "win32" ? test.skipIf(true) : sidecarTest;
 
-test.skipIf(process.platform === "win32")(
+posixSidecarTest(
   "cleanupExistingProxies: a holder that ignores SIGTERM draws the SIGKILL escalation, bound to the lock",
   async () => {
     const home = tmpHome();
@@ -857,10 +854,10 @@ test.skipIf(process.platform === "win32")(
         `Deno.writeTextFileSync(${CHILD_VALUES}.ready, "locked");\n` +
         "setInterval(() => {}, 60_000);\n",
     );
-    const child = spawnChild(Deno.execPath(), {
-      args: [...denoRunArgs(), holderScript, "start"],
+    const child = spawnDenoChild({
+      args: [holderScript, "start"],
       env: childValuesEnv({ home, ready }),
-      stdout: "null",
+      stdout: "ignore",
       stderr: "inherit",
     });
     try {
@@ -882,7 +879,7 @@ test.skipIf(process.platform === "win32")(
 
 // Negative control: the SIGKILL is bound to still holding the lock, not to pid liveness,
 // which a recycled pid would satisfy.
-test.skipIf(process.platform === "win32")(
+posixSidecarTest(
   "cleanupExistingProxies: a holder that releases the lock on SIGTERM but stays alive is NOT force-killed",
   async () => {
     const home = tmpHome();
@@ -899,10 +896,10 @@ test.skipIf(process.platform === "win32")(
         `Deno.writeTextFileSync(${CHILD_VALUES}.ready, "locked");\n` +
         "setInterval(() => {}, 60_000);\n",
     );
-    const child = spawnChild(Deno.execPath(), {
-      args: [...denoRunArgs(), holderScript, "start"],
+    const child = spawnDenoChild({
+      args: [holderScript, "start"],
       env: childValuesEnv({ home, ready }),
-      stdout: "null",
+      stdout: "ignore",
       stderr: "inherit",
     });
     try {
@@ -933,10 +930,10 @@ test(
     // The bystander: a live local process whose argv is nothing like a daemon.
     const script = join(home, "bystander.ts");
     writeFileSync(script, "setInterval(() => {}, 60_000);\n");
-    const child = spawnChild(Deno.execPath(), {
-      args: [...denoRunArgs(), script],
-      stdout: "null",
-      stderr: "null",
+    const child = spawnChild(process.execPath, {
+      args: [...bunRunArgs(), script],
+      stdout: "ignore",
+      stderr: "ignore",
     });
     // This test process stands in for the remote daemon: it holds the lock through the whole
     // cleanup while the marker names the bystander's pid.
@@ -972,10 +969,10 @@ test(
     const home = tmpHome();
     const script = join(home, "bystander.ts");
     writeFileSync(script, "setInterval(() => {}, 60_000);\n");
-    const child = spawnChild(Deno.execPath(), {
-      args: [...denoRunArgs(), script],
-      stdout: "null",
-      stderr: "null",
+    const child = spawnChild(process.execPath, {
+      args: [...bunRunArgs(), script],
+      stdout: "ignore",
+      stderr: "ignore",
     });
     expect(acquireDaemonLockForLife(home, { waitMs: 0 })).toBe(true);
     try {
@@ -1001,7 +998,7 @@ test(
   30_000,
 );
 
-test(
+sidecarTest(
   "cleanupExistingProxies: an unreadable lock in ANOTHER home defers the holder stop (fail closed)",
   async () => {
     const home = tmpHome();
@@ -1031,7 +1028,7 @@ test(
 // The escalation re-runs FULL corroboration at the deadline: a TERM survivor that BECOMES
 // another home's lock holder during the grace no longer corroborates, so it draws no
 // SIGKILL even though it still holds this home's lock and still looks like a daemon.
-test.skipIf(process.platform === "win32")(
+posixSidecarTest(
   "cleanupExistingProxies: a TERM survivor that acquires another home's lock mid-grace is NOT force-killed",
   async () => {
     const home = tmpHome();
@@ -1048,10 +1045,10 @@ test.skipIf(process.platform === "win32")(
         `Deno.writeTextFileSync(${CHILD_VALUES}.ready, "locked");\n` +
         "setInterval(() => {}, 60_000);\n",
     );
-    const child = spawnChild(Deno.execPath(), {
-      args: [...denoRunArgs(), holderScript, "start"],
+    const child = spawnDenoChild({
+      args: [holderScript, "start"],
       env: childValuesEnv({ home, ready, workHome }),
-      stdout: "null",
+      stdout: "ignore",
       stderr: "inherit",
     });
     try {
@@ -1505,25 +1502,25 @@ test("withStartLock releases the start lock on return and on throw alike", async
 
 /** Not daemon-shaped: with the classifier injected it only needs to be alive, so a skipped
  *  SIGTERM shows as survival. */
-function spawnInertChild(): Deno.ChildProcess {
-  return spawnChild(Deno.execPath(), {
-    args: ["eval", "setTimeout(() => {}, 60000)"],
-    stdout: "null",
-    stderr: "null",
+function spawnInertChild(): Bun.Subprocess {
+  return spawnChild(process.execPath, {
+    args: ["-e", "setTimeout(() => {}, 60000)"],
+    stdout: "ignore",
+    stderr: "ignore",
   });
 }
 
 describe("unproven tracked-pid identity scans", () => {
-  test(
+  sidecarTest(
     "classifyOwnedDaemonPid: confirms our daemon-shaped child, denies self and a dead pid",
     async () => {
       tmpHome();
       // The lockless daemon-shaped fake (argv signature, no daemon.lock) -- the shape
       // the courtesy stop's default classifier must confirm as OURS.
-      const child = spawnChild(Deno.execPath(), {
-        args: [...denoRunArgs(), join(ROOT, "test", "copilot-api-fake.mjs"), "start"],
-        stdout: "null",
-        stderr: "null",
+      const child = spawnDenoChild({
+        args: [join(ROOT, "test", "copilot-api-fake.mjs"), "start"],
+        stdout: "ignore",
+        stderr: "ignore",
       });
       try {
         await until(async () => (await classifyOwnedDaemonPid(child.pid)) === "yes");
@@ -1641,14 +1638,14 @@ describe("unproven tracked-pid identity scans", () => {
       const ready = join(dir, "term-trap-ready");
       // A TERM-trapping child: only the escalation's SIGKILL can end it, and that kill
       // must re-prove identity through the SAME injected seam as the plan and the TERM.
-      const child = spawnChild(Deno.execPath(), {
+      const child = spawnChild(process.execPath, {
         args: [
-          "eval",
-          `Deno.addSignalListener("SIGTERM", () => {}); Deno.writeTextFileSync(${CHILD_VALUES}.ready, "r"); setTimeout(() => {}, 60000);`,
+          "-e",
+          `process.on("SIGTERM", () => {}); require("node:fs").writeFileSync(${CHILD_VALUES}.ready, "r"); setTimeout(() => {}, 60000);`,
         ],
         env: childValuesEnv({ ready }),
-        stdout: "null",
-        stderr: "null",
+        stdout: "ignore",
+        stderr: "ignore",
       });
       try {
         await until(() => existsSync(ready));

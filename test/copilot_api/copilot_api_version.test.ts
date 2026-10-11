@@ -1,15 +1,12 @@
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   installedProxyVersion,
-  PROXY_PACKAGE_NAME,
   proxyVersionBoundsStatus,
   proxyVersionFloorStatus,
   type ProxyVersionStatus,
 } from "../../src/copilot_api/version.ts";
-import { isRecord } from "../../src/utils/json.ts";
 import type { ProjectConfig } from "../../src/utils/project_config.ts";
-import { PROJECT_ROOT } from "../../src/utils/root.ts";
 import { afterEach, beforeEach, describe, expect, tempDir, test } from "../helpers/testing.ts";
 
 let dir = "";
@@ -88,16 +85,4 @@ describe("proxy version status", () => {
       expect({ ...row, status: checks[row.check](row.version, CONFIG) }).toEqual(row);
     }
   });
-});
-
-// deno.json's import entry is an external contract (deno resolves the proxy by
-// that literal key), so it cannot derive from PROXY_PACKAGE_NAME -- pin the two
-// together instead, so renaming either side fails here rather than at install time.
-test("deno.json tracks the proxy dependency under PROXY_PACKAGE_NAME", () => {
-  const config: unknown = JSON.parse(readFileSync(join(PROJECT_ROOT, "deno.json"), "utf8"));
-  if (!isRecord(config) || !isRecord(config.imports)) {
-    throw new Error("deno.json has no imports table");
-  }
-  expect(Object.keys(config.imports)).toContain(PROXY_PACKAGE_NAME);
-  expect(config.imports[PROXY_PACKAGE_NAME]).toMatch(new RegExp(`^npm:${PROXY_PACKAGE_NAME}@`));
 });

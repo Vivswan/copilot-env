@@ -3,6 +3,7 @@
 // and the shared-home stop refusal.
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { abortable, delay } from "@std/async";
 import { CopilotEnvConfig } from "../../src/copilot_api/env_config.ts";
 import {
   daemonClientHeaders,
@@ -21,8 +22,9 @@ import { parseAbsolutePath } from "../../src/copilot_api/sidecar.ts";
 import { acquireDaemonLockForLife, daemonLockPath } from "../../src/copilot_api/daemon_lock.ts";
 import { releaseFileLock } from "../../src/utils/file_lock.ts";
 import { pidAlive } from "../../src/utils/pid.ts";
+import { sidecarDeno } from "./deno_sidecar.ts";
 import { writeRunState } from "./fixtures.ts";
-import { denoRunArgs, ROOT, spawnChild } from "./run.ts";
+import { bunRunArgs, ROOT, spawnChild } from "./run.ts";
 import { testAbortSignal } from "./testing.ts";
 
 /** `agent start`'s two credential steps as one call, the refusal gate and the resolution it feeds,
@@ -49,7 +51,8 @@ export const FAKE_DAEMON_CREDENTIAL: DaemonCredential = {
 export const FAKE_DAEMON_HOST = DEFAULT_COPILOT_API_BASE;
 
 /** A real detached daemon over `home`, preloads included, so it takes the daemon.lock at boot like
- *  production. */
+ *  production. The daemon runs under the sidecar deno, so a caller outside `sidecarTest` fails
+ *  here, by name, on a machine with no deno on PATH. */
 export function launchFakeDaemon(home: string, port: number): number {
   mkdirSync(home, { recursive: true });
   const logFile = join(home, "daemon.log");
@@ -68,41 +71,24 @@ export function launchFakeDaemon(home: string, port: number): number {
       path: join(ROOT, "test", "copilot-api-fake.mjs"),
       configFile: join(ROOT, "deno.json"),
     },
-    denoBin: parseAbsolutePath(Deno.execPath()),
+    denoBin: parseAbsolutePath(sidecarDeno()),
   });
 }
 
 /**
  * Resolves once `probe` answers true. No clock of its own: the test deadline is the one budget.
- * A pending probe or sleep rejects the moment it fires, so a `finally` behind the wait runs before
- * the runner can exit; a sync probe already true is still answered after it, so an abandoned
- * body's `finally` finishes the cleanup it can.
+ * A pending probe or sleep rejects with the deadline's reason the moment it fires, so a `finally`
+ * behind the wait runs before the runner can exit; a sync probe already true is still answered
+ * after it, so an abandoned body's `finally` finishes the cleanup it can.
  */
 export async function until(probe: () => boolean | Promise<boolean>): Promise<void> {
   const signal = testAbortSignal();
   if (signal === undefined) throw new Error("until: no test deadline to bound the wait");
   for (;;) {
     const answer = probe();
-    if (typeof answer === "boolean" ? answer : await unlessAborted(answer, signal)) return;
-    await unlessAborted(new Promise((resolve) => setTimeout(resolve, 50)), signal);
+    if (typeof answer === "boolean" ? answer : await abortable(answer, signal)) return;
+    await delay(50, { signal });
   }
-}
-
-/** Settles as `pending` does, or rejects with the signal's reason the moment it aborts, probe and
- *  sleep alike: the runner exits once the last test settles, and a wait still pending then would
- *  miss its cleanup. */
-function unlessAborted<T>(pending: T | Promise<T>, signal: AbortSignal): Promise<T> {
-  return new Promise((resolve, reject) => {
-    if (signal.aborted) {
-      reject(signal.reason);
-      return;
-    }
-    const onAbort = (): void => reject(signal.reason);
-    signal.addEventListener("abort", onAbort, { once: true });
-    Promise.resolve(pending)
-      .then(resolve, reject)
-      .finally(() => signal.removeEventListener("abort", onAbort));
-  });
 }
 
 /** Returns once the pid is gone: a daemon outliving its test would hold the temp home open into
@@ -117,16 +103,14 @@ export async function killAndAwaitExit(pid: number): Promise<void> {
 }
 
 /**
- * The thrower mimics Deno's NotCapable (name "NotCapable", `code` undefined), what a permission set
- * without --allow-run really throws; test/utils/pid.test.ts pins that shape. Inside `body` every
- * pidLiveness read is "unproven" and every signal fails as it does in the daemon.
+ * The thrower carries no errno `code`, the one shape pidLiveness (src/utils/pid.ts) reads as
+ * "unproven" rather than alive or dead. Inside `body` every liveness read is "unproven" and every
+ * signal fails, as they do for a daemon whose probe cannot run.
  */
 export async function withUnprovablePidProbe(body: () => Promise<void>): Promise<void> {
   const realKill = process.kill;
   process.kill = ((_pid: number, _signal?: string | number): true => {
-    throw Object.assign(new Error("Requires run access to signal processes"), {
-      name: "NotCapable",
-    });
+    throw new Error("the liveness probe cannot run");
   }) as typeof process.kill;
   try {
     await body();
@@ -153,10 +137,10 @@ export function stageRefusedStop(home: string, profile?: ProfileName): RefusedSt
   mkdirSync(home, { recursive: true });
   const script = join(home, "bystander.ts");
   writeFileSync(script, "setInterval(() => {}, 60_000);\n");
-  const child = spawnChild(Deno.execPath(), {
-    args: [...denoRunArgs(), script],
-    stdout: "null",
-    stderr: "null",
+  const child = spawnChild(process.execPath, {
+    args: [...bunRunArgs(), script],
+    stdout: "ignore",
+    stderr: "ignore",
   });
   if (!acquireDaemonLockForLife(home, { waitMs: 0 })) {
     throw new Error(`could not hold ${home}'s daemon.lock for the refused-stop fixture`);

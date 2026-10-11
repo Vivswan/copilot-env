@@ -108,7 +108,7 @@ test("withPowershellChildEnv: a 5.1 child sees no PSModulePath under any casing,
   if (process.platform !== "win32") process.env.psmodulepath = "/pwsh/modules";
   const parentOwn = psModulePathIn(process.env);
   const childSees = () =>
-    runSync(process.execPath, ["eval", 'console.log(Deno.env.get("PSModulePath") ?? "")']).stdout
+    runSync(process.execPath, ["-e", 'console.log(process.env.PSModulePath ?? "")']).stdout
       .trim();
 
   const desktop = withPowershellChildEnv("powershell", (env) => ({
@@ -245,13 +245,13 @@ test("findCommand: a real found command and a real proven absence, both proven",
 });
 
 test("runCaptured: the launch-failure mark rides ONLY the synthesized exit", async () => {
-  const ok = await runCaptured(process.execPath, ["eval", "console.log('ok')"]);
+  const ok = await runCaptured(process.execPath, ["-e", "console.log('ok')"]);
   expect(ok.exitCode).toBe(0);
   expect(ok.launchFailed).toBeUndefined();
   expect(ok.stdout.trim()).toBe("ok");
 
   // The child's OWN nonzero exit is a completed look: pgrep's "ran, found nothing" exit 1 rides exactly here.
-  const ranNonzero = await runCaptured(process.execPath, ["eval", "Deno.exit(1)"]);
+  const ranNonzero = await runCaptured(process.execPath, ["-e", "process.exit(1)"]);
   expect(ranNonzero.exitCode).toBe(1);
   expect(ranNonzero.launchFailed).toBeUndefined();
 

@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { terminatePid, type TerminateVerdict } from "../../src/copilot_api/process.ts";
 import { pidAlive } from "../../src/utils/pid.ts";
 import { killAndAwaitExit, until, withUnprovablePidProbe } from "../helpers/daemon.ts";
-import { CHILD_VALUES, childValuesEnv, denoRunArgs, spawnChild } from "../helpers/run.ts";
+import { bunRunArgs, CHILD_VALUES, childValuesEnv, spawnChild } from "../helpers/run.ts";
 import { afterEach, expect, removeDir, tempDir, test } from "../helpers/testing.ts";
 import { captureAllWrites as withCapturedOutput } from "../helpers/output.ts";
 
@@ -22,20 +22,21 @@ afterEach(() => {
   dir = removeDir(dir);
 });
 
-async function spawnTermIgnoringChild(): Promise<Deno.ChildProcess> {
+async function spawnTermIgnoringChild(): Promise<Bun.Subprocess> {
   dir = tempDir("copilot-terminate-");
   const ready = join(dir, "ready");
   const script = join(dir, "survivor.ts");
   writeFileSync(
     script,
-    'Deno.addSignalListener("SIGTERM", () => {});\n' +
-      `Deno.writeTextFileSync(${CHILD_VALUES}.ready, "up");\n` +
+    'import { writeFileSync } from "node:fs";\n' +
+      'process.on("SIGTERM", () => {});\n' +
+      `writeFileSync(${CHILD_VALUES}.ready, "up");\n` +
       "setInterval(() => {}, 60_000);\n",
   );
-  const child = spawnChild(Deno.execPath(), {
-    args: [...denoRunArgs(), script],
+  const child = spawnChild(process.execPath, {
+    args: [...bunRunArgs(), script],
     env: childValuesEnv({ ready }),
-    stdout: "null",
+    stdout: "ignore",
     stderr: "inherit",
   });
   await until(() => existsSync(ready));
@@ -119,20 +120,21 @@ test(
     // Windows), well inside the grace.
     writeFileSync(
       script,
-      `Deno.writeTextFileSync(${CHILD_VALUES}.ready, "up");\n` +
+      'import { writeFileSync } from "node:fs";\n' +
+        `writeFileSync(${CHILD_VALUES}.ready, "up");\n` +
         "setInterval(() => {}, 60_000);\n",
     );
-    const child = spawnChild(Deno.execPath(), {
-      args: [...denoRunArgs(), script],
+    const child = spawnChild(process.execPath, {
+      args: [...bunRunArgs(), script],
       env: childValuesEnv({ ready }),
-      stdout: "null",
+      stdout: "ignore",
       stderr: "inherit",
     });
     try {
       await until(() => existsSync(ready));
       // Observe the exit eagerly so the child is reaped as soon as the SIGTERM lands --
       // a lingering zombie would still read pidAlive at the boundary.
-      const exited = child.status;
+      const exited = child.exited;
       const { calls, classify } = classifyStub("no");
       expect(await terminatePid(child.pid, 3_000, classify)).toBe("died-in-grace");
       await exited;
@@ -155,18 +157,19 @@ test(
     const script = join(dir, "compliant.ts");
     writeFileSync(
       script,
-      `Deno.writeTextFileSync(${CHILD_VALUES}.ready, "up");\n` +
+      'import { writeFileSync } from "node:fs";\n' +
+        `writeFileSync(${CHILD_VALUES}.ready, "up");\n` +
         "setInterval(() => {}, 60_000);\n",
     );
-    const child = spawnChild(Deno.execPath(), {
-      args: [...denoRunArgs(), script],
+    const child = spawnChild(process.execPath, {
+      args: [...bunRunArgs(), script],
       env: childValuesEnv({ ready }),
-      stdout: "null",
+      stdout: "ignore",
       stderr: "inherit",
     });
     try {
       await until(() => existsSync(ready));
-      const exited = child.status;
+      const exited = child.exited;
       const { calls, classify } = classifyStub("no");
       expect(await terminatePid(child.pid, 0, classify)).toBe("term-only");
       await exited; // the SIGTERM alone ends the compliant child: the signal was sent
@@ -178,8 +181,8 @@ test(
   30_000,
 );
 
-// Under the daemon's own permission set the liveness probe throws NotCapable (pinned in
-// test/utils/pid.test.ts) and every pid reads "unproven". That must never mint "died-in-grace",
+// Under the daemon's own permission set the liveness probe cannot run (test/utils/pid.test.ts
+// pins the shape) and every pid reads "unproven". That must never mint "died-in-grace",
 // which stopTrackedProxy reads as a confirmed death and clears tracking on; the classify
 // boundary rules instead, as it does for a proven-alive pid.
 test(
@@ -192,13 +195,14 @@ test(
     // nothing can reach the child at all -- its survival proves exactly that.
     writeFileSync(
       script,
-      `Deno.writeTextFileSync(${CHILD_VALUES}.ready, "up");\n` +
+      'import { writeFileSync } from "node:fs";\n' +
+        `writeFileSync(${CHILD_VALUES}.ready, "up");\n` +
         "setInterval(() => {}, 60_000);\n",
     );
-    const child = spawnChild(Deno.execPath(), {
-      args: [...denoRunArgs(), script],
+    const child = spawnChild(process.execPath, {
+      args: [...bunRunArgs(), script],
       env: childValuesEnv({ ready }),
-      stdout: "null",
+      stdout: "ignore",
       stderr: "inherit",
     });
     try {

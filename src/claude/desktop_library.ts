@@ -15,8 +15,8 @@
 // what the app itself writes when the user clicks through; see prepareClaudeDesktopAppFiles):
 //   Claude-3p/claude_desktop_config.json  deploymentMode "3p"  -> boots third-party, no sign-in chooser
 //   Claude/developer_settings.json        allowDevTools true   -> Developer menu (the 3p copy too)
-import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
+import { userHomeDir } from "../utils/home.ts";
 import { type Profile, WINDOWS_DEVICE_NAME_RE } from "../copilot_api/profile.ts";
 import { appRunning, type AppScan } from "../utils/app_scan.ts";
 import { errMessage } from "../utils/error.ts";
@@ -92,7 +92,7 @@ function desktopEnv(): DesktopEnv {
 }
 
 function desktopDirs(): DesktopDirs {
-  return desktopDirsFor(process.platform, homedir(), desktopEnv());
+  return desktopDirsFor(process.platform, userHomeDir(), desktopEnv());
 }
 
 /** The `-1p` spelling is a contract with test/claude/claude_desktop.test.ts. */
@@ -138,7 +138,7 @@ export function desktopAppInstalledFor(
 export function claudeDesktopInstalled(): boolean {
   const seam = seamDir();
   if (seam !== null) return fs.exists(seam);
-  return desktopAppInstalledFor(process.platform, fs.exists, homedir(), desktopEnv());
+  return desktopAppInstalledFor(process.platform, fs.exists, userHomeDir(), desktopEnv());
 }
 
 // --- entry naming + classification ----------------------------------------------

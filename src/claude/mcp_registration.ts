@@ -4,8 +4,8 @@
 // about and left alone, never clobbered.
 //   machine-global file, `agent profile mcp --serve` -> the default profile's credential only; a
 //                                                      named profile registers by hand
-import { homedir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
+import { userHomeDir } from "../utils/home.ts";
 import { MCP_SERVER_NAME } from "../mcp/server.ts";
 import { resolveExecutablePath } from "../utils/command.ts";
 import * as fs from "../utils/fs_facade.ts";
@@ -24,10 +24,10 @@ const logger = taggedLogger("claude.mcp");
 export type McpRegistrationStatus = "absent" | "ours-current" | "ours-stale" | "foreign";
 
 /** CLAUDE_CONFIG_DIR relocates it alongside settings.json (true of current Claude Code releases).
- *  The fallback is homedir() ITSELF, not `~/.claude`, and without an $HOME override: Windows
- *  resolves %USERPROFILE%, where Claude Code reads. */
+ *  The fallback is the home ITSELF, not `~/.claude`: userHomeDir's, so Windows resolves
+ *  %USERPROFILE%, where Claude Code reads. */
 export function claudeJsonPath(): string {
-  return join(claudeConfigDirOverride() ?? homedir(), ".claude.json");
+  return join(claudeConfigDirOverride() ?? userHomeDir(), ".claude.json");
 }
 
 const CURRENT_MCP_SUBARGS: readonly string[] = ["profile", "mcp", "--serve"];

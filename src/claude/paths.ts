@@ -1,7 +1,7 @@
 // Dependency-light on purpose (node builtins plus the profile vocabulary) so any layer names the
 // same files without importing the config writer in src/claude/config.ts.
-import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { userHomeDir } from "../utils/home.ts";
 import type { Profile } from "../copilot_api/profile.ts";
 
 /** THE single reader of CLAUDE_CONFIG_DIR: claudeJsonPath (mcp_registration.ts) and
@@ -17,11 +17,10 @@ export function claudeConfigDirOverride(): string | null {
 export function resolveClaudeHome(): string {
   const override = claudeConfigDirOverride();
   if (override !== null) return override;
-  // homedir() WITHOUT a HOME override, matching src/codex/paths.ts: on Windows homedir() is
-  // %USERPROFILE%, where Claude Code reads, while HOME may be a Git-for-Windows/MSYS path;
-  // diverging would put settings.json where Claude never looks. On POSIX homedir() already honors
-  // $HOME.
-  return join(homedir(), ".claude");
+  // userHomeDir, matching src/codex/paths.ts: on Windows that is %USERPROFILE%, where Claude Code
+  // reads, never a Git-for-Windows/MSYS HOME; diverging would put settings.json where Claude never
+  // looks.
+  return join(userHomeDir(), ".claude");
 }
 
 function profileSuffix(profile: Profile): string {

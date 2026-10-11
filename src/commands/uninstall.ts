@@ -1,5 +1,4 @@
 // Idempotent: a second run finds nothing and exits 0.
-import { homedir } from "node:os";
 import { consola } from "consola";
 import { prompt } from "../utils/logger.ts";
 import { claudeProfileArtifacts, removeClaudeDefaultWiring } from "../claude/config.ts";
@@ -20,6 +19,7 @@ import { Credential } from "../copilot_api/credential.ts";
 import { stopTrackedProxy } from "../copilot_api/daemon.ts";
 import { allProfileNames } from "../copilot_api/env_state.ts";
 import { resolveRootHome } from "../copilot_api/paths.ts";
+import { userHomeDir } from "../utils/home.ts";
 import { DAEMON_SIGKILL_GRACE_MS } from "../copilot_api/process.ts";
 import { profileLabel, type ProfileName } from "../copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../copilot_api/run_state.ts";
@@ -221,7 +221,7 @@ function uninstallSteps(ctx: UninstallContext): UninstallStep[] {
       // Out of the doomed tree first; a dry run deletes nothing and moves nothing.
       if (!fs.dryRunActive()) {
         try {
-          process.chdir(homedir());
+          process.chdir(userHomeDir());
         } catch {
           // deletion may still succeed from the current cwd
         }

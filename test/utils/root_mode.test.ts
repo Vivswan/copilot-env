@@ -112,6 +112,27 @@ test("looksLikeInstallRoot gates the recursive delete on the marker layout or a 
   }
 });
 
+// Bun answers os.homedir() from a value read at startup, so a HOME retargeted at run time (the
+// test harness does it per test; node and deno follow it) would leave every home-derived guard
+// aimed at the real home: this one would then let `agent uninstall` sweep the directory HOME names.
+test("looksLikeInstallRoot reads the home from HOME as it stands now, not from the runtime's startup value", () => {
+  const home = tempDir("copilot-root-home-");
+  const saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+  try {
+    for (const marker of INSTALL_ROOT_MARKERS) mkdirSync(join(home, marker), { recursive: true });
+    expect(looksLikeInstallRoot(home)).toBe(true); // the marker layout alone qualifies it ...
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+    expect(looksLikeInstallRoot(home)).toBe(false); // ... until it IS the home
+  } finally {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test("derivedCompiledRoot: a flat root derives two levels up from the binary; a versioned binary roots at the current link, never its version dir", () => {
   // The GC-survival property: every path persisted outside the install is built
   // from this root, and a `versions/<name>` component in it would die with the

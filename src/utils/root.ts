@@ -1,8 +1,8 @@
-import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import type { Profile } from "../copilot_api/profile.ts";
 import { powershellFileArgs } from "./command.ts";
 import * as fs from "./fs_facade.ts";
+import { userHomeDir } from "./home.ts";
 import { parseJsonRecord } from "./json.ts";
 import { hideWritesUnder } from "./report_write.ts";
 
@@ -197,7 +197,7 @@ function looksLikeVersionedInstallTop(resolved: string): boolean {
 export function looksLikeInstallRoot(root: string): boolean {
   const resolved = resolve(root);
   if (resolved === dirname(resolved)) return false; // a filesystem root
-  if (resolved === resolve(homedir())) return false;
+  if (resolved === resolve(userHomeDir())) return false;
   // A valid manifest alone qualifies: a user-deleted asset dir must not make a real install
   // invisible to uninstall. A root we cannot inspect is not one we may delete. Absent or invalid
   // falls back to the markers.

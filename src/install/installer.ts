@@ -16,13 +16,13 @@
 // the whole commit of an update and old version dirs can be garbage-collected safely.
 import { spawnSync, type StdioOptions } from "node:child_process";
 import { configSetCommand } from "../copilot_api/env_config.ts";
-import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { consola } from "consola";
 
 import { runShellIntegration } from "../shell/integration.ts";
 import { errMessage } from "../utils/error.ts";
 import * as fs from "../utils/fs_facade.ts";
+import { userHomeDir } from "../utils/home.ts";
 import {
   ASSET_ROOT,
   CURRENT_LINK,
@@ -78,6 +78,7 @@ export const MATERIALIZED_ASSET_FILES = [
   "src/utils/fs_disk.ts",
   "src/utils/fs_facade.ts",
   "src/utils/fs_overlay.ts",
+  "src/utils/home.ts",
   "src/utils/hostname.ts",
   "src/utils/json.ts",
   "src/utils/logger.ts",
@@ -441,7 +442,7 @@ function unsafeRootReason(root: string): string | null {
   const canonical = canonicalizeForGuard(root);
   if (canonical === null) return "its canonical path cannot be resolved";
   if (canonical === dirname(canonical)) return "it is a filesystem root";
-  const home = homedir() ? canonicalizeForGuard(homedir()) : null;
+  const home = canonicalizeForGuard(userHomeDir());
   if (home !== null) {
     const sameAsHome = process.platform === "win32"
       ? canonical.toLowerCase() === home.toLowerCase()

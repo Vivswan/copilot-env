@@ -1,5 +1,5 @@
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { userHomeDir } from "../utils/home.ts";
 import { isEnoentOrNotdir } from "../utils/fs.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { hideWritesUnder } from "../utils/report_write.ts";
@@ -15,7 +15,7 @@ import {
 // One spelling on every platform: do NOT swap in a native %LOCALAPPDATA% location on Windows, the wrapper
 // and the daemon must derive the identical path. The daemon never depends on this default: every spawn
 // pins COPILOT_API_HOME from DaemonSpec.home (process.ts), so the dir carries OUR name, not the proxy package's.
-export const DEFAULT_HOME: string = join(homedir(), ".local", "share", "copilot-env");
+export const DEFAULT_HOME: string = join(userHomeDir(), ".local", "share", "copilot-env");
 
 export function resolveHome(): string {
   return process.env.COPILOT_API_HOME || DEFAULT_HOME;

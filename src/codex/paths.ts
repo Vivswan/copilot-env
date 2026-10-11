@@ -1,12 +1,12 @@
 // Dependency-light on purpose (node builtins only) so any layer names the same files without
 // importing the config writer in src/codex/config.ts.
-import { homedir } from "node:os";
 import * as path from "node:path";
 import type { Profile, ProfileName } from "../copilot_api/profile.ts";
+import { userHomeDir } from "../utils/home.ts";
 
-/** No process.env.HOME precedence: on Windows homedir() is %USERPROFILE%, where Codex reads, while
- *  HOME may be a Git-for-Windows/MSYS path. path.join, not string concat, so every writer and
- *  checker produces byte-identical paths; `||` (not `??`) treats an empty CODEX_HOME as unset. */
+/** The home is userHomeDir's (src/utils/home.ts): %USERPROFILE% on Windows, where Codex reads,
+ *  never a Git-for-Windows/MSYS HOME. path.join, not string concat, so every writer and checker
+ *  produces byte-identical paths; `||` (not `??`) treats an empty CODEX_HOME as unset. */
 export function defaultCodexHome(): string {
   return process.env.CODEX_HOME || plainCodexHome();
 }
@@ -14,7 +14,7 @@ export function defaultCodexHome(): string {
 /** `~/.codex` with no `$CODEX_HOME` precedence: where unmanagedCodexHome lands once the export is
  *  recognised as our own farm's, and a home the cleanup sweep always visits. */
 export function plainCodexHome(): string {
-  return path.join(homedir(), ".codex");
+  return path.join(userHomeDir(), ".codex");
 }
 
 /** The `model_provider` a copilot-env-written config.toml selects, direct and proxy alike (the mode

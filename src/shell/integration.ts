@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
+import { userHomeDir } from "../utils/home.ts";
 import { consola } from "consola";
 
 import { withPowershellChildEnv } from "../utils/command.ts";
@@ -278,7 +278,7 @@ export function removeShellIntegrationFrom(files: readonly string[]): void {
  *  the way the platform does (case-insensitive on Windows), so a differently-cased home
  *  still anchors; outside-home walks up ("..") or lands on another drive (absolute). */
 function homeTail(path: string): string | null {
-  const tail = relative(homedir(), path);
+  const tail = relative(userHomeDir(), path);
   if (tail === "" || tail.startsWith("..") || isAbsolute(tail)) return null;
   return sep + tail;
 }
@@ -373,12 +373,12 @@ function absolutePathEnv(name: string): string | null {
 // --- POSIX target files -------------------------------------------------------
 
 function rcCandidates(): string[] {
-  const home = absolutePathEnv(CI_RC_DIR_ENV) ?? homedir();
+  const home = absolutePathEnv(CI_RC_DIR_ENV) ?? userHomeDir();
   return [".bashrc", ".zshrc"].map((f) => join(home, f));
 }
 
 export function rcFiles(remove: boolean): string[] {
-  const home = absolutePathEnv(CI_RC_DIR_ENV) ?? homedir();
+  const home = absolutePathEnv(CI_RC_DIR_ENV) ?? userHomeDir();
   const existing = rcCandidates().filter((p) => fs.exists(p));
   if (existing.length > 0 || remove) return existing;
   const shell = basename(process.env.SHELL ?? "/bin/bash");

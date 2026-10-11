@@ -6,6 +6,7 @@
 //                        runs on (RunOptions.timeoutMs)
 
 import { afterAll, it } from "bun:test";
+import "./node_env.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { lstatSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -16,10 +17,6 @@ import { CI_NO_LIVE_LOOKUPS_ENV } from "../../src/codex/user_agent.ts";
 import { CI_PS_DOCUMENTS_DIR_ENV, CI_RC_DIR_ENV } from "../../src/shell/integration.ts";
 
 export { afterEach, beforeEach, describe, expect } from "bun:test";
-
-// consola defaults a logger to warn under NODE_ENV=test, which `bun test` sets, and the logger
-// tests assert on info lines; scripts/run_tests.ts pins the same value on the test process.
-process.env.NODE_ENV = "development";
 
 // --- the temp root -----------------------------------------------------------------
 //

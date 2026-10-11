@@ -403,8 +403,9 @@ test("settings --export refuses in the dry run where the real write refuses: a m
       refusal: enoent,
       stillAbsent: join(dir, "missing"),
     },
-    // The plain export's open: EISDIR on POSIX, EINVAL on Windows; the dry run says what the OS says.
-    { name: "onto a directory", args: { exportTo: dir }, refusal: /^E(ISDIR|INVAL): / },
+    // The plain export: EISDIR everywhere (bun's Windows write says it too, where node's open said
+    // EINVAL); the dry run says what the runtime says.
+    { name: "onto a directory", args: { exportTo: dir }, refusal: /^EISDIR: / },
     // The credential export lands by rename: EISDIR on POSIX. Windows reshapes its refusal through
     // the rename retry (RenameRefusedError), a code this test does not pin.
     {
@@ -530,9 +531,12 @@ test("the update preview takes the stage's and the flip's own refusals at `curre
   const file = join(dir, "file");
   mkdirSync(file, { recursive: true });
   writeFileSync(join(file, "current"), "");
-  // rmdir at a regular file is ENOTDIR on every platform (a lookup UNDER a file is where Windows
-  // says ENOENT).
-  const notDir = /ENOTDIR: not a directory, rmdir '/;
+  // rmdir at a regular file is ENOTDIR on POSIX; bun's Windows rmdir says ENOENT (node's said
+  // ENOTDIR).
+  const notDir =
+    process.platform === "win32"
+      ? /ENOENT: no such file or directory, rmdir '/
+      : /ENOTDIR: not a directory, rmdir '/;
   await expect(preview(file)).rejects.toThrow(notDir);
   expect(() => pointCurrentAt(file, versionName)).toThrow(notDir);
   const repair = join(dir, "repair");

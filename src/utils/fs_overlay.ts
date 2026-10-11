@@ -611,7 +611,10 @@ export class Overlay {
         if (WINDOWS) throw new RenameRefusedError(path, errno("EPERM", "rename", staged, path));
         throw errno("EISDIR", "rename", staged, path);
       }
-      throw errno(WINDOWS ? "EINVAL" : "EISDIR", "open", path);
+      // bun's node:fs on Windows opens the directory and fails the write, with no path in the
+      // message; node refused the open with EINVAL. The dry run says what this runtime says.
+      if (WINDOWS) throw errno("EISDIR", "write", null);
+      throw errno("EISDIR", "open", path);
     }
     const mode =
       write.mode !== undefined || seen === null || write.replace || seen.stats.isSymbolicLink()
@@ -709,8 +712,9 @@ export class Overlay {
     if (seen.stats.isSymbolicLink()) {
       if (!WINDOWS) throw errno("ENOTDIR", "rmdir", path);
     } else {
-      // At a regular file (not under one): ENOTDIR on Windows too, as node's rmdirSync raises it.
-      if (!seen.stats.isDirectory()) throw errno("ENOTDIR", "rmdir", path);
+      // At a regular file (not under one): ENOTDIR on POSIX; bun's Windows rmdir says ENOENT
+      // (node's said ENOTDIR).
+      if (!seen.stats.isDirectory()) throw errno(WINDOWS ? "ENOENT" : "ENOTDIR", "rmdir", path);
       if (this.readdir(path).length > 0) throw errno("ENOTEMPTY", "rmdir", path);
     }
     this.tombstone(key, resolve(path));

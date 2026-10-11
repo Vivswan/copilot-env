@@ -191,13 +191,14 @@ const ERRNO_TEXT: Record<string, string> = {
   ELOOP: "too many symbolic links encountered",
 };
 
-/** An error shaped as node:fs throws it, so `(e as NodeJS.ErrnoException).code` reads the same. */
-export function errno(code: string, syscall: string, path: string, dest?: string): Error {
-  const target = dest === undefined ? `'${path}'` : `'${path}' -> '${dest}'`;
-  const e: NodeJS.ErrnoException = new Error(`${code}: ${ERRNO_TEXT[code]}, ${syscall} ${target}`);
+/** An error shaped as node:fs throws it, so `(e as NodeJS.ErrnoException).code` reads the same.
+ *  `path` null renders the message without a target, as bun's Windows write onto a directory does. */
+export function errno(code: string, syscall: string, path: string | null, dest?: string): Error {
+  const target = path === null ? "" : dest === undefined ? ` '${path}'` : ` '${path}' -> '${dest}'`;
+  const e: NodeJS.ErrnoException = new Error(`${code}: ${ERRNO_TEXT[code]}, ${syscall}${target}`);
   e.code = code;
   e.syscall = syscall;
-  e.path = path;
+  if (path !== null) e.path = path;
   return e;
 }
 

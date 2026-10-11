@@ -95,7 +95,7 @@ const ERROR_CASES: Array<{
   setup: (root: string) => void;
   op: (root: string) => unknown;
   code: string;
-  /** The code Windows' own node:fs raises for the same state, when it differs. */
+  /** The code bun's node:fs raises on Windows for the same state, when it differs. */
   win32?: string;
   /** A state Windows cannot build without a privilege the runner lacks (a symlink). */
   posixOnly?: boolean;
@@ -105,7 +105,6 @@ const ERROR_CASES: Array<{
     setup: (r) => facade.mkdir(join(r, "d")),
     op: (r) => facade.writeText(join(r, "d"), "x", { atomic: false }),
     code: "EISDIR",
-    win32: "EINVAL",
   },
   {
     name: "staged write onto a directory",
@@ -172,6 +171,7 @@ const ERROR_CASES: Array<{
     setup: (r) => writeFileSync(join(r, "f"), "x"),
     op: (r) => facade.rmdir(join(r, "f")),
     code: "ENOTDIR",
+    win32: "ENOENT",
   },
   {
     name: "rm of a missing path with force",

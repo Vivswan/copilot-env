@@ -316,7 +316,7 @@ export function removeVersionDirsExcept(top: string, keep: ReadonlySet<string>):
  *  `<top>/current/bin/agent`, so the version it dispatches is always the live one. The
  *  checkout's bin/agent is the dev variant, and an install never overwrites a checkout, so the
  *  two texts never compete for one file. */
-export const POSIX_SHIM = `#!/bin/sh
+const POSIX_SHIM = `#!/bin/sh
 # copilot-env launcher (installed): dispatch to the compiled agent binary.
 HERE="$(cd "$(dirname "$0")" && pwd)"
 exec "$HERE/${INSTALLED_BINARY_POSIX}" "$@"
@@ -339,7 +339,7 @@ exec "$HERE/../${CURRENT_LINK}/bin/${INSTALLED_BINARY_POSIX}" "$@"
 
 /** Top-level bin/agent.ps1 (Windows twin of POSIX_CURRENT_SHIM; the junction
  *  resolves through every Win32 path API, PowerShell 5.1 included). */
-export const POWERSHELL_CURRENT_SHIM = `# copilot-env launcher (installed): dispatch through the current version link.
+const POWERSHELL_CURRENT_SHIM = `# copilot-env launcher (installed): dispatch through the current version link.
 $Here = Split-Path -Parent $MyInvocation.MyCommand.Path
 & (Join-Path (Split-Path -Parent $Here) '${CURRENT_LINK}\\bin\\${INSTALLED_BINARY_WINDOWS}') @args
 exit $LASTEXITCODE

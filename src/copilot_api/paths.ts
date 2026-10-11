@@ -15,7 +15,7 @@ import {
 // One spelling on every platform: do NOT swap in a native %LOCALAPPDATA% location on Windows, the wrapper
 // and the daemon must derive the identical path. The daemon never depends on this default: every spawn
 // pins COPILOT_API_HOME from DaemonSpec.home (process.ts), so the dir carries OUR name, not the proxy package's.
-export function defaultHome(): string {
+function defaultHome(): string {
   return join(userHomeDir(), ".local", "share", "copilot-env");
 }
 

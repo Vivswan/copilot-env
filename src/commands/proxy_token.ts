@@ -98,6 +98,9 @@ export function launchProxy(profile: Profile, output: LaunchOutput): void | Prom
  * key-only and both readline's prompt and consola.prompt write to stdout.
  *   stdin already closed, no line coming  -> rl.question never settles, the `end` event does
  *   EOF                                   -> "", which means START (the apiKeyHelper case)
+ *
+ * @public test/commands/proxy_token.test.ts imports it from a generated child script, which knip
+ * cannot follow.
  */
 export function readStartAnswer(query: string): Promise<string> {
   process.stderr.write(wrapMessage(query, terminalWidth(process.stderr)));

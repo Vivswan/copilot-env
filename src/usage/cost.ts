@@ -184,7 +184,7 @@ export class ReconcileMeter {
 }
 
 /** Flag, else the stored `cost.pricing-url` key, else the built-in (the accessor folds the last two). */
-export function resolvePricingUrl(
+function resolvePricingUrl(
   flag: string | undefined,
   config: CopilotEnvConfig = new CopilotEnvConfig(),
 ): string {

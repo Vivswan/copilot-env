@@ -25,7 +25,7 @@ interface StopArgs {
 
 type StopAction = { kind: "all" } | { kind: "profile"; name: ProfileName } | { kind: "default" };
 
-export function parseStopAction(args: StopArgs): StopAction {
+function parseStopAction(args: StopArgs): StopAction {
   if (args.all && args.profile !== undefined) {
     throw new Error("--all stops every daemon; it takes no profile name (`agent stop --all`)");
   }

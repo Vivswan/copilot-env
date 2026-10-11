@@ -50,7 +50,7 @@ function credentialResolves(kind: StoredCredential["kind"], ghAuthenticated: boo
   }
 }
 
-export function checkCliVersion(f: BootstrapFacts): CheckResult {
+function checkCliVersion(f: BootstrapFacts): CheckResult {
   return {
     ...meta("bootstrap.version"),
     profile: null,

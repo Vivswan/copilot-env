@@ -42,7 +42,7 @@ export const USAGE_INDEX_LOCK_NAME = "index.lock";
 /** The one stamp: a database stamped otherwise, or holding unstamped rows, has its rows deleted and
  *  is restamped. A table-layout change bumps CONTRIBUTION_VERSION with it, so the rows are rebuilt
  *  at once instead of row by row. */
-export const DEFAULT_PARSER_FINGERPRINT = `contribution-v${CONTRIBUTION_VERSION}`;
+const DEFAULT_PARSER_FINGERPRINT = `contribution-v${CONTRIBUTION_VERSION}`;
 
 /** The advisory lock serializes our own writers, so this only covers a writer from a release that
  *  does not take it. */

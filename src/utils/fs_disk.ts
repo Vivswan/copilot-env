@@ -109,12 +109,9 @@ export function realpath(path: string): string {
  *  fabricated from it; a dangling symlink IS present. A deep look fingerprints the whole tree keyed
  *  by full relative path, so moving an entry between levels changes it even when no directory
  *  metadata does. */
-export type Look =
-  | { kind: "present"; fingerprint: string }
-  | { kind: "absent" }
-  | { kind: "unknown" };
+type Look = { kind: "present"; fingerprint: string } | { kind: "absent" } | { kind: "unknown" };
 
-export function look(path: string, deep = false): Look {
+function look(path: string, deep = false): Look {
   let stat: Stats;
   try {
     stat = lstatSync(path);

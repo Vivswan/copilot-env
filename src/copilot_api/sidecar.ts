@@ -127,7 +127,7 @@ export function provisionedSidecar(
 }
 
 /** One x.y.z line, as the latest-release endpoint and the project config both carry it. */
-export function parseDenoVersionLine(content: string, source: string): string {
+function parseDenoVersionLine(content: string, source: string): string {
   const trimmed = content.trim();
   if (!isStableVersion(trimmed)) {
     throw new Error(

@@ -139,7 +139,7 @@ export function effectiveCodexHome(): string {
   return resolveCodexHome().home;
 }
 
-export function effectiveCodexHomeFor(prefs: CodexHomePrefs): string {
+function effectiveCodexHomeFor(prefs: CodexHomePrefs): string {
   return resolveCodexHome(prefs).home;
 }
 

@@ -42,7 +42,7 @@ const SEMVER_RE = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/;
 
 /** bunfig.toml's `[install] minimumReleaseAge`: the floor `bun install` itself applies, so the
  *  float never selects a proxy younger than the checkout's own dependencies may be. */
-export function defaultReleaseCooldownSeconds(): number {
+function defaultReleaseCooldownSeconds(): number {
   return readInstallMinimumReleaseAge();
 }
 
@@ -288,9 +288,7 @@ export function writeDaemonConfig(rootHome: string): void {
 /** `dependencies` is the test seam; the default is the embedded manifest's. An aliased entry
  *  (`"semver": "npm:@jsr/std__semver@^1"`) already names its package: the alias is the map key and
  *  the specifier is taken as written. */
-export function renderDaemonConfig(
-  dependencies: Record<string, string> = packageDependencies(),
-): string {
+function renderDaemonConfig(dependencies: Record<string, string> = packageDependencies()): string {
   if (dependencies[PROXY_PKG] === undefined) {
     throw new Error(
       `package.json does not list ${PROXY_PKG} under dependencies, so no import map can name the proxy`,

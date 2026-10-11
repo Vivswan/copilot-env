@@ -13,7 +13,7 @@ export function sameStrings(actual: unknown, expected: readonly string[]): boole
 
 /** `value` with every object's keys sorted at every level, arrays kept in order, so two
  *  payloads with the same content stringify identically. */
-export function sortKeys(value: unknown): unknown {
+function sortKeys(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(sortKeys);
   // fromEntries, not assignment into {}: an own "__proto__" key stays a key.
   if (isRecord(value)) {

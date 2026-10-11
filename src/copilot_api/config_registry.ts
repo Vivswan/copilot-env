@@ -6,10 +6,10 @@ import * as path from "node:path";
 import * as v from "valibot";
 import { SECONDS_PER_DAY } from "../utils/time.ts";
 
-export type PassthroughPref = "auto" | "on" | "off";
+type PassthroughPref = "auto" | "on" | "off";
 
 /** Which agents' configs carry the credential VALUE (`static-key`); the rest name the resolver command. */
-export const STATIC_KEY_SCOPES = ["none", "claude", "codex", "all"] as const;
+const STATIC_KEY_SCOPES = ["none", "claude", "codex", "all"] as const;
 export type StaticKeyScope = (typeof STATIC_KEY_SCOPES)[number];
 /** An agent a scope can single out; the same ids as src/agents/configure.ts's ManagedAgentId. */
 export type StaticKeyAgent = Exclude<StaticKeyScope, "none" | "all">;
@@ -805,7 +805,7 @@ const CONFIG_REGISTRY_LITERAL = [
 type RegistryEntry = (typeof CONFIG_REGISTRY_LITERAL)[number];
 
 /** Exported only for the @ts-expect-error pin tests. */
-export type TotalOverConfigKeys<Pin extends { [K in ConfigKey]: K }> = Pin;
+type TotalOverConfigKeys<Pin extends { [K in ConfigKey]: K }> = Pin;
 
 /** Every ConfigValueTypes key is optional in the stores, so a key omitted from the registry would
  *  still compile: written by set() yet silently stripped by CONFIG_SCHEMA on every read. This pin
@@ -817,8 +817,8 @@ export const CONFIG_REGISTRY: readonly ConfigKeyDef[] = CONFIG_REGISTRY_LITERAL;
 // --- the two maps, typed from the registry's scopes ---------------------------------------
 
 type KeysOfScope<S extends ConfigScope> = Extract<RegistryEntry, { scope: S }>["key"];
-export type ProfileKey = KeysOfScope<"profile">;
-export type ProfileDefaultKey = KeysOfScope<"profile-default">;
+type ProfileKey = KeysOfScope<"profile">;
+type ProfileDefaultKey = KeysOfScope<"profile-default">;
 export type GlobalKey = KeysOfScope<"global">;
 /** What the global map may hold: never a profile key. */
 export type GlobalMapKey = GlobalKey | ProfileDefaultKey;

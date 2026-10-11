@@ -28,7 +28,7 @@ type ShellAction =
   | { kind: "remove"; allHosts: boolean }
   | { kind: "wire"; allHosts: boolean; clis: CliSetup | null };
 
-export function parseShellAction(args: ShellArgs): ShellAction {
+function parseShellAction(args: ShellArgs): ShellAction {
   const remove = Boolean(args.remove);
   const clis = Boolean(args.clis);
   const cooldown = args.cooldown ?? null;

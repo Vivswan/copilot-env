@@ -1,7 +1,6 @@
 {
   "$schema": "https://unpkg.com/knip@6/schema.json",
   "entry": [
-    "src/cli.ts",
     "src/scripts/*_preload.ts",
     "scripts/**/*.ts",
     ".github/scripts/*.ts",

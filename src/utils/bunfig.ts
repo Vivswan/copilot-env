@@ -6,7 +6,7 @@ import * as fs from "./fs_facade.ts";
 import { ASSET_ROOT } from "./root.ts";
 import { isTomlTable, parseToml } from "./toml.ts";
 
-export const BUNFIG_FILE = "bunfig.toml";
+const BUNFIG_FILE = "bunfig.toml";
 
 /** `root` is for test fixtures. */
 export function readInstallMinimumReleaseAge(root: string = ASSET_ROOT): number {

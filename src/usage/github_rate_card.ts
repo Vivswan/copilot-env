@@ -27,7 +27,7 @@ const NOT_APPLICABLE = "Not applicable";
 
 /** Prompts (input plus cached input) above `promptTokens` bill at `tier`; a rate the tier leaves
  *  out keeps the model's base rate. */
-export interface LongContextTier {
+interface LongContextTier {
   promptTokens: number;
   tier: PricingTier;
 }

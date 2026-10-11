@@ -29,7 +29,7 @@ export type CatalogSource = "direct" | "proxy";
  * the version-free codex UA for consumers that feed no agent's requests (Desktop's fallback) and
  * must not resolve the versioned one, whose lookup can spawn `codex --version` and `npm view`.
  */
-export type DirectCatalogIdentity = { kind: "passthrough" } | { kind: "agents"; userAgent: string };
+type DirectCatalogIdentity = { kind: "passthrough" } | { kind: "agents"; userAgent: string };
 
 export interface FetchRawModelsOptions {
   /** Skips re-resolving, which for a gh-cli provider re-runs `gh auth token` (up to 5s). */

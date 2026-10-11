@@ -13,7 +13,7 @@ import type { CountedUsage, OnCounted, TokenBuckets, UsageRequest } from "./usag
  *  sit seconds apart; the minute absorbs a stalled write on either side. The token counts do the
  *  discriminating: two requests with identical counts in all four buckets within a minute of each
  *  other are not seen in practice. */
-export const OVERLAP_WINDOW_MS = 60_000;
+const OVERLAP_WINDOW_MS = 60_000;
 
 /** The client's clock over the lines that make up one request: a Codex token_count is one line, a
  *  Claude message streams over several, first to last, a final line that only repeats the counts

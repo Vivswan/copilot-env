@@ -90,7 +90,7 @@ export function parseUsageRow(raw: unknown): UsageRequest | null {
 }
 
 /** The roll-up and its per-day split, folded from the same rows. */
-export interface UsageTotals {
+interface UsageTotals {
   /** Derived from the same rows as `perDay`; kept so callers do not recompute it. */
   byModel: Map<string, ModelUsage>;
   /** Keyed by LOCAL calendar day, YYYY-MM-DD in the user's timezone. */

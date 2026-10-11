@@ -187,7 +187,7 @@ export function moveCodexProfileTables(codexHome: string): void {
 }
 
 /** Every known Codex home; one home's failure is reported and the rest still run. */
-export function moveCodexProfileTablesEverywhere(): void {
+function moveCodexProfileTablesEverywhere(): void {
   const { homes, complete } = knownCodexHomes();
   if (!complete) {
     consola.warn(
@@ -272,7 +272,7 @@ export const PREFERENCE_RENAMES: ReadonlyArray<readonly [string, string, ConfigK
  *  lands in the default's section and in each named profile's (`namedProfiles`, the credential
  *  slots'), a section's own value winning. Idempotent: a document without old keys is returned
  *  unchanged. */
-export function regroupPreferences(
+function regroupPreferences(
   doc: Record<string, unknown>,
   namedProfiles: readonly string[],
 ): Record<string, unknown> {
@@ -429,7 +429,7 @@ export function stripLaunchersBlocks(content: string): { content: string; leftBe
 }
 
 /** Every rc/profile file; a file that cannot be read fails the step after the others ran. */
-export function stripLaunchersRcBlocks(): void {
+function stripLaunchersRcBlocks(): void {
   const failed: string[] = [];
   for (const file of shellTargetFiles()) {
     try {
@@ -896,7 +896,7 @@ function renameOf({ from, to }: ProfileMove): { from: ProfileName; to: ProfileNa
 }
 
 /** The first `<base>-<n>` no artifact uses. Exported for the migration test. */
-export function freeProfileName(base: ProfileName, taken: (name: string) => boolean): ProfileName {
+function freeProfileName(base: ProfileName, taken: (name: string) => boolean): ProfileName {
   for (let n = 1; ; n++) {
     const candidate = `${base}-${n}`;
     if (isValidProfileName(candidate) && !taken(candidate)) return parseProfileName(candidate);

@@ -212,7 +212,7 @@ flowchart TD
   preflight["src/autoupdate/preflight.ts<br>runPreflight()"]
   release["src/install/resolve-release.ts<br>resolveTarget() pickAged()"]
   apply["src/autoupdate/apply.ts<br>applyUpdate() resolveProvenanceDecision() ProvenanceDecision"]
-  prov["src/install/provenance.ts<br>verifyReleaseProvenance() TUF_MIRROR_URL"]
+  prov["src/install/provenance.ts<br>verifyReleaseProvenance()"]
   att["src/install/attestation.ts<br>RELEASE_SIGNER_POLICY parseStatement() assertSubjectsAttested()"]
   layout[("{top}/versions/vX.Y.Z, {top}/current, {top}/bin/agent and agent.ps1")]
   rcfile[("~/.bashrc, ~/.zshrc, or the PowerShell $PROFILE")]

@@ -77,7 +77,7 @@ export async function githubLoginLook(
 // --- the device flow ----------------------------------------------------------------------------
 
 /** What GitHub hands back for the user to act on. */
-export interface DeviceCode {
+interface DeviceCode {
   userCode: string;
   verificationUri: string;
   expiresInS: number;

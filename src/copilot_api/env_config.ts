@@ -524,7 +524,7 @@ export class CopilotEnvConfig {
  *   profile-default key -> the named profile's section; the default's is the GLOBAL map (the
  *                          shared default every profile follows: the default never overrides it)
  */
-export function settingTarget(def: ConfigKeyDef, profile: Profile): SettingTarget {
+function settingTarget(def: ConfigKeyDef, profile: Profile): SettingTarget {
   switch (def.scope) {
     case "global":
       if (profile !== null) {

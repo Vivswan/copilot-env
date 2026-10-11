@@ -17,6 +17,10 @@ import { CI_PS_DOCUMENTS_DIR_ENV, CI_RC_DIR_ENV } from "../../src/shell/integrat
 
 export { afterEach, beforeEach, describe, expect } from "bun:test";
 
+// consola defaults a logger to warn under NODE_ENV=test, which `bun test` sets, and the logger
+// tests assert on info lines; scripts/run_tests.ts pins the same value on the test process.
+process.env.NODE_ENV = "development";
+
 // --- the temp root -----------------------------------------------------------------
 //
 // scripts/run_tests.ts runs each test file in its own process, so this module mints one root per
@@ -130,8 +134,6 @@ process.env[CI_PS_DOCUMENTS_DIR_ENV] = join(SANDBOX_HOME, "Documents");
 process.env[CLAUDE_DESKTOP_DIR_ENV] = join(SANDBOX_HOME, "claude-desktop");
 // The live-lookup seam (installed codex version, npm codex-version query, catalog probe) reads
 // "unavailable" under the suite, so no test depends on the developer's network or codex install.
-// Not NODE_ENV=test: consola reads that as a test run and silences the info output the logger
-// tests assert on (scripts/run_tests.ts keeps bun's own NODE_ENV=test off the test process).
 process.env[CI_NO_LIVE_LOOKUPS_ENV] = "1";
 
 const DEFAULT_TIMEOUT_MS = 15_000;

@@ -76,20 +76,37 @@ function liveTestSignal(): AbortSignal | undefined {
   return signal;
 }
 
+type StdioMode = "pipe" | "ignore" | "inherit";
+
+export interface SpawnChildOptions<
+  In extends StdioMode = "ignore",
+  Out extends StdioMode = "pipe",
+  Err extends StdioMode = "inherit",
+> {
+  args?: string[];
+  cwd?: string;
+  /** Merged over the parent's env, or the whole env under `clearEnv` (PATH included, for a
+   *  bare command name). */
+  env?: Record<string, string | undefined>;
+  clearEnv?: boolean;
+  stdin?: In;
+  stdout?: Out;
+  stderr?: Err;
+}
+
 /** The one async child spawn under test/: reaching a child-process API anywhere else is a lint
  *  error. The test's abort signal is the spawn's own, so the deadline teardown kills the child,
- *  and the harness keys mean it leaves nothing behind. */
+ *  and the harness keys mean it leaves nothing behind. A piped stream is a ReadableStream
+ *  (stdout, stderr) or a FileSink (stdin) on the returned subprocess. */
 export function spawnChild<
-  const In extends Bun.SpawnOptions.Writable = "ignore",
-  const Out extends Bun.SpawnOptions.Readable = "pipe",
-  const Err extends Bun.SpawnOptions.Readable = "inherit",
->(
-  cmd: string[],
-  options: Bun.SpawnOptions.OptionsObject<In, Out, Err> = {},
-): Bun.Subprocess<In, Out, Err> {
+  const In extends StdioMode = "ignore",
+  const Out extends StdioMode = "pipe",
+  const Err extends StdioMode = "inherit",
+>(cmd: string, options: SpawnChildOptions<In, Out, Err> = {}): Bun.Subprocess<In, Out, Err> {
   const signal = liveTestSignal();
-  const env = harnessEnv({ ...process.env, ...options.env });
-  return Bun.spawn(cmd, { ...options, env, signal, killSignal: "SIGKILL" });
+  const { args = [], clearEnv = false, env: given = {}, ...stdio } = options;
+  const env = harnessEnv(clearEnv ? given : { ...process.env, ...given });
+  return Bun.spawn([cmd, ...args], { ...stdio, env, signal, killSignal: "SIGKILL" });
 }
 
 /**

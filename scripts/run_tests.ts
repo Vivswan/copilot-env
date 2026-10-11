@@ -62,13 +62,14 @@ function jobs(): number {
 }
 
 /**
- * The parent's env, with NODE_ENV pinned to what it already is or to the empty string: `bun test`
- * sets NODE_ENV=test when it is unset, which consola reads as a test run and silences the info
- * output the logger tests assert on, in the test process and in every child that inherits its
- * env. `--no-env-file` on the same child keeps a .env in the checkout out of the suite.
+ * The parent's env with NODE_ENV pinned: `bun test` sets NODE_ENV=test when it is unset, which
+ * consola reads as a test run and silences the info output the logger tests assert on, in the
+ * test process and in every child that inherits its env (test/helpers/testing.ts pins the same
+ * value once loaded). `--no-env-file` on the same child keeps a .env in the checkout out of the
+ * suite.
  */
 function childEnv(): Record<string, string | undefined> {
-  return { ...process.env, NODE_ENV: process.env.NODE_ENV ?? "" };
+  return { ...process.env, NODE_ENV: "development" };
 }
 
 /** Aborted on SIGINT or SIGTERM, so an interrupted run leaves no `bun test` behind. */

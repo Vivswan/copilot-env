@@ -1,13 +1,15 @@
-// The float installs the proxy into a dedicated Deno npm cache under the root home, never into
-// node_modules. The successful resolution is recorded in <rootHome>/proxy/resolved-version.json:
-// the freshness oracle every status here reads, and the record src/copilot_api/process.ts turns
-// into the daemon's entry.
+// The float installs the proxy into the proxy home, `<rootHome>/proxy/`: a package.json naming the
+// proxy at the resolved version (and the preload shims' own npm dependencies), the bun.lock `bun
+// install` resolves from it, and the node_modules it populates. The successful resolution is
+// recorded in <rootHome>/proxy/resolved-version.json: the freshness oracle every status here
+// reads, and the record src/copilot_api/process.ts turns into the daemon's entry.
 //
-// npm lifecycle scripts never run for global-cache `npm:` execution, so a target declaring them
-// would misbehave silently at runtime: the default float REFUSES it (a recorded in-bounds version
-// is kept; otherwise it fails loud), while an explicit COPILOT_API_VERSION or `daemon.version` pin
-// installs it with a warning. The cache warm passes the cooldown as --minimum-dependency-age, so
-// TRANSITIVE deps get the window too.
+// npm lifecycle scripts never run for the proxy home's install (bun runs none for a dependency it
+// does not trust), so a target declaring them would misbehave silently at runtime: the default
+// float REFUSES it (a recorded in-bounds version is kept; otherwise it fails loud), while an
+// explicit COPILOT_API_VERSION or `daemon.version` pin installs it with a warning. The cooldown is
+// written as the proxy home's bunfig `[install] minimumReleaseAge`, so TRANSITIVE deps get the
+// window too.
 
 import "./utils/dotenv.ts";
 import { spawnSync } from "node:child_process";
@@ -17,9 +19,9 @@ import * as v from "valibot";
 import { proxyUnusedEverywhere } from "./agents/wiring.ts";
 import { CopilotEnvConfig, configSetCommand } from "./copilot_api/env_config.ts";
 import { resolveRootHome } from "./copilot_api/paths.ts";
-import { allShimPaths } from "./copilot_api/shims.ts";
-import { resolveDenoBin } from "./copilot_api/sidecar.ts";
+import { DAEMON_SHIM_DEPENDENCIES } from "./copilot_api/shims.ts";
 import {
+  installedProxyPackage,
   PROXY_PACKAGE_NAME,
   proxyVersionBoundsStatus,
   proxyVersionFloorStatus,
@@ -27,12 +29,13 @@ import {
 import { assertNever } from "./utils/assert.ts";
 import { readInstallMinimumReleaseAge } from "./utils/bunfig.ts";
 import { errMessage } from "./utils/error.ts";
-import { isEnoentOrNotdir, readTextOrNull } from "./utils/fs.ts";
+import { readTextOrNull } from "./utils/fs.ts";
 import * as fs from "./utils/fs_facade.ts";
 import { type ConsolaCreateOptions, wrapToTerminal } from "./utils/logger.ts";
 import { type ProjectConfig, readProjectConfig } from "./utils/project_config.ts";
 import { pickAgedVersion, versionLessThan } from "./utils/semver.ts";
 import { SECONDS_PER_DAY } from "./utils/time.ts";
+import { stringify as stringifyToml } from "./utils/toml.ts";
 import { packageDependencies } from "./utils/version.ts";
 
 const PROXY_PKG = PROXY_PACKAGE_NAME;
@@ -83,7 +86,7 @@ function formatReleaseAge(seconds: number): string {
 
 // --- Registry document: fetch + parse boundary --------------------------------
 
-/** npm's install-time scripts, which never run for global-cache `npm:` execution. External
+/** npm's install-time scripts, which the proxy home's `bun install` never runs. External
  *  contract. */
 const NPM_LIFECYCLE_SCRIPT_KEYS = ["preinstall", "install", "postinstall"] as const;
 
@@ -227,7 +230,7 @@ function refusalMessage(sel: Extract<ProxySelection, { kind: "refused" }>): stri
     `${PROXY_PKG}@${sel.version} declares npm lifecycle scripts (${sel.lifecycleScripts.join(
       ", ",
     )}), ` +
-    `which never run for global-cache execution and would misbehave silently; refusing it. ` +
+    `which never run in the proxy home's install and would misbehave silently; refusing it. ` +
     `Review the release, then pin it (${PROXY_VERSION_ENV} or \`${configSetCommand(
       "daemon.version",
       "<version>",
@@ -241,60 +244,78 @@ function refusalMessage(sel: Extract<ProxySelection, { kind: "refused" }>): stri
 interface ResolvedVersionRecord {
   version: string;
   resolvedAtMs: number;
-  denoDir: string;
 }
 
 const RECORD_SCHEMA = v.object({
   version: v.pipe(v.string(), v.regex(SEMVER_RE)),
   resolved_at_ms: v.pipe(v.number(), v.finite(), v.minValue(0)),
-  deno_dir: v.pipe(v.string(), v.minLength(1)),
 });
 
-export function proxyDenoDir(rootHome: string): string {
-  return join(rootHome, "deno", "cache");
+/** The one tree the float installs into and the daemon runs from: its package.json, bun.lock,
+ *  bunfig.toml, and node_modules. The daemon's cwd too (src/copilot_api/process.ts), so bun's
+ *  own discovery finds this bunfig and this package.json, never the caller's. */
+export function proxyHome(rootHome: string): string {
+  return join(rootHome, "proxy");
+}
+
+/** bun's download cache for the proxy home's installs, pinned under the root home so no float
+ *  writes into the user's own `~/.bun`. */
+export function proxyBunCacheDir(rootHome: string): string {
+  return join(rootHome, "bun", "cache");
 }
 
 export function resolvedVersionFile(rootHome: string): string {
-  return join(rootHome, "proxy", "resolved-version.json");
+  return join(proxyHome(rootHome), "resolved-version.json");
 }
 
-export function daemonConfigFile(rootHome: string): string {
-  return join(rootHome, "proxy", "deno.json");
+export function proxyManifestFile(rootHome: string): string {
+  return join(proxyHome(rootHome), "package.json");
 }
 
-/** A float-time artifact only: the daemon run never takes it, so a read-only install or two
- *  concurrent daemons cannot trip over it. It pins TRANSITIVE resolution between floats (the
- *  proxy's own ranges would otherwise re-resolve on every warm) and is the baseline
- *  `trust-policy=no-downgrade` compares against. */
+/** `bun install` writes it; it pins TRANSITIVE resolution between floats (the proxy's own ranges
+ *  would otherwise re-resolve on every warm), which is why a re-warm of the recorded version runs
+ *  `--frozen-lockfile` against it. */
 export function proxyLockFile(rootHome: string): string {
-  return join(rootHome, "proxy", "deno.lock");
+  return join(proxyHome(rootHome), "bun.lock");
 }
 
-/** The deno config every daemon spawn and float runs under: this build's runtime dependencies
- *  (package.json, embedded in the binary) as an import map of `npm:` specifiers, so the proxy and
- *  the preload shims' own imports (valibot, consola, the table renderers) resolve by bare name
- *  under the sidecar's cache. No lock or node_modules setting on purpose: a lock would reject
- *  `npm:<proxy>@<floated>`, and Bun's node_modules is not a layout deno resolves. Every float and
- *  verify re-renders it first, so a young record from an older build never keeps an outdated map
- *  steering daemon spawns until it ages out. */
-export function writeDaemonConfig(rootHome: string): void {
-  fs.writeText(daemonConfigFile(rootHome), renderDaemonConfig(), { secretKeys: [] });
+/** The proxy home's own bunfig: `[install] minimumReleaseAge` is how the cooldown reaches bun's
+ *  resolver, and `auto = "disable"` keeps a daemon started from this cwd from fetching a missing
+ *  import on its own. */
+export function daemonBunfigFile(rootHome: string): string {
+  return join(proxyHome(rootHome), "bunfig.toml");
 }
 
-function renderDaemonConfig(): string {
-  const dependencies = packageDependencies();
-  if (dependencies[PROXY_PKG] === undefined) {
-    throw new Error(
-      `package.json does not list ${PROXY_PKG} under dependencies, so no import map can name the proxy`,
-    );
+function renderDaemonBunfig(cooldownSeconds: number): string {
+  return stringifyToml({
+    install: { auto: "disable", minimumReleaseAge: cooldownSeconds },
+  });
+}
+
+/** The proxy home's package.json: the proxy at one EXACT version, plus the preload shims'
+ *  dependencies at this build's ranges (`dependencies` is the test seam; the default is the
+ *  embedded manifest's). An aliased entry (`"semver": "npm:@jsr/std__semver@^1"`) is taken as
+ *  written: the alias is the name the shims import. */
+export function renderProxyManifest(
+  version: string,
+  dependencies: Record<string, string> = packageDependencies(),
+): string {
+  const shimDependencies: Record<string, string> = {};
+  for (const name of DAEMON_SHIM_DEPENDENCIES) {
+    const range = dependencies[name];
+    if (range === undefined) {
+      throw new Error(
+        `package.json does not list ${name} under dependencies, which the daemon's preload shims import`,
+      );
+    }
+    shimDependencies[name] = range;
   }
-  const imports = Object.fromEntries(
-    Object.entries(dependencies).map(([name, range]) => [
-      name,
-      range.startsWith("npm:") ? range : `npm:${name}@${range}`,
-    ]),
-  );
-  return `${JSON.stringify({ imports: imports }, null, 2)}\n`;
+  const manifest = {
+    name: "copilot-env-proxy",
+    private: true,
+    dependencies: { [PROXY_PKG]: version, ...shimDependencies },
+  };
+  return `${JSON.stringify(manifest, null, 2)}\n`;
 }
 
 /** Malformed reads as null, the caller's "install needed" path: a corrupt record must never brick.
@@ -310,87 +331,40 @@ export function readResolvedVersionRecord(rootHome: string): ResolvedVersionReco
   }
   const parsed = v.safeParse(RECORD_SCHEMA, raw);
   if (!parsed.success) return null;
-  return {
-    version: parsed.output.version,
-    resolvedAtMs: parsed.output.resolved_at_ms,
-    denoDir: parsed.output.deno_dir,
-  };
+  return { version: parsed.output.version, resolvedAtMs: parsed.output.resolved_at_ms };
 }
 
-/** A timestamp refresh passes the record's own `denoDir` through, so the pointer never drifts from
- *  where the cache lives. */
-export function writeResolvedVersionRecord(
-  rootHome: string,
-  version: string,
-  nowMs: number,
-  denoDir: string = proxyDenoDir(rootHome),
-): void {
-  const record = {
-    version: version,
-    resolved_at_ms: nowMs,
-    deno_dir: denoDir,
-  };
+export function writeResolvedVersionRecord(rootHome: string, version: string, nowMs: number): void {
+  const record = { version: version, resolved_at_ms: nowMs };
   fs.writeText(resolvedVersionFile(rootHome), `${JSON.stringify(record, null, 2)}\n`, {
     secretKeys: [],
   });
 }
 
-// --- .npmrc trust policy ---------------------------------------------------------
-
-/** Its presence marks the .npmrc as ours. */
-export const NPMRC_MARKER = "# managed by copilot-env (proxy float); do not edit";
-
-const NPMRC_CONTENT = `${NPMRC_MARKER}\ntrust-policy=no-downgrade\n`;
-
-type NpmrcStatus =
-  | { kind: "written"; path: string }
-  | { kind: "current"; path: string }
-  | { kind: "kept-foreign"; path: string };
-
-/** A user-authored .npmrc (no marker) is never clobbered. An UNREADABLE file is kept the same way:
- *  ownership was not proven, so the write would clobber content we never saw. */
-export function ensureProxyNpmrc(rootHome: string): NpmrcStatus {
-  const path = join(rootHome, ".npmrc");
-  const read = fs.readTextResult(path);
-  if (read.kind === "unreadable") {
-    return { kind: "kept-foreign", path: path };
-  }
-  const existing = read.kind === "text" ? read.text : null;
-  if (existing !== null && !existing.includes(NPMRC_MARKER)) {
-    return { kind: "kept-foreign", path: path };
-  }
-  if (existing === NPMRC_CONTENT) {
-    return { kind: "current", path: path };
-  }
-  fs.writeText(path, NPMRC_CONTENT);
-  return { kind: "written", path: path };
-}
-
-// --- Deno cache commands ----------------------------------------------------------
+// --- bun install ------------------------------------------------------------------
 
 /** `launchFailed` marks a spawn that never completed (the same mark as runCaptured in
- *  src/utils/command.ts), so a failed look at the cache never reads as deno's own "cannot resolve".
- */
-interface DenoRunResult {
+ *  src/utils/command.ts), so a failed look never reads as bun's own verdict. */
+interface InstallRunResult {
   status: number;
   stdout: string;
   stderr: string;
   launchFailed?: true;
 }
 
-/** `env` is an OVERLAY the runner merges over the process env. */
-export type DenoRunner = (
-  command: string,
+/** Runs the bun CLI the running binary carries (`BUN_BE_BUN=1` makes a compiled binary one;
+ *  a checkout's execPath is bun already). `env` is an OVERLAY the runner merges over the
+ *  process env. */
+export type InstallRunner = (
   args: string[],
   options: { cwd: string; env: Record<string, string> },
-) => DenoRunResult;
+) => InstallRunResult;
 
-function defaultDenoRunner(
-  command: string,
+function defaultInstallRunner(
   args: string[],
   options: { cwd: string; env: Record<string, string> },
-): DenoRunResult {
-  const result = spawnSync(command, args, {
+): InstallRunResult {
+  const result = spawnSync(process.execPath, args, {
     cwd: options.cwd,
     env: { ...process.env, ...options.env },
     stdio: ["ignore", "pipe", "pipe"],
@@ -399,7 +373,7 @@ function defaultDenoRunner(
     status: result.status ?? 1,
     stdout: result.stdout?.toString() ?? "",
     stderr: result.stderr?.toString() ?? "",
-    // A spawn error or a null status (killed): deno itself never answered.
+    // A spawn error or a null status (killed): bun itself never answered.
     ...(result.error || result.status === null ? { launchFailed: true as const } : {}),
   };
 }
@@ -407,9 +381,8 @@ function defaultDenoRunner(
 interface FloatContext {
   rootHome: string;
   config: ProjectConfig;
-  denoBin: string;
   fetchLike: FetchLike;
-  runner: DenoRunner;
+  runner: InstallRunner;
   nowMs: number;
 }
 
@@ -418,137 +391,104 @@ interface ProxyFloatDeps {
   config?: ProjectConfig;
   /** Seconds; unset defers to env > config > built-in default. */
   cooldownSeconds?: number;
-  denoBin?: string;
   fetchLike?: FetchLike;
-  runner?: DenoRunner;
+  runner?: InstallRunner;
   nowMs?: number;
 }
 
 function floatContext(deps: ProxyFloatDeps): FloatContext {
-  // The sidecar resolves under the SAME home the float warms, so a caller passing only rootHome
-  // never warms one home while spawning another home's sidecar.
-  const rootHome = deps.rootHome ?? resolveRootHome();
   return {
-    rootHome: rootHome,
+    rootHome: deps.rootHome ?? resolveRootHome(),
     config: deps.config ?? readProjectConfig(),
-    denoBin: deps.denoBin ?? resolveDenoBin(process.env, rootHome),
     fetchLike: deps.fetchLike ?? fetch,
-    runner: deps.runner ?? defaultDenoRunner,
+    runner: deps.runner ?? defaultInstallRunner,
     nowMs: deps.nowMs ?? Date.now(),
   };
 }
 
-/** No package.json discovery: npm-specifier entrypoints fail under a discovered node-modules
- *  config, so with cwd=rootHome the spawns are location-independent. */
-function denoEnv(denoDir: string): Record<string, string> {
-  return { DENO_DIR: denoDir, DENO_NO_UPDATE_CHECK: "1", DENO_NO_PACKAGE_JSON: "1" };
+/** The manifest on disk against the one this build renders for `version`: a tree installed from
+ *  any other manifest (an older build's shim dependencies, another version) is not this
+ *  version's install. An unreadable file is a failed look, not a stale manifest. */
+function manifestLook(ctx: FloatContext, version: string): "current" | "stale" | "unproven" {
+  const read = fs.readTextResult(proxyManifestFile(ctx.rootHome));
+  if (read.kind === "unreadable") return "unproven";
+  if (read.kind === "absent") return "stale";
+  return read.text === renderProxyManifest(version) ? "current" : "stale";
 }
 
-/** deno's flag takes minutes, ISO-8601 durations, or timestamps; `0` disables. */
-function minimumDependencyAgeArg(cooldownSeconds: number): string {
-  return cooldownSeconds === 0 ? "0" : `PT${cooldownSeconds}S`;
-}
-
-/** Warms TWO graphs, the proxy package and the preload shims, because the daemon spawn resolves
- *  both under `--cached-only` and a miss on either is a hard launch failure. */
-function denoCacheVersion(ctx: FloatContext, version: string, cooldownSeconds: number): number {
+/**
+ * Writes the manifest and the bunfig, then `bun install` in the proxy home. The lockfile is
+ * frozen whenever the manifest it was resolved from is the one being installed again (a re-warm
+ * of the recorded version): the install then restores node_modules from the lock and the cache,
+ * offline if need be, and never moves a transitive pin. A changed manifest resolves afresh and
+ * rewrites the lock.
+ */
+function installIntoProxyHome(ctx: FloatContext, version: string, cooldownSeconds: number): number {
   dropSupersededCache(ctx, version);
-  writeDaemonConfig(ctx.rootHome);
-  const pinned = [
-    "--config",
-    daemonConfigFile(ctx.rootHome),
-    "--lock",
-    proxyLockFile(ctx.rootHome),
-    "--node-modules-dir=none",
-    `--minimum-dependency-age=${minimumDependencyAgeArg(cooldownSeconds)}`,
-  ];
-  const env = denoEnv(proxyDenoDir(ctx.rootHome));
-
-  const proxy = ctx.runner(ctx.denoBin, ["cache", ...pinned, `npm:${PROXY_PKG}@${version}`], {
-    cwd: ctx.rootHome,
-    env: env,
+  const frozen = manifestLook(ctx, version) === "current" && fs.exists(proxyLockFile(ctx.rootHome));
+  fs.writeText(proxyManifestFile(ctx.rootHome), renderProxyManifest(version), { secretKeys: [] });
+  fs.writeText(daemonBunfigFile(ctx.rootHome), renderDaemonBunfig(cooldownSeconds), {
+    secretKeys: [],
   });
-  if (proxy.status !== 0) {
-    if (proxy.stderr.trim()) logger.warn(proxy.stderr.trimEnd());
-    return proxy.status;
-  }
-
-  const shims = ctx.runner(ctx.denoBin, ["cache", ...pinned, ...allShimPaths()], {
-    cwd: ctx.rootHome,
-    env: env,
+  const result = ctx.runner(["install", ...(frozen ? ["--frozen-lockfile"] : [])], {
+    cwd: proxyHome(ctx.rootHome),
+    env: { BUN_BE_BUN: "1", BUN_INSTALL_CACHE_DIR: proxyBunCacheDir(ctx.rootHome) },
   });
-  if (shims.status !== 0 && shims.stderr.trim()) logger.warn(shims.stderr.trimEnd());
-  return shims.status;
+  if (result.status !== 0 && result.stderr.trim()) logger.warn(result.stderr.trimEnd());
+  return result.status;
 }
 
-/** The whole cache goes, not a prune: `deno clean --except` retains the graphs of FILES, so it
- *  cannot keep an npm specifier, and a prune "keeping" the proxy deletes the very tree the float
- *  just warmed. */
+/** The whole cache goes on a version change, not a prune: bun's cache is content-addressed and
+ *  keeps every tarball it ever fetched, so the superseded proxy's tree would otherwise stay
+ *  behind for good. */
 function dropSupersededCache(ctx: FloatContext, version: string): void {
   const record = readResolvedVersionRecord(ctx.rootHome);
   if (record === null || record.version === version) return;
-  fs.rm(proxyDenoDir(ctx.rootHome), { recursive: true, force: true });
+  fs.rm(proxyBunCacheDir(ctx.rootHome), { recursive: true, force: true });
 }
 
-/** "unproven" is a look that FAILED (the deno spawn itself). A string union rather than a boolean
- *  so no call site can flatten it by truthiness. */
-type CacheLook = "resolves" | "missing" | "unproven";
+/** "unproven" is a look that FAILED (a file this process could not read). A string union rather
+ *  than a boolean so no call site can flatten it by truthiness. */
+type InstallLook = "resolves" | "missing" | "unproven";
 
-/** Checks the preload shims' graph too: a half-warmed cache would otherwise read as up to date and
- *  the daemon die at launch on a missing import-map package. A `deno info` that never ran is
- *  "unproven" while the cache dir is there: the missing arm feeds recoveries that drop or
- *  re-warm the cache. */
-function cacheResolves(ctx: FloatContext, version: string, denoDir: string): CacheLook {
-  const config = daemonConfigFile(ctx.rootHome);
-  if (!fs.exists(config)) return "missing";
-  const pinned = ["--json", "--config", config, "--lock", proxyLockFile(ctx.rootHome)];
-  const options = { cwd: ctx.rootHome, env: denoEnv(denoDir) };
-
-  for (const target of [[`npm:${PROXY_PKG}@${version}`], allShimPaths()]) {
-    const result = ctx.runner(
-      ctx.denoBin,
-      ["info", ...pinned, "--node-modules-dir=none", ...target],
-      options,
-    );
-    if (result.launchFailed) {
-      // A dir PROVEN absent is "missing" by direct observation (dropSupersededCache may have
-      // removed it this invocation), and the keep paths must never vouch for a cache that is gone;
-      // any other stat error is itself a failed look.
-      try {
-        fs.stat(denoDir);
-        return "unproven";
-      } catch (e) {
-        return isEnoentOrNotdir(e) ? "missing" : "unproven";
-      }
-    }
-    if (result.status !== 0) return "missing";
+/** The proxy home holds `version` when its manifest is this build's manifest for it, the
+ *  installed proxy's own manifest says that version and names an entry file on disk, and every
+ *  shim dependency is installed: a half-installed tree would otherwise read as up to date and the
+ *  daemon die at launch on a missing import. */
+function installResolves(ctx: FloatContext, version: string): InstallLook {
+  const manifest = manifestLook(ctx, version);
+  if (manifest !== "current") return manifest === "stale" ? "missing" : "unproven";
+  const home = proxyHome(ctx.rootHome);
+  const installed = installedProxyPackage(home);
+  if (installed === null || installed.version !== version || !fs.exists(installed.entry)) {
+    return "missing";
+  }
+  for (const name of DAEMON_SHIM_DEPENDENCIES) {
+    if (!fs.exists(join(home, "node_modules", name, "package.json"))) return "missing";
   }
   return "resolves";
 }
 
-function warnCacheUnverified(version: string): void {
+function warnInstallUnverified(version: string): void {
   logger.warn(
-    `could not verify the ${PROXY_PKG}@${version} cache (deno info failed to run); keeping it`,
+    `could not verify the ${PROXY_PKG}@${version} install (its manifest could not be read); keeping it`,
   );
 }
 
 /** The one notion of "a usable installed proxy" every keep and fallback path shares. An UNPROVEN
  *  look keeps the record too: the null arm feeds destructive recoveries, and a genuinely broken
- *  cache still fails honestly at daemon launch. */
+ *  install still fails honestly at daemon launch. */
 function usableRecord(ctx: FloatContext): ResolvedVersionRecord | null {
   const record = readResolvedVersionRecord(ctx.rootHome);
   if (record === null) return null;
-  const look = cacheResolves(ctx, record.version, record.denoDir);
+  const look = installResolves(ctx, record.version);
   if (look === "unproven") {
-    warnCacheUnverified(record.version);
+    warnInstallUnverified(record.version);
     return record;
   }
   return look === "resolves" ? record : null;
 }
 
-/** The cache the record points at may sit OUTSIDE the root home, so deleting the home alone would
- *  miss it. An .npmrc without our marker is the user's: the float refused to write it, so the
- *  uninstall refuses to delete it. */
 export function removeProxyFloatArtifacts(
   rootHome: string = resolveRootHome(),
   paths: readonly string[] = proxyFloatArtifactPaths(rootHome),
@@ -559,25 +499,15 @@ export function removeProxyFloatArtifacts(
 /** The uninstall plan resolves this once and renders it both as the dry run and the live removal.
  */
 export function proxyFloatArtifactPaths(rootHome: string): string[] {
-  const record = readResolvedVersionRecord(rootHome);
-  const npmrc = join(rootHome, ".npmrc");
-  const candidates = [
-    ...(record === null ? [] : [record.denoDir]),
-    proxyDenoDir(rootHome),
-    join(rootHome, "proxy"),
-    ...(readTextOrNull(npmrc)?.includes(NPMRC_MARKER) ? [npmrc] : []),
-  ];
-  return [...new Set(candidates)].filter((path) => fs.readTextResult(path).kind !== "absent");
+  return [proxyBunCacheDir(rootHome), proxyHome(rootHome)].filter(
+    (path) => fs.readTextResult(path).kind !== "absent",
+  );
 }
 
 // --- Float actions -----------------------------------------------------------------
 
-function recordFloatResolution(
-  ctx: FloatContext,
-  version: string,
-  denoDir: string = proxyDenoDir(ctx.rootHome),
-): void {
-  writeResolvedVersionRecord(ctx.rootHome, version, ctx.nowMs, denoDir);
+function recordFloatResolution(ctx: FloatContext, version: string): void {
+  writeResolvedVersionRecord(ctx.rootHome, version, ctx.nowMs);
 }
 
 function logNowUsing(ctx: FloatContext): void {
@@ -585,9 +515,9 @@ function logNowUsing(ctx: FloatContext): void {
   logger.success(`now using ${PROXY_PKG}@${record?.version ?? "unknown"}`);
 }
 
-/** On a failed warm (false) the caller decides what is kept. */
+/** On a failed install (false) the caller decides what is kept. */
 function installVersion(ctx: FloatContext, version: string, cooldownSeconds: number): boolean {
-  if (denoCacheVersion(ctx, version, cooldownSeconds) !== 0) return false;
+  if (installIntoProxyHome(ctx, version, cooldownSeconds) !== 0) return false;
   recordFloatResolution(ctx, version);
   logNowUsing(ctx);
   return true;
@@ -613,7 +543,7 @@ function warnPinnedLifecycleScripts(doc: ProxyRegistryDoc | null, version: strin
     logger.warn(
       `pinned ${PROXY_PKG}@${version} declares npm lifecycle scripts (${scripts.join(
         ", ",
-      )}); they will NOT run under global-cache execution`,
+      )}); they will NOT run in the proxy home's install`,
     );
   }
 }
@@ -626,10 +556,7 @@ async function handlePinnedOverride(ctx: FloatContext, override: string): Promis
   if (SEMVER_RE.test(override)) {
     // Only a PROVEN "resolves" earns the fast path; an unproven look falls through to the
     // non-destructive re-warm.
-    if (
-      record?.version === override &&
-      cacheResolves(ctx, override, record.denoDir) === "resolves"
-    ) {
+    if (record?.version === override && installResolves(ctx, override) === "resolves") {
       logger.success(`up to date: ${PROXY_PKG}@${override} pinned; no install`);
       return;
     }
@@ -690,8 +617,8 @@ function handleUnavailable(ctx: FloatContext, reason: string, cooldownSeconds: n
   throw installFailure(ctx, floor, record);
 }
 
-/** Never installs the refused version. The kept record is re-warmed when its cache no longer
- *  resolves (a build change may need packages the old warm never cached), but only when the doc
+/** Never installs the refused version. The kept record is reinstalled when its install no longer
+ *  resolves (a build change may need packages the old install never had), but only when the doc
  *  CONFIRMS it is script-free: a scripted record left by an explicit pin must not be reinstalled
  *  without the pin's consent. */
 function handleRefused(
@@ -702,19 +629,19 @@ function handleRefused(
 ): void {
   const record = readResolvedVersionRecord(ctx.rootHome);
   if (record !== null && proxyVersionBoundsStatus(record.version, ctx.config).ok) {
-    const look = cacheResolves(ctx, record.version, record.denoDir);
-    // An UNPROVEN look keeps too rather than re-warming: the re-warm's failure arm is the loud
-    // refusal throw, and a failed look must not brick a possibly-working install.
+    const look = installResolves(ctx, record.version);
+    // An UNPROVEN look keeps too rather than reinstalling: the reinstall's failure arm is the
+    // loud refusal throw, and a failed look must not brick a possibly-working install.
     if (look !== "missing") {
-      if (look === "unproven") warnCacheUnverified(record.version);
+      if (look === "unproven") warnInstallUnverified(record.version);
       logger.warn(`${refusalMessage(sel)} Keeping ${PROXY_PKG}@${record.version}.`);
       return;
     }
     if (
       doc.releases.get(record.version)?.lifecycleScripts.length === 0 &&
-      denoCacheVersion(ctx, record.version, cooldownSeconds) === 0
+      installIntoProxyHome(ctx, record.version, cooldownSeconds) === 0
     ) {
-      recordFloatResolution(ctx, record.version); // the re-warm lands in the default cache dir
+      recordFloatResolution(ctx, record.version);
       logger.warn(`${refusalMessage(sel)} Keeping ${PROXY_PKG}@${record.version}.`);
       return;
     }
@@ -729,21 +656,21 @@ function handleResolved(
 ): void {
   const record = readResolvedVersionRecord(ctx.rootHome);
   // Only a PROVEN "resolves" earns the fast path; an unproven look falls through to the
-  // non-destructive re-warm, whose failure arm keeps the record via usableRecord.
-  const recordedLook: CacheLook =
-    record?.version === sel.version ? cacheResolves(ctx, sel.version, record.denoDir) : "missing";
+  // non-destructive reinstall, whose failure arm keeps the record via usableRecord.
+  const recordedLook: InstallLook =
+    record?.version === sel.version ? installResolves(ctx, sel.version) : "missing";
   if (record?.version === sel.version && recordedLook === "resolves") {
     // Refresh the record's timestamp so proxyFloatVerifyStatus stays on its offline fast path.
-    recordFloatResolution(ctx, sel.version, record.denoDir);
+    recordFloatResolution(ctx, sel.version);
     logger.success(`up to date: ${PROXY_PKG}@${sel.version} (${sel.reason}); no install`);
     return;
   }
 
   if (recordedLook === "unproven") {
-    // The version already matches and only its cache could not be verified: never the confident
-    // "update needed".
+    // The version already matches and only its install could not be verified: never the
+    // confident "update needed".
     logger.info(
-      `re-warming ${PROXY_PKG}@${sel.version}: could not verify its cache (deno info failed to run)`,
+      `reinstalling ${PROXY_PKG}@${sel.version}: could not verify its install (its manifest could not be read)`,
     );
   } else {
     logger.info(
@@ -764,11 +691,6 @@ function handleResolved(
 
 export async function floatProxy(deps: ProxyFloatDeps = {}): Promise<void> {
   const ctx = floatContext(deps);
-  writeDaemonConfig(ctx.rootHome);
-  const npmrc = ensureProxyNpmrc(ctx.rootHome);
-  if (npmrc.kind === "kept-foreign") {
-    logger.warn(`${npmrc.path} exists without the copilot-env marker; leaving it untouched`);
-  }
 
   // The cooldown is resolved only on the float path: a bad COPILOT_API_MIN_RELEASE_AGE must not
   // block a pin.
@@ -814,37 +736,36 @@ type ProxyFloatVerifyStatus = {
   message: string;
 };
 
-/** The two verdicts a cache look forces, the same for a pin and for the recorded version. A failed
- *  look is never "not in the cache"; upToDate:false still hands the decision to the float, whose
- *  failure arms keep rather than discard. */
-function cacheLookStatus(
-  look: CacheLook,
+/** The two verdicts an install look forces, the same for a pin and for the recorded version. A
+ *  failed look is never "not installed"; upToDate:false still hands the decision to the float,
+ *  whose failure arms keep rather than discard. */
+function installLookStatus(
+  ctx: FloatContext,
+  look: InstallLook,
   version: string,
-  denoDir: string,
 ): ProxyFloatVerifyStatus | null {
+  const home = proxyHome(ctx.rootHome);
   if (look === "unproven") {
     return {
       upToDate: false,
-      message: `install unverified: could not verify ${PROXY_PKG}@${version} in the deno cache (${denoDir}); deno info failed to run`,
+      message: `install unverified: could not verify ${PROXY_PKG}@${version} in ${home}; its manifest could not be read`,
     };
   }
   if (look === "missing") {
     return {
       upToDate: false,
-      message: `install needed: ${PROXY_PKG}@${version} is not in the deno cache (${denoDir})`,
+      message: `install needed: ${PROXY_PKG}@${version} is not installed in ${home}`,
     };
   }
   return null;
 }
 
 /** Offline while the record is younger than the cooldown window; once stale the registry is
- *  re-consulted. Read-only by contract but for the daemon config it re-renders; the record's
- *  timestamp only refreshes when the float itself runs. */
+ *  re-consulted. Read-only: the record's timestamp only refreshes when the float itself runs. */
 export async function proxyFloatVerifyStatus(
   deps: ProxyFloatDeps = {},
 ): Promise<ProxyFloatVerifyStatus> {
   const ctx = floatContext(deps);
-  writeDaemonConfig(ctx.rootHome);
   const record = readResolvedVersionRecord(ctx.rootHome);
 
   const override = resolveProxyVersionOverride();
@@ -864,7 +785,7 @@ export async function proxyFloatVerifyStatus(
       };
     }
     return (
-      cacheLookStatus(cacheResolves(ctx, override, record.denoDir), override, record.denoDir) ?? {
+      installLookStatus(ctx, installResolves(ctx, override), override) ?? {
         upToDate: true,
         message: `up to date: ${PROXY_PKG}@${override} pinned`,
       }
@@ -889,11 +810,7 @@ export async function proxyFloatVerifyStatus(
     return { upToDate: false, message: `update needed: ${detail}` };
   }
 
-  const recordedLook = cacheLookStatus(
-    cacheResolves(ctx, record.version, record.denoDir),
-    record.version,
-    record.denoDir,
-  );
+  const recordedLook = installLookStatus(ctx, installResolves(ctx, record.version), record.version);
   if (recordedLook !== null) return recordedLook;
 
   const cooldownSeconds = deps.cooldownSeconds ?? resolveMinimumReleaseAgeSeconds();

@@ -43,11 +43,11 @@ import {
   LAUNCH_SETTLE_MS,
   launchDaemon,
   printLogTail,
+  type RunnableEntry,
   resolveCopilotApiEntry,
 } from "./process.ts";
 import { agentAuthCommand, type Profile } from "./profile.ts";
 import { CopilotEnvRunState } from "./run_state.ts";
-import { detectSidecar, ensureSidecar, resolveDenoBin } from "./sidecar.ts";
 import { installedProxyVersion, PROXY_PACKAGE_NAME, proxyVersionFloorStatus } from "./version.ts";
 
 // --- the start lock -----------------------------------------------------------
@@ -89,8 +89,8 @@ export function withStartLock<T>(fn: () => Promise<T>): Promise<T> {
 
 // --- the proxy freshness + floor gate ---------------------------------------------
 
-/** null when the version cannot be known ahead of the launch: a mapped entry whose node_modules copy
- *  is missing, or a file override that runs whatever the file is (the CI fake has no version at all). */
+/** null when the version cannot be known ahead of the launch: nothing resolved, or a file override
+ *  that runs whatever the file is (the CI fake has no version at all). */
 export function entryProxyVersion(entry: CopilotApiEntry): string | null {
   switch (entry.kind) {
     case "floated":
@@ -98,6 +98,7 @@ export function entryProxyVersion(entry: CopilotApiEntry): string | null {
     case "package":
       return installedProxyVersion();
     case "file":
+    case "unresolved":
       return null;
     default:
       return assertNever(entry);
@@ -111,14 +112,9 @@ export function entryProxyVersion(entry: CopilotApiEntry): string | null {
  * floor is a hard contract: fail-closed, before disturbing any running daemon. A `COPILOT_API_ENTRY`
  * override skips both: it runs a file we did not resolve or version.
  */
-export async function ensureProxyFloor(): Promise<CopilotApiEntry> {
+export async function ensureProxyFloor(): Promise<RunnableEntry> {
   const preflight = resolveCopilotApiEntry();
   if (preflight.kind === "file") return preflight;
-
-  // The CLI runs on Bun, so SOME deno (PATH or a provisioned sidecar) must exist before the float
-  // can warm a cache or the daemon can launch.
-  const sidecar = await ensureSidecar(resolveRootHome());
-  consola.info(`Using deno for proxy work: ${sidecar}`);
 
   const status = await proxyFloatVerifyStatus();
   if (!status.upToDate) {
@@ -130,30 +126,25 @@ export async function ensureProxyFloor(): Promise<CopilotApiEntry> {
     }
   }
 
-  // A successful float just wrote the record, which moves the entry from the mapped fallback to the
-  // floated version.
+  // A successful float just wrote the record and the install, which moves the entry from the
+  // checkout fallback to the floated version.
   return judgeProxyFloor();
 }
 
 /** The start preview's floor gate, at the point in the order the live gate holds: the verify look
- *  (read-only but for the daemon config it re-renders, which lands on the overlay) and the same
- *  judgment of the resolved entry, without the float that would warm the real cache. The live gate
- *  provisions a sidecar deno first; the preview downloads nothing, so with no deno to hand the look
- *  (which spawns one) is skipped and the recorded entry alone is judged. A refusal is the live
- *  gate's, word for word. */
+ *  (read-only) and the same judgment of the resolved entry, without the float that would install
+ *  into the real proxy home. A refusal is the live gate's, word for word. */
 export async function previewProxyFloor(): Promise<void> {
   if (resolveCopilotApiEntry().kind === "file") return;
-  if (detectSidecar(resolveRootHome()).kind !== "absent") {
-    const status = await proxyFloatVerifyStatus();
-    if (!status.upToDate) consola.info(status.message);
-  }
+  const status = await proxyFloatVerifyStatus();
+  if (!status.upToDate) consola.info(status.message);
   judgeProxyFloor();
 }
 
-function judgeProxyFloor(): CopilotApiEntry {
+function judgeProxyFloor(): RunnableEntry {
   const entry = resolveCopilotApiEntry();
   const version = entryProxyVersion(entry);
-  if (version === null) {
+  if (entry.kind === "unresolved" || version === null) {
     throw new Error(
       `${PROXY_PACKAGE_NAME} is not resolved or installed - run 'agent start' online to float it.`,
     );
@@ -389,12 +380,11 @@ export function spawnConfiguredDaemon(opts: {
   copilotHost: string;
   /** The entry ensureProxyFloor judged (the caller runs that gate first); every bind-race relaunch
    *  runs exactly it. */
-  entry: CopilotApiEntry;
+  entry: RunnableEntry;
   config?: CopilotEnvConfig;
 }): SpawnedDaemon {
   const { port, logFile, profile, paths, credential, copilotHost, entry } = opts;
   const config = opts.config ?? new CopilotEnvConfig();
-  const denoBin = resolveDenoBin();
   const daemonEnv = daemonLifecycleEnv(profile, paths);
   // The idle watchdog lives in the daemon process, so server and watchdog are one unit (no orphan
   // either way) and every (re)start re-attaches it. With `daemon.auto-start` off there is no watchdog.
@@ -420,7 +410,6 @@ export function spawnConfiguredDaemon(opts: {
       idleWatchdog,
       muteProxyLogs,
       entry,
-      denoBin,
     });
   };
   return { pid: relaunch(port), idleWatchdog, relaunch };

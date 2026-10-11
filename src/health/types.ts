@@ -56,15 +56,18 @@ const CHECK_DESCRIPTORS = {
     group: "bootstrap",
     scopes: BOOTSTRAP_SCOPES,
   },
-  "bootstrap.deno": { label: "Bun runtime", group: "bootstrap", scopes: BOOTSTRAP_SCOPES },
+  "bootstrap.runtime": { label: "Runtime", group: "bootstrap", scopes: BOOTSTRAP_SCOPES },
   "bootstrap.nodeModules": {
     label: "Dependencies (node_modules)",
     group: "bootstrap",
     scopes: BOOTSTRAP_SCOPES,
   },
   "proxy.package": { label: "Proxy package", group: "proxy", scopes: BOOTSTRAP_SCOPES },
-  "proxy.sidecar": { label: "Deno sidecar", group: "proxy", scopes: BOOTSTRAP_SCOPES },
-  "proxy.resolved": { label: "Proxy resolved + cached", group: "proxy", scopes: BOOTSTRAP_SCOPES },
+  "proxy.resolved": {
+    label: "Proxy resolved + installed",
+    group: "proxy",
+    scopes: BOOTSTRAP_SCOPES,
+  },
   "runtime.port": { label: "Proxy port reachable", group: "runtime", scopes: RUNTIME_SCOPES },
   "runtime.pid": { label: "Tracked proxy process", group: "runtime", scopes: RUNTIME_SCOPES },
   // Informational rows: full-scope only (paths), or full+proxy; never the fast `runtime` probe

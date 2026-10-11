@@ -146,7 +146,7 @@ function managedDirectProvider(
     wire_api: "responses",
     supports_websockets: false,
     requires_openai_auth: false,
-    // The launcher may cold-start deno; warm calls take well under a second, and Codex refreshes
+    // The launcher may cold-start the runtime; warm calls take well under a second, and Codex refreshes
     // lazily. The catalog refresh runs at wiring and launch, never inside this command.
     ...credentialTables(
       credential,

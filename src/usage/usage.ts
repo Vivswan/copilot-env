@@ -361,7 +361,7 @@ export function readUsageRequests(dbPaths: string[], sinceMs?: number): UsageReq
 }
 
 /** `dayKey` is injectable so the per-day slicing is assertable without pinning the process `TZ`,
- *  which deno honors on unix only. */
+ *  which the suite does on unix only (TZ_PINNABLE in test/helpers/testing.ts). */
 export function foldUsageRequests(
   requests: Iterable<UsageRequest>,
   dayKey: DayKey = dayKeyIn(),

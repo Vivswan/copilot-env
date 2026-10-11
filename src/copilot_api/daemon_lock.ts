@@ -2,8 +2,8 @@
 // daemon's pid, and a reader judges that pid, so no unlock code has to run at death.
 //   SIGKILL, a crash                -> the marker stays, naming a dead pid: read as dead
 //   a daemon from an older release  -> holds none, so consumers fall back to the pid table
-//   the daemon's own permission set -> cannot signal, so every pid reads alive and it never takes a
-//                                      leftover over; the CLI clears one before the spawn
+//   a pid the daemon cannot judge   -> reads alive (EPERM, a sandboxed token), so the CLI clears a
+//                                      dead predecessor's leftover before the spawn
 //                                      (clearDeadDaemonLock)
 //   importing this module           -> acquires nothing; daemon_lock_preload.ts does
 import { join } from "node:path";
@@ -34,10 +34,10 @@ export function acquireDaemonLockForLife(
 ): boolean {
   const lockPath = daemonLockPath(home);
   const deadline = Date.now() + (opts.waitMs ?? ACQUIRE_WAIT_MS);
-  // Under the daemon's permission set every foreign pid reads alive, so a marker still there after
-  // the budget is refused whatever its holder's fate: a dead predecessor's leftover is the CLI's
-  // to clear before the spawn (clearDeadDaemonLock), and a live holder is a second daemon in this
-  // home. The retries cover a CLI test acquiring over a predecessor that is still exiting.
+  // A marker still there after the budget is refused whatever its holder's fate: a dead
+  // predecessor's leftover is the CLI's to clear before the spawn (clearDeadDaemonLock), and a
+  // live holder is a second daemon in this home. The retries cover a CLI test acquiring over a
+  // predecessor that is still exiting.
   for (;;) {
     if (tryAcquireFileLock(lockPath, ACQUIRE_STALE_MS)) return true;
     if (Date.now() >= deadline) return false;
@@ -46,7 +46,7 @@ export function acquireDaemonLockForLife(
 }
 
 /** The CLI's half of the takeover: a marker a dead daemon left is removed so the next daemon's
- *  acquire, which cannot signal the pid itself, finds the way clear. launchDaemon
+ *  acquire finds the way clear even where that daemon could not judge the pid. launchDaemon
  *  (src/copilot_api/process.ts) runs it before every spawn. */
 export function clearDeadDaemonLock(home: string): boolean {
   return removeLeftoverLock(daemonLockPath(home));

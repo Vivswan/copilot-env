@@ -4,10 +4,9 @@
 // graph.
 
 /** Only ESRCH is a death. A refused signal is an existing pid (EPERM: a sandboxed token, such as
- *  Codex's packaged app spawning us, cannot signal it), and a signal this permission set cannot
- *  send at all (the daemon's Deno sidecar runs without --allow-run) proves nothing, so every
- *  consumer whose "dead" licenses a destructive act (a tracking clear, a kill, a lock takeover)
- *  reads both as alive. */
+ *  Codex's packaged app spawning us, cannot signal it), and a probe that could not run at all
+ *  proves nothing, so every consumer whose "dead" licenses a destructive act (a tracking clear, a
+ *  kill, a lock takeover) reads both as alive. */
 export type PidLiveness = "alive" | "dead";
 
 export function pidLiveness(pid: number): PidLiveness {

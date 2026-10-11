@@ -189,8 +189,7 @@ function uninstallSteps(ctx: UninstallContext): UninstallStep[] {
     // wiring gone nothing can.
     async () => {
       await stopAllDaemons(ctx.profiles);
-      // Before the home goes: a sidecar install can put the float's cache OUTSIDE the home, and
-      // deleting the home alone would strand it.
+      // Named one by one ahead of the home sweep: the plan lists them, so the removal matches it.
       removeProxyFloatArtifacts(ctx.rootHome, ctx.targets.floatArtifacts);
       fs.rm(ctx.rootHome, { recursive: true, force: true, detail: "the copilot-api home" });
     },
@@ -332,8 +331,7 @@ export async function runUninstall(
     consola.success("copilot-env is uninstalled. Restart your shell to finish.");
   }
   consola.info(
-    "Not removed: the agent CLIs themselves (claude / copilot / codex npm globals), " +
-      "a deno you installed yourself for the proxy (and its PATH entry), the " +
+    "Not removed: the agent CLIs themselves (claude / copilot / codex npm globals), the " +
       "PowerShell execution policy, Codex's " +
       "sandbox_workspace_write.network_access key, other hosts' ~/.codex/hosts/* dirs " +
       "on a shared home, and the agents' own session history.",

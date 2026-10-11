@@ -26,8 +26,8 @@ function isUnderLogsDir(target: unknown): boolean {
 
 const realCreateWriteStream = fs.createWriteStream;
 
-/** A Writable rather than the OS null device: deno cannot open node's Windows `devNull` path, and
- *  the proxy's logger touches only the Writable surface (write/end/destroyed/on("error")). */
+/** A Writable rather than a stream on the OS null device: no file is opened at all, and the proxy's
+ *  logger touches only the Writable surface (write/end/destroyed/on("error")). */
 function muteSink(): Writable {
   return new Writable({
     write(_chunk, _encoding, callback) {

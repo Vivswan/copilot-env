@@ -5,8 +5,8 @@
 // next acquirer judges the pid it names (src/utils/pid.ts): a dead pid, a malformed marker, or
 // this process's own pid with no in-process hold is a leftover and is taken over; a live pid, or
 // one this permission set cannot signal (the daemon's), is a holder. The same file is the whole
-// protocol, so the CLI and the daemon (which runs on the Deno sidecar and loads this module
-// through src/scripts/daemon_lock_preload.ts) agree without an OS lock, which Bun does not expose.
+// protocol, so the CLI and the daemon (which loads this module through
+// src/scripts/daemon_lock_preload.ts) agree without an OS lock, which Bun does not expose.
 //
 // Two limits, accepted: a recycled pid reads as a live holder, and two contenders that judge one
 // leftover stale at the same instant race between the judgment and the unlink, so the loser can

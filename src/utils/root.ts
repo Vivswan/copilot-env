@@ -65,9 +65,10 @@ function isVersionedInstallTop(top: string): boolean {
   return sameDir && !fs.entryAbsent(versionsDir);
 }
 
-/** Under a standalone, `process.execPath` is OUR binary, which cannot run `deno cache` or launch
- *  the proxy. Observed from the runtime's own report rather than sniffed from `import.meta.url`:
- *  the virtual filesystem root is a plain path whose spelling no contract pins. */
+/** Under a standalone, `process.execPath` is OUR binary: a bun CLI only under BUN_BE_BUN, and the
+ *  root of an install rather than a checkout. Observed from the runtime's own report rather than
+ *  sniffed from `import.meta.url`: the virtual filesystem root is a plain path whose spelling no
+ *  contract pins. */
 export function isStandaloneBinary(): boolean {
   return Bun.isStandaloneExecutable;
 }

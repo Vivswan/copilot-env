@@ -5,11 +5,9 @@ import { configGetCommand, configSetCommand } from "../copilot_api/env_config.ts
 import { type StoredCredential, storedCredentialKind } from "../copilot_api/env_state.ts";
 import { lastActivityMs } from "../copilot_api/idle_watchdog.ts";
 import { agentAuthCommand, agentStartCommand, agentStopCommand } from "../copilot_api/profile.ts";
-import { SIDECAR_DENO_ENV } from "../copilot_api/sidecar.ts";
 import { PROXY_PACKAGE_NAME, type ProxyVersionStatus } from "../copilot_api/version.ts";
 import { assertNever } from "../utils/assert.ts";
 import type { CommandLook } from "../utils/command.ts";
-import { versionLessThan } from "../utils/semver.ts";
 import { formatDuration, SECONDS_PER_DAY } from "../utils/time.ts";
 import { filterByScope } from "./aggregate.ts";
 import {
@@ -60,15 +58,15 @@ function checkCliVersion(f: BootstrapFacts): CheckResult {
   };
 }
 
-/** Health runs on Bun, so the runtime is always present: the row names its version. The id keeps
- *  its historical spelling (a JSON contract); the proxy's deno is `proxy.sidecar`. */
+/** Health runs on bun, so the runtime is always present, and the proxy daemon runs from the same
+ *  executable (src/copilot_api/process.ts spawns it as a bun CLI): one row names both. */
 export function checkRuntime(f: BootstrapFacts): CheckResult {
   return {
-    ...meta("bootstrap.deno"),
+    ...meta("bootstrap.runtime"),
     profile: null,
     status: "ok",
-    detail: `bun ${f.runtimeVersion}`,
-    value: { available: true, version: f.runtimeVersion },
+    detail: `bun ${f.runtimeVersion}; the proxy daemon runs from this executable\n${f.runtimePath}`,
+    value: { available: true, version: f.runtimeVersion, executable: f.runtimePath },
   };
 }
 
@@ -132,9 +130,9 @@ export function checkProxyPackage(f: ProxyFacts): CheckResult {
       )}`,
     };
   } else if (bounds.reason === "missing") {
-    if (f.sidecar.standalone) {
-      // A compiled install ships no node_modules: the float resolves the proxy into its own
-      // cache at `agent start`, so "missing" is the normal pre-start state, not a broken
+    if (f.standalone) {
+      // A compiled install ships no node_modules: the float installs the proxy into the proxy
+      // home at `agent start`, so "missing" is the normal pre-start state, not a broken
       // install.
       standaloneMissing = true;
       outcome = {
@@ -196,61 +194,8 @@ function floatCooldownLabel(seconds: number | null): string {
   return `cooldown ${seconds}s`;
 }
 
-/** The CLI runs on Bun, so the proxy needs a deno from PATH, the SIDECAR_DENO_ENV override, or
- *  the provisioned copy, checkout and compiled binary alike; having none of the three is a
- *  failure, not a note. */
-export function checkProxySidecar(f: ProxyFacts): CheckResult {
-  const base = { ...meta("proxy.sidecar"), profile: null };
-  const { kind, referenceVersion, denoBin, version, standalone } = f.sidecar;
-  if (kind === "absent") {
-    if (f.floatSkips) {
-      // Direct-only: nothing spawns the proxy, so a missing deno is idle capacity, not a
-      // failure. A proxy rewire re-enables the requirement.
-      return {
-        ...base,
-        status: "ok",
-        detail:
-          "no deno found; not required (Codex + Claude are both direct, so the proxy is unused)",
-        value: { kind, referenceVersion, standalone, floatSkips: true },
-      };
-    }
-    return {
-      ...base,
-      status: "fail",
-      detail: "no deno found (PATH or provisioned); the proxy cannot spawn without one",
-      fix: "install deno (https://deno.com), or `agent start` to provision one",
-      value: { kind, referenceVersion, standalone },
-    };
-  }
-  // A PATH/override deno older than the tested reference still works: warn, never block
-  // (upgrading is the user's job). An unreadable version is not a verdict, so it reads ok.
-  const behind = version !== null && versionLessThan(version, referenceVersion);
-  const named = version === null ? "deno (version unknown)" : `deno ${version}`;
-  const source =
-    kind === "override"
-      ? `${named} via ${SIDECAR_DENO_ENV}`
-      : kind === "path"
-        ? `${named} on PATH`
-        : `${named} provisioned`;
-  if (behind) {
-    return {
-      ...base,
-      status: "warn",
-      detail: `${source} is older than the tested ${referenceVersion}\n${denoBin}`,
-      fix: "upgrade deno (`deno upgrade`, or your package manager)",
-      value: { kind, referenceVersion, version, standalone },
-    };
-  }
-  return {
-    ...base,
-    status: "ok",
-    detail: `${source}\n${denoBin}`,
-    value: { kind, referenceVersion, version, standalone },
-  };
-}
-
 /** Not resolved yet reads ok: the proxy waits for `agent start` to float it in. A RECORDED version
- *  whose cache has gone missing fails, because the launch asks for that exact version offline. */
+ *  whose install has gone missing fails, because the launch runs that exact version from it. */
 export function checkProxyResolved(f: ProxyFacts): CheckResult {
   const base = { ...meta("proxy.resolved"), profile: null };
   const resolved = f.resolved;
@@ -264,22 +209,22 @@ export function checkProxyResolved(f: ProxyFacts): CheckResult {
       value: { resolved: false },
     };
   }
-  if (!resolved.cached) {
+  if (!resolved.installed) {
     return {
       ...base,
       status: "fail",
       detail:
-        `${PROXY_PACKAGE_NAME} ${resolved.version} is recorded, but its cache ` +
-        `${resolved.denoDir} is missing`,
+        `${PROXY_PACKAGE_NAME} ${resolved.version} is recorded, but its install under the ` +
+        "proxy home is missing",
       fix: "agent start",
-      value: { resolved: true, version: resolved.version, cached: false },
+      value: { resolved: true, version: resolved.version, installed: false },
     };
   }
   return {
     ...base,
     status: "ok",
-    detail: `${PROXY_PACKAGE_NAME} ${resolved.version}\ncached in ${resolved.denoDir}`,
-    value: { resolved: true, version: resolved.version, cached: true },
+    detail: `${PROXY_PACKAGE_NAME} ${resolved.version}\ninstalled in the proxy home`,
+    value: { resolved: true, version: resolved.version, installed: true },
   };
 }
 
@@ -904,11 +849,7 @@ export function evaluateAll(scope: HealthScope, facts: HealthFacts): CheckResult
     );
   }
   if (facts.proxy) {
-    out.push(
-      checkProxyPackage(facts.proxy),
-      checkProxyResolved(facts.proxy),
-      checkProxySidecar(facts.proxy),
-    );
+    out.push(checkProxyPackage(facts.proxy), checkProxyResolved(facts.proxy));
   }
   // One runtime block per target, in gather order. Per-daemon rows render exactly for the
   // targets whose daemon was interrogated (the probe's `probed` arm), so a row can never

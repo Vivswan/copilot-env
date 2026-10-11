@@ -1,4 +1,4 @@
-// srvx's deno adapter looks `Deno.serve` up at serve time, so a preload-time wrap of the global
+// srvx's bun adapter looks `Bun.serve` up at serve time, so a preload-time wrap of the global
 // sees every request before routing or auth: a rejected inference POST still counts as use, and
 // liveness pings never do. The same wrap is where the server handle surfaces, so it hands it to
 // daemon_shutdown.ts on the way through.
@@ -88,12 +88,12 @@ export function clearPersistedInferenceActivity(profile: Profile = null): void {
 
 type ServeHandler = (this: unknown, request: Request, ...rest: unknown[]) => unknown;
 
-type ServeOptionsLike = Record<string, unknown> & { handler?: ServeHandler };
+type ServeOptionsLike = Record<string, unknown> & { fetch?: ServeHandler };
 
-/** Structural, so the wrap does not have to satisfy or re-declare `Deno.serve`'s overload set. */
+/** Structural, so the wrap does not have to satisfy or re-declare `Bun.serve`'s overload set. */
 type ServeLike = (...args: unknown[]) => unknown;
 
-/** `this` is preserved because deno binds the handler to the server. */
+/** `this` is preserved because bun binds the handler to the server. */
 function observed(handler: ServeHandler): ServeHandler {
   return function (this: unknown, request: Request, ...rest: unknown[]): unknown {
     try {
@@ -107,24 +107,17 @@ function observed(handler: ServeHandler): ServeHandler {
   };
 }
 
-/** An argument list matching no known `Deno.serve` shape is returned untouched, so a future
+/** `Bun.serve` takes one options object whose `fetch` is the handler (srvx's bun adapter passes
+ *  exactly that). An argument list of any other shape is returned untouched, so a future
  *  signature still serves, just unobserved. */
 export function observeServeArgs(args: readonly unknown[]): unknown[] {
   // A copy, substituted in place, so the call's arity reaches the real serve unchanged.
   const out = [...args];
-  const [first, second] = out;
-  if (typeof first === "function") {
-    out[0] = observed(first as ServeHandler);
-    return out;
-  }
-  if (typeof second === "function") {
-    out[1] = observed(second as ServeHandler);
-    return out;
-  }
+  const [first] = out;
   if (typeof first === "object" && first !== null) {
     const options = first as ServeOptionsLike;
-    if (typeof options.handler === "function") {
-      out[0] = { ...options, handler: observed(options.handler) };
+    if (typeof options.fetch === "function") {
+      out[0] = { ...options, fetch: observed(options.fetch) };
     }
   }
   return out;
@@ -132,10 +125,10 @@ export function observeServeArgs(args: readonly unknown[]): unknown[] {
 
 export function installInferenceObserver(): void {
   try {
-    const deno = (globalThis as unknown as { Deno?: { serve: ServeLike } }).Deno;
-    if (deno === undefined || typeof deno.serve !== "function") return;
-    const realServe = deno.serve;
-    deno.serve = (...args: unknown[]): unknown => {
+    const bun = (globalThis as unknown as { Bun?: { serve: ServeLike } }).Bun;
+    if (bun === undefined || typeof bun.serve !== "function") return;
+    const realServe = bun.serve;
+    bun.serve = (...args: unknown[]): unknown => {
       const server = realServe(...observeServeArgs(args));
       recordDaemonServer(server);
       return server;

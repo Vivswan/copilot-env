@@ -41,7 +41,7 @@ export function isUpToDate(current: string, target: string): boolean {
 }
 
 /** A plain `x.y.z` release: no `v`, no prerelease or build suffix. */
-export function isStableVersion(v: string): boolean {
+function isStableVersion(v: string): boolean {
   return /^\d+\.\d+\.\d+$/.test(v);
 }
 

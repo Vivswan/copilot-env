@@ -15,6 +15,6 @@
     "bench/**/*.ts",
     "test/**/*.ts"
   ],
-  "ignoreDependencies": ["@copilotkit/aimock", "@jeffreycao/copilot-api", "undici", "undici7"],
+  "ignoreDependencies": ["@copilotkit/aimock", "@jeffreycao/copilot-api"],
   "ignoreBinaries": ["pgrep", "where.exe"]
 }

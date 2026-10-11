@@ -8,7 +8,6 @@ import type { CodexWiringStatus } from "../codex/inspect.ts";
 import type { AuthProvider, ProfileMode } from "../copilot_api/env_state.ts";
 import type { CopilotApiPaths } from "../copilot_api/paths.ts";
 import type { Profile, ProfileName } from "../copilot_api/profile.ts";
-import type { SidecarStatus } from "../copilot_api/sidecar.ts";
 import type { ProxyVersionStatus } from "../copilot_api/version.ts";
 import type { CommandLook } from "../utils/command.ts";
 
@@ -151,8 +150,10 @@ export interface WatchdogFacts {
 
 export interface BootstrapFacts {
   cliVersion: string;
-  /** The Bun release health itself (the CLI) runs on; the proxy's deno is `proxy.sidecar`. */
+  /** The bun release this process runs on: the CLI's runtime and the proxy daemon's, which is
+   *  spawned from `runtimePath`, this very executable, as a bun CLI. */
   runtimeVersion: string;
+  runtimePath: string;
   /** null when running as a compiled binary: dependencies are embedded, so there
    *  is no node_modules to judge. */
   nodeModules: { present: boolean; fresh: boolean } | null;
@@ -162,9 +163,8 @@ export interface BootstrapFacts {
 interface ProxyResolvedFacts {
   version: string;
   resolvedAtMs: number;
-  denoDir: string;
-  /** True when the recorded cache directory is actually on disk. */
-  cached: boolean;
+  /** True when the proxy home's node_modules holds exactly the recorded version. */
+  installed: boolean;
 }
 
 export interface ProxyFacts {
@@ -179,10 +179,11 @@ export interface ProxyFacts {
   // bounds are unenforceable and must not read as a failure.
   floatSkips: boolean;
   // The float's record, or null when it has never resolved here (a fresh checkout or a
-  // Direct-only install: nothing has warmed the proxy into the sidecar's cache yet).
+  // Direct-only install: nothing has installed the proxy into the proxy home yet).
   resolved: ProxyResolvedFacts | null;
-  // The deno binary every proxy spawn runs on.
-  sidecar: SidecarStatus;
+  /** True when the running process is a compiled binary: no node_modules exists to read an
+   *  installed proxy version from, so the proxy runs only once floated. */
+  standalone: boolean;
 }
 
 export interface ShellFileFact {

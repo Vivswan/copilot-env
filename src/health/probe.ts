@@ -42,10 +42,10 @@ import {
 } from "../copilot_api/port.ts";
 import type { Profile, ProfileName } from "../copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../copilot_api/run_state.ts";
-import { sidecarStatus } from "../copilot_api/sidecar.ts";
 import { installedProxyVersion, proxyVersionBoundsStatus } from "../copilot_api/version.ts";
 import {
   proxyFloatSkips,
+  proxyHome,
   readResolvedVersionRecord,
   resolveMinimumReleaseAgeSeconds,
 } from "../proxy_float.ts";
@@ -56,7 +56,7 @@ import { readTextOrNull } from "../utils/fs.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { pidAlive } from "../utils/pid.ts";
 import { readProjectConfig } from "../utils/project_config.ts";
-import { PROJECT_ROOT } from "../utils/root.ts";
+import { isStandaloneBinary, PROJECT_ROOT } from "../utils/root.ts";
 import { packageVersion } from "../utils/version.ts";
 import {
   type AuthFacts,
@@ -473,20 +473,28 @@ export async function gatherFacts(
   if (profile === null && BOOTSTRAP_SCOPES.includes(scope)) {
     jobs.push(
       (async () => {
-        const sidecar = sidecarStatus(resolveRootHome());
+        const standalone = isStandaloneBinary();
         facts.bootstrap = {
           cliVersion: packageVersion(),
           runtimeVersion: process.versions.bun,
+          runtimePath: process.execPath,
           // A compiled binary embeds its dependencies: no node_modules to judge.
-          nodeModules: sidecar.standalone
+          nodeModules: standalone
             ? null
             : {
                 present: fs.exists(join(PROJECT_ROOT, "node_modules")),
                 fresh: nodeModulesFresh(),
               },
         };
-        const record = readResolvedVersionRecord(resolveRootHome());
-        const resolved = record === null ? null : { ...record, cached: fs.exists(record.denoDir) };
+        const rootHome = resolveRootHome();
+        const record = readResolvedVersionRecord(rootHome);
+        const resolved =
+          record === null
+            ? null
+            : {
+                ...record,
+                installed: installedProxyVersion(proxyHome(rootHome)) === record.version,
+              };
         // The version that would actually RUN, in the daemon entry's own precedence: the float's
         // recorded resolution, else the range package.json pins, read off the installed copy in
         // node_modules. Judging bounds on anything else would grade a copy the daemon never loads.
@@ -511,7 +519,7 @@ export async function gatherFacts(
             cooldownSeconds,
             floatSkips,
             resolved,
-            sidecar,
+            standalone,
           };
         } catch (e) {
           facts.proxy = {
@@ -521,7 +529,7 @@ export async function gatherFacts(
             cooldownSeconds,
             floatSkips,
             resolved,
-            sidecar,
+            standalone,
           };
         }
       })(),

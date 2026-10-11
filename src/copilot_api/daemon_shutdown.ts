@@ -1,17 +1,18 @@
 // The one way the daemon stops itself, so neither the idle watchdog nor the SIGTERM `agent stop`
 // sends can skip the drain.
-//   the server handle      -> from the Deno.serve wrap in inference_activity.ts, the only place in
+//   the server handle      -> from the Bun.serve wrap in inference_activity.ts, the only place in
 //                             the process that sees it
 //   importing this module  -> installs nothing; daemon_runtime_preload.ts arms the handler
 
-/** Structural on purpose: the handle is recorded by shape rather than by matching Deno's full
- *  HttpServer type. */
+/** Structural on purpose: the handle is recorded by shape rather than by matching Bun's full
+ *  Server type. `stop()` without the force flag stops listening and resolves once the in-flight
+ *  requests have finished. */
 interface DrainableServer {
-  shutdown(): Promise<void>;
+  stop(closeActiveConnections?: boolean): Promise<void>;
 }
 
-/** A SIGTERM listener replaces deno's default terminate-on-signal, so without a deadline a wedged
- *  drain would leave `agent stop` (one SIGTERM, no SIGKILL) unable to stop the daemon. Every
+/** A SIGTERM listener replaces the runtime's default terminate-on-signal, so without a deadline a
+ *  wedged drain would leave `agent stop` (one SIGTERM, no SIGKILL) unable to stop the daemon. Every
  *  escalating teardown (start --force, uninstall, de-auth, profile <name> del) SIGKILLs after a 2000ms
  *  grace, so this must sit under that. */
 export const DRAIN_DEADLINE_MS = 1_500;
@@ -28,7 +29,7 @@ export function recordDaemonServer(candidate: unknown): void {
   if (
     typeof candidate === "object" &&
     candidate !== null &&
-    typeof (candidate as DrainableServer).shutdown === "function"
+    typeof (candidate as DrainableServer).stop === "function"
   ) {
     daemonServer = candidate as DrainableServer;
   }
@@ -56,19 +57,20 @@ export function shutdownDaemon(code = 0): Promise<void> {
   if (shuttingDown !== null) return shuttingDown;
   const server = daemonServer;
   if (server === null) process.exit(code);
-  shuttingDown = withDeadline(Promise.resolve(server.shutdown()), DRAIN_DEADLINE_MS).then(() =>
+  shuttingDown = withDeadline(Promise.resolve(server.stop()), DRAIN_DEADLINE_MS).then(() =>
     process.exit(code),
   );
   return shuttingDown;
 }
 
 /** POSIX only: on Windows node's `process.kill(pid, "SIGTERM")` is TerminateProcess, which no
- *  in-process handler can intercept. The Windows daemon keeps the hard kill; SQLite WAL recovery
- *  is what makes that safe. The process API, not the runtime's own: this module runs inside the
- *  deno daemon and under the CLI's bun-side watchdog test alike. */
+ *  in-process handler can intercept. The Windows daemon keeps the hard kill; SQLite WAL recovery is
+ *  what makes that safe. SIGINT is the foreground run's Ctrl-C, drained the same way. */
 export function installTerminationHandler(): void {
   if (process.platform === "win32") return;
-  process.on("SIGTERM", () => {
-    void shutdownDaemon(0);
-  });
+  for (const signal of ["SIGTERM", "SIGINT"] as const) {
+    process.on(signal, () => {
+      void shutdownDaemon(0);
+    });
+  }
 }

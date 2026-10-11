@@ -26,7 +26,7 @@ import {
  *  read here, never the dependency's default. */
 const TUF_MIRROR_URL = "https://tuf-repo-cdn.sigstore.dev";
 
-/** A subsystem cache under copilot-env's own root home (like the proxy float's deno cache), so
+/** A subsystem cache under copilot-env's own root home (like the proxy float's bun cache), so
  *  `agent uninstall`'s home sweep removes it. */
 function tufCachePath(rootHome: string = resolveRootHome()): string {
   return join(rootHome, "sigstore", "tuf");

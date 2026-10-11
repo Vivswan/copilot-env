@@ -48,8 +48,6 @@
     "memfs": "4.79.0",
     "smol-toml": "^1.9.0",
     "string-width": "^8.2.2",
-    "undici": "^8.11.2",
-    "undici7": "npm:undici@^7.29.1",
     "valibot": "^1.5.0",
     "wrap-ansi": "^10.0.2"
   },

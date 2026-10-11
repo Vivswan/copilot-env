@@ -63,7 +63,7 @@ export interface ProxyTokenDeps {
   notify(line: string): void;
 }
 
-/** Through bin/agent rather than in-process, so a dev checkout bootstraps deno and deps there.
+/** Through bin/agent rather than in-process, so a dev checkout bootstraps its dependencies there.
  *   the child's stdio  -> placed so the caller's stdout stays untouched
  *   the exit status    -> unread; the follow-up proxyUp probe is the verdict
  *   `agent profile launch`     -> injects this as its own launchProxy dependency */

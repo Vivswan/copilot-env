@@ -1,15 +1,10 @@
 // Lives apart from process.ts because the spawn picks a SUBSET per credential/config while the proxy
-// float must pre-warm EVERY shim into its cache (`--cached-only` gives no second chance), and
-// process.ts already imports the float.
+// float installs the dependencies of EVERY shim into the proxy home (the daemon runs with auto-install
+// off, so a missing one is a launch failure), and process.ts already imports the float.
 import { join } from "node:path";
 import { PROJECT_ROOT } from "../utils/root.ts";
 
-/** Loaded by EVERY proxy spawn, daemon or foreground: it restores node's `fs.existsSync` contract,
- *  without which the proxy dies at module load on Linux. */
-export const NODE_COMPAT_SHIM = "node_compat_preload.ts";
-
 export const DAEMON_SHIM_FILES = [
-  "node_compat_preload.ts",
   "daemon_lock_preload.ts",
   "token_argv_preload.ts",
   "daemon_runtime_preload.ts",
@@ -22,10 +17,17 @@ export const DAEMON_SHIM_FILES = [
 
 export type DaemonShimFile = (typeof DAEMON_SHIM_FILES)[number];
 
+/** The npm packages the shims' import closure reaches (the loggers, the table renderers, the
+ *  config schemas). A compiled install has no node_modules beside the shims, so the float
+ *  installs these into the proxy home at this build's ranges and the daemon resolves them from
+ *  there through NODE_PATH. test/install/installer_pinning.e2e.test.ts pins the list to the closure. */
+export const DAEMON_SHIM_DEPENDENCIES = [
+  "consola",
+  "string-width",
+  "valibot",
+  "wrap-ansi",
+] as const;
+
 export function shimPath(name: DaemonShimFile): string {
   return join(PROJECT_ROOT, "src", "scripts", name);
-}
-
-export function allShimPaths(): string[] {
-  return DAEMON_SHIM_FILES.map(shimPath);
 }

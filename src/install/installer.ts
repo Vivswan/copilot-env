@@ -56,7 +56,7 @@ export const MATERIALIZED_ASSET_DIRS = [
   ".claude-plugin",
 ] as const;
 
-/** Materialized as individual files: the `src/scripts` shims import these, and the sidecar deno
+/** Materialized as individual files: the `src/scripts` shims import these, and the daemon's bun
  *  resolves them on real disk in the install root, so a missing one kills the daemon at module
  *  load. The shims' full local import closure OUTSIDE the materialized dirs, pinned
  *  bidirectionally by test/install/installer_pinning.e2e.test.ts. */
@@ -92,7 +92,7 @@ export const MATERIALIZED_ASSET_FILES = [
  *  virtual filesystem), a copy in the install root would be read by nothing and drift from the
  *  binary. Still verified present at plan time: absent from the binary means a broken build.
  *
- *    copilot-env.config -> readProjectConfig (the float bounds and the sidecar's deno pin)
+ *    copilot-env.config -> readProjectConfig (the float bounds)
  *    bunfig.toml        -> readInstallMinimumReleaseAge (the float's default release cooldown) */
 export const BUNDLED_ONLY_ASSETS = ["copilot-env.config", "bunfig.toml"] as const;
 

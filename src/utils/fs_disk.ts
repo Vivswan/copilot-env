@@ -482,8 +482,7 @@ export function atomicSymlink(target: string, link: string): void {
   reportWrite("linked", link, `to ${target}`);
 }
 
-/** The one way runtime code streams bytes to a path (a release download, the deno sidecar's
- *  archive): a web stream, so a fetched body pipes straight in, and `pipeTo` closes the file with
+/** The one way runtime code streams bytes to a path (a release download): a web stream, so a fetched body pipes straight in, and `pipeTo` closes the file with
  *  the stream on success and on abort alike. The open is awaited so a path that cannot be opened
  *  fails here, not inside the pipe. */
 export async function openWritable(path: string): Promise<WritableStream<Uint8Array>> {

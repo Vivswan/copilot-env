@@ -15,5 +15,5 @@
     "allowJs": true,
     "customConditions": ["node"]
   },
-  "include": ["src", "test", "scripts", "bench", ".github/scripts", "types"]
+  "include": ["src", "test", "scripts", "bench", ".github/scripts"]
 }

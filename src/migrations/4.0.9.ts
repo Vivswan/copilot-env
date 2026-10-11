@@ -49,7 +49,6 @@ import {
   type ConfigKey,
   configScope,
 } from "../copilot_api/config_registry.ts";
-import { stopTrackedProxy } from "../copilot_api/daemon.ts";
 import {
   CopilotEnvConfig,
   GLOBAL_SETTING_KEYS,
@@ -70,13 +69,11 @@ import {
   PROXY_CONFIG_FILENAME,
   profileHome,
   profileHomeNames,
-  ROOT_HOME_ENV,
   RUN_DIR_NAME,
   RUN_STATE_FILENAME,
   resolveRootHome,
   STATE_STORE_FILENAME,
 } from "../copilot_api/paths.ts";
-import { DAEMON_SIGKILL_GRACE_MS } from "../copilot_api/process.ts";
 import {
   DEFAULT_PROFILE_NAME,
   isReservedProfileWord,
@@ -88,6 +85,7 @@ import {
 } from "../copilot_api/profile.ts";
 import { rootStateStore } from "../copilot_api/state_store.ts";
 import { shellTargetFiles } from "../shell/integration.ts";
+import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import { isEnoentOrNotdir } from "../utils/fs.ts";
 import * as fs from "../utils/fs_facade.ts";
@@ -102,6 +100,7 @@ import {
 import { isTomlTable } from "../utils/toml.ts";
 import { FENCE_LINES, failIfAny, LAUNCHERS_MARKER, LAUNCHERS_MARKER_END } from "./4.0.0.ts";
 import type { Migration } from "./index.ts";
+import { stopLockedDaemon } from "./legacy_daemon.ts";
 
 /** Key-wise, recursing into tables, `over`'s leaves winning: a table's `features.multi_agent`
  *  survives a file that only sets `features.shell_tool`, as Codex itself layers the two. */
@@ -755,7 +754,7 @@ const ROOT_DAEMON_ARTIFACTS: readonly string[] = [
 /** The `.run/<host>/.state.json` files that may belong to a live daemon: another host's recording a
  *  pid (it means nothing on this host, so nothing here can stop it), or any host's that cannot be
  *  read or parsed. Fail closed: a state this host cannot judge is never "no daemon". This host's
- *  own readable record is stopTrackedProxy's to judge. */
+ *  own daemon is the root's lock's to judge (stopRootDaemon). */
 function occupiedRunStates(runDir: string, thisHost: string): string[] {
   let hosts: string[];
   try {
@@ -820,32 +819,35 @@ export async function moveRootDaemonHome(
   }
 }
 
-/** The paths layer resolves the default home through the CURRENT rule (profiles/default), so the
- *  root daemon is reached the way a daemon reaches its own home: with both env pins aimed at the
- *  root for the duration of the stop. Restored whatever happens. */
-async function stopRootDaemon(root: string): Promise<void> {
-  const saved = { home: process.env.COPILOT_API_HOME, rootHome: process.env[ROOT_HOME_ENV] };
-  process.env.COPILOT_API_HOME = root;
-  process.env[ROOT_HOME_ENV] = root;
-  try {
-    const result = await stopTrackedProxy(DAEMON_SIGKILL_GRACE_MS, null);
-    if (!result.stopped) {
-      throw new Error(`the daemon (pid ${result.trackedPid}) running at ${root} would not stop`);
-    }
-    // A migration never starts a daemon (that is the launch pipeline's), so a live one stays down
-    // until the next `agent start`; said here because an autoupdate inside `agent start` reaches
-    // this step right after that start spawned it.
-    if (result.signalled) {
-      consola.warn(
-        `  the default daemon at ${root} was stopped for the move; the next \`agent start\` (or a ` +
-          "launcher) starts it under profiles/default",
+/** The root daemon's home IS the root (the layout before this step), so its lock is read there, and
+ *  it is stopped by the lock alone (stopLockedDaemon): this release's classifier reads the previous
+ *  release's daemon as foreign, so no pid-table judgment could own it. A migration never starts a
+ *  daemon (that is the launch pipeline's), so a live one stays down until the next `agent start`;
+ *  said out loud because an autoupdate inside `agent start` reaches this step right after that
+ *  start spawned it. Exported for the migration test. */
+export async function stopRootDaemon(root: string): Promise<void> {
+  const outcome = await stopLockedDaemon(root);
+  switch (outcome.kind) {
+    case "none":
+      return;
+    case "would-stop":
+      consola.info(`  would stop the daemon (pid ${outcome.pid}) running at ${root} for the move`);
+      return;
+    case "unjudged":
+      throw new Error(
+        `a daemon may still run at ${root}: ${outcome.reason}. Run \`agent stop\` there, then re-run`,
       );
-    }
-  } finally {
-    if (saved.home === undefined) delete process.env.COPILOT_API_HOME;
-    else process.env.COPILOT_API_HOME = saved.home;
-    if (saved.rootHome === undefined) delete process.env[ROOT_HOME_ENV];
-    else process.env[ROOT_HOME_ENV] = saved.rootHome;
+    case "stopped":
+      if (outcome.stillRunning) {
+        throw new Error(`the daemon (pid ${outcome.pid}) running at ${root} would not stop`);
+      }
+      consola.warn(
+        `  the default daemon at ${root} (pid ${outcome.pid}) was stopped for the move; the next ` +
+          "`agent start` (or a launcher) starts it under profiles/default",
+      );
+      return;
+    default:
+      assertNever(outcome);
   }
 }
 
@@ -1178,8 +1180,10 @@ async function moveProfile(
   const rename = renameOf(move);
   if (rename !== null) {
     assertMovable(rename, claudeHome, codexHomes);
-    const { stopped } = await stopTrackedProxy(DAEMON_SIGKILL_GRACE_MS, from);
-    if (!stopped) {
+    // By the lock alone, like the root daemon's stop: the previous release's daemon reads as
+    // foreign to this release's classifier.
+    const outcome = await stopLockedDaemon(profileHome(rename.from));
+    if (outcome.kind === "unjudged" || (outcome.kind === "stopped" && outcome.stillRunning)) {
       // The profile's name is a verb, so no command addresses its daemon any more: by hand it is.
       throw new Error(
         `${profileLabel(from)}'s proxy daemon did not stop; stop it by hand (its pid is recorded ` +

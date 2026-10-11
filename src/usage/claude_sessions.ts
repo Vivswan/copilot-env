@@ -73,7 +73,8 @@ export function discoverClaudeSessionRoots(homes: string[] = [resolveClaudeHome(
 }
 
 /** `timeZone` exists so the per-day slicing is assertable without pinning the process `TZ`, which
- *  deno honors on unix only. `onCounted` sees every increment the fold records. */
+ *  the suite does on unix only (TZ_PINNABLE in test/helpers/testing.ts). `onCounted` sees every
+ *  increment the fold records. */
 export async function readClaudeSessions(
   roots: string[],
   sinceMs: number | undefined,

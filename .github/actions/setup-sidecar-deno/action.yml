@@ -11,8 +11,8 @@ description: |
   it there, so the workflows carry no second copy.
 
   Its callers, each a job that starts the daemon:
-    - checks.yml `check` (the fake-proxy lifecycle smoke)
-    - release-gate.yml `live-clis`, `floated-lifecycle`, `session-log-corpus`
+    - checks.yml `check` (the lifecycle smoke and the suite's daemon tests)
+    - checks.yml `floated-lifecycle` and release-gate.yml `floated-lifecycle`
 
   The step also exports DENO_NO_UPDATE_CHECK=1 to the rest of the job, so the
   sidecar never prints an update nag into a log a test reads.

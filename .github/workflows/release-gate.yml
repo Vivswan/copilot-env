@@ -21,9 +21,6 @@ on:
 permissions:
   contents: read
 
-env:
-  DENO_NO_UPDATE_CHECK: "1"
-
 jobs:
   # The build and validation half of update-release.yml's upload-assets job, run before any tag
   # exists. The tag is synthetic: release-assets.ts only rewrites the installers' INSTALL_REF line
@@ -32,57 +29,60 @@ jobs:
   release-assets:
     name: release assets build and validation
     runs-on: ubuntu-latest
-    # Five cross-compiles, each downloading its target's denort on a cold cache.
+    # Five cross-compiles, each downloading its target's bun runtime on a cold cache.
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # cache: true keys the DENO_DIR cache on deno.lock; the per-target
-      # denort archives deno compile downloads land there too.
-      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          deno-version-file: .dvmrc
-          cache: true
+          bun-version-file: .bun-version
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('**/bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
 
       - name: Install dependencies
-        run: deno install --frozen
+        run: bun install --frozen-lockfile
 
       # Read through the repository's one version owner (src/utils/version.ts), not a second
       # package.json reader.
       - name: Name the synthetic release tag
         id: tag
         run: |
-          version="$(deno eval 'import { packageVersion } from "./src/utils/version.ts"; console.log(packageVersion())')"
+          version="$(bun -e 'import { packageVersion } from "./src/utils/version.ts"; console.log(packageVersion())')"
           echo "tag=v$version" >> "$GITHUB_OUTPUT"
 
       - name: Create installer assets
         env:
           TAG: ${{ steps.tag.outputs.tag }}
-        run: deno run --allow-read --allow-write --allow-env .github/scripts/release-assets.ts prepare "$TAG"
+        run: bun .github/scripts/release-assets.ts prepare "$TAG"
 
       - name: Validate installer assets
         env:
           TAG: ${{ steps.tag.outputs.tag }}
         run: |
-          deno run --allow-read --allow-env .github/scripts/release-assets.ts validate "$TAG"
+          bun .github/scripts/release-assets.ts validate "$TAG"
           bash -n release-assets/install.sh
           pwsh -NoProfile -Command "[scriptblock]::Create((Get-Content -Raw release-assets/install.ps1)) | Out-Null"
 
       - name: Compile agent binaries (all targets)
         run: |
-          deno task compile
+          bun run build
           (cd dist && sha256sum -c checksums.txt)
 
       # scripts/compile.ts already fails the step above when a target does not compile. What only
-      # this step catches is a zero-exit compile that left a stub or a truncated artifact (a denort
-      # that failed to embed, a download cut short): the size floor and the host's --help run
-      # expose both. The expected names come from the targets' one source of truth
+      # this step catches is a zero-exit compile that left a stub or a truncated artifact (a bun
+      # runtime that failed to embed, a download cut short): the size floor and the host's --help
+      # run expose both. The expected names come from the targets' one source of truth
       # (src/install/targets.ts), since checksums.txt lists only what compile wrote.
       - name: Prove every release asset exists and the host's runs
         run: |
           set -euo pipefail
-          assets="$(deno eval 'import { RELEASE_TARGETS, releaseAssetName } from "./src/install/targets.ts"; console.log(RELEASE_TARGETS.map(releaseAssetName).join("\n"));')"
-          host="$(deno eval 'import { currentReleaseTarget, releaseAssetName } from "./src/install/targets.ts"; const t = currentReleaseTarget(); if (t === null) throw new Error("no release target for this runner"); console.log(releaseAssetName(t));')"
+          assets="$(bun -e 'import { RELEASE_TARGETS, releaseAssetName } from "./src/install/targets.ts"; console.log(RELEASE_TARGETS.map(releaseAssetName).join("\n"));')"
+          host="$(bun -e 'import { currentReleaseTarget, releaseAssetName } from "./src/install/targets.ts"; const t = currentReleaseTarget(); if (t === null) throw new Error("no release target for this runner"); console.log(releaseAssetName(t));')"
           for asset in $assets; do
             size="$(stat -c %s "dist/$asset")"
             echo "dist/$asset: $size bytes"

@@ -1193,7 +1193,7 @@ skipWin(
   },
 );
 
-// Fixtures mirror test/agents/configure_defaults.test.ts: proxy on the default port 4141, so the read-back
+// Fixtures mirror test/agents/configure_defaults.e2e.test.ts: proxy on the default port 4141, so the read-back
 // classifies both agents as proxy-wired.
 
 const PROXY_CODEX_BASE = "http://127.0.0.1:4141/v1";

@@ -1,7 +1,7 @@
 // The `copilot-host` key end to end: what the writers bake, what the inspectors recognise, what the
 // daemon spawn receives. The auto rule itself is
-// pinned in integration_identity.test.ts, the survey render in auth.test.ts, the shim's rewrite in
-// copilot_host_preload.test.ts.
+// pinned in integration_identity.test.ts, the survey render in auth.e2e.test.ts, the shim's rewrite in
+// copilot_host_preload.e2e.test.ts.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "smol-toml";

@@ -8,7 +8,7 @@
 // spelling (a member read, a computed member, `globalThis.Bun`, a destructuring of Bun), and
 // any value import of node:child_process. Matching a call shape would miss a function stored in
 // a variable first; enumerating entry points would miss `import * as cp`. Type-only imports are
-// erased and stay legal. Teeth pinned by test/utils/child_spawn_lint.test.ts.
+// erased and stay legal. Teeth pinned by test/utils/child_spawn_lint.e2e.test.ts.
 language js(typescript)
 
 or {

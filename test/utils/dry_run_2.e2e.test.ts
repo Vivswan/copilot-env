@@ -1,7 +1,7 @@
 // `--dry-run` on the remaining writers: each command takes the same path as its real run, records
 // every write through the seam, spawns and prompts nothing, and the plan's PATH set equals the
 // real run's change set (the tree fingerprinted before and after; the real run is the control
-// that proves the assertion can fail). Content equality is test/utils/dry_run.test.ts's business (the
+// that proves the assertion can fail). Content equality is test/utils/dry_run.e2e.test.ts's business (the
 // attribute-level plans); a refusal the real command gives is pinned as the same refusal here.
 import {
   existsSync,

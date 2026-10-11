@@ -610,7 +610,7 @@ test("bare install defaults to shell wiring; the negated and assets-only flags m
 test("shell --clis --no-prereqs verifies only and wires this platform's startup file", () => {
   const root = tempDir("copilot-shell-clis-");
   const documents = join(root, "Documents");
-  // The homedir()/$HOME fallback is covered in shell_integration.test.ts.
+  // The homedir()/$HOME fallback is covered in shell_integration.e2e.test.ts.
   const ok = runCli(["shell", "--clis", "--no-prereqs"], {
     env: isolatedEnv({
       HOME: root,

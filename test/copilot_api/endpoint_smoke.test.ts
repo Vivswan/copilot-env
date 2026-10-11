@@ -1,6 +1,6 @@
 // directSmoke's verdict arms, composed the way the CLI-less probe arm composes them (pick, then
 // ping). The happy paths (headers, model pick, ping body) are pinned end to end in
-// claude_config.test.ts / codex_config.test.ts through detect*Direct; here every arm must land on
+// claude_config.e2e.test.ts / codex_config.e2e.test.ts through detect*Direct; here every arm must land on
 // the right verdict, and a failure must carry its reason, because the live probe prints that
 // detail as the one explanation of a fall to the proxy.
 import { directSmoke } from "../../src/copilot_api/endpoint_smoke.ts";

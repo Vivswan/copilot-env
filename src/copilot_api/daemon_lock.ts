@@ -87,7 +87,7 @@ export function daemonLockHold(home: string): DaemonLockHold {
       return { kind: "unreadable" };
     default: {
       // Inline exhaustiveness: importing assertNever would widen the daemon shims'
-      // materialized import closure, which test/install/installer_pinning.test.ts pins.
+      // materialized import closure, which test/install/installer_pinning.e2e.test.ts pins.
       const unhandled: never = probe;
       throw new Error(`unreachable: unhandled lock probe ${JSON.stringify(unhandled)}`);
     }

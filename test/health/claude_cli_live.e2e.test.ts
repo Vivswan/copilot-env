@@ -107,4 +107,4 @@ live(
 
 // Not exercised: a stream whose connection drops mid-way. claude reads it as a connection error
 // and retries ten times over about six minutes before it re-asks without streaming, which no
-// test may take; codex_cli_live.test.ts exercises the same drop through codex, which fails fast.
+// test may take; codex_cli_live.e2e.test.ts exercises the same drop through codex, which fails fast.

@@ -223,7 +223,7 @@ function verifyLauncherWiring(launcher: string): void {
   }
   const envArgs = isWindows ? ["profile", "env", "--format", "powershell"] : ["profile", "env"];
   const emitted = launcherOutput(launcher, envArgs);
-  // The same source constant test/commands/env.test.ts pins verbatim, so the smoke can
+  // The same source constant test/commands/env.e2e.test.ts pins verbatim, so the smoke can
   // never assert a spelling the emitter no longer produces.
   const expected = launcherFunctionLines(isWindows);
   const missing = expected.filter((line) => emitted === null || !emitted.includes(line));

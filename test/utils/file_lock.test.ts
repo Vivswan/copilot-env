@@ -14,7 +14,7 @@ import { ROOT } from "../helpers/run.ts";
 import { expect, tempDir, test } from "../helpers/testing.ts";
 import { tsFilesUnder } from "../helpers/tree.ts";
 
-// The multi-process mutual-exclusion proof is config_lock.test.ts. Here every judgment is
+// The multi-process mutual-exclusion proof is config_lock.e2e.test.ts. Here every judgment is
 // deterministic: probes use an injected clock or staleMs=Infinity, so a suspended test
 // process can never age a lock mid-test, and another process is played by a marker naming a
 // foreign pid under an injected liveness.

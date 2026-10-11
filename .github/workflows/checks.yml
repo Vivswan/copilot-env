@@ -73,7 +73,7 @@ jobs:
         timeout-minutes: 25
         env:
           COPILOT_ENV_USAGE_FIXTURE_MB: ${{ runner.os == 'Windows' && '100' || '1024' }}
-        run: bun run test test/usage/usage_index_perf.test.ts test/usage/usage_golden.test.ts
+        run: bun run test test/usage/usage_index_perf.e2e.test.ts test/usage/usage_golden.e2e.test.ts
 
       # .github/scripts/lifecycle-smoke.ts against the fake proxy, so no Copilot auth is needed.
       - name: Start/stop + health lifecycle (fake proxy)
@@ -161,12 +161,12 @@ jobs:
       - name: Generate from the installed Codex's dump and prove it accepts the result (and rejects a broken one)
         env:
           COPILOT_ENV_LIVE_CODEX: "1"
-        run: bun run test test/codex/codex_catalog_live.test.ts
+        run: bun run test test/codex/codex_catalog_live.e2e.test.ts
 
       # The named-profile layout is Codex's contract too (profile v1 was removed in 0.134): the
       # installed CLI must start `--profile <name>` on what the writer produces.
       - name: Prove the installed Codex starts a writer-produced named profile
-        run: bun run test test/codex/codex_profile_wiring.test.ts
+        run: bun run test test/codex/codex_profile_wiring.e2e.test.ts
 
   # The one job that floats the REAL proxy against the live registry and runs the daemon to auth.
   # It asserts up to auth, not through a lifecycle: there is no credential here.
@@ -272,7 +272,7 @@ jobs:
       - name: Recorder end to end (real CLIs, fake backend)
         env:
           COPILOT_ENV_LIVE_CORPUS: "1"
-        run: bun run test test/usage/usage_corpus.test.ts
+        run: bun run test test/usage/usage_corpus.e2e.test.ts
 
       # The corpus task prints one JSON summary line last and leaves a runnable
       # HOME at <out>/home. HOME moves for the `agent cost` run so nothing on the

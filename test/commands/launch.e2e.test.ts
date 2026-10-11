@@ -552,7 +552,7 @@ sidecarPosix(
     const bin = fakeCliBin(root, "claude");
     // With no daemon lock (this decoy holds none), proxyStatus falls back to pid classification: the
     // tracked pid must be a deno process running a copilot-api-named entry with the `start`
-    // subcommand, and the recorded loopback port must really listen. proxy_token.test.ts stages
+    // subcommand, and the recorded loopback port must really listen. proxy_token.e2e.test.ts stages
     // the same.
     const decoy = join(root, "copilot-api-decoy.mjs");
     writeFileSync(decoy, "setTimeout(() => {}, 30_000);\n");

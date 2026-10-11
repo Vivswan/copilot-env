@@ -1055,7 +1055,7 @@ async function main(argv: readonly string[]): Promise<number> {
   }
 }
 
-// test/usage/cost_metrics.test.ts imports the pure functions, so nothing runs on import.
+// test/usage/cost_metrics.e2e.test.ts imports the pure functions, so nothing runs on import.
 if (import.meta.main) {
   try {
     process.exit(await main(process.argv.slice(2)));

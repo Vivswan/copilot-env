@@ -10,7 +10,7 @@
 // member read off any object (`fs.mkdtempSync`, `os.tmpdir`, `fs["mkdtempSync"]`), or a
 // destructuring. Matching the call would miss a function stored first; a user property that
 // happens to share a name false-positives loudly, which beats a silent miss. Teeth pinned by
-// test/utils/temp_dir_lint.test.ts.
+// test/utils/temp_dir_lint.e2e.test.ts.
 language js(typescript)
 
 or {

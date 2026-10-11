@@ -1,5 +1,5 @@
-// The environment/runtime checks and the fact gatherer are pinned in health.test.ts,
-// named-profile behaviour in health_profiles.test.ts.
+// The environment/runtime checks and the fact gatherer are pinned in health.e2e.test.ts,
+// named-profile behaviour in health_profiles.e2e.test.ts.
 import { join } from "node:path";
 import type { ClaudeDesktopStatus } from "../../src/claude/desktop_status.ts";
 import { type CodexHostDrift, codexHostDriftLine } from "../../src/codex/host.ts";
@@ -897,7 +897,7 @@ test("checkCodexHost: the codex-host key against the disk, every drift warns wit
     enabled: true,
   });
   // Every disagreement is a warn rendering the shared drift line (its wording is pinned
-  // once, in test/codex/codex_host.test.ts) with the command that resolves it.
+  // once, in test/codex/codex_host.e2e.test.ts) with the command that resolves it.
   const line = (drift: CodexHostDrift): string => codexHostDriftLine(drift);
   const drifts: Array<{ facts: CodexHostFacts; summary: string; withConfig: boolean }> = [
     // On but hand-deleted (nothing on disk), or only half-built (dir without config.toml).
@@ -961,7 +961,7 @@ test("checkCodexHost: the codex-host key against the disk, every drift warns wit
 // --- claude desktop ---------------------------------------------------------
 
 test("checkClaudeDesktop: a rendered fix is a warn, none is ok; the detail is the rendered lines", () => {
-  // The rendering itself (every arm) is proven over real libraries in claude_desktop.test.ts;
+  // The rendering itself (every arm) is proven over real libraries in claude_desktop.e2e.test.ts;
   // this pins the check's mapping of that rendering onto a health verdict.
   const inspected = {
     kind: "inspected" as const,

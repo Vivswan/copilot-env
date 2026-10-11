@@ -1,5 +1,5 @@
 // Golden `agent cost --json` payloads recorded from the pre-index implementation, shared
-// by the recorder (scripts/usage/goldens.ts) and the pinning test (test/usage/usage_golden.test.ts)
+// by the recorder (scripts/usage/goldens.ts) and the pinning test (test/usage/usage_golden.e2e.test.ts)
 // so the two agree on the matrix, the paths, the serializer, the digest, and the run.
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";

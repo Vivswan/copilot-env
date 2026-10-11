@@ -15,7 +15,7 @@ import { tsFilesUnder } from "../helpers/tree.ts";
 // twice, and a drift fails silently at launch (a token-less daemon, a daemon under the proxy's own identity).
 //   the shim's literal, read as text  -> must equal the CLI constant (importing the shim would defeat the design)
 //   the shim's runtime imports        -> none; `biome ci` runs biome/no_shim_imports.grit over them
-//                                        (scope and teeth pinned by test/utils/shim_imports_lint.test.ts)
+//                                        (scope and teeth pinned by test/utils/shim_imports_lint.e2e.test.ts)
 
 const SRC_DIR = join(ROOT, "src");
 const SCRIPTS_DIR = join(SRC_DIR, "scripts");
@@ -77,7 +77,7 @@ function extractStringConst(source: string, name: string, file: string): string 
   if (value === undefined || extra.length > 0) {
     throw new Error(
       `expected exactly one \`const ${name} = "..."\` in ${file}, found ${values.length} -- ` +
-        "if the shim was refactored, update PINNED_PAIRS in test/copilot_api/daemon_env_keys.test.ts",
+        "if the shim was refactored, update PINNED_PAIRS in test/copilot_api/daemon_env_keys.e2e.test.ts",
     );
   }
   return value;
@@ -142,7 +142,7 @@ test("every env key spelled in a script is a pinned CLI pair (sweep)", () => {
   if (unexpected.length > 0) {
     throw new Error(
       `env key(s) ${unexpected.join(", ")} are spelled in src/scripts/ but not pinned -- ` +
-        "add a PINNED_PAIRS entry in test/copilot_api/daemon_env_keys.test.ts (or, for a key that is " +
+        "add a PINNED_PAIRS entry in test/copilot_api/daemon_env_keys.e2e.test.ts (or, for a key that is " +
         "genuinely not a shim/CLI pair, SCRIPT_ONLY_KEYS)",
     );
   }
@@ -150,7 +150,7 @@ test("every env key spelled in a script is a pinned CLI pair (sweep)", () => {
   if (missing.length > 0) {
     throw new Error(
       `pinned env key(s) ${missing.join(", ")} are no longer spelled in src/scripts/ -- ` +
-        "if the shim went away, drop the PINNED_PAIRS entry in test/copilot_api/daemon_env_keys.test.ts",
+        "if the shim went away, drop the PINNED_PAIRS entry in test/copilot_api/daemon_env_keys.e2e.test.ts",
     );
   }
   // Each pinned key is really spelled on the CLI side too -- the other half of the pair.

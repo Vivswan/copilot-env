@@ -85,7 +85,7 @@ interface ScrubState {
 
 /** Fail-closed for strings and numbers: one not listed below is content and becomes its
  *  placeholder. Booleans, null, and the empty string pass through unchanged
- *  (test/usage/usage_corpus.test.ts pins a kept null).
+ *  (test/usage/usage_corpus.e2e.test.ts pins a kept null).
  *    string  -> a pseudonymized id; a timestamp or version under one of its keys; one of its
  *               key's closed enum values
  *    number  -> only DIRECTLY under a NUMERIC_KEYS key outside a container (an array element

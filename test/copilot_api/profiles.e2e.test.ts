@@ -673,7 +673,7 @@ test("profile <name> add requires a mode for a new profile", async () => {
   await expect(addProfile(WORK, { mode: "unflagged", noAuth: true })).rejects.toThrow(
     /--direct, --proxy, or --auto/,
   );
-  // --direct --proxy is rejected at the CLI boundary (cli.smoke.test.ts, "the mode conflict is
+  // --direct --proxy is rejected at the CLI boundary (cli.smoke.e2e.test.ts, "the mode conflict is
   // rejected at the boundary on every command that takes the pair"), never here.
 });
 

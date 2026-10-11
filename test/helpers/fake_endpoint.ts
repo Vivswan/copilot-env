@@ -72,7 +72,7 @@ const SCENARIOS = {
   // The connection drops right after the FIRST content delta of a codex-shaped Responses stream
   // (aimock destroys the socket, so this is the mid-stream disconnect, not a clean early end).
   // The frame count is codex's request shape (reasoning item, prelude, one delta) plus aimock's
-  // off-by-one; fake_model_endpoint.test.ts pins that exactly one delta gets through. Exercised
+  // off-by-one; fake_model_endpoint.e2e.test.ts pins that exactly one delta gets through. Exercised
   // through codex, which reconnects five times within seconds and fails the turn; claude reads
   // the same drop as a connection error it retries ten times over about six minutes, so its arm
   // is recorded, never exercised.

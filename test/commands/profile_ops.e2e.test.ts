@@ -97,7 +97,7 @@ test("each runtime verb reaches its command on the named profile: env on the por
   expect(models.stderr).toContain("the local proxy for profile 'work' is not running");
   expect(models.stderr).toContain("agent profile work start");
   // The launch refuses before it spawns anything: the missing CLI when no claude is on PATH,
-  // else the missing profile (test/commands/launch.test.ts pins that wording in-process). Either refusal
+  // else the missing profile (test/commands/launch.e2e.test.ts pins that wording in-process). Either refusal
   // is the launch's own, so the spelling reached it rather than Commander.
   const launch = observe(["profile", "nope", "launch", "claude", "--", "x"], scratch);
   expect(launch.exitCode).toBe(1);

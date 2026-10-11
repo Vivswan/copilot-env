@@ -24,7 +24,6 @@
       "!.github/settings.yml",
       "!.github/workflows/auto-assign.yml",
       "!.github/workflows/ci.yml",
-      "!.github/workflows/deno-audit.yml",
       "!.github/workflows/pr-title.yml",
       "!test/fixtures/provenance/v4.0.0/attestation.json",
       "!test/fixtures/provenance/v4.0.0/trusted_root.json",

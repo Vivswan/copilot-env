@@ -59,5 +59,36 @@
     }
   },
   "plugins": [],
-  "overrides": []
+  "overrides": [
+    {
+      "includes": [
+        "src/scripts/token_argv_preload.ts",
+        "src/scripts/pat_passthrough_preload.ts",
+        "src/scripts/client_headers_preload.ts",
+        "src/scripts/copilot_host_preload.ts"
+      ],
+      "plugins": [
+        "./biome/no_shim_imports.grit"
+      ]
+    },
+    {
+      "includes": [
+        "test/**",
+        "!test/helpers/run.ts",
+        "!test/helpers/testing.ts"
+      ],
+      "plugins": [
+        "./biome/no_unmanaged_child_spawn.grit"
+      ]
+    },
+    {
+      "includes": [
+        "test/**",
+        "!test/helpers/testing.ts"
+      ],
+      "plugins": [
+        "./biome/no_unmanaged_temp_dir.grit"
+      ]
+    }
+  ]
 }

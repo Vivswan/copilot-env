@@ -1,0 +1,4 @@
+[install]
+auto = "disable"
+frozenLockfile = true
+minimumReleaseAge = 604800

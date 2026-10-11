@@ -1,0 +1,64 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.5.15/schema.json",
+  "vcs": {
+    "enabled": true,
+    "clientKind": "git",
+    "useIgnoreFile": true
+  },
+  "files": {
+    "includes": [
+      "**",
+      "!node_modules",
+      "!dist",
+      "!.claude",
+      "!CHANGELOG.md",
+      "!.repo-platform.yml",
+      "!.typography-allow",
+      "!AGENTS.md",
+      "!CLAUDE.md",
+      "!.github/agents.md",
+      "!.github/copilot-instructions.md",
+      "!.github/dependabot.yml",
+      "!.github/instructions/review.instructions.md",
+      "!.github/repo-platform-manifest.json",
+      "!.github/settings.yml",
+      "!.github/workflows/auto-assign.yml",
+      "!.github/workflows/ci.yml",
+      "!.github/workflows/deno-audit.yml",
+      "!.github/workflows/pr-title.yml",
+      "!test/fixtures/provenance/v4.0.0/attestation.json",
+      "!test/fixtures/provenance/v4.0.0/trusted_root.json",
+      "!test/fixtures/github-rate-card.yml"
+    ]
+  },
+  "formatter": {
+    "enabled": true,
+    "indentStyle": "space",
+    "indentWidth": 2,
+    "lineWidth": 100,
+    "lineEnding": "lf"
+  },
+  "javascript": {
+    "formatter": {
+      "quoteStyle": "double",
+      "semicolons": "always",
+      "trailingCommas": "all"
+    }
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "preset": "recommended",
+      "correctness": {
+        "noUnusedImports": "error",
+        "noUnusedVariables": "error"
+      },
+      "style": {
+        "useImportType": "error",
+        "useNodejsImportProtocol": "error"
+      }
+    }
+  },
+  "plugins": [],
+  "overrides": []
+}

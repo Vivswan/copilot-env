@@ -1,0 +1,21 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "entry": [
+    "src/cli.ts",
+    "src/scripts/*_preload.ts",
+    "scripts/**/*.ts",
+    ".github/scripts/*.ts",
+    "bench/*.ts",
+    "test/**/*.test.ts",
+    "test/helpers/*_preload.ts"
+  ],
+  "project": [
+    "src/**/*.ts",
+    "scripts/**/*.ts",
+    ".github/scripts/**/*.ts",
+    "bench/**/*.ts",
+    "test/**/*.ts"
+  ],
+  "ignoreDependencies": ["@copilotkit/aimock", "@jeffreycao/copilot-api", "undici", "undici7"],
+  "ignoreBinaries": ["pgrep", "where.exe"]
+}

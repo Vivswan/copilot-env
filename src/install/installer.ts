@@ -92,8 +92,9 @@ export const MATERIALIZED_ASSET_FILES = [
  *  virtual filesystem), a copy in the install root would be read by nothing and drift from the
  *  binary. Still verified present at plan time: absent from the binary means a broken build.
  *
- *    copilot-env.config -> readProjectConfig (the float bounds and the sidecar's deno pin) */
-export const BUNDLED_ONLY_ASSETS = ["copilot-env.config"] as const;
+ *    copilot-env.config -> readProjectConfig (the float bounds and the sidecar's deno pin)
+ *    bunfig.toml        -> readInstallMinimumReleaseAge (the float's default release cooldown) */
+export const BUNDLED_ONLY_ASSETS = ["copilot-env.config", "bunfig.toml"] as const;
 
 // --- The versioned layout ---------------------------------------------------------
 

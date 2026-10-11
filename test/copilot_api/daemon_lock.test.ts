@@ -9,7 +9,8 @@ import { CopilotApiPaths } from "../../src/copilot_api/paths.ts";
 import { parseProfileName } from "../../src/copilot_api/profile.ts";
 import { launchDaemon } from "../../src/copilot_api/process.ts";
 import { pidAlive } from "../../src/utils/pid.ts";
-import { resolveDenoBin } from "../../src/copilot_api/sidecar.ts";
+import { parseAbsolutePath } from "../../src/copilot_api/sidecar.ts";
+import { sidecarDenoOnPath } from "../helpers/sidecar.ts";
 import { daemonConfigFile, writeDaemonConfig } from "../../src/proxy_float.ts";
 import { resolveRootHome } from "../../src/copilot_api/paths.ts";
 import { CopilotEnvRunState } from "../../src/copilot_api/run_state.ts";
@@ -47,6 +48,10 @@ import { closeServer, freePort, listenEphemeral } from "../helpers/net.ts";
 
 // A pid no real process holds (far above any OS pid ceiling we run on).
 const DEAD_PID = 2_147_483_646;
+
+/** The sidecar deno on PATH; the tests that need one skip without it. */
+const SIDECAR_DENO = sidecarDenoOnPath();
+const withSidecar = test.skipIf(SIDECAR_DENO === null);
 
 const restoreEnv = envSnapshot();
 let dir = "";
@@ -160,7 +165,7 @@ test("a live holder blocks acquisition; SIGKILL releases the lock promptly", asy
 // The daemon side of the protocol for real: the sidecar deno (PATH or the override) runs the fake
 // proxy with the preload shims under the generated daemon config, and daemon_lock_preload creates
 // the same marker file this process judges.
-test("a launched daemon holds its home's lock for life, released by SIGKILL", async () => {
+withSidecar("a launched daemon holds its home's lock for life, released by SIGKILL (needs the sidecar deno on PATH)", async () => {
   dir = isolateProxyHome("copilot-daemon-lock-");
   const port = await freePort();
   const logFile = join(dir, "daemon.log");
@@ -183,7 +188,7 @@ test("a launched daemon holds its home's lock for life, released by SIGKILL", as
       path: join(ROOT, "test", "copilot-api-fake.mjs"),
       configFile: daemonConfigFile(resolveRootHome()),
     },
-    denoBin: resolveDenoBin(),
+    denoBin: parseAbsolutePath(SIDECAR_DENO ?? ""),
   });
   try {
     // The preload acquires before the proxy serves, so a held lock is observable no
@@ -252,7 +257,7 @@ function spawnDaemonShapedDecoy(
       `writeFileSync(${CHILD_VALUES}.ready, "up");\n` +
       "setInterval(() => {}, 60_000);\n",
   );
-  return spawnChild(resolveDenoBin(), {
+  return spawnChild(SIDECAR_DENO ?? "", {
       args: ["run", "--allow-write", "--allow-env", decoy, "start"],
     env: childValuesEnv({ ready }),
     stdout: "ignore",
@@ -260,8 +265,8 @@ function spawnDaemonShapedDecoy(
   });
 }
 
-test(
-  "stopTrackedProxy: a lock-held corroborated daemon is signalled, lock-first",
+withSidecar(
+  "stopTrackedProxy: a lock-held corroborated daemon is signalled, lock-first (needs the sidecar deno on PATH)",
   async () => {
     dir = isolateProxyHome("copilot-daemon-lock-");
     const home = defaultHomeDir();
@@ -418,8 +423,8 @@ test("stopTrackedProxy: a lock-dead tracked pid is never signalled, and tracking
 // With no lock to consult and an unprovable pid-table read, the identity scan and the port
 // probe own the verdict: a live daemon-shaped tracked pid whose recorded port answers reads
 // UP (the real NotCapable probe shape is pinned in test/utils/pid.test.ts).
-test(
-  "proxyStatus: an unprovable liveness read defers to identity + port probe, not DOWN",
+withSidecar(
+  "proxyStatus: an unprovable liveness read defers to identity + port probe, not DOWN (needs the sidecar deno on PATH)",
   async () => {
     dir = isolateProxyHome("copilot-daemon-lock-");
     // The real classification must answer "yes" for the status to survive the pid-reuse guard.

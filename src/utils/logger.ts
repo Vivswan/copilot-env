@@ -15,6 +15,17 @@ import { terminalWidth, wrapMessage } from "./table.ts";
 
 const NO_DATE = { date: false } as const;
 
+/** createConsola's node build takes `fancy`, which its published option type omits. */
+export type ConsolaCreateOptions = NonNullable<Parameters<typeof createConsola>[0]> & {
+  fancy?: boolean;
+};
+
+/** Piped, Bun reports `process.stderr.isTTY` as undefined, which consola reads as a terminal and
+ *  answers with its fancy reporter; only a true TTY gets it, so piped and CI output stay basic. */
+const FANCY = process.stderr.isTTY === true;
+const basicOffTty: ConsolaCreateOptions = { fancy: FANCY };
+consola.options.reporters = createConsola(basicOffTty).options.reporters;
+
 /** Every logger made here, so one scope can silence them all (withNarrationMuted); a logger made
  *  inside that scope joins it silenced. */
 const INSTANCES: ConsolaInstance[] = [consola];
@@ -233,11 +244,13 @@ export const prompt: ConsolaInstance["prompt"] = (message, options) => {
 };
 
 export function createStderrLogger(): ConsolaInstance {
-  return register(wrapToTerminal(createConsola({
+  const options: ConsolaCreateOptions = {
     stdout: process.stderr,
     stderr: process.stderr,
+    fancy: FANCY,
     formatOptions: NO_DATE,
-  })));
+  };
+  return register(wrapToTerminal(createConsola(options)));
 }
 
 /** For a body run only to learn what it would do (an import's apply on the fs overlay, whose

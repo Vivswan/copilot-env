@@ -399,9 +399,10 @@ export class CopilotEnvConfig {
     return this.value("daemon.version");
   }
 
-  /** The COPILOT_API_MIN_RELEASE_AGE env layer stays at the read site (src/proxy_float.ts). */
-  releaseCooldownSeconds(): number {
-    return this.setting("daemon.release-cooldown");
+  /** Stored by hand only: the default is bunfig.toml's install floor, layered with the
+   *  COPILOT_API_MIN_RELEASE_AGE env at the read site (src/proxy_float.ts). */
+  storedReleaseCooldownSeconds(): number | undefined {
+    return this.value("daemon.release-cooldown");
   }
 
   /** The COPILOT_API_IDLE_TIMEOUT env layer stays at the read site (src/copilot_api/idle_watchdog.ts).

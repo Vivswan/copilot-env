@@ -13,11 +13,10 @@ import "./utils/dotenv.ts";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { createConsola } from "consola";
-import { wrapToTerminal } from "./utils/logger.ts";
+import { type ConsolaCreateOptions, wrapToTerminal } from "./utils/logger.ts";
 import * as v from "valibot";
 import { proxyUnusedEverywhere } from "./agents/wiring.ts";
 import * as fs from "./utils/fs_facade.ts";
-import { configDefaultNumber } from "./copilot_api/config_registry.ts";
 import { configSetCommand, CopilotEnvConfig } from "./copilot_api/env_config.ts";
 import { resolveRootHome } from "./copilot_api/paths.ts";
 import { allShimPaths } from "./copilot_api/shims.ts";
@@ -28,6 +27,7 @@ import {
   proxyVersionFloorStatus,
 } from "./copilot_api/version.ts";
 import { assertNever } from "./utils/assert.ts";
+import { readInstallMinimumReleaseAge } from "./utils/bunfig.ts";
 import { errMessage } from "./utils/error.ts";
 import { isEnoentOrNotdir, readTextOrNull } from "./utils/fs.ts";
 import { type ProjectConfig, readProjectConfig } from "./utils/project_config.ts";
@@ -40,7 +40,11 @@ const PROXY_VERSION_ENV = "COPILOT_API_VERSION";
 const MIN_RELEASE_AGE_ENV = "COPILOT_API_MIN_RELEASE_AGE";
 const SEMVER_RE = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/;
 
-export const DEFAULT_RELEASE_COOLDOWN_SECONDS = configDefaultNumber("daemon.release-cooldown");
+/** bunfig.toml's `[install] minimumReleaseAge`: the floor `bun install` itself applies, so the
+ *  float never selects a proxy younger than the checkout's own dependencies may be. */
+export function defaultReleaseCooldownSeconds(): number {
+  return readInstallMinimumReleaseAge();
+}
 
 /** The full document: its `time` map carries the publish times the cooldown needs; the abbreviated
  *  install doc lacks it. */
@@ -54,11 +58,7 @@ export function resolveProxyVersionOverride(): string | undefined {
   return process.env[PROXY_VERSION_ENV]?.trim() || new CopilotEnvConfig().proxyVersionPin();
 }
 
-type ProxyConsolaOptions = NonNullable<Parameters<typeof createConsola>[0]> & {
-  fancy?: boolean;
-};
-
-const loggerOptions: ProxyConsolaOptions = {
+const loggerOptions: ConsolaCreateOptions = {
   "stdout": process.stderr,
   "stderr": process.stderr,
   "fancy": false,
@@ -77,7 +77,7 @@ export function resolveMinimumReleaseAgeSeconds(): number {
   }
   // Strict config read, like the version pin: a stored cooldown must not be shortened to the
   // default by an unreadable store.
-  return new CopilotEnvConfig().releaseCooldownSeconds();
+  return new CopilotEnvConfig().storedReleaseCooldownSeconds() ?? defaultReleaseCooldownSeconds();
 }
 
 function formatReleaseAge(seconds: number): string {

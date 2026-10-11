@@ -3,30 +3,23 @@
 // closure must not pull in copilot_api/process.ts, which reaches the daemon spawn and proxy-float
 // graph.
 
-/** Three states on purpose: a probe that could not run is not a death, and every consumer whose
- *  "dead" licenses a destructive act (a tracking clear, a kill, a lock takeover) must never read
- *  it as one. */
-export type PidLiveness = "alive" | "dead" | "unproven";
+/** Only ESRCH is a death. A refused signal is an existing pid (EPERM: a sandboxed token, such as
+ *  Codex's packaged app spawning us, cannot signal it), and a signal this permission set cannot
+ *  send at all (the daemon's Deno sidecar runs without --allow-run) proves nothing, so every
+ *  consumer whose "dead" licenses a destructive act (a tracking clear, a kill, a lock takeover)
+ *  reads both as alive. */
+export type PidLiveness = "alive" | "dead";
 
 export function pidLiveness(pid: number): PidLiveness {
   try {
     process.kill(pid, 0);
     return "alive";
   } catch (e) {
-    const code = (e as NodeJS.ErrnoException).code;
-    if (code === "ESRCH") return "dead";
-    // EPERM is answered only for a pid that exists: a sandboxed token (Codex's packaged app
-    // spawning us) cannot signal it.
-    if (code === "EPERM") return "alive";
-    // Anything else is a probe that did not run: the daemon's Deno sidecar refuses the null
-    // signal under its permission set (NotCapable, code undefined).
-    return "unproven";
+    return (e as NodeJS.ErrnoException).code === "ESRCH" ? "dead" : "alive";
   }
 }
 
-/** True means NOT provably dead: every boolean consumer's false licenses or reports a death, and a
- *  probe this permission set cannot run (the daemon's own, without --allow-run) must never mint
- *  one. */
+/** True means NOT provably dead. */
 export function pidAlive(pid: number): boolean {
   return pidLiveness(pid) !== "dead";
 }

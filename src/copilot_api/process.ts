@@ -555,11 +555,13 @@ export function daemonArgv(spec: DaemonSpec): string[] {
 
 export function launchDaemon(spec: DaemonSpec): number {
   // A dead predecessor's marker would otherwise refuse the new daemon's acquire for its whole
-  // budget: the daemon cannot judge the pid, this process can.
+  // budget: the daemon cannot signal the pid, this process can.
   clearDeadDaemonLock(spec.home);
   const logFd = fs.openWriteFd(spec.logFile);
   // The disk's `/dev/null` in every mode, a dry run included: the raw open the fs lint exempts.
   const devnull = openSync(devNull, "r");
+  // The child is the deno sidecar, never process.execPath: a compiled binary spawning itself would
+  // re-run its own entry unless the child env carried BUN_BE_BUN=1.
   const proc = spawn(spec.denoBin, daemonArgv(spec), {
     stdio: [devnull, logFd, logFd],
     detached: true,

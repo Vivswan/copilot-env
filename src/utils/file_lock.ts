@@ -1,15 +1,14 @@
 // Exclusion is an exclusive create (`wx`) of the lock file, whose text names the holder: pid, then
 // the clock of the write. A crashed holder (SIGKILL, a power loss) leaves its file behind, so the
 // next acquirer judges the pid it names (src/utils/pid.ts): a dead pid, a malformed marker, or
-// this process's own pid with no in-process hold is a leftover and is taken over; a live pid is a
-// holder; a liveness this permission set cannot probe is read as a holder, never as a leftover.
-// The same file is the whole protocol, so the CLI and the daemon (which runs on the Deno sidecar
-// and loads this module through src/scripts/daemon_lock_preload.ts) agree without an OS lock,
-// which Bun does not expose.
+// this process's own pid with no in-process hold is a leftover and is taken over; a live pid, or
+// one this permission set cannot signal (the daemon's), is a holder. The same file is the whole
+// protocol, so the CLI and the daemon (which runs on the Deno sidecar and loads this module
+// through src/scripts/daemon_lock_preload.ts) agree without an OS lock, which Bun does not expose.
 //
-// Two contenders that both judge one leftover stale race between the judgment and the unlink; the
-// loser of that race can take the winner's fresh file. The window is a few microseconds on a lock
-// nobody holds, and the widely used pid lockfiles accept the same race.
+// Two limits, accepted: a recycled pid reads as a live holder, and two contenders that judge one
+// leftover stale at the same instant race between the judgment and the unlink, so the loser can
+// take the winner's fresh file (the published pid lockfiles accept the same race).
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { setTimeout as sleepAsync } from "node:timers/promises";
@@ -122,25 +121,18 @@ function markerHolds(
   lockPath: string,
   raw: string,
   liveness: (pid: number) => PidLiveness,
-): "held" | "leftover" | "unproven" {
+): "held" | "leftover" {
   const pid = markerPid(raw);
   if (pid === null) return "leftover";
   if (pid === process.pid) return HELD_LOCKS.has(lockPath) ? "held" : "leftover";
-  switch (liveness(pid)) {
-    case "alive":
-      return "held";
-    case "dead":
-      return "leftover";
-    case "unproven":
-      return "unproven";
-  }
+  return liveness(pid) === "alive" ? "held" : "leftover";
 }
 
 /** A primitive: production code scopes lock lifetimes through withFileLock/withFileLockSync, bar
  *  src/copilot_api/daemon_lock.ts, and this stays exported for the on-disk contract tests.
  *
- *  the file names a live pid                     -> false
- *  the file names a pid we cannot judge          -> false
+ *  the file names a live pid (or one we cannot
+ *  signal)                                       -> false
  *  our own hold, marker still fresh              -> false
  *  our own hold, marker aged past staleMs        -> refreshed, true
  *  no file, or a leftover (dead pid, malformed,
@@ -179,9 +171,7 @@ function tryAcquire(lockPath: string, staleMs: number, opts: FileLockOptions): A
   if (observed.kind === "unreadable") return { kind: "unavailable", cause: observed.cause };
   // Released between the create and the read: the next attempt lands.
   if (observed.kind === "absent") return BUSY;
-  if (markerHolds(lockPath, observed.raw, opts.liveness ?? pidLiveness) !== "leftover") {
-    return BUSY;
-  }
+  if (markerHolds(lockPath, observed.raw, opts.liveness ?? pidLiveness) === "held") return BUSY;
 
   // The takeover: the leftover goes, then the create runs again; a contender that won the same
   // takeover is a holder now.
@@ -213,7 +203,7 @@ const PROBE_ABSENT: FileLockProbe = Object.freeze({ kind: "absent" });
 const PROBE_UNKNOWN: FileLockProbe = Object.freeze({ kind: "unknown" });
 
 /** Non-mutating: the marker is read and its pid judged. `unknown` is a marker this process cannot
- *  read or a pid it cannot probe, so a caller about to act on "nobody there" fails closed. */
+ *  read, so a caller about to act on "nobody there" fails closed. */
 export function probeFileLock(
   lockPath: string,
   liveness: (pid: number) => PidLiveness = pidLiveness,
@@ -222,21 +212,16 @@ export function probeFileLock(
   if (observed.kind === "unreadable") return PROBE_UNKNOWN;
   if (observed.kind === "absent") return PROBE_ABSENT;
   const pid = markerPid(observed.raw);
-  switch (markerHolds(lockPath, observed.raw, liveness)) {
-    case "held":
-      return Object.freeze({ kind: "held", markerPid: pid });
-    case "leftover":
-      return Object.freeze({ kind: "free", markerPid: pid });
-    case "unproven":
-      return PROBE_UNKNOWN;
-  }
+  return markerHolds(lockPath, observed.raw, liveness) === "held"
+    ? Object.freeze({ kind: "held", markerPid: pid })
+    : Object.freeze({ kind: "free", markerPid: pid });
 }
 
 /** A leftover (probeFileLock's `free`) is unlinked and true comes back; a holder, an absent file,
- *  and a marker this process cannot judge are left alone. For a process that can judge liveness
- *  to clear the way for one that cannot: the daemon's own acquire (src/copilot_api/daemon_lock.ts)
- *  runs under a permission set that reads every pid as unproven, so the CLI clears a dead
- *  daemon's leftover before the spawn. */
+ *  and a marker this process cannot read are left alone. For a process that can signal to clear
+ *  the way for one that cannot: the daemon's own acquire (src/copilot_api/daemon_lock.ts) runs
+ *  under a permission set that reads every pid as alive, so the CLI clears a dead daemon's
+ *  leftover before the spawn. */
 export function removeLeftoverLock(lockPath: string): boolean {
   if (probeFileLock(lockPath).kind !== "free") return false;
   removeMarkerWithRetry(lockPath);

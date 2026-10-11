@@ -35,7 +35,7 @@ import { CopilotApiPaths, profileHome, resolveRootHome } from "../../src/copilot
 import { parseProfileName } from "../../src/copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../../src/copilot_api/run_state.ts";
 import { pointCurrentAt } from "../../src/install/installer.ts";
-import { writeResolvedVersionRecord } from "../../src/proxy_float.ts";
+import { proxyBunCacheDir, writeResolvedVersionRecord } from "../../src/proxy_float.ts";
 import {
   CI_PS_DOCUMENTS_DIR_ENV,
   CI_RC_DIR_ENV,
@@ -68,7 +68,7 @@ const startCwd = process.cwd();
 afterEach(() => {
   restoreEnv();
   process.chdir(startCwd);
-  // An aborted run's exit 1 must never leak into the whole `deno test` run.
+  // An aborted run's exit 1 must never leak into the whole `bun test` run.
   resetExitCode();
 });
 
@@ -557,10 +557,11 @@ test("uninstall's dry run and live run land ONE resolved plan", async () => {
   ledger.record("claudeDesktop", join(library, "ours.json"));
   // A stale claim: an owned row whose file is already gone.
   ledger.record("claudeDesktop", join(library, "gone.json"));
-  // A float cache recorded OUTSIDE the root home: only the plan can name it.
-  const elsewhere = join(dir, "float-elsewhere");
+  // The float's own artifacts, the record and bun's cache, go through the plan's list ahead of the
+  // home sweep, so each is named.
+  const elsewhere = proxyBunCacheDir(proxyHome);
   mkdirSync(elsewhere, { recursive: true });
-  writeResolvedVersionRecord(proxyHome, "1.10.30", Date.now(), elsewhere);
+  writeResolvedVersionRecord(proxyHome, "1.10.30", Date.now());
   // A wired rc / PowerShell profile on a scratch home, resolved by the REAL shell resolver: the
   // plan must name the concrete file.
   const rcDir = join(dir, "rc");

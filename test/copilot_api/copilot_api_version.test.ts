@@ -11,11 +11,7 @@ import { afterEach, beforeEach, describe, expect, tempDir, test } from "../helpe
 
 let dir = "";
 
-const CONFIG: ProjectConfig = {
-  proxyMinVersion: "1.10.0",
-  proxyMaxVersion: "1.10.30",
-  sidecarDenoVersion: "2.9.7",
-};
+const CONFIG: ProjectConfig = { proxyMinVersion: "1.10.0", proxyMaxVersion: "1.10.30" };
 
 function writeProxyPackage(root: string, versionJson: string): void {
   const pkgDir = join(root, "node_modules", "@jeffreycao", "copilot-api");
@@ -35,11 +31,14 @@ afterEach(() => {
 });
 
 describe("installedProxyVersion", () => {
-  // Only a parseable package.json carrying a version answers; a missing package, unparseable
-  // metadata, or metadata without a version all read as "not installed", never a throw.
+  // Only a parseable package.json carrying a version and a bin answers (the daemon runs the bin,
+  // so a package without one is nothing to run); a missing package, unparseable metadata, or
+  // metadata without either all read as "not installed", never a throw.
   test("reads the installed version, or null for missing, malformed, or versionless metadata", () => {
+    const bin = { "copilot-api": "./dist/main.js" };
     const rows: { pkg: string | null; version: string | null }[] = [
-      { pkg: JSON.stringify({ version: "1.10.30" }), version: "1.10.30" },
+      { pkg: JSON.stringify({ version: "1.10.30", bin }), version: "1.10.30" },
+      { pkg: JSON.stringify({ version: "1.10.30" }), version: null },
       { pkg: null, version: null },
       { pkg: "{ nope", version: null },
       { pkg: JSON.stringify({ name: "@jeffreycao/copilot-api" }), version: null },

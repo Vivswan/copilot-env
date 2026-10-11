@@ -10,7 +10,7 @@ import {
 } from "../../src/commands/proxy_token.ts";
 import { CopilotApiPaths } from "../../src/copilot_api/paths.ts";
 import { type Profile, parseProfileName } from "../../src/copilot_api/profile.ts";
-import { sidecarTest, spawnDenoChild } from "../helpers/deno_sidecar.ts";
+import { spawnDaemonShapedChild } from "../helpers/daemon.ts";
 import { agentHomeEnv, envSnapshot } from "../helpers/env.ts";
 import { writeRunState } from "../helpers/fixtures.ts";
 import { importSpecifier, ROOT, runCli, runScript } from "../helpers/run.ts";
@@ -210,12 +210,12 @@ function isolatedEnv(home: string): Record<string, string> {
   return { ...(process.env as Record<string, string>), CONSOLA_LEVEL: "5", ...agentHomeEnv(home) };
 }
 
-/** A daemon proxyStatus corroborates: a real deno process running a copilot-api-named entry with the
+/** A daemon proxyStatus corroborates: a real bun process running a copilot-api-named entry with the
  *  `start` subcommand, plus a listening loopback port recorded in run state. */
 async function stageDecoyDaemon(home: string): Promise<{ teardown: () => Promise<void> }> {
   const decoy = join(home, "copilot-api-decoy.mjs");
   writeFileSync(decoy, "setTimeout(() => {}, 30_000);\n");
-  const daemon = spawnDenoChild({ args: [decoy, "start"], stdout: "ignore", stderr: "ignore" });
+  const daemon = spawnDaemonShapedChild(decoy);
   const { server, port } = await new Promise<{ server: Server; port: number }>(
     (resolve, reject) => {
       const srv = createServer();
@@ -249,62 +249,56 @@ async function stageDecoyDaemon(home: string): Promise<{ teardown: () => Promise
 // Claude apiKeyHelper, and the launchers' eval consume, so the prompt and the refusal live on
 // stderr. The key lives in the default daemon home's config.json. The happy row needs a POSIX decoy
 // daemon, so it skips on Windows.
-// The `up` rows stage a decoy daemon, a deno process (the classifier gates on the runtime's
-// executable name), so the whole table needs the sidecar deno.
-sidecarTest(
-  "spawned proxy-token: stdout is exactly the key line or nothing; prompts and refusals are stderr",
-  async () => {
-    const rows: Array<{
-      name: string;
-      args: string[];
-      input?: string;
-      up: boolean;
-      exit: number;
-      stderr: string[];
-    }> = [
-      { name: "refuse (--yes, down, unmanaged)", args: ["--yes"], up: false, exit: 1, stderr: [] },
-      {
-        name: "decline (interactive, down, unmanaged)",
-        args: [],
-        input: "n\n",
-        up: false,
-        exit: 1,
-        stderr: ["copilot proxy not running. Start it now? [Y/n]", "Continuing without the proxy"],
-      },
-      { name: "happy (--yes, up)", args: ["--yes"], up: true, exit: 0, stderr: [] },
-    ];
-    for (const row of rows) {
-      if (row.up && process.platform === "win32") continue;
-      dir = removeDir(dir);
-      dir = tempDir("copilot-proxy-token-");
-      const staged = row.up ? await stageDecoyDaemon(dir) : null;
-      try {
-        const res = runCli(["profile", "proxy-token", ...row.args], {
-          env: isolatedEnv(dir),
-          input: row.input,
-        });
-        let stdout = "";
-        if (row.up) {
-          const config = JSON.parse(readFileSync(new CopilotApiPaths().configFile, "utf8")) as {
-            auth?: { apiKeys?: string[] };
-          };
-          const key = config.auth?.apiKeys?.[0];
-          expect(typeof key).toBe("string");
-          stdout = `${key}\n`;
-        }
-        expect({ name: row.name, exitCode: res.exitCode, stdout: res.stdout }).toEqual({
-          name: row.name,
-          exitCode: row.exit,
-          stdout,
-        });
-        for (const line of row.stderr) expect(res.stderr).toContain(line);
-      } finally {
-        await staged?.teardown();
+test("spawned proxy-token: stdout is exactly the key line or nothing; prompts and refusals are stderr", async () => {
+  const rows: Array<{
+    name: string;
+    args: string[];
+    input?: string;
+    up: boolean;
+    exit: number;
+    stderr: string[];
+  }> = [
+    { name: "refuse (--yes, down, unmanaged)", args: ["--yes"], up: false, exit: 1, stderr: [] },
+    {
+      name: "decline (interactive, down, unmanaged)",
+      args: [],
+      input: "n\n",
+      up: false,
+      exit: 1,
+      stderr: ["copilot proxy not running. Start it now? [Y/n]", "Continuing without the proxy"],
+    },
+    { name: "happy (--yes, up)", args: ["--yes"], up: true, exit: 0, stderr: [] },
+  ];
+  for (const row of rows) {
+    if (row.up && process.platform === "win32") continue;
+    dir = removeDir(dir);
+    dir = tempDir("copilot-proxy-token-");
+    const staged = row.up ? await stageDecoyDaemon(dir) : null;
+    try {
+      const res = runCli(["profile", "proxy-token", ...row.args], {
+        env: isolatedEnv(dir),
+        input: row.input,
+      });
+      let stdout = "";
+      if (row.up) {
+        const config = JSON.parse(readFileSync(new CopilotApiPaths().configFile, "utf8")) as {
+          auth?: { apiKeys?: string[] };
+        };
+        const key = config.auth?.apiKeys?.[0];
+        expect(typeof key).toBe("string");
+        stdout = `${key}\n`;
       }
+      expect({ name: row.name, exitCode: res.exitCode, stdout: res.stdout }).toEqual({
+        name: row.name,
+        exitCode: row.exit,
+        stdout,
+      });
+      for (const line of row.stderr) expect(res.stderr).toContain(line);
+    } finally {
+      await staged?.teardown();
     }
-  },
-  60_000,
-);
+  }
+}, 60_000);
 
 test("readStartAnswer: the prompt goes to stderr, EOF reads as the empty (default) answer", () => {
   // The real stdin reader, driven as a child so EOF and stream placement are the

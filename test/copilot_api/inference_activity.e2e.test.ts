@@ -10,9 +10,8 @@ import {
   persistedInferenceMs,
   resetInferenceActivityForTests,
 } from "../../src/copilot_api/inference_activity.ts";
-import { denoRunArgs, sidecarDeno, sidecarTest } from "../helpers/deno_sidecar.ts";
 import { envSnapshot, isolateProxyHome } from "../helpers/env.ts";
-import { importSpecifier, ROOT, resolvePackageDir, runSync } from "../helpers/run.ts";
+import { bunRunArgs, importSpecifier, ROOT, resolvePackageDir, runSync } from "../helpers/run.ts";
 import { afterEach, expect, test } from "../helpers/testing.ts";
 
 const PRELOAD = join(ROOT, "src", "scripts", "daemon_runtime_preload.ts");
@@ -88,10 +87,10 @@ test("markInference: memory always moves; the activity-file persist is throttled
   expect(persistedInferenceMs()).toBe(0);
 });
 
-// srvx's deno adapter uses the (options, handler) form today; the other two shapes are covered so
-// a proxy stack move cannot silently stop marking. An argument list matching none of them must
-// reach the real serve untouched, arity included.
-test("observeServeArgs substitutes the handler in every Deno.serve calling shape", async () => {
+// Bun.serve takes one options object whose `fetch` is the handler (srvx's bun adapter passes
+// exactly that); the other keys ride through untouched, and an argument list of any other shape
+// must reach the real serve as it came, arity included.
+test("observeServeArgs substitutes the fetch handler and relays everything else", async () => {
   tmpHome(); // marking persists to the activity file -- keep it out of the real home
   const seen: string[] = [];
   const handler = (request: Request): Response => {
@@ -101,26 +100,18 @@ test("observeServeArgs substitutes the handler in every Deno.serve calling shape
   const post = (path: string): Request =>
     new Request(`http://127.0.0.1${path}`, { method: "POST" });
 
-  const [wrappedOnly, ...noTail] = observeServeArgs([handler]);
+  const [options, ...noTail] = observeServeArgs([
+    { port: 0, hostname: "127.0.0.1", fetch: handler },
+  ]);
   expect(noTail).toEqual([]); // arity preserved
-  await (wrappedOnly as typeof handler)(post("/v1/messages"));
-  expect(lastObservedInferenceMs()).toBeGreaterThan(0);
-
-  resetInferenceActivityForTests();
-  const twoArg = observeServeArgs([{ port: 0 }, handler]);
-  expect(twoArg[0]).toEqual({ port: 0 }); // options relayed untouched
-  await (twoArg[1] as typeof handler)(post("/v1/responses"));
-  expect(lastObservedInferenceMs()).toBeGreaterThan(0);
-
-  resetInferenceActivityForTests();
-  const [options] = observeServeArgs([{ port: 0, handler }]);
-  const wrapped = (options as { handler: typeof handler }).handler;
+  const wrapped = (options as { fetch: typeof handler; port: number; hostname: string }).fetch;
   expect(wrapped).not.toBe(handler);
-  await wrapped(post("/v1/chat/completions"));
+  expect(options).toMatchObject({ port: 0, hostname: "127.0.0.1" });
+  await wrapped(post("/v1/messages"));
   expect(lastObservedInferenceMs()).toBeGreaterThan(0);
+  expect(seen).toEqual(["/v1/messages"]);
 
-  expect(seen).toEqual(["/v1/messages", "/v1/responses", "/v1/chat/completions"]);
-
+  expect(observeServeArgs([{ port: 0 }])).toEqual([{ port: 0 }]); // no handler: relayed as is
   expect(observeServeArgs([42, "x"])).toEqual([42, "x"]);
   expect(observeServeArgs([])).toEqual([]);
 });
@@ -131,8 +122,8 @@ const TARGET_SCRIPT = `
 import { lastObservedInferenceMs, persistedInferenceMs } from ${importSpecifier(
   join(ROOT, "src", "copilot_api", "inference_activity.ts"),
 )};
-const server = Deno.serve({ hostname: "127.0.0.1", port: 0, onListen: () => {} }, () => new Response("ok"));
-const base = "http://127.0.0.1:" + server.addr.port;
+const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("ok") });
+const base = "http://127.0.0.1:" + server.port;
 const out = {};
 await fetch(base + "/v1/models"); // liveness/model-list: must NOT mark
 out.afterGet = lastObservedInferenceMs();
@@ -140,39 +131,36 @@ const res = await fetch(base + "/v1/messages", { method: "POST", body: "{}" });
 out.body = await res.text(); // the wrapped handler must still serve normally
 out.afterPost = lastObservedInferenceMs();
 out.persisted = persistedInferenceMs();
-await server.shutdown();
+await server.stop();
 console.log(JSON.stringify(out));
 `;
 
-sidecarTest(
-  "the preloaded observer marks inference POSTs through a real Deno.serve, not GETs",
-  () => {
-    tmpHome();
-    const target = join(dir, "target.ts");
-    writeFileSync(target, TARGET_SCRIPT);
-    const before = Date.now();
-    const res = runSync(sidecarDeno(), [...denoRunArgs("--preload", PRELOAD), target], {
-      env: { ...process.env, COPILOT_API_HOME: dir },
-    });
-    if (res.exitCode !== 0) throw new Error(`preloaded target failed: ${res.stderr}`);
-    const out = JSON.parse(res.stdout.trim()) as {
-      afterGet: number;
-      afterPost: number;
-      body: string;
-      persisted: number;
-    };
-    expect(out.body).toBe("ok"); // observation never broke serving
-    expect(out.afterGet).toBe(0);
-    expect(out.afterPost).toBeGreaterThanOrEqual(before);
-    expect(out.persisted).toBe(out.afterPost); // the first mark persists immediately
-  },
-);
+test("the preloaded observer marks inference POSTs through a real Bun.serve, not GETs", () => {
+  tmpHome();
+  const target = join(dir, "target.ts");
+  writeFileSync(target, TARGET_SCRIPT);
+  const before = Date.now();
+  const res = runSync(process.execPath, [...bunRunArgs("--preload", PRELOAD), target], {
+    env: { ...process.env, COPILOT_API_HOME: dir },
+  });
+  if (res.exitCode !== 0) throw new Error(`preloaded target failed: ${res.stderr}`);
+  const out = JSON.parse(res.stdout.trim()) as {
+    afterGet: number;
+    afterPost: number;
+    body: string;
+    persisted: number;
+  };
+  expect(out.body).toBe("ok"); // observation never broke serving
+  expect(out.afterGet).toBe(0);
+  expect(out.afterPost).toBeGreaterThanOrEqual(before);
+  expect(out.persisted).toBe(out.afterPost); // the first mark persists immediately
+});
 
-// Drift alarm: the observer wraps Deno.serve from a preload, and srvx's Deno adapter looks
-// Deno.serve up at serve time, so the wrapper is what serves. A release that drops srvx or
-// serves without Deno.serve would silently stop marking, so the check follows srvx's own
-// "deno" export condition, not fixed paths.
-test("the installed proxy still serves through srvx's call-time Deno.serve lookup", () => {
+// Drift alarm: the observer wraps Bun.serve from a preload, and srvx's bun adapter looks
+// Bun.serve up at serve time, so the wrapper is what serves. A release that drops srvx or
+// serves without Bun.serve would silently stop marking, so the check follows srvx's own
+// "bun" export condition, not fixed paths.
+test("the installed proxy still serves through srvx's call-time Bun.serve lookup", () => {
   const proxyDir = resolvePackageDir("@jeffreycao/copilot-api", ROOT);
   const startBundle = readdirSync(join(proxyDir, "dist")).find(
     (name) => name.startsWith("start-") && name.endsWith(".js"),
@@ -183,13 +171,13 @@ test("the installed proxy still serves through srvx's call-time Deno.serve looku
   );
   const srvxDir = resolvePackageDir("srvx", proxyDir);
   const srvxPkg = JSON.parse(readFileSync(join(srvxDir, "package.json"), "utf8")) as {
-    exports?: Record<string, { deno?: unknown }>;
+    exports?: Record<string, { bun?: unknown }>;
   };
-  const denoEntry = srvxPkg.exports?.["."]?.deno;
-  if (typeof denoEntry !== "string") {
-    throw new Error('srvx no longer exports a deno adapter under its "." deno condition');
+  const bunEntry = srvxPkg.exports?.["."]?.bun;
+  if (typeof bunEntry !== "string") {
+    throw new Error('srvx no longer exports a bun adapter under its "." bun condition');
   }
-  const entry = join(srvxDir, denoEntry);
+  const entry = join(srvxDir, bunEntry);
   const entrySource = readFileSync(entry, "utf8");
   const sources = [entrySource];
   for (const match of entrySource.matchAll(/from\s+"(\.[^"]+)"/g)) {
@@ -197,5 +185,5 @@ test("the installed proxy still serves through srvx's call-time Deno.serve looku
     const path = join(dirname(entry), spec);
     if (existsSync(path)) sources.push(readFileSync(path, "utf8"));
   }
-  expect(sources.some((s) => s.includes("Deno.serve("))).toBe(true);
+  expect(sources.some((s) => s.includes("Bun.serve("))).toBe(true);
 });

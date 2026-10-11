@@ -7,35 +7,35 @@ import { registryEntry } from "../../src/copilot_api/config_registry.ts";
 import { CopilotEnvConfig } from "../../src/copilot_api/env_config.ts";
 import { CopilotApiPaths } from "../../src/copilot_api/paths.ts";
 import {
+  BUN_CLI_ENV,
   copilotApiArgv,
-  copilotApiEnv,
   resolveCopilotApiEntry,
 } from "../../src/copilot_api/process.ts";
-import { DAEMON_SHIM_FILES } from "../../src/copilot_api/shims.ts";
+import { DAEMON_SHIM_DEPENDENCIES } from "../../src/copilot_api/shims.ts";
+import { PROXY_PACKAGE_NAME } from "../../src/copilot_api/version.ts";
 import {
-  type DenoRunner,
-  daemonConfigFile,
-  ensureProxyNpmrc,
+  daemonBunfigFile,
   type FetchLike,
   floatProxy,
-  NPMRC_MARKER,
+  type InstallRunner,
   parseRegistryDoc,
-  proxyDenoDir,
+  proxyBunCacheDir,
   proxyFloatSkips,
   proxyFloatVerifyStatus,
+  proxyHome,
   proxyLockFile,
+  proxyManifestFile,
   readResolvedVersionRecord,
   removeProxyFloatArtifacts,
+  renderProxyManifest,
   resolvedVersionFile,
   resolveMinimumReleaseAgeSeconds,
   resolveProxyVersionOverride,
   selectProxyVersion,
-  writeDaemonConfig,
   writeResolvedVersionRecord,
 } from "../../src/proxy_float.ts";
 import type { ProjectConfig } from "../../src/utils/project_config.ts";
 import { MILLISECONDS_PER_DAY } from "../../src/utils/time.ts";
-import { sidecarDeno, sidecarTest } from "../helpers/deno_sidecar.ts";
 import { envSnapshot, isolateProxyHome } from "../helpers/env.ts";
 import { ROOT, runSync } from "../helpers/run.ts";
 import { afterEach, beforeEach, describe, expect, removeDir, test } from "../helpers/testing.ts";
@@ -43,15 +43,11 @@ import { afterEach, beforeEach, describe, expect, removeDir, test } from "../hel
 // resolved-version.json records each float; it is the freshness oracle that
 // proxyFloatVerifyStatus's offline fast path reads.
 
-const PROXY_PKG = "@jeffreycao/copilot-api";
+const PROXY_PKG = PROXY_PACKAGE_NAME;
 const NOW_MS = Date.parse("2026-06-10T00:00:00.000Z");
 const WEEK_SECONDS = 604800;
 
-const CONFIG: ProjectConfig = {
-  proxyMinVersion: "1.10.0",
-  proxyMaxVersion: null,
-  sidecarDenoVersion: "2.9.7",
-};
+const CONFIG: ProjectConfig = { proxyMinVersion: "1.10.0", proxyMaxVersion: null };
 
 const MIN_RELEASE_AGE_ENV = "COPILOT_API_MIN_RELEASE_AGE";
 const VERSION_ENV = "COPILOT_API_VERSION";
@@ -110,78 +106,73 @@ function offlineFetch(): { calls: string[]; fetchLike: FetchLike } {
   };
 }
 
-interface DenoCall {
-  command: string;
+interface InstallCall {
   args: string[];
   cwd: string;
   env: Record<string, string>;
 }
 
-/** A fake deno sidecar. A cache seeded with any proxy version stands for a completed prior
- *  float, so its shims count as warm too.
- *    cache <spec>     -> warms the proxy version or the shim unit the argv names
- *    info <spec>      -> answers for whichever is warm
- *    infoLaunchFails  -> every info is a marked FAILED look (spawn never completed); cache still warms */
-function fakeDeno(
-  initialCached: string[] = [],
-  opts: { cacheExit?: number; infoLaunchFails?: boolean } = {},
-): { calls: DenoCall[]; cached: Set<string>; runner: DenoRunner } {
-  const cached = new Set(initialCached);
-  let shimsWarm = initialCached.length > 0;
-  const calls: DenoCall[] = [];
-  const runner: DenoRunner = (command, args, options) => {
-    calls.push({ command, args: [...args], cwd: options.cwd, env: options.env });
-    const spec = args[args.length - 1] ?? "";
-    const prefix = `npm:${PROXY_PKG}@`;
-    const isProxy = spec.startsWith(prefix);
-    const version = isProxy ? spec.slice(prefix.length) : "";
-    if (args[0] === "cache") {
-      if (opts.cacheExit) return { status: opts.cacheExit, stdout: "", stderr: "boom" };
-      if (isProxy) cached.add(version);
-      else shimsWarm = true;
-      return { status: 0, stdout: "", stderr: "" };
-    }
-    if (args[0] === "info") {
-      if (opts.infoLaunchFails) {
-        return { status: 1, stdout: "", stderr: "", launchFailed: true as const };
-      }
-      const ok = isProxy ? cached.has(version) : shimsWarm;
-      return { status: ok ? 0 : 1, stdout: "", stderr: "" };
-    }
+/** What `bun install` leaves in a proxy home from the manifest on disk: the proxy package with
+ *  its manifest and bin, every shim dependency, and the lockfile. */
+function materializeInstall(home: string): void {
+  const manifest = JSON.parse(readFileSync(join(home, "package.json"), "utf8")) as {
+    dependencies: Record<string, string>;
+  };
+  for (const [name, range] of Object.entries(manifest.dependencies)) {
+    const packageDir = join(home, "node_modules", ...name.split("/"));
+    mkdirSync(join(packageDir, "dist"), { recursive: true });
+    const version = name === PROXY_PKG ? range : "0.0.0";
+    writeFileSync(
+      join(packageDir, "package.json"),
+      JSON.stringify({ name, version, bin: { "copilot-api": "./dist/main.js" } }),
+    );
+    writeFileSync(join(packageDir, "dist", "main.js"), "");
+  }
+  writeFileSync(join(home, "bun.lock"), "{}\n");
+}
+
+/** A fake `bun install`: succeeds by materializing whatever the manifest on disk names (the way
+ *  the real one populates node_modules from package.json), or fails as told. */
+function fakeInstall(opts: { exit?: number } = {}): {
+  calls: InstallCall[];
+  runner: InstallRunner;
+} {
+  const calls: InstallCall[] = [];
+  const runner: InstallRunner = (args, options) => {
+    calls.push({ args: [...args], cwd: options.cwd, env: options.env });
+    if (opts.exit) return { status: opts.exit, stdout: "", stderr: "boom" };
+    materializeInstall(options.cwd);
     return { status: 0, stdout: "", stderr: "" };
   };
-  return { calls, cached, runner };
+  return { calls, runner };
 }
 
-/** The artifact set a COMPLETED prior float leaves behind. A record alone is a half-written
- *  float: cacheResolves' unproven arm checks the cache dir exists before vouching. */
-function seedFloat(version: string, atMs: number, denoDir?: string): void {
-  writeDaemonConfig(dir);
-  writeResolvedVersionRecord(dir, version, atMs, denoDir);
-  mkdirSync(denoDir ?? proxyDenoDir(dir), { recursive: true });
+/** The artifact set a COMPLETED prior float of `version` leaves behind: the record and the
+ *  install under this build's manifest. */
+function seedFloat(version: string, atMs: number): void {
+  writeResolvedVersionRecord(dir, version, atMs);
+  mkdirSync(proxyHome(dir), { recursive: true });
+  writeFileSync(proxyManifestFile(dir), renderProxyManifest(version));
+  materializeInstall(proxyHome(dir));
 }
 
-/** A float that installs warms TWO graphs, the proxy package and then the preload shims, because
- *  the daemon spawn resolves both under `--cached-only`; a recorded target that still resolves
- *  warms nothing. */
-function cacheCalls(calls: DenoCall[]): DenoCall[] {
-  return calls.filter((c) => c.args[0] === "cache");
+function installCalls(calls: InstallCall[]): InstallCall[] {
+  return calls.filter((c) => c.args[0] === "install");
 }
 
-function proxyCacheCalls(calls: DenoCall[]): DenoCall[] {
-  return cacheCalls(calls).filter((c) => (c.args[c.args.length - 1] ?? "").startsWith("npm:"));
+/** The proxy version the manifest on disk names after a float. */
+function manifestProxyVersion(): string | undefined {
+  const manifest = JSON.parse(readFileSync(proxyManifestFile(dir), "utf8")) as {
+    dependencies: Record<string, string>;
+  };
+  return manifest.dependencies[PROXY_PKG];
 }
 
-function shimCacheCalls(calls: DenoCall[]): DenoCall[] {
-  return cacheCalls(calls).filter((c) => !(c.args[c.args.length - 1] ?? "").startsWith("npm:"));
-}
-
-function deps(fetchLike: FetchLike, runner: DenoRunner, cooldownSeconds?: number) {
+function deps(fetchLike: FetchLike, runner: InstallRunner, cooldownSeconds?: number) {
   return {
     rootHome: dir,
     config: CONFIG,
     cooldownSeconds: cooldownSeconds,
-    denoBin: "deno-test",
     fetchLike: fetchLike,
     runner: runner,
     nowMs: NOW_MS,
@@ -203,11 +194,7 @@ describe("selectProxyVersion", () => {
   // One registry document, one window, one cooldown -> one selection. The reason fragment
   // names the branch taken, so a clamp that answers the right version for the wrong reason
   // (or the floor reached by fallback instead of by clamp) still fails its row.
-  const FLOOR_30: ProjectConfig = {
-    proxyMinVersion: "1.10.30",
-    proxyMaxVersion: null,
-    sidecarDenoVersion: "2.9.7",
-  };
+  const FLOOR_30: ProjectConfig = { proxyMinVersion: "1.10.30", proxyMaxVersion: null };
   const rows: {
     name: string;
     doc: unknown;
@@ -266,11 +253,7 @@ describe("selectProxyVersion", () => {
     {
       name: "an aged release above the ceiling clamps DOWN to the ceiling",
       doc: registryDoc({ "1.10.29": 8, "1.10.30": 8 }),
-      config: {
-        proxyMinVersion: "1.10.0",
-        proxyMaxVersion: "1.10.29",
-        sidecarDenoVersion: "2.9.7",
-      },
+      config: { proxyMinVersion: "1.10.0", proxyMaxVersion: "1.10.29" },
       cooldownSeconds: WEEK_SECONDS,
       expected: {
         kind: "resolved",
@@ -416,88 +399,124 @@ describe("resolveMinimumReleaseAgeSeconds", () => {
 });
 
 describe("floatProxy", () => {
-  test("caches the exact newest cooldown-aged target and records it", async () => {
+  // The install is bun's own, so what the float controls is what it writes and how it runs it:
+  // the manifest naming the exact target plus the shims' dependencies, the bunfig carrying the
+  // cooldown, the cache pinned under the root home, the bun CLI environment.
+  test("installs the exact newest cooldown-aged target from a manifest and bunfig it writes, and records it", async () => {
     const { fetchLike } = docFetch(registryDoc({ "1.10.30": 8, "1.10.31": 1 }));
-    const deno = fakeDeno();
+    const install = fakeInstall();
 
-    await floatProxy(deps(fetchLike, deno.runner, WEEK_SECONDS));
+    await floatProxy(deps(fetchLike, install.runner, WEEK_SECONDS));
 
-    const cache = proxyCacheCalls(deno.calls);
-    expect(cache).toHaveLength(1);
-    expect(cache[0]?.command).toBe("deno-test");
-    // The DAEMON config, not the checkout's: deno.json's frozen lock would reject this
-    // exact specifier outright, since only the caret range is in deno.lock.
-    expect(cache[0]?.args).toEqual([
-      "cache",
-      "--config",
-      daemonConfigFile(dir),
-      // The proxy's OWN lockfile pins the transitive tree across floats and is the baseline
-      // trust-policy=no-downgrade compares against; with no lockfile there is nothing to compare.
-      "--lock",
-      proxyLockFile(dir),
-      "--node-modules-dir=none",
-      "--minimum-dependency-age=PT604800S",
-      `npm:${PROXY_PKG}@1.10.30`,
+    expect(install.calls).toEqual([
+      {
+        // A first install has no lockfile to freeze: bun resolves and writes it.
+        args: ["install"],
+        cwd: proxyHome(dir),
+        env: { ...BUN_CLI_ENV, BUN_INSTALL_CACHE_DIR: proxyBunCacheDir(dir) },
+      },
     ]);
-    // The shims are warmed too -- a miss on them is just as fatal to the launch.
-    const shimWarm = shimCacheCalls(deno.calls);
-    expect(shimWarm).toHaveLength(1);
-    expect(shimWarm[0]?.args).toContain("--config");
-    for (const shim of DAEMON_SHIM_FILES) {
-      expect(shimWarm[0]?.args.some((a) => a.endsWith(shim))).toBe(true);
-    }
-    expect(cache[0]?.env.DENO_DIR).toBe(proxyDenoDir(dir));
-    expect(cache[0]?.env.DENO_NO_UPDATE_CHECK).toBe("1");
-    // Location-independence: config/package.json discovery must never reach the
-    // spawn (npm-specifier entrypoints fail under a discovered node-modules config).
-    expect(cache[0]?.env.DENO_NO_PACKAGE_JSON).toBe("1");
-    expect(cache[0]?.cwd).toBe(dir);
-
-    const record = readResolvedVersionRecord(dir);
-    expect(record).toEqual({
-      version: "1.10.30",
-      resolvedAtMs: NOW_MS,
-      denoDir: proxyDenoDir(dir),
+    // The manifest: the proxy at the EXACT version, and every shim dependency at this build's
+    // range (the checkout's package.json), nothing else.
+    const checkout = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")) as {
+      dependencies: Record<string, string>;
+    };
+    const manifest = JSON.parse(readFileSync(proxyManifestFile(dir), "utf8"));
+    expect(manifest).toEqual({
+      name: "copilot-env-proxy",
+      private: true,
+      dependencies: {
+        [PROXY_PKG]: "1.10.30",
+        ...Object.fromEntries(
+          DAEMON_SHIM_DEPENDENCIES.map((name) => [name, checkout.dependencies[name]]),
+        ),
+      },
     });
+    // The bunfig: the cooldown as bun's own floor, so the transitive tree gets the window too,
+    // and no auto-install for a daemon started from this cwd.
+    expect(parseToml(readFileSync(daemonBunfigFile(dir), "utf8"))).toEqual({
+      install: { auto: "disable", minimumReleaseAge: WEEK_SECONDS },
+    });
+
+    expect(readResolvedVersionRecord(dir)).toEqual({ version: "1.10.30", resolvedAtMs: NOW_MS });
     // The on-disk keys are the external contract.
     const raw = JSON.parse(readFileSync(resolvedVersionFile(dir), "utf8"));
-    expect(Object.keys(raw).sort()).toEqual(["deno_dir", "resolved_at_ms", "version"]);
+    expect(Object.keys(raw).sort()).toEqual(["resolved_at_ms", "version"]);
   });
 
-  test("skips the cache write when the recorded target is already cached, refreshing the record", async () => {
+  test("skips the install when the recorded target is already installed, refreshing the record", async () => {
     seedFloat("1.10.30", NOW_MS - 30 * MILLISECONDS_PER_DAY);
     const { fetchLike } = docFetch(registryDoc({ "1.10.30": 8, "1.10.31": 1 }));
-    const deno = fakeDeno(["1.10.30"]);
+    const install = fakeInstall();
 
-    await floatProxy(deps(fetchLike, deno.runner, WEEK_SECONDS));
+    await floatProxy(deps(fetchLike, install.runner, WEEK_SECONDS));
 
-    expect(cacheCalls(deno.calls)).toEqual([]);
+    expect(install.calls).toEqual([]);
     // The record's timestamp refreshes so proxyFloatVerifyStatus stays on its offline fast path.
     expect(readResolvedVersionRecord(dir)?.resolvedAtMs).toBe(NOW_MS);
   });
 
-  test("a timestamp refresh preserves the record's own cache dir", async () => {
-    const elsewhere = join(dir, "old-cache");
-    seedFloat("1.10.30", NOW_MS - 30 * MILLISECONDS_PER_DAY, elsewhere);
+  // Three re-installs of the recorded version, told apart by what the lockfile may do:
+  //   node_modules gone, manifest and lock intact  -> frozen: restored from the lock, no pin moves
+  //   a shim dependency gone                       -> frozen too: the manifest is still this build's
+  //   the manifest from another build              -> a fresh resolve; the lock follows
+  test("a reinstall of the recorded version is frozen while the manifest is this build's", async () => {
     const { fetchLike } = docFetch(registryDoc({ "1.10.30": 8 }));
-    const deno = fakeDeno(["1.10.30"]);
-
-    await floatProxy(deps(fetchLike, deno.runner, WEEK_SECONDS));
-
-    // The cache probe ran against the recorded dir, and the refreshed record
-    // still points there -- never silently rewritten to the current dir.
-    expect(deno.calls[0]?.env.DENO_DIR).toBe(elsewhere);
-    expect(readResolvedVersionRecord(dir)?.denoDir).toBe(elsewhere);
+    const rows: { name: string; damage: () => void; args: string[] }[] = [
+      {
+        name: "node_modules gone",
+        damage: () => rmSync(join(proxyHome(dir), "node_modules"), { recursive: true }),
+        args: ["install", "--frozen-lockfile"],
+      },
+      {
+        name: "a shim dependency gone",
+        damage: () => rmSync(join(proxyHome(dir), "node_modules", "valibot"), { recursive: true }),
+        args: ["install", "--frozen-lockfile"],
+      },
+      {
+        name: "another build's manifest",
+        damage: () =>
+          writeFileSync(
+            proxyManifestFile(dir),
+            renderProxyManifest("1.10.30", {
+              ...JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")).dependencies,
+              valibot: "^0.1.0",
+            }),
+          ),
+        args: ["install"],
+      },
+    ];
+    for (const row of rows) {
+      dir = removeDir(dir);
+      dir = isolateProxyHome("copilot-float-");
+      seedFloat("1.10.30", NOW_MS);
+      row.damage();
+      const install = fakeInstall();
+      await floatProxy(deps(fetchLike, install.runner, WEEK_SECONDS));
+      expect({ name: row.name, calls: installCalls(install.calls).map((c) => c.args) }).toEqual({
+        name: row.name,
+        calls: [row.args],
+      });
+      expect(manifestProxyVersion(), row.name).toBe("1.10.30");
+      expect(readResolvedVersionRecord(dir)?.resolvedAtMs, row.name).toBe(NOW_MS);
+    }
   });
 
-  test("re-caches when the record matches but the cache entry is gone", async () => {
-    seedFloat("1.10.30", NOW_MS);
-    const { fetchLike } = docFetch(registryDoc({ "1.10.30": 8 }));
-    const deno = fakeDeno(); // nothing cached
+  test("a version change resolves afresh and drops the superseded version's cache", async () => {
+    seedFloat("1.10.29", NOW_MS - 30 * MILLISECONDS_PER_DAY);
+    const staleTarball = join(proxyBunCacheDir(dir), "old.tgz");
+    mkdirSync(proxyBunCacheDir(dir), { recursive: true });
+    writeFileSync(staleTarball, "");
+    const { fetchLike } = docFetch(registryDoc({ "1.10.29": 40, "1.10.30": 8 }));
+    const install = fakeInstall();
 
-    await floatProxy(deps(fetchLike, deno.runner, WEEK_SECONDS));
+    await floatProxy(deps(fetchLike, install.runner, WEEK_SECONDS));
 
-    expect(proxyCacheCalls(deno.calls)).toHaveLength(1);
+    // Never frozen: the manifest changed, so the lock must follow it.
+    expect(installCalls(install.calls).map((c) => c.args)).toEqual([["install"]]);
+    expect(manifestProxyVersion()).toBe("1.10.30");
+    expect(existsSync(staleTarball)).toBe(false);
+    expect(readResolvedVersionRecord(dir)?.version).toBe("1.10.30");
   });
 
   test("a refused target keeps a usable in-bounds recorded version", async () => {
@@ -505,45 +524,41 @@ describe("floatProxy", () => {
     const { fetchLike } = docFetch(
       registryDoc({ "1.10.29": 40, "1.10.30": 8 }, { scripts: { "1.10.30": ["install"] } }),
     );
-    const deno = fakeDeno(["1.10.29"]);
+    const install = fakeInstall();
 
-    await floatProxy(deps(fetchLike, deno.runner, WEEK_SECONDS));
+    await floatProxy(deps(fetchLike, install.runner, WEEK_SECONDS));
 
-    expect(cacheCalls(deno.calls)).toEqual([]);
+    expect(install.calls).toEqual([]);
     expect(readResolvedVersionRecord(dir)?.version).toBe("1.10.29");
   });
 
-  test("a refused target re-warms a kept record whose cache the new map orphaned", async () => {
-    // A build change regenerates the daemon config; when the new map no longer
-    // resolves against the old warm, the kept record must be re-warmed, not thrown
-    // away -- the daemon would otherwise launch `--cached-only` against a cold cache.
-    seedFloat("1.10.29", NOW_MS - 30 * MILLISECONDS_PER_DAY, join(dir, "old-cache"));
+  test("a refused target reinstalls a kept record whose install is gone", async () => {
+    // A build change renders a new manifest; when the install on disk is not this build's, the
+    // kept record must be reinstalled, not thrown away: the daemon would otherwise launch
+    // against a tree missing what the new shims import.
+    writeResolvedVersionRecord(dir, "1.10.29", NOW_MS - 30 * MILLISECONDS_PER_DAY);
     const { fetchLike } = docFetch(
       registryDoc({ "1.10.29": 40, "1.10.30": 8 }, { scripts: { "1.10.30": ["install"] } }),
     );
-    const deno = fakeDeno(); // nothing cached: the regenerated map resolves nothing
+    const install = fakeInstall();
 
-    await floatProxy(deps(fetchLike, deno.runner, WEEK_SECONDS));
+    await floatProxy(deps(fetchLike, install.runner, WEEK_SECONDS));
 
-    const warmed = proxyCacheCalls(deno.calls);
-    // The KEPT version is the only warm, never the refused one -- under the same
-    // supply-chain window as any other install.
-    expect(warmed.map((c) => c.args[c.args.length - 1])).toEqual([`npm:${PROXY_PKG}@1.10.29`]);
-    expect(warmed[0]?.args).toContain("--minimum-dependency-age=PT604800S");
-    expect(warmed[0]?.env.DENO_DIR).toBe(proxyDenoDir(dir));
-    // The record repoints at the cache dir the warm landed in, refreshed.
-    expect(readResolvedVersionRecord(dir)).toEqual({
-      version: "1.10.29",
-      resolvedAtMs: NOW_MS,
-      denoDir: proxyDenoDir(dir),
+    // The KEPT version is the only install, never the refused one, under the same supply-chain
+    // window as any other install.
+    expect(installCalls(install.calls)).toHaveLength(1);
+    expect(manifestProxyVersion()).toBe("1.10.29");
+    expect(parseToml(readFileSync(daemonBunfigFile(dir), "utf8"))).toMatchObject({
+      install: { minimumReleaseAge: WEEK_SECONDS },
     });
+    expect(readResolvedVersionRecord(dir)).toEqual({ version: "1.10.29", resolvedAtMs: NOW_MS });
   });
 
   test("a lifecycle-scripted target is refused outright with nothing usable on record: fresh, cold scripted, or cold unlisted", async () => {
     // A fresh install has nothing to keep. An explicit pin bypasses the refusal, so a scripted
-    // version can be on record (e.g. the pin was later removed); re-warming it automatically would
-    // install the refused version without the pin's consent. A record the doc does not list cannot
-    // have its scripts vetted at all, and fails closed the same way.
+    // version can be on record (e.g. the pin was later removed); reinstalling it automatically
+    // would install the refused version without the pin's consent. A record the doc does not
+    // list cannot have its scripts vetted at all, and fails closed the same way.
     const rows: { recorded: string | null; script: string }[] = [
       { recorded: null, script: "postinstall" },
       { recorded: "1.10.30", script: "install" },
@@ -554,214 +569,152 @@ describe("floatProxy", () => {
       const doc = registryDoc({ "1.10.30": 8 }, { scripts: { "1.10.30": [row.script] } });
       dir = removeDir(dir);
       dir = isolateProxyHome("copilot-float-");
-      if (row.recorded !== null) seedFloat(row.recorded, NOW_MS - 30 * MILLISECONDS_PER_DAY);
-      const deno = fakeDeno(); // cold: the keep-without-install path is not available
+      if (row.recorded !== null) {
+        writeResolvedVersionRecord(dir, row.recorded, NOW_MS - 30 * MILLISECONDS_PER_DAY);
+      }
+      const install = fakeInstall(); // cold: the keep-without-install path is not available
 
       await expect(
-        floatProxy(deps(docFetch(doc).fetchLike, deno.runner, WEEK_SECONDS)),
+        floatProxy(deps(docFetch(doc).fetchLike, install.runner, WEEK_SECONDS)),
         label,
       ).rejects.toThrow("lifecycle scripts");
-      expect(cacheCalls(deno.calls), label).toEqual([]);
+      expect(install.calls, label).toEqual([]);
     }
   });
 
-  test("a refused target whose kept record cannot re-warm still fails loud", async () => {
-    seedFloat("1.10.29", NOW_MS - 30 * MILLISECONDS_PER_DAY);
+  test("a refused target whose kept record cannot reinstall still fails loud", async () => {
+    writeResolvedVersionRecord(dir, "1.10.29", NOW_MS - 30 * MILLISECONDS_PER_DAY);
     const { fetchLike } = docFetch(
       registryDoc({ "1.10.29": 40, "1.10.30": 8 }, { scripts: { "1.10.30": ["install"] } }),
     );
 
     await expect(
-      floatProxy(deps(fetchLike, fakeDeno([], { cacheExit: 1 }).runner, WEEK_SECONDS)),
+      floatProxy(deps(fetchLike, fakeInstall({ exit: 1 }).runner, WEEK_SECONDS)),
     ).rejects.toThrow("lifecycle scripts");
   });
 
   test("registry failure keeps a usable recorded version, else installs the floor offline", async () => {
     seedFloat("1.10.30", NOW_MS - 30 * MILLISECONDS_PER_DAY);
-    const kept = fakeDeno(["1.10.30"]);
+    const kept = fakeInstall();
     await floatProxy(deps(offlineFetch().fetchLike, kept.runner, WEEK_SECONDS));
-    expect(cacheCalls(kept.calls)).toEqual([]);
+    expect(kept.calls).toEqual([]);
 
     dir = removeDir(dir);
     dir = isolateProxyHome("copilot-float-");
-    const floor = fakeDeno();
+    const floor = fakeInstall();
     await floatProxy({
       ...deps(offlineFetch().fetchLike, floor.runner, WEEK_SECONDS),
-      config: { proxyMinVersion: "1.10.30", proxyMaxVersion: null, sidecarDenoVersion: "2.9.7" },
+      config: { proxyMinVersion: "1.10.30", proxyMaxVersion: null },
     });
-    const cache = proxyCacheCalls(floor.calls);
-    expect(cache).toHaveLength(1);
-    expect(cache[0]?.args[cache[0].args.length - 1]).toBe(`npm:${PROXY_PKG}@1.10.30`);
+    expect(installCalls(floor.calls)).toHaveLength(1);
+    expect(manifestProxyVersion()).toBe("1.10.30");
     expect(readResolvedVersionRecord(dir)?.version).toBe("1.10.30");
   });
 
-  test("a FAILED cache look keeps the recorded version -- never the floor reinstall", async () => {
-    // The bug this pins: a failed look read as "cache missing" installed the floor, and
-    // dropSupersededCache discarded the recorded, possibly working, cache on the way. Contrast
-    // the proven-missing control above, where the floor install is the correct recovery.
-    seedFloat("1.10.30", NOW_MS - 30 * MILLISECONDS_PER_DAY);
-    const deno = fakeDeno(["1.10.30"], { infoLaunchFails: true });
+  // The bug this pins: a failed look read as "install missing" installed the floor, and the
+  // superseded-cache drop discarded the recorded, possibly working, install on the way. The
+  // proven-missing control is the floor install above. chmod 000 denies nothing to root or on
+  // Windows, so the row skips there.
+  test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+    "a FAILED install look keeps the recorded version, never the floor reinstall; verify says could-not-verify",
+    async () => {
+      seedFloat("1.10.30", NOW_MS - 30 * MILLISECONDS_PER_DAY);
+      chmodSync(proxyManifestFile(dir), 0o000);
+      try {
+        const install = fakeInstall();
+        await floatProxy(deps(offlineFetch().fetchLike, install.runner, WEEK_SECONDS));
+        expect(readResolvedVersionRecord(dir)?.version).toBe("1.10.30");
+        expect(install.calls).toEqual([]); // no floor install, no reinstall
 
-    await floatProxy(deps(offlineFetch().fetchLike, deno.runner, WEEK_SECONDS));
+        const unproven = await proxyFloatVerifyStatus(
+          deps(offlineFetch().fetchLike, install.runner, WEEK_SECONDS),
+        );
+        expect(unproven.upToDate).toBe(false);
+        expect(unproven.message).toContain("could not verify");
+        expect(unproven.message).not.toContain("is not installed");
 
-    expect(readResolvedVersionRecord(dir)?.version).toBe("1.10.30");
-    expect(cacheCalls(deno.calls)).toEqual([]); // no floor install, no re-warm
-  });
+        // An exact pin whose look failed reinstalls (same version, non-destructive) instead of
+        // claiming "pinned; no install".
+        process.env[VERSION_ENV] = "1.10.30";
+        chmodSync(proxyManifestFile(dir), 0o600);
+        chmodSync(proxyManifestFile(dir), 0o000);
+        const pinned = fakeInstall();
+        await floatProxy(deps(offlineFetch().fetchLike, pinned.runner));
+        expect(installCalls(pinned.calls)).toHaveLength(1);
+        expect(readResolvedVersionRecord(dir)?.version).toBe("1.10.30");
+      } finally {
+        chmodSync(proxyManifestFile(dir), 0o600);
+      }
+    },
+  );
 
-  test("verify: a FAILED cache look says could-not-verify, never 'not in the deno cache'", async () => {
-    seedFloat("1.10.30", NOW_MS);
-    const unproven = await proxyFloatVerifyStatus(
-      deps(
-        offlineFetch().fetchLike,
-        fakeDeno(["1.10.30"], { infoLaunchFails: true }).runner,
-        WEEK_SECONDS,
-      ),
-    );
-    expect(unproven.upToDate).toBe(false);
-    expect(unproven.message).toContain("could not verify");
-    expect(unproven.message).not.toContain("is not in the deno cache");
-
-    // The proven-missing control: `deno info` RAN and said no -- that (and only
-    // that) earns the confident "is not in the deno cache".
+  test("verify: a proven-missing install earns the confident 'not installed'", async () => {
+    writeResolvedVersionRecord(dir, "1.10.30", NOW_MS);
     const missing = await proxyFloatVerifyStatus(
-      deps(offlineFetch().fetchLike, fakeDeno().runner, WEEK_SECONDS),
+      deps(offlineFetch().fetchLike, fakeInstall().runner, WEEK_SECONDS),
     );
     expect(missing.upToDate).toBe(false);
-    expect(missing.message).toContain("is not in the deno cache");
+    expect(missing.message).toContain(`is not installed in ${proxyHome(dir)}`);
   });
 
-  test("an exact pin whose cache look failed re-warms instead of claiming up to date", async () => {
-    process.env[VERSION_ENV] = "1.10.30";
-    seedFloat("1.10.30", NOW_MS);
-    const deno = fakeDeno(["1.10.30"], { infoLaunchFails: true });
-
-    await floatProxy(deps(offlineFetch().fetchLike, deno.runner));
-
-    // Not the "pinned; no install" fast path: the unverified cache is re-warmed
-    // (same version -- non-destructive) and the record stays on the pin.
-    expect(proxyCacheCalls(deno.calls)).toHaveLength(1);
-    expect(readResolvedVersionRecord(dir)?.version).toBe("1.10.30");
-  });
-
-  test("a superseded-then-failed install never 'keeps' the cache it just dropped", async () => {
-    // The warm DROPS A's cache (dropSupersededCache) before failing, and the info look fails
-    // too; the unproven keep must not vouch for A when its cache dir is observably gone.
-    seedFloat("1.10.5", NOW_MS - 30 * MILLISECONDS_PER_DAY);
+  test("a failed install below the floor throws", async () => {
     const { fetchLike } = docFetch(registryDoc({ "1.10.30": 8 }));
-    const deno = fakeDeno(["1.10.5"], { cacheExit: 1, infoLaunchFails: true });
-
-    await expect(floatProxy(deps(fetchLike, deno.runner, WEEK_SECONDS))).rejects.toThrow(
-      "could not install",
-    );
-  });
-
-  test("a failed cache write below the floor throws", async () => {
-    const { fetchLike } = docFetch(registryDoc({ "1.10.30": 8 }));
-    const deno = fakeDeno([], { cacheExit: 1 });
-
-    await expect(floatProxy(deps(fetchLike, deno.runner, WEEK_SECONDS))).rejects.toThrow(
-      "could not install",
-    );
+    await expect(
+      floatProxy(deps(fetchLike, fakeInstall({ exit: 1 }).runner, WEEK_SECONDS)),
+    ).rejects.toThrow("could not install");
   });
 
   test("an exact env pin bypasses window, cooldown, and a bad cooldown env, at the float and at verify", async () => {
     process.env[VERSION_ENV] = "1.9.99"; // below CONFIG's floor on purpose
     process.env[MIN_RELEASE_AGE_ENV] = "not-a-number"; // would throw if resolved
-    const deno = fakeDeno();
+    const install = fakeInstall();
 
-    await floatProxy(deps(offlineFetch().fetchLike, deno.runner));
+    await floatProxy(deps(offlineFetch().fetchLike, install.runner));
 
-    const cache = proxyCacheCalls(deno.calls);
-    expect(cache).toHaveLength(1);
-    expect(cache[0]?.args).toContain("--minimum-dependency-age=0");
-    expect(cache[0]?.args).toContain(`npm:${PROXY_PKG}@1.9.99`);
+    expect(installCalls(install.calls)).toHaveLength(1);
+    expect(manifestProxyVersion()).toBe("1.9.99");
+    // A pin's install runs with no floor at all, the transitive tree included.
+    expect(parseToml(readFileSync(daemonBunfigFile(dir), "utf8"))).toMatchObject({
+      install: { minimumReleaseAge: 0 },
+    });
     expect(readResolvedVersionRecord(dir)?.version).toBe("1.9.99");
 
-    // The same pin, now recorded and cached, verifies up to date under the same bad cooldown env.
-    const status = await proxyFloatVerifyStatus(deps(offlineFetch().fetchLike, deno.runner));
+    // The same pin, now recorded and installed, verifies up to date under the same bad cooldown env.
+    const status = await proxyFloatVerifyStatus(deps(offlineFetch().fetchLike, install.runner));
     expect(status.upToDate).toBe(true);
   });
 
-  test("an exact pin already recorded and cached is a no-op", async () => {
+  test("an exact pin already recorded and installed is a no-op", async () => {
     process.env[VERSION_ENV] = "1.10.30";
     seedFloat("1.10.30", NOW_MS - 30 * MILLISECONDS_PER_DAY);
-    const deno = fakeDeno(["1.10.30"]);
+    const install = fakeInstall();
 
-    await floatProxy(deps(offlineFetch().fetchLike, deno.runner));
+    await floatProxy(deps(offlineFetch().fetchLike, install.runner));
 
-    expect(cacheCalls(deno.calls)).toEqual([]);
+    expect(install.calls).toEqual([]);
   });
 
   test("a stored proxy-version config pin applies; the env pin wins over it", async () => {
     new CopilotEnvConfig().set({ "daemon.version": "1.10.29" });
-    const deno = fakeDeno();
-    await floatProxy(deps(offlineFetch().fetchLike, deno.runner));
+    await floatProxy(deps(offlineFetch().fetchLike, fakeInstall().runner));
     expect(readResolvedVersionRecord(dir)?.version).toBe("1.10.29");
 
     process.env[VERSION_ENV] = "1.10.30";
-    const deno2 = fakeDeno();
-    await floatProxy(deps(offlineFetch().fetchLike, deno2.runner));
+    await floatProxy(deps(offlineFetch().fetchLike, fakeInstall().runner));
     expect(readResolvedVersionRecord(dir)?.version).toBe("1.10.30");
   });
 
   test("a dist-tag pin resolves through the registry; an unknown tag throws", async () => {
     process.env[VERSION_ENV] = "latest";
     const doc = registryDoc({ "1.10.31": 1 }, { distTags: { latest: "1.10.31" } });
-    const deno = fakeDeno();
 
-    await floatProxy(deps(docFetch(doc).fetchLike, deno.runner));
+    await floatProxy(deps(docFetch(doc).fetchLike, fakeInstall().runner));
     expect(readResolvedVersionRecord(dir)?.version).toBe("1.10.31");
 
     process.env[VERSION_ENV] = "nope";
-    await expect(floatProxy(deps(docFetch(doc).fetchLike, fakeDeno().runner))).rejects.toThrow(
+    await expect(floatProxy(deps(docFetch(doc).fetchLike, fakeInstall().runner))).rejects.toThrow(
       "'nope' tag does not exist",
     );
-  });
-});
-
-describe("ensureProxyNpmrc", () => {
-  test("writes the marked trust-policy file and is idempotent", () => {
-    expect(ensureProxyNpmrc(dir).kind).toBe("written");
-    const content = readFileSync(join(dir, ".npmrc"), "utf8");
-    expect(content).toContain(NPMRC_MARKER);
-    expect(content).toContain("trust-policy=no-downgrade");
-    expect(ensureProxyNpmrc(dir).kind).toBe("current");
-  });
-
-  // A foreign .npmrc (no marker) is kept byte for byte, whether its content could be read or
-  // not: ownership unproven means never rewritten. The unreadable half needs chmod 000 to deny
-  // the read, so it skips on Windows and under root.
-  const FOREIGN_NPMRC = "registry=https://example.test\n";
-  for (const readable of [true, false]) {
-    test.skipIf(!readable && (process.platform === "win32" || process.getuid?.() === 0))(
-      `never clobbers a foreign .npmrc that is ${readable ? "readable" : "UNREADABLE"}`,
-      () => {
-        const npmrc = join(dir, ".npmrc");
-        writeFileSync(npmrc, FOREIGN_NPMRC);
-        if (!readable) chmodSync(npmrc, 0o000);
-        try {
-          expect(ensureProxyNpmrc(dir).kind).toBe("kept-foreign");
-        } finally {
-          if (!readable) chmodSync(npmrc, 0o600);
-        }
-        expect(readFileSync(npmrc, "utf8")).toBe(FOREIGN_NPMRC);
-      },
-    );
-  }
-
-  test("floatProxy writes it before installing", async () => {
-    // Read at cache-spawn time, inside the runner: an .npmrc written after the
-    // install could not steer deno's trust policy, so an assertion made once
-    // floatProxy returned would pass on exactly the ordering bug this guards.
-    const seen: string[] = [];
-    const inner = fakeDeno();
-    const runner: DenoRunner = (command, args, options) => {
-      if (args[0] === "cache") seen.push(readFileSync(join(dir, ".npmrc"), "utf8"));
-      return inner.runner(command, args, options);
-    };
-    await floatProxy(deps(docFetch(registryDoc({ "1.10.30": 8 })).fetchLike, runner, 0));
-    expect(seen.length).toBeGreaterThan(0);
-    for (const content of seen) expect(content).toContain(NPMRC_MARKER);
   });
 });
 
@@ -776,57 +729,13 @@ describe("resolved-version record", () => {
   });
 });
 
-// Every verify re-renders the daemon config from the running build's import map ahead of its cache
-// probes, so an `agent update` behind a still-young record (no float due) cannot leave the old
-// build's config steering daemon spawns until the record ages out of the cooldown window.
-describe("the daemon config on verify", () => {
-  test("a young record's stale config is regenerated offline; the resolution timestamp stays", async () => {
-    seedFloat("1.10.30", NOW_MS - 1000);
-    writeFileSync(daemonConfigFile(dir), '{"imports":{"stale":"npm:stale@1.0.0"}}\n');
-    const offline = offlineFetch();
-    const status = await proxyFloatVerifyStatus(
-      deps(offline.fetchLike, fakeDeno(["1.10.30"]).runner, WEEK_SECONDS),
-    );
-    expect(status.upToDate).toBe(true);
-    expect(offline.calls).toEqual([]);
-    const config = JSON.parse(readFileSync(daemonConfigFile(dir), "utf8"));
-    expect(config.imports.stale).toBeUndefined();
-    expect(config.imports[PROXY_PKG]).toBeDefined();
-    // Regeneration must never extend the cooldown window, so the resolution timestamp stays.
-    const record = readResolvedVersionRecord(dir);
-    expect(record?.resolvedAtMs).toBe(NOW_MS - 1000);
-    expect(record?.denoDir).toBe(proxyDenoDir(dir));
-  });
-
-  test("regeneration happens BEFORE the cache probe, so a changed map can trigger the re-warm", async () => {
-    // fakeDeno's cache ignores config content, so a regeneration moved AFTER cacheResolves
-    // would still pass the other tests, while production would probe the OLD map and skip
-    // the re-warm the new map needs. Every probe must already see the regenerated config.
-    seedFloat("1.10.30", NOW_MS - 1000);
-    writeFileSync(daemonConfigFile(dir), '{"imports":{"stale":"npm:stale@1.0.0"}}\n');
-    const probed: string[] = [];
-    const runner: DenoRunner = (_command, args, _options) => {
-      if (args[0] === "info") probed.push(readFileSync(daemonConfigFile(dir), "utf8"));
-      return { status: 0, stdout: "", stderr: "" };
-    };
-    const status = await proxyFloatVerifyStatus(
-      deps(offlineFetch().fetchLike, runner, WEEK_SECONDS),
-    );
-    expect(status.upToDate).toBe(true);
-    expect(probed.length).toBeGreaterThan(0);
-    for (const config of probed) {
-      expect(JSON.parse(config).imports.stale).toBeUndefined();
-    }
-  });
-});
-
 describe("proxyFloatVerifyStatus", () => {
-  // Every row runs offline: the record's state alone (present, cached, fresh, in bounds) must
+  // Every row runs offline: the record's state alone (present, installed, fresh, in bounds) must
   // decide the verdict, and only the stale-record rows may reach for the registry.
   const rows: {
     name: string;
     record: { version: string; ageMs: number } | null;
-    cached: string[];
+    installed: boolean;
     upToDate: boolean;
     message?: string;
     network?: boolean;
@@ -834,27 +743,27 @@ describe("proxyFloatVerifyStatus", () => {
     {
       name: "install needed when nothing is recorded",
       record: null,
-      cached: [],
+      installed: false,
       upToDate: false,
     },
     {
-      name: "a fresh in-bounds cached record verifies",
+      name: "a fresh in-bounds installed record verifies",
       record: { version: "1.10.30", ageMs: 1000 },
-      cached: ["1.10.30"],
+      installed: true,
       upToDate: true,
       network: false,
     },
     {
-      name: "a fresh record whose cache entry is gone needs an install",
+      name: "a fresh record whose install is gone needs an install",
       record: { version: "1.10.30", ageMs: 1000 },
-      cached: [],
+      installed: false,
       upToDate: false,
-      message: "deno cache",
+      message: "is not installed",
     },
     {
       name: "a stale record is kept when the registry is unreachable",
       record: { version: "1.10.30", ageMs: 30 * MILLISECONDS_PER_DAY },
-      cached: ["1.10.30"],
+      installed: true,
       upToDate: true,
       message: "keeping",
       network: true,
@@ -862,21 +771,24 @@ describe("proxyFloatVerifyStatus", () => {
     {
       name: "a recorded version outside the window needs an update, without network",
       record: { version: "1.9.99", ageMs: 1000 },
-      cached: ["1.9.99"],
+      installed: true,
       upToDate: false,
       message: "1.10.0",
       network: false,
     },
   ];
 
-  test("the record's presence, cache, age, and bounds decide the offline verdict", async () => {
+  test("the record's presence, install, age, and bounds decide the offline verdict", async () => {
     for (const row of rows) {
       dir = removeDir(dir);
       dir = isolateProxyHome("copilot-float-");
-      if (row.record) seedFloat(row.record.version, NOW_MS - row.record.ageMs);
+      if (row.record) {
+        if (row.installed) seedFloat(row.record.version, NOW_MS - row.record.ageMs);
+        else writeResolvedVersionRecord(dir, row.record.version, NOW_MS - row.record.ageMs);
+      }
       const offline = offlineFetch();
       const status = await proxyFloatVerifyStatus(
-        deps(offline.fetchLike, fakeDeno(row.cached).runner, WEEK_SECONDS),
+        deps(offline.fetchLike, fakeInstall().runner, WEEK_SECONDS),
       );
       expect(status.upToDate, row.name).toBe(row.upToDate);
       if (row.message) expect(status.message, row.name).toContain(row.message);
@@ -890,24 +802,24 @@ describe("proxyFloatVerifyStatus", () => {
     seedFloat("1.10.30", NOW_MS - 30 * MILLISECONDS_PER_DAY);
     const same = docFetch(registryDoc({ "1.10.30": 8, "1.10.31": 1 }));
     const okStatus = await proxyFloatVerifyStatus(
-      deps(same.fetchLike, fakeDeno(["1.10.30"]).runner, WEEK_SECONDS),
+      deps(same.fetchLike, fakeInstall().runner, WEEK_SECONDS),
     );
     expect(same.calls).toHaveLength(1);
     expect(okStatus.upToDate).toBe(true);
 
     const moved = docFetch(registryDoc({ "1.10.30": 40, "1.10.31": 8 }));
     const staleStatus = await proxyFloatVerifyStatus(
-      deps(moved.fetchLike, fakeDeno(["1.10.30"]).runner, WEEK_SECONDS),
+      deps(moved.fetchLike, fakeInstall().runner, WEEK_SECONDS),
     );
     expect(staleStatus.upToDate).toBe(false);
     expect(staleStatus.message).toContain("1.10.30");
     expect(staleStatus.message).toContain("1.10.31");
   });
 
-  test("COPILOT_API_VERSION: up to date only when the exact pin is recorded and cached", async () => {
+  test("COPILOT_API_VERSION: up to date only when the exact pin is recorded and installed", async () => {
     seedFloat("1.10.30", NOW_MS);
     process.env[VERSION_ENV] = "1.10.30";
-    const d = deps(offlineFetch().fetchLike, fakeDeno(["1.10.30"]).runner);
+    const d = deps(offlineFetch().fetchLike, fakeInstall().runner);
     expect((await proxyFloatVerifyStatus(d)).upToDate).toBe(true);
 
     process.env[VERSION_ENV] = "1.10.31";
@@ -919,116 +831,21 @@ describe("proxyFloatVerifyStatus", () => {
   });
 });
 
-describe("writeDaemonConfig", () => {
-  test("carries the import map but DROPS lock and nodeModulesDir", () => {
-    // Both omissions are load-bearing, and both were live launch failures before:
-    //   - a frozen `lock` rejects `npm:<proxy>@<floated version>` ("lockfile is out of
-    //     date"), because only the caret range is in deno.lock;
-    //   - `nodeModulesDir` routes resolution through a node_modules tree a compiled
-    //     install does not have.
-    writeDaemonConfig(dir);
-    const config = JSON.parse(readFileSync(daemonConfigFile(dir), "utf8"));
-
-    expect(config.imports[PROXY_PKG]).toBeDefined();
-    expect(config.lock).toBeUndefined();
-    expect(config.nodeModulesDir).toBeUndefined();
-
-    // The import map must be complete, not just the proxy: the preload shims resolve their OWN
-    // imports through it, and `--cached-only` gives no second chance. Every runtime dependency
-    // of this build (package.json's `dependencies`, which the CLI itself installs) is mapped.
-    const manifest = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")) as {
-      dependencies: Record<string, string>;
-    };
-    expect(Object.keys(config.imports).sort()).toEqual(Object.keys(manifest.dependencies).sort());
-  });
-
-  test("the float writes it before caching", async () => {
-    // Captured inside the runner's cache call: `deno cache` resolves through this config, so
-    // one written after the warm would leave the cache built against nothing, and an
-    // existsSync after floatProxy returned could not tell the difference.
-    const seen: string[] = [];
-    const inner = fakeDeno();
-    const runner: DenoRunner = (command, args, options) => {
-      if (args[0] === "cache") seen.push(readFileSync(daemonConfigFile(dir), "utf8"));
-      return inner.runner(command, args, options);
-    };
-    await floatProxy(deps(docFetch(registryDoc({ "1.10.30": 8 })).fetchLike, runner, 0));
-    expect(seen.length).toBeGreaterThan(0);
-    for (const config of seen) {
-      expect(JSON.parse(config).imports[PROXY_PKG]).toBeDefined();
-    }
-  });
-});
-
-// No root carries a deno config of its own (the CLI runs on Bun), so both no-float spawn paths
-// (a COPILOT_API_ENTRY override, the mapped package fallback) generate the daemon config from
-// the embedded manifest, checkout and compiled install alike.
-describe("resolveCopilotApiEntry with no float record", () => {
-  test("both no-float entries resolve under a daemon config generated from the embedded manifest", () => {
-    const fallback = resolveCopilotApiEntry();
-    expect(fallback.kind).toBe("package");
-    expect(fallback.configFile).toBe(daemonConfigFile(dir));
-    const config = JSON.parse(readFileSync(daemonConfigFile(dir), "utf8"));
-    expect(config.imports[PROXY_PKG]).toBeDefined();
-    expect(config.lock).toBeUndefined();
-
-    rmSync(daemonConfigFile(dir));
-    process.env.COPILOT_API_ENTRY = join(dir, "fake-proxy.mjs");
-    try {
-      expect(resolveCopilotApiEntry()).toEqual({
-        kind: "file",
-        path: join(dir, "fake-proxy.mjs"),
-        configFile: daemonConfigFile(dir),
-      });
-      expect(existsSync(daemonConfigFile(dir))).toBe(true);
-    } finally {
-      delete process.env.COPILOT_API_ENTRY;
-    }
-  });
-
-  test("a stale or foreign daemon config is regenerated, not trusted", () => {
-    // The float rewrites this file with the same content on every warm; the
-    // resolver regenerates it too, so no leftover can steer a compiled spawn.
-    const sentinel = '{"imports":{"sentinel":"npm:sentinel@1.0.0"}}\n';
-    mkdirSync(join(dir, "proxy"), { recursive: true });
-    writeFileSync(daemonConfigFile(dir), sentinel);
-    const entry = resolveCopilotApiEntry();
-    expect(entry.configFile).toBe(daemonConfigFile(dir));
-    const config = JSON.parse(readFileSync(daemonConfigFile(dir), "utf8"));
-    expect(config.imports.sentinel).toBeUndefined();
-    expect(config.imports[PROXY_PKG]).toBeDefined();
-  });
-});
-
 describe("removeProxyFloatArtifacts", () => {
-  test("removes the record, the cache it points at, and OUR .npmrc", async () => {
-    const deno = fakeDeno();
-    await floatProxy(deps(docFetch(registryDoc({ "1.10.30": 8 })).fetchLike, deno.runner, 0));
-    mkdirSync(proxyDenoDir(dir), { recursive: true });
+  test("removes the proxy home (record, install, lock) and bun's cache; a neighbour survives", async () => {
+    await floatProxy(
+      deps(docFetch(registryDoc({ "1.10.30": 8 })).fetchLike, fakeInstall().runner, 0),
+    );
+    mkdirSync(proxyBunCacheDir(dir), { recursive: true });
+    const neighbour = join(dir, "state.json");
+    writeFileSync(neighbour, "{}");
     expect(existsSync(resolvedVersionFile(dir))).toBe(true);
-    expect(existsSync(join(dir, ".npmrc"))).toBe(true);
+    expect(existsSync(proxyLockFile(dir))).toBe(true);
 
     removeProxyFloatArtifacts(dir);
-    expect(existsSync(resolvedVersionFile(dir))).toBe(false);
-    expect(existsSync(proxyDenoDir(dir))).toBe(false);
-    expect(existsSync(join(dir, ".npmrc"))).toBe(false);
-  });
-
-  test("a cache recorded OUTSIDE the root home is still removed", () => {
-    // Deleting the root home alone would strand it, which is the whole reason
-    // uninstall goes through here first.
-    const elsewhere = join(dir, "..", `float-elsewhere-${Date.now()}`);
-    mkdirSync(elsewhere, { recursive: true });
-    seedFloat("1.10.30", NOW_MS, elsewhere);
-
-    removeProxyFloatArtifacts(dir);
-    expect(existsSync(elsewhere)).toBe(false);
-  });
-
-  test("an unmarked user .npmrc survives, exactly as the float refused to write it", () => {
-    writeFileSync(join(dir, ".npmrc"), "registry=https://example.test\n");
-    removeProxyFloatArtifacts(dir);
-    expect(readFileSync(join(dir, ".npmrc"), "utf8")).toBe("registry=https://example.test\n");
+    expect(existsSync(proxyHome(dir))).toBe(false);
+    expect(existsSync(proxyBunCacheDir(dir))).toBe(false);
+    expect(existsSync(neighbour)).toBe(true);
   });
 });
 
@@ -1067,15 +884,15 @@ describe("proxyFloatSkips", () => {
 
 // --- the floated spawn, actually executed -------------------------------------
 describe("the floated spawn executes", () => {
-  // Every other test here asserts the SHAPE of the argv, and a well-shaped argv no deno would
-  // run (frozen lock, import map incomplete under --cached-only) once passed both gates. The
-  // fixture is genuine float output built by scripts/warm-proxy-cache.ts while the container
-  // image still has a network, which keeps this offline and deterministic. In CI and the
-  // container the fixture always exists; a checkout without it (build one with
+  // Every other test here asserts the SHAPE of the install, and a well-shaped proxy home no bun
+  // would run (a bin the package does not ship, a shim dependency outside the manifest) passes
+  // them. The fixture is genuine float output built by scripts/warm-proxy-cache.ts while the
+  // container image still has a network, which keeps this offline and deterministic. In CI and
+  // the container the fixture always exists; a checkout without it (build one with
   // `bun scripts/warm-proxy-cache.ts`) reports this test ignored, never passed.
   const record = readResolvedVersionRecord(PROXY_CACHE_FIXTURE);
-  (record === null ? test.skipIf(true) : sidecarTest)(
-    "a real floated install actually launches the proxy, with no node_modules",
+  test.skipIf(record === null)(
+    "a real floated install actually launches the proxy, with no node_modules of its own",
     () => {
       if (record === null) throw new Error("unreachable: the fixture gate skipped this test");
       process.env.COPILOT_API_HOME = PROXY_CACHE_FIXTURE;
@@ -1084,22 +901,18 @@ describe("the floated spawn executes", () => {
       expect(entry.version).toBe(record.version);
 
       // Merged over our own environment, as daemonEnvironment does in production: a child
-      // stripped of PATH/HOME would test something the daemon never does.
-      const result = runSync(sidecarDeno(), copilotApiArgv(["--help"], [], entry), {
-        env: { ...process.env, ...copilotApiEnv(entry) },
+      // stripped of PATH/HOME would test something the daemon never does. NODE_PATH points at the
+      // fixture's install alone, so a shim import the float did not install cannot be answered by
+      // the checkout's node_modules.
+      const result = runSync(process.execPath, copilotApiArgv(["--help"], [], entry), {
+        cwd: entry.proxyHome,
+        env: { ...process.env, ...BUN_CLI_ENV, NODE_PATH: join(entry.proxyHome, "node_modules") },
         timeoutMs: 120_000,
       });
       const output = `${result.stdout}${result.stderr}`;
-      // Resolution: config, lockfile and cache must let deno assemble the whole graph offline.
-      // Both defects this test was written for surfaced exactly here.
-      expect(output).not.toContain("not found in cache");
-      expect(output).not.toContain("lockfile is out of date");
-      expect(output).not.toContain("Module not found");
-
-      // On Linux the launch completes only because every spawn preloads the node-compat shim:
-      // the proxy probes /proc at module load, which deno answers with a thrown NotCapable
-      // under any permission set short of all-access. The output rides in the assertion so
-      // a failure says WHY deno refused; the refusals this catches are all in stderr.
+      // Resolution: the install must let bun assemble the whole graph offline.
+      expect(output).not.toContain("Cannot find");
+      expect(output).not.toContain("Could not resolve");
       expect(`exit=${result.exitCode} ${output}`).toContain("exit=0");
       expect(output).toContain("copilot-api");
     },

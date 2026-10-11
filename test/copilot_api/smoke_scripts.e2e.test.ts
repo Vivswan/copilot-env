@@ -54,8 +54,8 @@ describe("the smokes' disposable-HOME guard", () => {
         },
       ];
       for (const { script, line } of smokes) {
-        // Safe by construction, not by the guard alone: the scripts spawn `deno` by NAME
-        // and the child's PATH points at nothing, so even a broken guard could never
+        // Safe by construction, not by the guard alone: the scripts spawn the agent launcher
+        // by NAME and the child's PATH points at nothing, so even a broken guard could never
         // launch the real lifecycle. The scratch homes are belt and braces on top.
         const proc = runScript(join(ROOT, ".github", "scripts", script), [], {
           env: {
@@ -107,14 +107,21 @@ test("the floated smoke's verdict names the first failed check", () => {
       failure: "the daemon recreated the legacy copilot-api home",
     },
     {
-      name: "permission error (NotCapable)",
-      evidence: { ...healthy, proxyLog: 'NotCapable: Requires read access to "/proc/self"' },
-      failure: "the daemon hit a permission error under the production grant set",
+      name: "a shim import the floated install lacks",
+      evidence: {
+        ...healthy,
+        proxyLog:
+          'error: Cannot find package "valibot" from "/x/src/scripts/idle_watchdog_preload.ts"',
+      },
+      failure: "the daemon failed to resolve a module from the floated install",
     },
     {
-      name: "permission error (Requires all access)",
-      evidence: { ...healthy, proxyLog: "Requires all access; auth provider skipped" },
-      failure: "the daemon hit a permission error under the production grant set",
+      name: "a proxy import its own install lacks",
+      evidence: {
+        ...healthy,
+        proxyLog: 'error: Could not resolve: "srvx". Maybe you need to "bun install"?',
+      },
+      failure: "the daemon failed to resolve a module from the floated install",
     },
     {
       name: "died before auth",

@@ -836,7 +836,7 @@ test("profile health narrows the run to the named profile and excludes account-w
   }
   for (const id of [
     "bootstrap.version",
-    "bootstrap.deno",
+    "bootstrap.runtime",
     "bootstrap.nodeModules",
     "proxy.package",
     "setup.shell",
@@ -898,7 +898,7 @@ test("health --scope full runs every group end-to-end and fails on a dead proxy"
   const ids = json.checks.map((c) => c.id);
   expect(json.scope).toBe("full");
   for (const id of [
-    "bootstrap.deno",
+    "bootstrap.runtime",
     "proxy.package",
     "runtime.port",
     "setup.shell",
@@ -948,7 +948,7 @@ const SCOPE_ROWS: {
     // findings are warnings, never failures.
     scope: "setup",
     present: ["setup.shell", "setup.codex", "setup.codex-host"],
-    absent: ["runtime.port", "bootstrap.deno"],
+    absent: ["runtime.port", "bootstrap.runtime"],
     exitCode: 0,
     detail: (json) => {
       const codexHost = json.checks.find((c) => c.id === "setup.codex-host");

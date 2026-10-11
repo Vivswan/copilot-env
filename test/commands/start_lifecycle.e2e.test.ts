@@ -25,11 +25,11 @@ import {
   setIntegrationProbeFetch,
 } from "../../src/copilot_api/integration_identity.ts";
 import { startLockPath } from "../../src/copilot_api/launch.ts";
-import { CopilotApiPaths } from "../../src/copilot_api/paths.ts";
+import { CopilotApiPaths, resolveRootHome } from "../../src/copilot_api/paths.ts";
 import { classifyDaemonPid } from "../../src/copilot_api/process.ts";
 import { parseProfileName } from "../../src/copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../../src/copilot_api/run_state.ts";
-import { writeResolvedVersionRecord } from "../../src/proxy_float.ts";
+import { proxyHome, writeResolvedVersionRecord } from "../../src/proxy_float.ts";
 import { probeFileLock, withFileLock } from "../../src/utils/file_lock.ts";
 import { pidAlive } from "../../src/utils/pid.ts";
 import { packageVersion } from "../../src/utils/version.ts";
@@ -150,7 +150,7 @@ test("start --dry-run runs the launch's credential gate: no credential is the re
 test("start --dry-run refuses a recorded proxy below the version floor with the real gate's error", async () => {
   tmpHome();
   new Credential().store("gh-token", "ghp_fake_for_the_plan");
-  writeResolvedVersionRecord(dir, "0.0.1", Date.now(), join(dir, "deno-cache"));
+  writeResolvedVersionRecord(dir, "0.0.1", Date.now());
   const before = fingerprintTree(dir);
   await expect(dryRunNarration()).rejects.toThrow(/0\.0\.1 is below the required .* floor/);
   expect(fingerprintTree(dir)).toEqual(before);
@@ -305,6 +305,13 @@ test("start --dry-run plans the corroborated holder stop and the dead-pid tracki
 
     // Never acts: the live cleanup would clear this tracking and stop this daemon.
     expect(new CopilotEnvRunState().read().pid).toBe(DEAD_PID);
+    // And installs nothing: the floor gate's preview never floats, so an empty proxy home gets no
+    // tree, no stage, and no record.
+    expect(
+      ["install", "install.next", "resolved-version.json"].filter((name) =>
+        existsSync(join(proxyHome(resolveRootHome()), name)),
+      ),
+    ).toEqual([]);
     expect(pidAlive(daemonPid)).toBe(true);
     expect(daemonLockHolderPid(home)).toBe(daemonPid);
   } finally {

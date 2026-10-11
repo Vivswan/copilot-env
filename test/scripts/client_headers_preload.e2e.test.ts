@@ -1,27 +1,17 @@
-import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { daemonClientHeaders } from "../../src/copilot_api/integration_identity.ts";
 import { isCopilotApiHost } from "../../src/scripts/client_headers_preload.ts";
-import { runWithDenoPreload, sidecarTest } from "../helpers/deno_sidecar.ts";
+import { runWithPreload } from "../helpers/daemon.ts";
 import { freePort } from "../helpers/net.ts";
-import {
-  CHILD_VALUES,
-  childValuesEnv,
-  importSpecifier,
-  ROOT,
-  resolvePackageDir,
-} from "../helpers/run.ts";
+import { CHILD_VALUES, childValuesEnv, ROOT } from "../helpers/run.ts";
 import { expect, test } from "../helpers/testing.ts";
 
 // Importing the preload without its env var set installs nothing, so the exported helpers are
-// unit-tested directly; the wiring (fetch AND undici's WebSocket, Copilot hosts only) runs as a
-// real `--preload` subprocess under the sidecar deno against local servers, the way launchDaemon
-// loads it.
+// unit-tested directly; the wiring (fetch to the Copilot hosts only) runs as a real `--preload`
+// subprocess against local servers, the way launchDaemon loads it. The /responses WebSocket
+// handshake is not covered because bun offers no seam for it (the shim's header says why).
 const SHIM = join(ROOT, "src", "scripts", "client_headers_preload.ts");
 const UA = "codex_exec/1.2.3";
-/** The undici lines the preload must serve: the 7 the floated proxy ships today and the 8 it
- *  will move to, whose WebSockets read their global dispatcher from different Symbol.for keys. */
-const UNDICI_LINES = ["undici7", "undici"] as const;
 
 /** What the server saw of the identity headers on one request. */
 interface Seen {
@@ -31,27 +21,13 @@ interface Seen {
 }
 
 /** Two loopback servers echo the identity headers they receive: one IS the daemon's pinned
- *  Copilot host (the `host` env, so the shim treats it as *.githubcopilot.com), the other
- *  is any other host. The target hits the pinned one over fetch and over undici's WebSocket (the
- *  transport copilot-api imports for /responses, which never touches the global fetch), and the
- *  other over fetch. */
+ *  Copilot host (the `host` env, so the shim treats it as *.githubcopilot.com), the other is any
+ *  other host. */
 async function runPreloaded(
   set: Record<string, string | null>,
-  undici: (typeof UNDICI_LINES)[number],
-): Promise<{ http: Seen; ws: Seen; other: Seen }> {
+): Promise<{ http: Seen; other: Seen }> {
   const [pinned, other] = [await freePort(), await freePort()];
-  // By file URL into the checkout's node_modules: the target lives under the temp root, where a
-  // bare specifier has no package.json to resolve against (and bun answers "undici" with its own
-  // built-in, so the package dir is walked to, not resolved).
-  const undiciDir = resolvePackageDir(undici, ROOT);
-  const undiciMain = (
-    JSON.parse(readFileSync(join(undiciDir, "package.json"), "utf8")) as {
-      main: string;
-    }
-  ).main;
-  const undiciEntry = importSpecifier(join(undiciDir, undiciMain));
   const source = [
-    `import { WebSocket as UndiciWebSocket } from ${undiciEntry};`,
     `const values = ${CHILD_VALUES};`,
     "const seen = (req) => ({",
     '  ua: req.headers.get("user-agent"),',
@@ -59,30 +35,16 @@ async function runPreloaded(
     '  intent: req.headers.get("openai-intent"),',
     "});",
     "const serve = (port) =>",
-    '  Deno.serve({ port, hostname: "127.0.0.1", onListen() {} }, (req) => {',
-    // Read before the upgrade: an upgraded request's headers are gone.
-    "    const record = seen(req);",
-    '    if (req.headers.get("upgrade") === "websocket") {',
-    "      const { socket, response } = Deno.upgradeWebSocket(req);",
-    "      socket.onopen = () => { socket.send(JSON.stringify(record)); socket.close(); };",
-    "      return response;",
-    "    }",
-    "    return Response.json(record);",
-    "  });",
+    '  Bun.serve({ port, hostname: "127.0.0.1", fetch: (req) => Response.json(seen(req)) });',
     "const servers = [serve(values.pinned), serve(values.other)];",
-    // The proxy's own upstream identity, as copilot-api sends it on both transports.
+    // The proxy's own upstream identity, as copilot-api sends it.
     'const proxyOwn = { "Copilot-Integration-Id": "vscode-chat", "user-agent": "node", "openai-intent": "conversation-agent" };',
     "const http = await (await fetch(`http://127.0.0.1:${values.pinned}/models`, { headers: proxyOwn })).json();",
     "const other = await (await fetch(`http://127.0.0.1:${values.other}/models`, { headers: proxyOwn })).json();",
-    "const ws = await new Promise((resolve, reject) => {",
-    "  const socket = new UndiciWebSocket(`ws://127.0.0.1:${values.pinned}/responses`, { headers: proxyOwn });",
-    "  socket.onmessage = (e) => resolve(JSON.parse(String(e.data)));",
-    "  socket.onerror = () => reject(new Error('websocket failed'));",
-    "});",
-    "console.log(JSON.stringify({ http, ws, other }));",
-    "await Promise.all(servers.map((s) => s.shutdown()));",
+    "console.log(JSON.stringify({ http, other }));",
+    "await Promise.all(servers.map((s) => s.stop()));",
   ].join("\n");
-  const res = runWithDenoPreload(SHIM, source, {
+  const res = runWithPreload(SHIM, source, {
     env: {
       ...process.env,
       ...childValuesEnv({ pinned, other }),
@@ -94,35 +56,34 @@ async function runPreloaded(
   return JSON.parse(res.stdout.trim());
 }
 
-for (const undici of UNDICI_LINES) {
-  sidecarTest(
-    `the daemon sends the resolved identity on fetch AND ${undici}'s WebSocket to its Copilot host, and nothing else changes`,
-    async () => {
-      const proxyOwn: Seen = { ua: "node", id: "vscode-chat", intent: "conversation-agent" };
-      // The codex identity: the codex User-Agent and NO integration id, whatever copilot-api set.
-      const codex = await runPreloaded(daemonClientHeaders(UA, null), undici);
-      const codexSeen: Seen = { ua: UA, id: null, intent: "conversation-edits" };
-      expect(codex).toEqual({ http: codexSeen, ws: codexSeen, other: proxyOwn });
-      // An id identity: the same set with the id replaced.
-      const cli = await runPreloaded(daemonClientHeaders(UA, "copilot-developer-cli"), undici);
-      const cliSeen: Seen = { ua: UA, id: "copilot-developer-cli", intent: "conversation-edits" };
-      expect(cli).toEqual({ http: cliSeen, ws: cliSeen, other: proxyOwn });
-    },
-  );
-}
+test("the daemon sends the resolved identity on fetch to its Copilot host, and nothing else changes", async () => {
+  const proxyOwn: Seen = { ua: "node", id: "vscode-chat", intent: "conversation-agent" };
+  // The codex identity: the codex User-Agent and NO integration id, whatever copilot-api set.
+  const codex = await runPreloaded(daemonClientHeaders(UA, null));
+  expect(codex).toEqual({
+    http: { ua: UA, id: null, intent: "conversation-edits" },
+    other: proxyOwn,
+  });
+  // An id identity: the same set with the id replaced.
+  const cli = await runPreloaded(daemonClientHeaders(UA, "copilot-developer-cli"));
+  expect(cli).toEqual({
+    http: { ua: UA, id: "copilot-developer-cli", intent: "conversation-edits" },
+    other: proxyOwn,
+  });
+});
 
 test("isCopilotApiHost: the Copilot inference hosts match on any scheme, plus the pinned host", () => {
   expect(isCopilotApiHost("https://api.githubcopilot.com/models")).toBe(true);
-  expect(isCopilotApiHost("wss://api.enterprise.githubcopilot.com/responses")).toBe(true);
+  expect(isCopilotApiHost("https://api.enterprise.githubcopilot.com/responses")).toBe(true);
   expect(isCopilotApiHost("https://api.business.githubcopilot.com/v1/messages")).toBe(true);
   expect(isCopilotApiHost("https://api.github.com/copilot_internal/user")).toBe(false);
   expect(isCopilotApiHost("http://127.0.0.1:4141/models")).toBe(false);
   expect(isCopilotApiHost("not a url")).toBe(false);
   // A `host` literal off githubcopilot.com (a GHE Copilot host) gates on the identity too,
-  // over its WebSocket scheme as well, but only the exact pinned host does.
+  // whatever the scheme, but only the exact pinned host does.
   const ghe = "https://copilot-api.ghe.example";
   expect(isCopilotApiHost(`${ghe}/models`, ghe)).toBe(true);
-  expect(isCopilotApiHost("wss://copilot-api.ghe.example/responses", ghe)).toBe(true);
+  expect(isCopilotApiHost("http://copilot-api.ghe.example/responses", ghe)).toBe(true);
   expect(isCopilotApiHost(`${ghe}/models`)).toBe(false);
   expect(isCopilotApiHost("https://other.ghe.example/models", ghe)).toBe(false);
 });

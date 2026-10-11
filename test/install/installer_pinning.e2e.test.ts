@@ -11,14 +11,16 @@ import {
 import { join, parse, posix } from "node:path";
 import { compiledHealthFailures } from "../../.github/scripts/installer-smoke.ts";
 import { INSTALLER_PINS } from "../../.github/scripts/release-assets.ts";
+import { DAEMON_SHIM_DEPENDENCIES } from "../../src/copilot_api/shims.ts";
 import {
   BUNDLED_ONLY_ASSETS,
   CHECKOUT_MARKERS,
   MATERIALIZED_ASSET_DIRS,
   MATERIALIZED_ASSET_FILES,
 } from "../../src/install/installer.ts";
+import { readInstallMinimumReleaseAge } from "../../src/utils/bunfig.ts";
 import { withPowershellChildEnv } from "../../src/utils/command.ts";
-import { readProjectConfig, readSidecarDenoVersion } from "../../src/utils/project_config.ts";
+import { readProjectConfig } from "../../src/utils/project_config.ts";
 import {
   currentReleaseTarget,
   installedBinaryName,
@@ -150,8 +152,8 @@ describe("bundled-only assets are never read through PROJECT_ROOT", () => {
   });
 
   test("a VFS holding exactly the bundled-only assets satisfies every run-time reader", () => {
-    // The converse guard: an asset a reader takes from ASSET_ROOT at run time (the sidecar's
-    // version pin, the project config) that left BUNDLED_ONLY_ASSETS breaks every compiled
+    // The converse guard: an asset a reader takes from ASSET_ROOT at run time (the project
+    // config, the float's default cooldown) that left BUNDLED_ONLY_ASSETS breaks every compiled
     // install while the suite stays green on the checkout copy.
     const vfs = tempDir("ce-vfs-");
     try {
@@ -159,8 +161,8 @@ describe("bundled-only assets are never read through PROJECT_ROOT", () => {
         copyFileSync(join(ROOT, asset), join(vfs, asset));
       }
       const readers: Record<string, (root: string) => unknown> = {
-        "sidecar version pin": readSidecarDenoVersion,
         "project config": readProjectConfig,
+        "default release cooldown": readInstallMinimumReleaseAge,
       };
       for (const [name, read] of Object.entries(readers)) {
         expect(() => read(vfs), name).not.toThrow();
@@ -179,6 +181,19 @@ describe("the materialized files are the shims' import closure", () => {
   //   in the closure, not in MATERIALIZED_ASSET_FILES  -> broken daemon on every install
   //   in MATERIALIZED_ASSET_FILES, not in the closure  -> dead weight nothing imports
   const importRe = /(?:import|export)[^"']*?["'](\.[^"']+\.ts)["']/g;
+  /** A runtime import of a package (not relative, not a runtime module); `import type` is erased. */
+  const bareImportRe = /(?:^|\n)\s*(?:import|export)\s(?!type\s)[^"';]*?["']([^."'][^"']*)["']/g;
+
+  function bareImports(files: Iterable<string>): string[] {
+    const names = new Set<string>();
+    for (const rel of files) {
+      for (const match of readFileSync(join(ROOT, rel), "utf8").matchAll(bareImportRe)) {
+        const name = match[1] ?? "";
+        if (!name.startsWith("node:") && !name.startsWith("bun:")) names.add(name);
+      }
+    }
+    return [...names].sort();
+  }
 
   function localImportClosure(seeds: string[]): Set<string> {
     const seen = new Set<string>();
@@ -211,6 +226,19 @@ describe("the materialized files are the shims' import closure", () => {
       (rel) => !MATERIALIZED_ASSET_DIRS.some((dir) => rel.startsWith(`${dir}/`)),
     );
     expect(outside.sort()).toEqual([...MATERIALIZED_ASSET_FILES].sort());
+  });
+
+  // A compiled install has no node_modules beside the shims: the float installs exactly
+  // DAEMON_SHIM_DEPENDENCIES into the proxy home and the daemon runs with auto-install off, so a
+  // package the closure imports but the list lacks kills the daemon at module load on every
+  // install, while the suite (which resolves from the checkout) stays green.
+  test("DAEMON_SHIM_DEPENDENCIES is exactly the closure's package imports", () => {
+    const seeds = readdirSync(join(ROOT, "src", "scripts"))
+      .filter((name) => name.endsWith(".ts"))
+      .map((name) => `src/scripts/${name}`);
+    const imported = bareImports(localImportClosure(seeds));
+    expect(imported.length).toBeGreaterThan(0); // the walk saw real imports
+    expect(imported).toEqual([...DAEMON_SHIM_DEPENDENCIES].sort());
   });
 });
 
@@ -689,18 +717,26 @@ describe("the install script's arguments", () => {
 
 describe("compiled-health smoke invariants fail closed", () => {
   // Optional-chaining past a renamed check id would print success while asserting nothing.
+  const BINARY = "copilot-env";
   const good = () => ({
     checks: [
       { id: "bootstrap.nodeModules", status: "ok", value: { embedded: true } },
       { id: "proxy.package", status: "ok", value: {} },
-      { id: "proxy.sidecar", status: "ok", value: { kind: "absent" } },
+      {
+        id: "bootstrap.runtime",
+        status: "ok",
+        value: { executable: `/home/x/.copilot-env/versions/v1.0.0/bin/${BINARY}` } as Record<
+          string,
+          unknown
+        >,
+      },
     ],
   });
 
   test("healthy reports pass; every reshaped, missing, or non-ok row is one failure", () => {
-    const sidecar = (kind: string) => {
+    const runtime = (executable: unknown) => {
       const report = good();
-      report.checks[2] = { id: "proxy.sidecar", status: "ok", value: { kind } };
+      report.checks[2] = { id: "bootstrap.runtime", status: "ok", value: { executable } };
       return report;
     };
     const pkg = (status: string | undefined) => {
@@ -709,10 +745,14 @@ describe("compiled-health smoke invariants fail closed", () => {
       return report;
     };
     const rows: { name: string; report: unknown; failures: number | string[] }[] = [
-      { name: "absent sidecar", report: good(), failures: [] },
-      { name: "provisioned sidecar", report: sidecar("provisioned"), failures: [] },
-      { name: "dev sidecar", report: sidecar("dev"), failures: 1 },
-      { name: "unknown sidecar kind", report: sidecar("future-kind"), failures: 1 },
+      { name: "the installed binary", report: good(), failures: [] },
+      // A Windows install names the binary with its suffix: the check is given that name.
+      {
+        name: "a bun from PATH (a checkout's answer)",
+        report: runtime("/usr/local/bin/bun"),
+        failures: 1,
+      },
+      { name: "no executable in the row", report: runtime(undefined), failures: 1 },
       { name: "package fail", report: pkg("fail"), failures: 1 },
       { name: "package warn", report: pkg("warn"), failures: 1 },
       { name: "package status missing", report: pkg(undefined), failures: 1 },
@@ -732,18 +772,10 @@ describe("compiled-health smoke invariants fail closed", () => {
         failures: ["health --json did not produce a checks array"],
       },
       { name: "null", report: null, failures: 1 },
-      {
-        name: "sidecar value reshaped",
-        report: (() => {
-          const report = good();
-          report.checks[2] = { id: "proxy.sidecar", status: "ok", value: {} as { kind: string } };
-          return report;
-        })(),
-        failures: 1,
-      },
     ];
     for (const { name, report, failures } of rows) {
-      const got = compiledHealthFailures(report);
+      // The spelling judgment is the smoke's own (realpath on the runner); here the paths are fixtures.
+      const got = compiledHealthFailures(report, BINARY, (a, b) => a.split("/").at(-1) === b);
       if (typeof failures === "number") expect(got, name).toHaveLength(failures);
       else expect(got, name).toEqual(failures);
     }

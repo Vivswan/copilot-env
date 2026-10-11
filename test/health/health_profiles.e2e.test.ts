@@ -920,7 +920,7 @@ test("a named profile narrows gathering to its target and excludes account-wide 
     expect(ids).toContain("setup.claude");
     for (const absent of [
       "bootstrap.version",
-      "bootstrap.deno",
+      "bootstrap.runtime",
       "bootstrap.nodeModules",
       "proxy.package",
       "setup.shell",

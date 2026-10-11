@@ -23,7 +23,7 @@ import { CopilotApiPaths } from "../../src/copilot_api/paths.ts";
 import { parseProfileName } from "../../src/copilot_api/profile.ts";
 import type { FileChange } from "../../src/utils/dry_run.ts";
 import { getSanitizedHostname } from "../../src/utils/hostname.ts";
-import { sidecarTest, spawnDenoChild } from "../helpers/deno_sidecar.ts";
+import { spawnDaemonShapedChild } from "../helpers/daemon.ts";
 import { dryRunChanges } from "../helpers/dry_run.ts";
 import { type AgentHomes, agentHomeEnv, envSnapshot, isolateAgentHomes } from "../helpers/env.ts";
 import { writeClaudeSettings, writeCodexConfigToml, writeRunState } from "../helpers/fixtures.ts";
@@ -541,22 +541,18 @@ skipWin("e2e: a proxy-wired Claude launch aborts (exit 1) when the start offer i
   expect(recordedMode(root)).toBe("proxy"); // aborted before the wire: only the fixture's record
 });
 
-// A decoy daemon is a deno process (the classifier gates on the runtime's executable name), so the
-// POSIX e2e also needs the sidecar deno.
-const sidecarPosix = process.platform === "win32" ? skipWin : sidecarTest;
-
-sidecarPosix(
+skipWin(
   "e2e: with the proxy up, the wire re-syncs Claude and only success records",
   async () => {
     const root = e2eRoot();
     const bin = fakeCliBin(root, "claude");
     // With no daemon lock (this decoy holds none), proxyStatus falls back to pid classification: the
-    // tracked pid must be a deno process running a copilot-api-named entry with the `start`
+    // tracked pid must be a bun process running a copilot-api-named entry with the `start`
     // subcommand, and the recorded loopback port must really listen. proxy_token.e2e.test.ts stages
     // the same.
     const decoy = join(root, "copilot-api-decoy.mjs");
     writeFileSync(decoy, "setTimeout(() => {}, 30_000);\n");
-    const daemon = spawnDenoChild({ args: [decoy, "start"], stdout: "ignore", stderr: "ignore" });
+    const daemon = spawnDaemonShapedChild(decoy);
     const { server, port } = await new Promise<{ server: Server; port: number }>(
       (resolve, reject) => {
         const srv = createServer();

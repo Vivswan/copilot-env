@@ -11,17 +11,17 @@ import {
   daemonLockPath,
   daemonLockVerdict,
 } from "../../src/copilot_api/daemon_lock.ts";
-import { CopilotApiPaths, resolveRootHome } from "../../src/copilot_api/paths.ts";
+import { CopilotApiPaths } from "../../src/copilot_api/paths.ts";
 import { launchDaemon } from "../../src/copilot_api/process.ts";
 import { parseProfileName } from "../../src/copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../../src/copilot_api/run_state.ts";
-import { parseAbsolutePath } from "../../src/copilot_api/sidecar.ts";
-import { daemonConfigFile, writeDaemonConfig } from "../../src/proxy_float.ts";
 import { releaseFileLock } from "../../src/utils/file_lock.ts";
 import { pidAlive } from "../../src/utils/pid.ts";
 import {
   FAKE_DAEMON_CREDENTIAL,
   FAKE_DAEMON_HOST,
+  fakeProxyEntry,
+  spawnDaemonShapedChild,
   until,
   withUnprovablePidProbe,
 } from "../helpers/daemon.ts";
@@ -37,7 +37,6 @@ import {
   ROOT,
   spawnChild,
 } from "../helpers/run.ts";
-import { sidecarDenoOnPath } from "../helpers/sidecar.ts";
 import { afterEach, expect, tempDir, test } from "../helpers/testing.ts";
 
 // The daemon holds `<home>/daemon.lock` for life (acquired by daemon_lock_preload), and the
@@ -47,10 +46,6 @@ import { afterEach, expect, tempDir, test } from "../helpers/testing.ts";
 
 // A pid no real process holds (far above any OS pid ceiling we run on).
 const DEAD_PID = 2_147_483_646;
-
-/** The sidecar deno on PATH; the tests that need one skip without it. */
-const SIDECAR_DENO = sidecarDenoOnPath();
-const withSidecar = test.skipIf(SIDECAR_DENO === null);
 
 const restoreEnv = envSnapshot();
 let dir = "";
@@ -161,54 +156,43 @@ test("a live holder blocks acquisition; SIGKILL releases the lock promptly", asy
 
 // --- the real daemon spawn: the preload takes the lock, SIGKILL frees it -----------------
 
-// The daemon side of the protocol for real: the sidecar deno (PATH or the override) runs the fake
-// proxy with the preload shims under the generated daemon config, and daemon_lock_preload creates
-// the same marker file this process judges.
-withSidecar(
-  "a launched daemon holds its home's lock for life, released by SIGKILL (needs the sidecar deno on PATH)",
-  async () => {
-    dir = isolateProxyHome("copilot-daemon-lock-");
-    const port = await freePort();
-    const logFile = join(dir, "daemon.log");
-    writeFileSync(logFile, "");
-    writeDaemonConfig(resolveRootHome());
-    // A predecessor's leftover: the launch clears it, or the daemon's own acquire (which cannot
-    // judge the pid) would refuse for its whole budget and the proxy would never serve.
-    plantMarker(dir, DEAD_PID);
-    const pid = launchDaemon({
-      port,
-      logFile,
-      home: dir,
-      env: {},
-      credential: FAKE_DAEMON_CREDENTIAL,
-      idleWatchdog: false,
-      muteProxyLogs: false,
-      copilotHost: FAKE_DAEMON_HOST,
-      entry: {
-        kind: "file",
-        path: join(ROOT, "test", "copilot-api-fake.mjs"),
-        configFile: daemonConfigFile(resolveRootHome()),
-      },
-      denoBin: parseAbsolutePath(SIDECAR_DENO ?? ""),
-    });
+// The daemon side of the protocol for real: the running bun runs the fake proxy with the preload
+// shims, and daemon_lock_preload creates the same marker file this process judges.
+test("a launched daemon holds its home's lock for life, released by SIGKILL", async () => {
+  dir = isolateProxyHome("copilot-daemon-lock-");
+  const port = await freePort();
+  const logFile = join(dir, "daemon.log");
+  writeFileSync(logFile, "");
+  // A predecessor's leftover: the launch clears it, or the daemon's own acquire (which cannot
+  // judge the pid) would refuse for its whole budget and the proxy would never serve.
+  plantMarker(dir, DEAD_PID);
+  const pid = launchDaemon({
+    port,
+    logFile,
+    home: dir,
+    env: {},
+    credential: FAKE_DAEMON_CREDENTIAL,
+    idleWatchdog: false,
+    muteProxyLogs: false,
+    copilotHost: FAKE_DAEMON_HOST,
+    entry: fakeProxyEntry(),
+  });
+  try {
+    // The preload acquires before the proxy serves, so a held lock is observable no
+    // later than readiness.
+    await until(() => daemonLockVerdict(dir, pid) === "alive");
+    expect(daemonLockHolderPid(dir)).toBe(pid);
+  } finally {
     try {
-      // The preload acquires before the proxy serves, so a held lock is observable no
-      // later than readiness.
-      await until(() => daemonLockVerdict(dir, pid) === "alive");
-      expect(daemonLockHolderPid(dir)).toBe(pid);
-    } finally {
-      try {
-        process.kill(pid, "SIGKILL");
-      } catch {
-        // already gone
-      }
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // already gone
     }
-    await until(() => !pidAlive(pid));
-    // The postcondition of the whole design: the killed daemon's lock reads dead, by pid.
-    await until(() => daemonLockVerdict(dir, pid) === "dead");
-  },
-  30_000,
-);
+  }
+  await until(() => !pidAlive(pid));
+  // The postcondition of the whole design: the killed daemon's lock reads dead, by pid.
+  await until(() => daemonLockVerdict(dir, pid) === "dead");
+}, 30_000);
 
 // --- proxyStatus consults the lock first --------------------------------------------------
 
@@ -246,9 +230,7 @@ test("proxyStatus: an acquirable lock naming the tracked pid reads DOWN, pid tab
 
 // --- stopTrackedProxy consults the lock first ---------------------------------------------
 
-/** A process the owner-filtered scan classifies as our daemon: the sidecar deno running an entry
- *  whose basename starts with `copilot-api`, with `start` next. Nothing else in the process table
- *  qualifies, the CLI's own Bun processes included. */
+/** A daemon-shaped decoy that reports when it is up. */
 function spawnDaemonShapedDecoy(
   dir: string,
   ready: string,
@@ -260,48 +242,39 @@ function spawnDaemonShapedDecoy(
       `writeFileSync(${CHILD_VALUES}.ready, "up");\n` +
       "setInterval(() => {}, 60_000);\n",
   );
-  return spawnChild(SIDECAR_DENO ?? "", {
-    args: ["run", "--allow-write", "--allow-env", decoy, "start"],
-    env: childValuesEnv({ ready }),
-    stdout: "ignore",
-    stderr: "inherit",
-  });
+  return spawnDaemonShapedChild(decoy, ["start"], childValuesEnv({ ready }));
 }
 
-withSidecar(
-  "stopTrackedProxy: a lock-held corroborated daemon is signalled, lock-first (needs the sidecar deno on PATH)",
-  async () => {
-    dir = isolateProxyHome("copilot-daemon-lock-");
-    const home = defaultHomeDir();
-    const ready = join(dir, "ready");
-    // A lock-alive pid is signalled only under the owner-filtered scan's corroboration; the
-    // shared-home refusal is the test below. This process takes the effective home's lock (the
-    // one stopTrackedProxy consults for the default profile) and the marker then names the
-    // daemon-shaped decoy, as the decoy's own acquire would have left it.
-    const child = spawnDaemonShapedDecoy(dir, ready);
-    try {
-      await until(() => existsSync(ready));
-      expect(acquireDaemonLockForLife(home, { waitMs: 0 })).toBe(true);
-      writeFileSync(daemonLockPath(home), `${child.pid}\n${Date.now()}\n`);
-      writeRunState({ pid: child.pid });
-      expect(daemonLockVerdict(home, child.pid)).toBe("alive");
+test("stopTrackedProxy: a lock-held corroborated daemon is signalled, lock-first", async () => {
+  dir = isolateProxyHome("copilot-daemon-lock-");
+  const home = defaultHomeDir();
+  const ready = join(dir, "ready");
+  // A lock-alive pid is signalled only under the owner-filtered scan's corroboration; the
+  // shared-home refusal is the test below. This process takes the effective home's lock (the
+  // one stopTrackedProxy consults for the default profile) and the marker then names the
+  // daemon-shaped decoy, as the decoy's own acquire would have left it.
+  const child = spawnDaemonShapedDecoy(dir, ready);
+  try {
+    await until(() => existsSync(ready));
+    expect(acquireDaemonLockForLife(home, { waitMs: 0 })).toBe(true);
+    writeFileSync(daemonLockPath(home), `${child.pid}\n${Date.now()}\n`);
+    writeRunState({ pid: child.pid });
+    expect(daemonLockVerdict(home, child.pid)).toBe("alive");
 
-      const result = await stopTrackedProxy();
-      expect(result.trackedPid).toBe(child.pid);
-      expect(result.signalled).toBe(true); // lock-alive AND corroborated as our daemon
-      await child.exited; // the SIGTERM (TerminateProcess on Windows) ends it
-    } finally {
-      // The marker names the decoy, so this drops the record alone and leaves the file.
-      releaseFileLock(daemonLockPath(home));
-      try {
-        child.kill("SIGKILL");
-      } catch {
-        // already gone
-      }
+    const result = await stopTrackedProxy();
+    expect(result.trackedPid).toBe(child.pid);
+    expect(result.signalled).toBe(true); // lock-alive AND corroborated as our daemon
+    await child.exited; // the SIGTERM (TerminateProcess on Windows) ends it
+  } finally {
+    // The marker names the decoy, so this drops the record alone and leaves the file.
+    releaseFileLock(daemonLockPath(home));
+    try {
+      child.kill("SIGKILL");
+    } catch {
+      // already gone
     }
-  },
-  30_000,
-);
+  }
+}, 30_000);
 
 // Shared-home coincidence on the STOP path: our crashed daemon's state pid, the remote
 // daemon's marker, and an innocent local process all carry the same number. The stop must
@@ -422,32 +395,28 @@ test("stopTrackedProxy: a lock-dead tracked pid is never signalled, and tracking
 // With no lock to consult and an unprovable pid-table read, the identity scan and the port
 // probe own the verdict: a live daemon-shaped tracked pid whose recorded port answers reads
 // UP (the real NotCapable probe shape is pinned in test/utils/pid.test.ts).
-withSidecar(
-  "proxyStatus: an unprovable liveness read defers to identity + port probe, not DOWN (needs the sidecar deno on PATH)",
-  async () => {
-    dir = isolateProxyHome("copilot-daemon-lock-");
-    // The real classification must answer "yes" for the status to survive the pid-reuse guard.
-    const ready = join(dir, "ready");
-    const child = spawnDaemonShapedDecoy(dir, ready);
-    const { server, port } = await listenEphemeral();
+test("proxyStatus: an unprovable liveness read defers to identity + port probe, not DOWN", async () => {
+  dir = isolateProxyHome("copilot-daemon-lock-");
+  // The real classification must answer "yes" for the status to survive the pid-reuse guard.
+  const ready = join(dir, "ready");
+  const child = spawnDaemonShapedDecoy(dir, ready);
+  const { server, port } = await listenEphemeral();
+  try {
+    await until(() => existsSync(ready));
+    writeRunState({ pid: child.pid, port });
+    await withUnprovablePidProbe(async () => {
+      expect(await proxyStatus()).toEqual({ up: true, port });
+    });
+  } finally {
+    await closeServer(server);
     try {
-      await until(() => existsSync(ready));
-      writeRunState({ pid: child.pid, port });
-      await withUnprovablePidProbe(async () => {
-        expect(await proxyStatus()).toEqual({ up: true, port });
-      });
-    } finally {
-      await closeServer(server);
-      try {
-        child.kill("SIGKILL");
-      } catch {
-        // already gone
-      }
-      await child.exited;
+      child.kill("SIGKILL");
+    } catch {
+      // already gone
     }
-  },
-  30_000,
-);
+    await child.exited;
+  }
+}, 30_000);
 
 // graceMs > 0 is the caller that must be SURE (de-auth): with no signal deliverable and no
 // death provable, the stop must not claim stopped and must keep the tracking, so a follow-up

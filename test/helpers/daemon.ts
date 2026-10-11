@@ -1,6 +1,7 @@
 // A live daemon and its neighbours as fixtures: the credential resolution `agent start` runs, a
-// real detached fake daemon over a home, the waits that bound themselves by the test deadline,
-// and the shared-home stop refusal.
+// real detached fake daemon over a home, daemon-side children run the way the daemon runs (the
+// running bun as a bun CLI, a shim under `--preload`), the waits that bound themselves by the test
+// deadline, and the shared-home stop refusal.
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { abortable, delay } from "@std/async";
@@ -17,17 +18,14 @@ import {
   resolveLaunchCredential,
 } from "../../src/copilot_api/launch.ts";
 import { resolveRootHome } from "../../src/copilot_api/paths.ts";
-import type { DaemonCredential } from "../../src/copilot_api/process.ts";
-import { launchDaemon } from "../../src/copilot_api/process.ts";
+import { BUN_CLI_ENV, type DaemonCredential, launchDaemon } from "../../src/copilot_api/process.ts";
 import type { Profile, ProfileName } from "../../src/copilot_api/profile.ts";
-import { parseAbsolutePath } from "../../src/copilot_api/sidecar.ts";
-import { daemonConfigFile, writeDaemonConfig } from "../../src/proxy_float.ts";
+import { proxyHome } from "../../src/proxy_float.ts";
 import { releaseFileLock } from "../../src/utils/file_lock.ts";
 import { pidAlive } from "../../src/utils/pid.ts";
 import { writeRunState } from "./fixtures.ts";
-import { bunRunArgs, ROOT, spawnChild } from "./run.ts";
-import { sidecarDenoOnPath } from "./sidecar.ts";
-import { testAbortSignal } from "./testing.ts";
+import { bunRunArgs, ROOT, type RunOptions, runSync, spawnChild } from "./run.ts";
+import { tempDir, testAbortSignal } from "./testing.ts";
 
 /** `agent start`'s two credential steps as one call, the refusal gate and the resolution it feeds,
  *  so a decision table holds refusals and resolved credentials side by side (a refusal rejects). */
@@ -52,22 +50,22 @@ export const FAKE_DAEMON_CREDENTIAL: DaemonCredential = {
 };
 export const FAKE_DAEMON_HOST = DEFAULT_COPILOT_API_BASE;
 
-/** A real detached daemon over `home`, preloads included, so it takes the daemon.lock at boot like
- *  production: under the generated daemon config and the sidecar deno found when the helpers
- *  loaded (a test that narrows PATH to a scratch bin for its agent lookups must not lose it). A
- *  caller outside `sidecarTest` fails here, by name, on a machine with no deno on PATH. */
-function sidecarDeno(): string {
-  const deno = sidecarDenoOnPath();
-  if (deno === null) throw new Error("no deno on PATH: the fake daemon runs under the sidecar");
-  return deno;
+/** The fake proxy as a file entry under the resolved root home's proxy home, the shape
+ *  COPILOT_API_ENTRY resolves to. */
+export function fakeProxyEntry(): { kind: "file"; path: string; proxyHome: string } {
+  return {
+    kind: "file",
+    path: join(ROOT, "test", "copilot-api-fake.mjs"),
+    proxyHome: proxyHome(resolveRootHome()),
+  };
 }
 
+/** A real detached daemon over `home`, preloads included, so it takes the daemon.lock at boot like
+ *  production: the running bun spawned as the daemon's runtime. */
 export function launchFakeDaemon(home: string, port: number): number {
   mkdirSync(home, { recursive: true });
   const logFile = join(home, "daemon.log");
   writeFileSync(logFile, "");
-  const rootHome = resolveRootHome();
-  writeDaemonConfig(rootHome);
   return launchDaemon({
     port,
     logFile,
@@ -77,12 +75,45 @@ export function launchFakeDaemon(home: string, port: number): number {
     idleWatchdog: false,
     muteProxyLogs: false,
     copilotHost: FAKE_DAEMON_HOST,
-    entry: {
-      kind: "file",
-      path: join(ROOT, "test", "copilot-api-fake.mjs"),
-      configFile: daemonConfigFile(rootHome),
-    },
-    denoBin: parseAbsolutePath(sidecarDeno()),
+    entry: fakeProxyEntry(),
+  });
+}
+
+/**
+ * A process the owner-filtered scan classifies as our daemon: the running bun (the runtime name
+ * the classifier gates on) running `entry`, whose basename starts with `copilot-api`, with `start`
+ * next on its argv, and a `--preload` under this checkout, the mark only our spawn leaves (the
+ * parent-exit preload, so a decoy also dies with the test). Nothing else in the process table
+ * qualifies, the suite's own bun processes included. `stderr` is inherited so a child that dies
+ * says why in the run.
+ */
+export function spawnDaemonShapedChild(
+  entry: string,
+  args: string[] = ["start"],
+  env: Record<string, string> = {},
+): Bun.Subprocess<"ignore", "ignore", "inherit"> {
+  const preload = join(ROOT, "test", "helpers", "exit_with_parent_preload.ts");
+  return spawnChild(process.execPath, {
+    args: [...bunRunArgs("--preload", preload), entry, ...args],
+    env: { ...env, ...BUN_CLI_ENV },
+    stdout: "ignore",
+    stderr: "inherit",
+  });
+}
+
+/** `source` written under a fresh temp dir and run with `--preload shim` ahead of it, the way the
+ *  daemon launcher loads the shims; `args` follow the target on its argv. */
+export function runWithPreload(
+  shim: string,
+  source: string,
+  opts: RunOptions & { args?: string[] } = {},
+): ReturnType<typeof runSync> {
+  const target = join(tempDir("preload-target-"), "target.ts");
+  writeFileSync(target, source);
+  const { args = [], ...run } = opts;
+  return runSync(process.execPath, [...bunRunArgs("--preload", shim), target, ...args], {
+    ...run,
+    env: { ...(run.env ?? process.env), ...BUN_CLI_ENV },
   });
 }
 

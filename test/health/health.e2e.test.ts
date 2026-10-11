@@ -22,7 +22,6 @@ import {
   checkNodeModules,
   checkProxyPackage,
   checkProxyResolved,
-  checkProxySidecar,
   checkRuntime,
   checkRuntimeWatchdog,
   checkShellIntegration,
@@ -127,15 +126,8 @@ function defaultTarget(overrides: TargetOverrides = {}): DefaultRuntimeTarget {
 const BOOTSTRAP_OK: BootstrapFacts = {
   cliVersion: "3.1.0",
   runtimeVersion: "1.4.2",
+  runtimePath: "/opt/bun",
   nodeModules: { present: true, fresh: true },
-};
-
-const PATH_SIDECAR: ProxyFacts["sidecar"] = {
-  kind: "path",
-  referenceVersion: "2.9.5",
-  denoBin: "/deno",
-  version: "2.9.5",
-  standalone: false,
 };
 
 const CODEX_UNCONFIGURED: CodexFacts = {
@@ -176,14 +168,14 @@ test("aggregate: filterByScope, worstStatus, and exitCodeFor over one check list
     result("runtime.port", "ok", ["full", "proxy", "runtime"]),
     result("setup.shell", "warn", ["full", "setup"]),
     result("setup.codex", "ok", ["full", "setup", "codex"]),
-    result("bootstrap.deno", "ok", ["full", "proxy"]),
+    result("bootstrap.runtime", "ok", ["full", "proxy"]),
   ];
   const ids = (scope: HealthScope) => filterByScope(all, scope).map((r) => r.id);
   expect(ids("runtime")).toEqual(["runtime.port"]);
   expect(ids("setup")).toEqual(["setup.shell", "setup.codex"]);
   expect(ids("codex")).toEqual(["setup.codex"]);
-  expect(ids("proxy")).toEqual(["runtime.port", "bootstrap.deno"]);
-  expect(ids("full")).toEqual(["runtime.port", "setup.shell", "setup.codex", "bootstrap.deno"]);
+  expect(ids("proxy")).toEqual(["runtime.port", "bootstrap.runtime"]);
+  expect(ids("full")).toEqual(["runtime.port", "setup.shell", "setup.codex", "bootstrap.runtime"]);
 
   // Severity ranks fail > warn > ok wherever the fail sits; only a fail moves the exit code.
   const failing = [...all.slice(0, 2), result("runtime.pid", "fail", ["full"]), ...all.slice(2)];
@@ -222,14 +214,9 @@ test("proxy package: the version bounds decide status and fix, the cooldown the 
       cooldownSeconds: 604800,
       floatSkips: false,
       resolved: null,
-      sidecar: PATH_SIDECAR,
+      standalone: false,
       ...facts,
     });
-  const standalone: ProxyFacts["sidecar"] = {
-    ...PATH_SIDECAR,
-    kind: "provisioned",
-    standalone: true,
-  };
   const missing: Partial<ProxyFacts> = {
     version: null,
     bounds: { ok: false, reason: "missing", version: null },
@@ -335,11 +322,11 @@ test("proxy package: the version bounds decide status and fix, the cooldown the 
       status: "fail",
       detail: "copilot-env.config",
     },
-    // A compiled binary ships no deno.json baseline; the float resolves the proxy at `agent start`,
+    // A compiled binary ships no node_modules; the float resolves the proxy at `agent start`,
     // so "missing" is the normal pre-start state of a binary install, not a broken one.
     {
       name: "missing, compiled install, both agents direct",
-      facts: { ...missing, floatSkips: true, sidecar: standalone },
+      facts: { ...missing, floatSkips: true, standalone: true },
       status: "ok",
       detail: "not required",
       noFix: true,
@@ -347,7 +334,7 @@ test("proxy package: the version bounds decide status and fix, the cooldown the 
     },
     {
       name: "missing, compiled install, proxy expected",
-      facts: { ...missing, sidecar: standalone },
+      facts: { ...missing, standalone: true },
       status: "ok",
       detail: "agent start",
       noFix: true,
@@ -366,134 +353,7 @@ test("proxy package: the version bounds decide status and fix, the cooldown the 
   }
 });
 
-test("proxy sidecar: absent is fatal wherever the proxy may spawn; a found deno is named by where it came from", () => {
-  const facts = (sidecar: ProxyFacts["sidecar"]): ProxyFacts => ({
-    version: "1.10.5",
-    bounds: { ok: true, version: "1.10.5" },
-    configError: null,
-    cooldownSeconds: 604800,
-    floatSkips: false,
-    resolved: null,
-    sidecar,
-  });
-
-  // A compiled binary is not a deno CLI: with no deno anywhere it cannot spawn
-  // the proxy at all, so this is a failure rather than a note.
-  const compiled = checkProxySidecar(
-    facts({
-      kind: "absent",
-      referenceVersion: "2.9.5",
-      denoBin: null,
-      version: null,
-      standalone: true,
-    }),
-  );
-  expect(compiled.status).toBe("fail");
-  expect(compiled.fix).toBe("install deno (https://deno.com), or `agent start` to provision one");
-
-  // A checkout is no different: the CLI runs on Bun, so it has no deno of its own to fall back on.
-  expect(
-    checkProxySidecar(
-      facts({
-        kind: "absent",
-        referenceVersion: "2.9.5",
-        denoBin: null,
-        version: null,
-        standalone: false,
-      }),
-    ).status,
-  ).toBe("fail");
-
-  const checkoutPath = checkProxySidecar(
-    facts({
-      kind: "path",
-      referenceVersion: "2.9.5",
-      denoBin: "/usr/bin/deno",
-      version: "2.9.5",
-      standalone: false,
-    }),
-  );
-  expect(checkoutPath.status).toBe("ok");
-  expect(checkoutPath.detail).toContain("/usr/bin/deno");
-
-  const provisioned = checkProxySidecar(
-    facts({
-      kind: "provisioned",
-      referenceVersion: "2.9.5",
-      denoBin: "/home/x/deno",
-      version: "2.9.5",
-      standalone: true,
-    }),
-  );
-  expect(provisioned.status).toBe("ok");
-  expect(provisioned.detail).toContain("2.9.5");
-
-  // A PATH deno is the normal answer under the user's-toolchain-wins policy: older is a WARN, never
-  // a block, and an unreadable version is not a verdict.
-  const onPath = checkProxySidecar(
-    facts({
-      kind: "path",
-      referenceVersion: "2.9.5",
-      denoBin: "/opt/homebrew/bin/deno",
-      version: "2.10.0",
-      standalone: true,
-    }),
-  );
-  expect(onPath.status).toBe("ok");
-  expect(onPath.detail).toContain("deno 2.10.0 on PATH");
-  const older = checkProxySidecar(
-    facts({
-      kind: "path",
-      referenceVersion: "2.9.5",
-      denoBin: "/opt/homebrew/bin/deno",
-      version: "2.8.1",
-      standalone: true,
-    }),
-  );
-  expect(older.status).toBe("warn");
-  expect(older.detail).toContain("deno 2.8.1 on PATH is older than the tested 2.9.5");
-  expect(older.fix).toContain("upgrade deno");
-  // A canary build (`x.y.z+<hash>`) is semver: its core compares, so an old canary warns too.
-  const canary = checkProxySidecar(
-    facts({
-      kind: "path",
-      referenceVersion: "2.9.5",
-      denoBin: "/opt/homebrew/bin/deno",
-      version: "2.8.1+a1b2c3d",
-      standalone: true,
-    }),
-  );
-  expect(canary.status).toBe("warn");
-  expect(canary.detail).toContain("deno 2.8.1+a1b2c3d on PATH is older than the tested 2.9.5");
-  const unknownVersion = checkProxySidecar(
-    facts({
-      kind: "path",
-      referenceVersion: "2.9.5",
-      denoBin: "/opt/homebrew/bin/deno",
-      version: null,
-      standalone: true,
-    }),
-  );
-  expect(unknownVersion.status).toBe("ok");
-  expect(unknownVersion.detail).toContain("deno (version unknown) on PATH");
-
-  // Direct-only: nothing spawns the proxy, so an absent sidecar is idle capacity even on a compiled build.
-  const unused = checkProxySidecar({
-    ...facts({
-      kind: "absent",
-      referenceVersion: "2.9.5",
-      denoBin: null,
-      version: null,
-      standalone: true,
-    }),
-    floatSkips: true,
-  });
-  expect(unused.status).toBe("ok");
-  expect(unused.detail).toContain("not required");
-  expect(unused.fix).toBeUndefined();
-});
-
-test("proxy resolved: no record is ok, a record with a missing cache fails", () => {
+test("proxy resolved: no record is ok, a record with a missing install fails", () => {
   const facts = (resolved: ProxyFacts["resolved"], floatSkips = false): ProxyFacts => ({
     version: resolved?.version ?? "1.10.5",
     bounds: { ok: true, version: resolved?.version ?? "1.10.5" },
@@ -501,13 +361,7 @@ test("proxy resolved: no record is ok, a record with a missing cache fails", () 
     cooldownSeconds: 604800,
     floatSkips,
     resolved,
-    sidecar: {
-      kind: "path",
-      referenceVersion: "2.9.5",
-      denoBin: "/deno",
-      version: "2.9.5",
-      standalone: false,
-    },
+    standalone: false,
   });
 
   // Never floated: the mapped package runs under the generated config, which is a working fallback.
@@ -518,19 +372,14 @@ test("proxy resolved: no record is ok, a record with a missing cache fails", () 
   // Direct-only says so explicitly rather than implying a pending float.
   expect(checkProxyResolved(facts(null, true)).detail).toContain("both direct");
 
-  // Recorded but the cache is gone: the launch asks for that exact version offline, so no fallback exists.
-  const stale = checkProxyResolved(
-    facts({ version: "1.10.5", resolvedAtMs: 1, denoDir: "/gone", cached: false }),
-  );
+  // Recorded but the install is gone: the launch runs that exact version from it, so no fallback exists.
+  const stale = checkProxyResolved(facts({ version: "1.10.5", resolvedAtMs: 1, installed: false }));
   expect(stale.status).toBe("fail");
   expect(stale.fix).toBe("agent start");
 
-  const ok = checkProxyResolved(
-    facts({ version: "1.10.5", resolvedAtMs: 1, denoDir: "/cache", cached: true }),
-  );
+  const ok = checkProxyResolved(facts({ version: "1.10.5", resolvedAtMs: 1, installed: true }));
   expect(ok.status).toBe("ok");
   expect(ok.detail).toContain("1.10.5");
-  expect(ok.detail).toContain("/cache");
 });
 
 // --- runtime checks (preserve original semantics) ---------------------------
@@ -1201,7 +1050,12 @@ test("with no recorded port the default target probes the configured port, marke
 // --- bootstrap checks -------------------------------------------------------
 
 test("the runtime is named; node_modules absent fails, stale warns, fresh ok", () => {
-  expect(checkRuntime(BOOTSTRAP_OK)).toMatchObject({ status: "ok", detail: "bun 1.4.2" });
+  // One row for both runtimes: the bun version, then the executable the daemon is spawned from.
+  expect(checkRuntime(BOOTSTRAP_OK)).toMatchObject({
+    status: "ok",
+    detail: "bun 1.4.2; the proxy daemon runs from this executable\n/opt/bun",
+    value: { available: true, version: "1.4.2", executable: "/opt/bun" },
+  });
   expect(checkNodeModules(BOOTSTRAP_OK).status).toBe("ok");
   expect(
     checkNodeModules({ ...BOOTSTRAP_OK, nodeModules: { present: false, fresh: false } }).status,
@@ -1530,7 +1384,7 @@ test("checkAutoupdate: full status always shown (disabled too); recorded error w
   expect(checkAutoupdate(enabled).detail).toContain("enabled");
   expect(checkAutoupdate(enabled).detail).toContain("up to date");
 
-  const errored = { ...enabled, lastResult: "error: deno install failed after update" };
+  const errored = { ...enabled, lastResult: "error: the install failed after update" };
   const r = checkAutoupdate(errored);
   expect(r.status).toBe("warn");
   expect(r.fix).toBe("agent update --auto-status");
@@ -1549,7 +1403,7 @@ test("evaluateAll: each scope yields its own check ids", () => {
       cooldownSeconds: 604800,
       floatSkips: false,
       resolved: null,
-      sidecar: PATH_SIDECAR,
+      standalone: false,
     },
     shell: { files: [], integrationWired: true, launchersWired: false },
     clis: [{ command: "claude", name: "Claude", look: { kind: "absent" } }],

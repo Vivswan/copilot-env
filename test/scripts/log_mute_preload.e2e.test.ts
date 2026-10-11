@@ -9,19 +9,18 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { runWithDenoPreload, sidecarTest } from "../helpers/deno_sidecar.ts";
+import { runWithPreload } from "../helpers/daemon.ts";
 import { ROOT, resolvePackageDir } from "../helpers/run.ts";
 import { expect, tempDir, test } from "../helpers/testing.ts";
 
 // The shim patches `node:fs` at import, so any import would show it; the subprocess proves it
-// loads the way production does, through `--preload` under the sidecar deno
-// (src/copilot_api/process.ts).
+// loads the way production does, through `--preload` (src/copilot_api/process.ts).
 const SHIM = join(ROOT, "src", "scripts", "log_mute_preload.ts");
 
 function runPreloaded(home: string, script: string): string {
   // Both env vars as the daemon spawn pins them (src/copilot_api/launch.ts): inside a daemon,
   // COPILOT_API_HOME IS the home.
-  const res = runWithDenoPreload(SHIM, script, {
+  const res = runWithPreload(SHIM, script, {
     env: { ...process.env, COPILOT_API_HOME: home, COPILOT_ENV_ROOT_HOME: home },
   });
   if (res.exitCode !== 0) {
@@ -52,7 +51,7 @@ await new Promise((r) => real.end(r));
 console.log("DONE");
 `;
 
-sidecarTest("writes under <home>/logs are discarded outright (no growth, no file creation)", () => {
+test("writes under <home>/logs are discarded outright (no growth, no file creation)", () => {
   const home = tempDir("copilot-logmute-");
   try {
     // An hour-old mtime on the seeded log pins that discard never touches the file, not even its

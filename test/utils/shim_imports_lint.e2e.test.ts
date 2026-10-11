@@ -47,9 +47,9 @@ test("biome.json points the rule at each import-free shim and nothing else", () 
     "src/scripts/pat_passthrough_preload.ts": importing,
     "src/scripts/client_headers_preload.ts": importing,
     "src/scripts/copilot_host_preload.ts": importing,
-    // Other preloads import on purpose (the node-compat shim, the idle watchdog), and the CLI
-    // imports everywhere.
-    "src/scripts/node_compat_preload.ts": importing,
+    // Other preloads import on purpose (the idle watchdog, the daemon lock), and the CLI imports
+    // everywhere.
+    "src/scripts/idle_watchdog_preload.ts": importing,
     "src/commands/profile.ts": importing,
     "test/helpers/env.ts": importing,
   };
@@ -58,7 +58,7 @@ test("biome.json points the rule at each import-free shim and nothing else", () 
     "src/scripts/pat_passthrough_preload.ts": 1,
     "src/scripts/client_headers_preload.ts": 1,
     "src/scripts/copilot_host_preload.ts": 1,
-    "src/scripts/node_compat_preload.ts": 0,
+    "src/scripts/idle_watchdog_preload.ts": 0,
     "src/commands/profile.ts": 0,
     "test/helpers/env.ts": 0,
   });

@@ -1,13 +1,5 @@
-import {
-  chmodSync,
-  copyFileSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  realpathSync,
-  writeFileSync,
-} from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { join, parse } from "node:path";
 import { DRAIN_DEADLINE_MS } from "../../src/copilot_api/daemon_shutdown.ts";
 import {
   DAEMON_CLIENT_HEADERS_ENV,
@@ -15,10 +7,13 @@ import {
   daemonClientHeaders,
 } from "../../src/copilot_api/integration_identity.ts";
 import {
+  BUN_CLI_ENV,
   classifyPidFromScan,
   copilotApiArgv,
   DAEMON_GH_TOKEN_ENV,
+  DAEMON_RUNTIMES,
   DAEMON_SIGKILL_GRACE_MS,
+  type DaemonOwnership,
   type DaemonSpec,
   daemonArgv,
   daemonEnvironment,
@@ -28,31 +23,36 @@ import {
   launchDaemon,
   noProxyWithLoopback,
   parseProcessRows,
+  type RunnableEntry,
   resolveCopilotApiEntry,
 } from "../../src/copilot_api/process.ts";
-import { parseAbsolutePath } from "../../src/copilot_api/sidecar.ts";
-import { PROXY_PACKAGE_NAME } from "../../src/copilot_api/version.ts";
-import {
-  daemonConfigFile,
-  writeDaemonConfig,
-  writeResolvedVersionRecord,
-} from "../../src/proxy_float.ts";
+import { installedProxyPackage, PROXY_PACKAGE_NAME } from "../../src/copilot_api/version.ts";
+import { proxyHome, writeResolvedVersionRecord } from "../../src/proxy_float.ts";
 import { pidAlive } from "../../src/utils/pid.ts";
+import { INSTALLED_BINARY_POSIX } from "../../src/utils/targets.ts";
 import { FAKE_DAEMON_CREDENTIAL, FAKE_DAEMON_HOST, until } from "../helpers/daemon.ts";
-import {
-  runDenoScript,
-  sidecarDeno,
-  sidecarTest,
-  spawnDenoChild,
-} from "../helpers/deno_sidecar.ts";
 import { envSnapshot, isolateProxyHome } from "../helpers/env.ts";
-import { CHILD_VALUES, childValuesEnv, importSpecifier, ROOT } from "../helpers/run.ts";
+import {
+  bunRunArgs,
+  CHILD_VALUES,
+  childValuesEnv,
+  importSpecifier,
+  ROOT,
+  runSync,
+  spawnChild,
+} from "../helpers/run.ts";
 import { afterEach, beforeEach, expect, tempDir, test } from "../helpers/testing.ts";
 
 // Every daemon spawn derives from ONE DaemonSpec, so argv and environment are pinned against the
 // spec rather than a pile of optional arguments.
 
-const restoreEnv = envSnapshot(["COPILOT_API_ENTRY", "NO_PROXY", "no_proxy", "HTTP_PROXY"]);
+const restoreEnv = envSnapshot([
+  "COPILOT_API_ENTRY",
+  "NO_PROXY",
+  "no_proxy",
+  "HTTP_PROXY",
+  "NODE_PATH",
+]);
 let dir = "";
 
 // The entry resolver reads the float's record out of the root home; on a dev machine that HAS
@@ -65,6 +65,8 @@ afterEach(() => {
   restoreEnv();
 });
 
+const FAKE = join(ROOT, "test", "copilot-api-fake.mjs");
+
 const BASE: DaemonSpec = {
   port: 4141,
   logFile: "/tmp/proxy.log",
@@ -74,12 +76,7 @@ const BASE: DaemonSpec = {
   idleWatchdog: false,
   muteProxyLogs: false,
   copilotHost: FAKE_DAEMON_HOST,
-  entry: {
-    kind: "package",
-    specifier: PROXY_PACKAGE_NAME,
-    configFile: daemonConfigFile("/the/root/home"),
-  },
-  denoBin: parseAbsolutePath("/opt/deno/deno"),
+  entry: { kind: "file", path: FAKE, proxyHome: "/the/root/home/proxy" },
 };
 
 function preloads(spec: DaemonSpec): string[] {
@@ -87,6 +84,19 @@ function preloads(spec: DaemonSpec): string[] {
   return argv
     .filter((_path, i) => argv[i - 1] === "--preload")
     .map((path) => path.split(/[\\/]/).at(-1) as string);
+}
+
+/** A proxy installed in the isolated root home's proxy home at `version`, as a float leaves it:
+ *  the package's manifest and the bin it names. */
+function plantInstalledProxy(version: string): string {
+  const packageDir = join(proxyHome(dir), "node_modules", ...PROXY_PACKAGE_NAME.split("/"));
+  mkdirSync(join(packageDir, "dist"), { recursive: true });
+  writeFileSync(
+    join(packageDir, "package.json"),
+    JSON.stringify({ name: PROXY_PACKAGE_NAME, version, bin: { "copilot-api": "./dist/main.js" } }),
+  );
+  writeFileSync(join(packageDir, "dist", "main.js"), "");
+  return join(packageDir, "dist", "main.js");
 }
 
 const CLI_HEADERS = daemonClientHeaders("codex_exec/1", "copilot-developer-cli");
@@ -100,7 +110,6 @@ test("the preload set and its environment derive from the spec, in load order", 
   // Every daemon carries a credential and a host, so the token, host, and client-header shims are
   // always loaded, in this order; the optional shims append.
   const base = [
-    "node_compat_preload.ts",
     "daemon_lock_preload.ts",
     "token_argv_preload.ts",
     "daemon_runtime_preload.ts",
@@ -175,23 +184,24 @@ test("the preload set and its environment derive from the spec, in load order", 
     },
     {
       // The daemon inherits our TLS/proxy environment; the spec's own wiring wins over an inherited
-      // copy, and deno's release check stays off.
+      // copy, and an inherited NODE_PATH is replaced, never joined: the shims resolve from the
+      // proxy home's install alone.
       spec: { home: "/profiles/work" },
       preloads: base,
       env: [
         {
           inherited: {
             NODE_EXTRA_CA_CERTS: "/etc/corp.pem",
-            DENO_TLS_CA_STORE: "system",
             HTTPS_PROXY: "http://corp:3128",
             COPILOT_API_HOME: "/the/default/home",
+            NODE_PATH: "/somewhere/else",
           },
           keys: {
             NODE_EXTRA_CA_CERTS: "/etc/corp.pem",
-            DENO_TLS_CA_STORE: "system",
             HTTPS_PROXY: "http://corp:3128",
             COPILOT_API_HOME: "/profiles/work",
-            DENO_NO_UPDATE_CHECK: "1",
+            NODE_PATH: join("/the/root/home/proxy", "node_modules"),
+            BUN_BE_BUN: "1",
           },
         },
       ],
@@ -240,186 +250,125 @@ test("the preload set and its environment derive from the spec, in load order", 
   }
 });
 
-test("with no float record the argv runs the mapped package, offline-only, ending in start", () => {
-  delete process.env.COPILOT_API_ENTRY;
-  // The generated daemon config, rendered on every resolve: no root carries a deno config of its own.
-  expect(resolveCopilotApiEntry()).toEqual({
-    kind: "package",
-    specifier: PROXY_PACKAGE_NAME,
-    configFile: daemonConfigFile(dir),
-  });
-  expect(existsSync(daemonConfigFile(dir))).toBe(true);
-
+// The runtime flags and the environment are one contract: `--no-env-file` and `--no-install`
+// sit between `run` and the first `--preload` (bun reads them nowhere before `run`), the entry is
+// the installed package's own bin, and the environment makes a compiled binary a bun CLI.
+test("the daemon argv runs the entry as a bun CLI, every preload between run and the entry", () => {
   const argv = daemonArgv({ ...BASE, port: 4242 });
-  expect(argv[0]).toBe("run");
-  // The config is PINNED, never discovered: a package specifier has no directory to
-  // discover from, and the preloads resolve their imports through this file's import map.
-  expect(argv.slice(1, 3)).toEqual(["--config", BASE.entry.configFile]);
-  expect(argv).toContain("--cached-only");
-  // The grants are an exact visible list: never a blanket -A, never one grant more than the daemon needs.
-  expect(argv.filter((a) => a === "-A" || a.startsWith("--allow"))).toEqual([
-    "--allow-env",
-    "--allow-read",
-    "--allow-write",
-    "--allow-net",
-    "--allow-sys",
+  expect(argv.slice(0, 3)).toEqual(["run", "--no-env-file", "--no-install"]);
+  expect(argv.slice(3, 3 + 2 * preloads(BASE).length).filter((_a, i) => i % 2 === 0)).toEqual(
+    preloads(BASE).map(() => "--preload"),
+  );
+  expect(argv.slice(-5)).toEqual([FAKE, "start", "--verbose", "--port", "4242"]);
+  // No flag follows the entry: everything after it is the proxy's own argv.
+  const entryAt = argv.indexOf(FAKE);
+  expect(argv.slice(entryAt + 1).some((a) => a.startsWith("--preload"))).toBe(false);
+  expect(daemonEnvironment(BASE, {})).toMatchObject(BUN_CLI_ENV);
+  // Any proxy subcommand rides the same entry and flags.
+  expect(copilotApiArgv(["debug", "models"], [], BASE.entry)).toEqual([
+    "run",
+    "--no-env-file",
+    "--no-install",
+    FAKE,
+    "debug",
+    "models",
   ]);
-  // The generated config's import map is the single source of the proxy version, so no version
-  // string is restated on the command line.
-  expect(argv.slice(-5)).toEqual([PROXY_PACKAGE_NAME, "start", "--verbose", "--port", "4242"]);
-  // Nothing to point a resolve at: the mapped entry resolves through node_modules.
-  expect(daemonEnvironment(BASE, {}).DENO_DIR).toBeUndefined();
 });
 
-test("a daemon config already on disk is re-rendered, never trusted as written", () => {
-  // One rule for every non-floated entry: the generated config, rewritten on every resolve, so a
-  // stale or foreign file cannot steer a spawn.
+// (record, the proxy home's install, the checkout's copy) -> the entry kind and the file run. A
+// record whose install is gone must never name a file that is not there; the float gate ahead of
+// every start is what reinstalls it, and the checkout copy is the fallback until then.
+test("resolveCopilotApiEntry: the float's record runs its installed bin; an override always wins", () => {
   delete process.env.COPILOT_API_ENTRY;
-  mkdirSync(dirname(daemonConfigFile(dir)), { recursive: true });
-  writeFileSync(daemonConfigFile(dir), '{"imports":{"sentinel":"npm:sentinel@1.0.0"}}\n');
+  const home = proxyHome(dir);
+  const checkout = installedProxyPackage();
+  if (checkout === null) throw new Error("the checkout has no installed proxy (bun install)");
+
+  // No record: the checkout's own copy.
   expect(resolveCopilotApiEntry()).toEqual({
     kind: "package",
-    specifier: PROXY_PACKAGE_NAME,
-    configFile: daemonConfigFile(dir),
+    path: checkout.entry,
+    proxyHome: home,
   });
-});
 
-test("a float record moves the entry to that exact version, run out of the cache it warmed", () => {
-  delete process.env.COPILOT_API_ENTRY;
-  const denoDir = join(dir, "deno", "cache");
-  writeResolvedVersionRecord(dir, "1.14.30", Date.now(), denoDir);
+  // A record whose version the proxy home does not hold: still the checkout copy.
+  writeResolvedVersionRecord(dir, "1.14.30", Date.now());
+  expect(resolveCopilotApiEntry()).toEqual({
+    kind: "package",
+    path: checkout.entry,
+    proxyHome: home,
+  });
+  plantInstalledProxy("1.14.29");
+  expect(resolveCopilotApiEntry().kind).toBe("package");
 
-  const entry = resolveCopilotApiEntry();
-  expect(entry).toEqual({
+  // The recorded version installed: run exactly its bin, as the package names it.
+  const bin = plantInstalledProxy("1.14.30");
+  expect(resolveCopilotApiEntry()).toEqual({
     kind: "floated",
-    specifier: `npm:${PROXY_PACKAGE_NAME}@1.14.30`,
     version: "1.14.30",
-    denoDir,
-    configFile: daemonConfigFile(dir),
+    path: bin,
+    proxyHome: home,
   });
 
-  const spec = { ...BASE, entry };
-  const argv = daemonArgv(spec);
-  // THE regression pin: a config with a frozen lock rejects this exact specifier, and one whose
-  // import map names packages the float's DENO_DIR never held fails under `--cached-only`. Both
-  // were live launch failures; the generated config beside the record carries neither.
-  expect(argv.slice(1, 3)).toEqual(["--config", daemonConfigFile(dir)]);
-  // A compiled install has no node_modules; resolution stays inside the float's cache.
-  expect(argv).toContain("--node-modules-dir=none");
-  // The resolve still never reaches the network: the float pre-warmed the cache DENO_DIR points at.
-  expect(argv).toContain("--cached-only");
-  expect(argv.slice(-5)).toEqual([
-    `npm:${PROXY_PACKAGE_NAME}@1.14.30`,
-    "start",
-    "--verbose",
-    "--port",
-    "4141",
-  ]);
-  // Without this the `--cached-only` resolve would look in the default cache and fail.
-  expect(daemonEnvironment(spec, {}).DENO_DIR).toBe(denoDir);
-  // The spec's own home wiring still wins over the entry's overlay.
-  expect(daemonEnvironment({ ...spec, env: { DENO_DIR: "/pinned" } }, {}).DENO_DIR).toBe("/pinned");
-});
-
-test("a floated resolve never rewrites the daemon config: the verify/float gate owns it", () => {
-  // A rewrite here could hand `--cached-only` an import map the recorded cache was never warmed for.
-  // Regeneration for a changed build lives in proxyFloatVerifyStatus/floatProxy (proxy_float.ts),
-  // which re-warms on a miss.
-  delete process.env.COPILOT_API_ENTRY;
-  const sentinel = '{"imports":{"sentinel":"npm:sentinel@1.0.0"}}\n';
-  mkdirSync(join(dir, "proxy"), { recursive: true });
-  writeFileSync(daemonConfigFile(dir), sentinel);
-  writeResolvedVersionRecord(dir, "1.14.30", Date.now(), join(dir, "deno", "cache"));
-
-  const entry = resolveCopilotApiEntry();
-  expect(entry.kind).toBe("floated");
-  expect(readFileSync(daemonConfigFile(dir), "utf8")).toBe(sentinel);
-});
-
-// A COPILOT_API_ENTRY override runs that file whether or not a float record exists, so the CI fake
-// is never shadowed by a real resolve; it runs under the generated daemon config either way.
-test("a COPILOT_API_ENTRY override runs that file under the generated config, never a cached package", () => {
-  const fake = join(ROOT, "test", "copilot-api-fake.mjs");
-  process.env.COPILOT_API_ENTRY = fake;
-  for (const floated of [false, true]) {
-    if (floated) {
-      writeResolvedVersionRecord(dir, "1.14.30", Date.now(), join(dir, "deno", "cache"));
-    }
-    expect({ floated, entry: resolveCopilotApiEntry() }).toEqual({
-      floated,
-      entry: { kind: "file", path: fake, configFile: daemonConfigFile(dir) },
-    });
-    expect(existsSync(daemonConfigFile(dir)), String(floated)).toBe(true);
-  }
-
-  const argv = daemonArgv({
-    ...BASE,
-    entry: { kind: "file", path: fake, configFile: daemonConfigFile(dir) },
-  });
-  // `--cached-only` is about resolving a package; a file entry must never carry it. From a checkout
-  // (this suite) its imports resolve from the checkout's node_modules, so a fixture never reaches
-  // the network; an install has no node_modules and gets no such flag.
-  expect(argv).not.toContain("--cached-only");
-  expect(argv).toContain("--node-modules-dir=manual");
-  expect(argv).not.toContain(PROXY_PACKAGE_NAME);
-  expect(argv.slice(-5)).toEqual([fake, "start", "--verbose", "--port", "4141"]);
-});
-
-test("copilotApiArgv runs any proxy subcommand through the same entry and permissions", () => {
-  delete process.env.COPILOT_API_ENTRY;
-  const argv = copilotApiArgv(["debug", "models"]);
-  // Without the node-compat shim the proxy dies at module load on Linux, whatever the subcommand.
-  const loaded = argv.filter((_a, i) => argv[i - 1] === "--preload");
-  expect(loaded.map((p) => p.split(/[\\/]/).at(-1))).toEqual(["node_compat_preload.ts"]);
-  expect(argv.slice(-2)).toEqual(["debug", "models"]);
-  expect(argv).toContain(PROXY_PACKAGE_NAME);
+  // The override runs that file whether or not a float resolved, so the CI fake is never
+  // shadowed by a real install.
+  process.env.COPILOT_API_ENTRY = FAKE;
+  expect(resolveCopilotApiEntry()).toEqual({ kind: "file", path: FAKE, proxyHome: home });
 });
 
 // --- the launched binary ---------------------------------------------------------------
 
-sidecarTest(
-  "launchDaemon spawns exactly the spec's denoBin, never a re-derived one",
-  async () => {
-    // A re-derived resolveDenoBin() can land on the PATH deno, so only a COPY at a different path
-    // makes this discriminating.
-    const sidecar = join(dir, process.platform === "win32" ? "sidecar-deno.exe" : "sidecar-deno");
-    copyFileSync(sidecarDeno(), sidecar);
-    if (process.platform !== "win32") chmodSync(sidecar, 0o755);
-    const entryFile = join(dir, "report-exec-path.ts");
-    writeFileSync(entryFile, "console.log('EXEC:' + Deno.execPath());\n");
-    const logFile = join(dir, "spawn.log");
-    writeDaemonConfig(dir);
-    const pid = launchDaemon({
-      ...BASE,
-      denoBin: parseAbsolutePath(sidecar),
-      home: dir,
-      logFile,
-      entry: { kind: "file", path: entryFile, configFile: daemonConfigFile(dir) },
+// The daemon is the running executable as a bun CLI, in the proxy home, resolving the shims'
+// imports from there: a compiled binary spawning itself without BUN_BE_BUN would re-run the CLI,
+// and a cwd left to the caller would land bun's own discovery (bunfig, package.json) on a
+// stranger's files.
+test("launchDaemon spawns process.execPath as a bun CLI with the proxy home as cwd and NODE_PATH", async () => {
+  const entryFile = join(dir, "report-runtime.ts");
+  writeFileSync(
+    entryFile,
+    "console.log('RUNTIME:' + JSON.stringify({ execPath: process.execPath, cwd: process.cwd(), " +
+      "nodePath: process.env.NODE_PATH, beBun: process.env.BUN_BE_BUN }));\n",
+  );
+  const logFile = join(dir, "spawn.log");
+  const home = proxyHome(dir);
+  expect(existsSync(home)).toBe(false); // created by the spawn, not assumed
+  const pid = launchDaemon({
+    ...BASE,
+    home: dir,
+    logFile,
+    entry: { kind: "file", path: entryFile, proxyHome: home },
+  });
+  try {
+    expect(pid).toBeGreaterThan(0);
+    let logged = "";
+    await until(() => {
+      logged = readFileSync(logFile, "utf8");
+      return logged.includes("RUNTIME:");
     });
+    const raw = /RUNTIME:(.+)/.exec(logged)?.[1]?.trim();
+    if (raw === undefined) throw new Error(`no RUNTIME line; log was: ${logged}`);
+    const reported = JSON.parse(raw) as {
+      execPath: string;
+      cwd: string;
+      nodePath: string;
+      beBun: string;
+    };
+    // realpath both sides: the OS tmpdir may be a symlink, and bun canonicalizes its execPath.
+    expect(realpathSync(reported.execPath)).toBe(realpathSync(process.execPath));
+    expect(realpathSync(reported.cwd)).toBe(realpathSync(home));
+    expect(reported.nodePath).toBe(join(home, "node_modules"));
+    expect(reported.beBun).toBe("1");
+  } finally {
+    // On Windows the isolate root's removal would race a still-running child, so wait until the
+    // pid is genuinely gone.
     try {
-      expect(pid).toBeGreaterThan(0);
-      let logged = "";
-      await until(() => {
-        logged = readFileSync(logFile, "utf8");
-        return logged.includes("EXEC:");
-      });
-      const reported = /EXEC:(.+)/.exec(logged)?.[1]?.trim();
-      if (reported === undefined) throw new Error(`no EXEC line; log was: ${logged}`);
-      // realpath both sides: Deno.execPath() canonicalizes, and the OS tmpdir may be a symlink.
-      expect(realpathSync(reported)).toBe(realpathSync(sidecar));
-    } finally {
-      // On Windows the isolate root's removal would race a still-running copied deno.exe, so wait until
-      // the pid is genuinely gone.
-      try {
-        process.kill(pid, "SIGKILL");
-      } catch {
-        /* already gone */
-      }
-      await until(() => !pidAlive(pid));
+      process.kill(pid, "SIGKILL");
+    } catch {
+      /* already gone */
     }
-  },
-  30_000,
-); // a real daemon boot on a loaded runner
+    await until(() => !pidAlive(pid));
+  }
+}, 30_000); // a real daemon boot on a loaded runner
 
 // --- the daemon environment ----------------------------------------------------------
 
@@ -441,10 +390,18 @@ test("NO_PROXY gains the loopback hosts without losing the user's own", () => {
 
 // --- the POSIX process scan ----------------------------------------------------------
 
+// The runtime gate reads the process table's executable name: `bun` in a checkout (this very
+// process), the installed binary's name under a release. targets.ts owns that name and the
+// copilot_api layer does not import install/, so the two spellings are pinned here.
+test("DAEMON_RUNTIMES names the installed binary and the checkout's bun", () => {
+  expect(DAEMON_RUNTIMES).toContain(INSTALLED_BINARY_POSIX);
+  expect(DAEMON_RUNTIMES).toContain(parse(process.execPath).name);
+});
+
 test("parseProcessRows splits pid and ucomm off, keeping the command line verbatim", () => {
   const rows = parseProcessRows(
     "  900 distnoted        /usr/sbin/distnoted agent\n" +
-      "12345 deno             /home/me/.deno/bin/deno run --allow-net @jeffreycao/copilot-api start --port 4141\n" +
+      "12345 bun              /home/me/.bun/bin/bun run --no-env-file /x/node_modules/@jeffreycao/copilot-api/dist/main.js start --port 4141\n" +
       "\n" +
       "not a row\n",
   );
@@ -452,8 +409,9 @@ test("parseProcessRows splits pid and ucomm off, keeping the command line verbat
     { pid: 900, ucomm: "distnoted", command: "/usr/sbin/distnoted agent" },
     {
       pid: 12345,
-      ucomm: "deno",
-      command: "/home/me/.deno/bin/deno run --allow-net @jeffreycao/copilot-api start --port 4141",
+      ucomm: "bun",
+      command:
+        "/home/me/.bun/bin/bun run --no-env-file /x/node_modules/@jeffreycao/copilot-api/dist/main.js start --port 4141",
     },
   ]);
   // A command line with runs of spaces survives intact -- only the leading columns split.
@@ -463,11 +421,14 @@ test("parseProcessRows splits pid and ucomm off, keeping the command line verbat
 });
 
 test("daemonPidsFromRows preserves a FAILED scan as unproven, never a confident empty list", () => {
-  const self = { pid: 111, ucomm: "deno", command: "deno test" };
+  const self = { pid: 111, ucomm: "bun", command: "bun test" };
+  // Ours by its preload under this checkout, the mark the scan reads with the real roots.
   const daemon = {
     pid: 222,
-    ucomm: "deno",
-    command: "/home/me/.deno/bin/deno run --allow-net npm:@jeffreycao/copilot-api start",
+    ucomm: "bun",
+    command:
+      `/home/me/.bun/bin/bun run --preload ${join(ROOT, "src", "scripts", "daemon_lock_preload.ts")} ` +
+      "/x/node_modules/@jeffreycao/copilot-api/dist/main.js start",
   };
   // The scan's control is the calling process: a readable `ps -U <uid>` always contains it, so rows
   // WITHOUT it prove the scan failed, and "failed to look" must ride to the sweep as "unproven",
@@ -495,76 +456,121 @@ test("classifyPidFromScan: a FAILED owner scan is unknown, a proven-foreign owne
 // never does. POSIX gates on ps's ucomm via isDaemonProcess; isDaemonCommandLine mirrors the
 // Windows CommandLine judgment the PS scripts interpolate.
 
-function daemonRow(spec: DaemonSpec): { pid: number; ucomm: string; command: string } {
-  return { pid: 1, ucomm: "deno", command: [spec.denoBin, ...daemonArgv(spec)].join(" ") };
+function daemonRow(
+  spec: DaemonSpec,
+  ucomm: (typeof DAEMON_RUNTIMES)[number] = "bun",
+): { pid: number; ucomm: string; command: string } {
+  const runtime =
+    ucomm === "bun" ? "/home/me/.bun/bin/bun" : `/home/me/.copilot-env/current/bin/${ucomm}`;
+  return { pid: 1, ucomm, command: [runtime, ...daemonArgv(spec)].join(" ") };
 }
 
 test("the sweep signature matches every real daemon shape, straight from daemonArgv", () => {
   delete process.env.COPILOT_API_ENTRY;
-  const denoDir = join(dir, "deno", "cache");
-  writeResolvedVersionRecord(dir, "1.14.30", Date.now(), denoDir);
-  const floated = { ...BASE, entry: resolveCopilotApiEntry() };
+  writeResolvedVersionRecord(dir, "1.14.30", Date.now());
+  plantInstalledProxy("1.14.30");
+  const floated = { ...BASE, entry: resolveCopilotApiEntry() as RunnableEntry };
   expect(floated.entry.kind).toBe("floated");
+  // The installed binary's daemon and a checkout's alike.
+  expect(isDaemonProcess(daemonRow(floated, "copilot-env"))).toBe(true);
   expect(isDaemonProcess(daemonRow(floated))).toBe(true);
-
   expect(isDaemonProcess(daemonRow(BASE))).toBe(true);
-
-  const fake = join(ROOT, "test", "copilot-api-fake.mjs");
-  expect(
-    isDaemonProcess(
-      daemonRow({
-        ...BASE,
-        entry: { kind: "file", path: fake, configFile: daemonConfigFile(dir) },
-      }),
-    ),
-  ).toBe(true);
+  expect(isDaemonProcess(daemonRow({ ...BASE, idleWatchdog: true, muteProxyLogs: true }))).toBe(
+    true,
+  );
 
   // ps flattens a SPACED path, but both fragments still carry slashes; missing this daemon would
   // make proxyStatus read it as down and `agent stop` skip it.
+  const spacedInstall: DaemonOwnership = {
+    preloadRoots: ["/Users/John Smith/.copilot-env/current"],
+    entryRoots: [
+      "/Users/John Smith/.local/share/copilot-env/proxy/node_modules/@jeffreycao/copilot-api",
+    ],
+  };
+  expect(
+    isDaemonProcess(
+      {
+        pid: 1,
+        ucomm: "copilot-env",
+        command:
+          "/Users/John Smith/.copilot-env/current/bin/copilot-env run --no-env-file --no-install " +
+          "--preload /Users/John Smith/.copilot-env/current/src/scripts/daemon_lock_preload.ts " +
+          "/Users/John Smith/.local/share/copilot-env/proxy/node_modules/@jeffreycao/copilot-api/dist/main.js " +
+          "start --verbose --port 4141",
+      },
+      spacedInstall,
+    ),
+  ).toBe(true);
+  // The same package run by another tool from its own node_modules: daemon-shaped, and not ours.
+  // Under deno a copilot-api run was ours by construction; under bun only our spawn's marks say so:
+  // a --preload under the install root, or an entry in the proxy home's or the checkout's copy.
   expect(
     isDaemonProcess({
       pid: 1,
-      ucomm: "deno",
+      ucomm: "bun",
       command:
-        "/Users/John Smith/.local/share/copilot-api/deno/2.1.4/deno run " +
-        "--config /Users/John Smith/.local/share/copilot-api/proxy/deno.json --cached-only " +
-        "npm:@jeffreycao/copilot-api@1.14.30 start --verbose --port 4141",
+        "/home/me/.bun/bin/bun run /opt/unrelated/node_modules/@jeffreycao/copilot-api/dist/main.js start --port 4141",
     }),
-  ).toBe(true);
+  ).toBe(false);
   // The DOCUMENTED loss: a path component of two or more words flattens into a slash-less bare
   // fragment ("Runtime"), which the signature refuses; every bare-word tolerance re-admitted impostors.
   expect(
     isDaemonProcess({
       pid: 1,
-      ucomm: "deno",
+      ucomm: "bun",
       command:
-        "/Applications/Deno Runtime Tools/deno run --cached-only " +
-        "npm:@jeffreycao/copilot-api@1.14.30 start --verbose --port 4141",
+        "/Applications/Bun Runtime Tools/bun run --no-install " +
+        "/x/node_modules/@jeffreycao/copilot-api/dist/main.js start --verbose --port 4141",
     }),
   ).toBe(false);
 });
 
-test("the Windows CommandLine mirror matches the image-quoted daemon shapes", () => {
+test("the Windows CommandLine mirror matches the image-quoted daemon shapes, ownership included", () => {
+  // Roots in the OS's own spelling: the quoted paths below must be read as theirs through quotes,
+  // backslashes, and case.
+  const windowsInstall: DaemonOwnership = {
+    preloadRoots: ["C:\\Users\\John Smith\\.copilot-env\\current", "C:\\repo"],
+    entryRoots: [
+      "C:\\Users\\John Smith\\AppData\\Local\\copilot-env\\proxy\\node_modules\\@jeffreycao\\copilot-api",
+      "C:\\x\\node_modules\\@x\\copilot-api",
+    ],
+  };
   // Quoted image path (spaces and all), .exe suffix -- the WMI CommandLine form.
   expect(
     isDaemonCommandLine(
-      '"C:\\Users\\John Smith\\.copilot-env\\home\\deno\\2.1.4\\deno.exe" run --cached-only ' +
-        "npm:@jeffreycao/copilot-api@1.14.30 start --verbose --port 4141",
+      '"C:\\Users\\John Smith\\.copilot-env\\current\\bin\\copilot-env.exe" run --no-env-file --no-install ' +
+        '"C:\\Users\\John Smith\\AppData\\Local\\copilot-env\\proxy\\node_modules\\@jeffreycao\\copilot-api\\dist\\main.js" ' +
+        "start --verbose --port 4141",
+      windowsInstall,
     ),
   ).toBe(true);
-  // A quoted file entry with spaces is still a real daemon; missing it would make `agent stop` skip it.
+  // The same package under another tool's node_modules: the shape matches, the ownership does not.
   expect(
     isDaemonCommandLine(
-      '"C:\\Program Files\\Deno\\deno.exe" run "C:\\tmp\\copilot-api fake.mjs" start --port 4141',
+      '"C:\\Users\\John Smith\\.copilot-env\\current\\bin\\copilot-env.exe" run --no-env-file --no-install ' +
+        '"C:\\tools\\other\\node_modules\\@jeffreycao\\copilot-api\\dist\\main.js" start',
+      windowsInstall,
+    ),
+  ).toBe(false);
+  // A quoted file entry with spaces is still a real daemon (its --preload marks it ours); missing
+  // it would make `agent stop` skip it.
+  expect(
+    isDaemonCommandLine(
+      '"C:\\Program Files\\Bun\\bun.exe" run --preload "C:\\repo\\src\\scripts\\daemon_lock_preload.ts" "C:\\tmp\\copilot-api fake.mjs" start --port 4141',
+      windowsInstall,
     ),
   ).toBe(true);
   expect(
-    isDaemonCommandLine("C:\\Users\\me\\.deno\\bin\\deno.exe run npm:@x/copilot-api@1.2.3 start"),
+    isDaemonCommandLine(
+      "C:\\Users\\me\\.bun\\bin\\bun.exe run C:\\x\\node_modules\\@x\\copilot-api\\dist\\main.js start",
+      windowsInstall,
+    ),
   ).toBe(true);
   // Prompt text in a non-runtime image's argv never matches, whatever it mentions.
   expect(
     isDaemonCommandLine(
       '"C:\\Program Files\\Codex\\codex.exe" exec --prompt fix the copilot-api start sweep',
+      windowsInstall,
     ),
   ).toBe(false);
 });
@@ -587,8 +593,8 @@ test("impostor argv that merely mentions copilot-api and start survives the swee
   expect(
     isDaemonProcess({
       pid: 1,
-      ucomm: "deno",
-      command: "/home/me/.deno/bin/deno run script.ts --note copilot-api start",
+      ucomm: "bun",
+      command: "/home/me/.bun/bin/bun run script.ts --note copilot-api start",
     }),
   ).toBe(false);
   // A copilot-api-SHAPED path in a runtime's own arguments: the bare word before it
@@ -596,16 +602,16 @@ test("impostor argv that merely mentions copilot-api and start survives the swee
   expect(
     isDaemonProcess({
       pid: 1,
-      ucomm: "deno",
-      command: "deno run worker.ts --prompt inspect /tmp/copilot-api-notes start safely",
+      ucomm: "bun",
+      command: "bun run worker.ts --prompt inspect /tmp/copilot-api-notes start safely",
     }),
   ).toBe(false);
   // A copilot-api path token NOT followed by the start subcommand (a foreground run).
   expect(
     isDaemonProcess({
       pid: 1,
-      ucomm: "deno",
-      command: "/opt/deno/deno run @jeffreycao/copilot-api auth login",
+      ucomm: "bun",
+      command: "/opt/bun/bun run /x/node_modules/@jeffreycao/copilot-api/dist/main.js auth login",
     }),
   ).toBe(false);
   // A codex process even with a perfectly daemon-shaped command line: ucomm decides.
@@ -613,16 +619,31 @@ test("impostor argv that merely mentions copilot-api and start survives the swee
     isDaemonProcess({
       pid: 1,
       ucomm: "codex",
-      command: "/opt/deno/deno run npm:@jeffreycao/copilot-api@1.14.30 start",
+      command: "/opt/bun/bun run /x/node_modules/@jeffreycao/copilot-api/dist/main.js start",
+    }),
+  ).toBe(false);
+  // The suite's own bun processes: a test runner, the CLI under test. Neither carries an entry.
+  expect(
+    isDaemonProcess({
+      pid: 1,
+      ucomm: "bun",
+      command: "bun test test/copilot_api/daemon_spawn.test.ts",
+    }),
+  ).toBe(false);
+  expect(
+    isDaemonProcess({
+      pid: 1,
+      ucomm: "bun",
+      command: "bun run --no-env-file /repo/src/cli.ts start --port 4141",
     }),
   ).toBe(false);
   // A copilot-api-named ROOT HOME in an unrelated flag never qualifies as the entry.
   expect(
     isDaemonProcess({
       pid: 1,
-      ucomm: "deno",
+      ucomm: "bun",
       command:
-        "deno run --config /home/me/.local/share/copilot-api/proxy/deno.json /repo/src/cli.ts env",
+        "bun run --preload /home/me/.local/share/copilot-api/proxy/x.ts /repo/src/cli.ts env",
     }),
   ).toBe(false);
   // Slash-carrying tokens must not read as one "spaced path" bridging over the bare word: that
@@ -630,8 +651,8 @@ test("impostor argv that merely mentions copilot-api and start survives the swee
   expect(
     isDaemonProcess({
       pid: 1,
-      ucomm: "deno",
-      command: "deno run /tmp/tool.ts inspect /tmp/data /tmp/copilot-api-notes start",
+      ucomm: "bun",
+      command: "bun run /tmp/tool.ts inspect /tmp/data /tmp/copilot-api-notes start",
     }),
   ).toBe(false);
   // ps already stripped shell quoting, so LITERAL quotes in POSIX argv are prompt text; quoted
@@ -639,19 +660,19 @@ test("impostor argv that merely mentions copilot-api and start survives the swee
   expect(
     isDaemonProcess({
       pid: 1,
-      ucomm: "deno",
-      command: 'deno run /tmp/tool.ts --prompt "inspect bare words" /tmp/copilot-api-notes start',
+      ucomm: "bun",
+      command: 'bun run /tmp/tool.ts --prompt "inspect bare words" /tmp/copilot-api-notes start',
     }),
   ).toBe(false);
   // Every middle alternative consumes exactly one token and the classes are disjoint (`--flag=/path`
   // reads as a flag only), so a failing scan is linear. The bound catches a polynomially-slow
   // regression; an exponential one hangs the suite, still a failure.
-  const pathHeavy = `deno run ${Array.from(
+  const pathHeavy = `bun run ${Array.from(
     { length: 60 },
     (_v, i) => `/dir${i}/file${i}.ts --flag${i}=/opt/val${i}`,
   ).join(" ")} tail`;
   const startedMs = Date.now();
-  expect(isDaemonProcess({ pid: 1, ucomm: "deno", command: pathHeavy })).toBe(false);
+  expect(isDaemonProcess({ pid: 1, ucomm: "bun", command: pathHeavy })).toBe(false);
   expect(Date.now() - startedMs).toBeLessThan(1_000);
 });
 
@@ -659,31 +680,28 @@ test("impostor argv that merely mentions copilot-api and start survives the swee
 
 const SHUTDOWN_MODULE = importSpecifier(join(ROOT, "src", "copilot_api", "daemon_shutdown.ts"));
 
-sidecarTest(
-  "a wedged drain still exits: the deadline is what keeps `agent stop` able to stop us",
-  () => {
-    // A SIGTERM listener REPLACES deno's terminate-on-signal, and `agent stop` sends a single SIGTERM
-    // with no SIGKILL escalation, so a shutdown() that never settles must not keep the daemon alive.
-    dir = tempDir("copilot-shutdown-");
-    const target = join(dir, "wedged.ts");
-    writeFileSync(
-      target,
-      `import { recordDaemonServer, shutdownDaemon, DRAIN_DEADLINE_MS } from ${SHUTDOWN_MODULE};\n` +
-        "recordDaemonServer({ shutdown: () => new Promise(() => {}) });\n" +
-        "const started = Date.now();\n" +
-        "globalThis.addEventListener('unload', () => console.log(String(Date.now() - started)));\n" +
-        "await shutdownDaemon(0);\n" +
-        "console.log('UNREACHABLE');\n",
-    );
-    const res = runDenoScript(target, [], { timeoutMs: 30_000 });
-    expect(res.exitCode).toBe(0);
-    expect(res.stdout).not.toContain("UNREACHABLE"); // the path never returns
-    // It waited the full drain window (small margin for timer coarseness).
-    expect(Number(res.stdout.trim())).toBeGreaterThanOrEqual(DRAIN_DEADLINE_MS - 100);
-  },
-);
+test("a wedged drain still exits: the deadline is what keeps `agent stop` able to stop us", () => {
+  // A SIGTERM listener REPLACES the runtime's terminate-on-signal, and `agent stop` sends a single
+  // SIGTERM with no SIGKILL escalation, so a stop() that never settles must not keep the daemon alive.
+  dir = tempDir("copilot-shutdown-");
+  const target = join(dir, "wedged.ts");
+  writeFileSync(
+    target,
+    `import { recordDaemonServer, shutdownDaemon, DRAIN_DEADLINE_MS } from ${SHUTDOWN_MODULE};\n` +
+      "recordDaemonServer({ stop: () => new Promise(() => {}) });\n" +
+      "const started = Date.now();\n" +
+      "process.on('exit', () => console.log(String(Date.now() - started)));\n" +
+      "await shutdownDaemon(0);\n" +
+      "console.log('UNREACHABLE');\n",
+  );
+  const res = runSync(process.execPath, [...bunRunArgs(), target], { timeoutMs: 30_000 });
+  expect(res.exitCode).toBe(0);
+  expect(res.stdout).not.toContain("UNREACHABLE"); // the path never returns
+  // It waited the full drain window (small margin for timer coarseness).
+  expect(Number(res.stdout.trim())).toBeGreaterThanOrEqual(DRAIN_DEADLINE_MS - 100);
+});
 
-(process.platform === "win32" ? test.skipIf(true) : sidecarTest)(
+test.skipIf(process.platform === "win32")(
   "SIGTERM drains an IN-FLIGHT request before the daemon exits",
   async () => {
     // Windows has no deliverable SIGTERM, so the drain is a POSIX contract. The request must be
@@ -694,7 +712,8 @@ sidecarTest(
     const release = join(dir, "release");
     writeFileSync(
       target,
-      `import { installTerminationHandler } from ${SHUTDOWN_MODULE};\n` +
+      `import { existsSync } from "node:fs";\n` +
+        `import { installTerminationHandler } from ${SHUTDOWN_MODULE};\n` +
         `import { installInferenceObserver } from ${importSpecifier(
           join(ROOT, "src", "copilot_api", "inference_activity.ts"),
         )};\n` +
@@ -703,25 +722,20 @@ sidecarTest(
         "installTerminationHandler();\n" +
         // A second listener, so the parent learns the signal was delivered. It runs AFTER
         // the handler installed above, which starts the drain synchronously.
-        "Deno.addSignalListener('SIGTERM', () => console.log('SIGNALLED'));\n" +
+        "process.on('SIGTERM', () => console.log('SIGNALLED'));\n" +
         "const parked = async () => {\n" +
         "  console.log('SERVING');\n" +
-        "  for (;;) {\n" +
-        "    try { await Deno.stat(release); break; } catch { /* not yet */ }\n" +
-        "    await new Promise((r) => setTimeout(r, 20));\n" +
-        "  }\n" +
+        "  while (!existsSync(release)) await new Promise((r) => setTimeout(r, 20));\n" +
         "  return new Response('drained-ok');\n" +
         "};\n" +
-        "const server = Deno.serve(\n" +
-        "  { hostname: '127.0.0.1', port: 0, onListen: (a) => console.log('PORT ' + a.port) },\n" +
-        "  parked,\n" +
-        ");\n" +
-        "server.finished.then(() => console.log('DRAINED'));\n",
+        "const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: parked });\n" +
+        "console.log('PORT ' + server.port);\n" +
+        "process.on('exit', () => console.log('DRAINED'));\n",
     );
     // Bun.spawn reports the real wait status (exit code and signal apart), so a clean exit after
     // the SIGTERM is distinguishable from a death by that signal.
-    const child = spawnDenoChild({
-      args: [target],
+    const child = spawnChild(process.execPath, {
+      args: [...bunRunArgs(), target],
       env: childValuesEnv({ release }),
       stdout: "pipe",
       stderr: "pipe",
@@ -773,7 +787,8 @@ sidecarTest(
       expect(await child.exited).toBe(0);
       expect(child.signalCode).toBeNull();
       await pump;
-      // Drained through the shared path, not severed by deno's default terminate.
+      // Drained through the shared path (a process.exit after stop()), not severed by the
+      // runtime's default terminate, which runs no exit handlers.
       expect(stdout).toContain("DRAINED");
     } finally {
       // An assertion that threw before the request was consumed would otherwise hold the

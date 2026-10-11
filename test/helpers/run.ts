@@ -65,8 +65,16 @@ export interface RunOptions {
  *                     packages (`import ... from "undici"` in a generated target) from this
  *                     checkout's node_modules, which no ancestor of a tmp dir holds
  */
+/** Bun's runtime transpiler cache is off in every child: it lives under the child's HOME (macOS
+ *  `Library/Caches/bun`, Windows AppData), and a test that retargets HOME and fingerprints it would
+ *  find the `.pile` files among its own writes. */
 function harnessEnv(env: Record<string, string | undefined>): Record<string, string | undefined> {
-  return { ...env, [TEST_ROOT_ENV]: ISOLATE_ROOT, NODE_PATH: join(ROOT, "node_modules") };
+  return {
+    ...env,
+    [TEST_ROOT_ENV]: ISOLATE_ROOT,
+    NODE_PATH: join(ROOT, "node_modules"),
+    BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0",
+  };
 }
 
 /** Every spawn starts here, so a body the deadline abandoned never gets a new child at all. */

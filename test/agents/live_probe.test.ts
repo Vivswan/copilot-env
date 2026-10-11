@@ -457,7 +457,9 @@ test("probeDirectWorks spawns the CLI from inside the throwaway home, never the 
       writeFileSync(
         join(home, script),
         'import { realpathSync } from "node:fs";\n' +
-          "process.exit(realpathSync(process.cwd()) === realpathSync(import.meta.dirname) ? 0 : 3);\n",
+          // `.native`: the Windows temp dir arrives as its 8.3 short name on one side (`RUNNER~1`),
+          // which only the OS call expands.
+          "process.exit(realpathSync.native(process.cwd()) === realpathSync.native(import.meta.dirname) ? 0 : 3);\n",
       ),
     fakeSmoke(),
     { findCommand: () => ({ kind: "found", path: process.execPath }) },

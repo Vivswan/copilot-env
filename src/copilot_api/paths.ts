@@ -15,10 +15,12 @@ import {
 // One spelling on every platform: do NOT swap in a native %LOCALAPPDATA% location on Windows, the wrapper
 // and the daemon must derive the identical path. The daemon never depends on this default: every spawn
 // pins COPILOT_API_HOME from DaemonSpec.home (process.ts), so the dir carries OUR name, not the proxy package's.
-export const DEFAULT_HOME: string = join(userHomeDir(), ".local", "share", "copilot-env");
+export function defaultHome(): string {
+  return join(userHomeDir(), ".local", "share", "copilot-env");
+}
 
 export function resolveHome(): string {
-  return process.env.COPILOT_API_HOME || DEFAULT_HOME;
+  return process.env.COPILOT_API_HOME || defaultHome();
 }
 
 /** Directory under a daemon home that holds the per-host runtime dirs (`.run/<host>/`). */
@@ -145,9 +147,9 @@ export const RUN_STATE_FILENAME = ".state.json";
 /** The one account-wide store at the ROOT home (src/copilot_api/state_store.ts). */
 export const STATE_STORE_FILENAME = "state.json";
 
-/** Lock sidecars are PERMANENT (file_lock.ts never unlinks one), so the root stores' locks park here
- *  instead of cluttering the home listing. Locks inside daemon homes stay beside their files: a daemon
- *  home is the proxy's territory, not ours to reorganize. */
+/** The root stores' lock markers park here instead of cluttering the home listing. Locks inside
+ *  daemon homes stay beside their files: a daemon home is the proxy's territory, not ours to
+ *  reorganize. */
 export const LOCKS_DIR_NAME = "locks";
 
 /** Generated helper scripts that FOREIGN programs execute (the Claude Desktop credential helpers).

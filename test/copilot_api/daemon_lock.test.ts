@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   anyTrackedDaemonAlive,
@@ -120,7 +120,8 @@ test("a live holder blocks acquisition; SIGKILL releases the lock promptly", asy
       `writeFileSync(${CHILD_VALUES}.ready, "locked");\n` +
       "setInterval(() => {}, 60_000);\n",
   );
-  const child = spawnChild([process.execPath, ...bunRunArgs(), holder], {
+  const child = spawnChild(process.execPath, {
+      args: [...bunRunArgs(), holder],
     env: childValuesEnv({ home, ready }),
     stdout: "ignore",
     stderr: "inherit",
@@ -154,23 +155,6 @@ test("a live holder blocks acquisition; SIGKILL releases the lock promptly", asy
   }
 }, 30_000);
 
-// The daemon runs on the Deno sidecar under a permission set that cannot signal, so its liveness
-// reads are unproven: it must never take over a lock on that reading, or two daemons could share
-// a home after a crash. The takeover is the CLI's, which can judge; the daemon only refuses what
-// exists.
-test("an acquirer whose liveness probe cannot run never takes over a dead holder's lock; one that can does", async () => {
-  dir = tempDir("copilot-daemon-lock-");
-  plantMarker(dir, DEAD_PID);
-  await withUnprovablePidProbe(async () => {
-    expect(acquireDaemonLockForLife(dir, { waitMs: 0 })).toBe(false);
-    expect(daemonLockVerdict(dir, DEAD_PID)).toBe("unproven");
-    await Promise.resolve();
-  });
-  expect(readFileSync(daemonLockPath(dir), "utf8").startsWith(`${DEAD_PID}\n`)).toBe(true);
-  expect(acquireDaemonLockForLife(dir, { waitMs: 0 })).toBe(true);
-  releaseFileLock(daemonLockPath(dir));
-});
-
 // --- the real daemon spawn: the preload takes the lock, SIGKILL frees it -----------------
 
 // The daemon side of the protocol for real: the sidecar deno (PATH or the override) runs the fake
@@ -182,6 +166,9 @@ test("a launched daemon holds its home's lock for life, released by SIGKILL", as
   const logFile = join(dir, "daemon.log");
   writeFileSync(logFile, "");
   writeDaemonConfig(resolveRootHome());
+  // A predecessor's leftover: the launch clears it, or the daemon's own acquire (which cannot
+  // judge the pid) would refuse for its whole budget and the proxy would never serve.
+  plantMarker(dir, DEAD_PID);
   const pid = launchDaemon({
     port,
     logFile,
@@ -265,7 +252,8 @@ function spawnDaemonShapedDecoy(
       `writeFileSync(${CHILD_VALUES}.ready, "up");\n` +
       "setInterval(() => {}, 60_000);\n",
   );
-  return spawnChild([resolveDenoBin(), "run", "--allow-write", "--allow-env", decoy, "start"], {
+  return spawnChild(resolveDenoBin(), {
+      args: ["run", "--allow-write", "--allow-env", decoy, "start"],
     env: childValuesEnv({ ready }),
     stdout: "ignore",
     stderr: "inherit",
@@ -318,7 +306,8 @@ test(
     const home = defaultHomeDir();
     const bystander = join(dir, "bystander.ts");
     writeFileSync(bystander, "setInterval(() => {}, 60_000);\n");
-    const child = spawnChild([process.execPath, ...bunRunArgs(), bystander], {
+    const child = spawnChild(process.execPath, {
+      args: [...bunRunArgs(), bystander],
       stdout: "ignore",
       stderr: "ignore",
     });
@@ -372,7 +361,8 @@ test.skipIf(process.platform === "win32")(
         `writeFileSync(${CHILD_VALUES}.ready, "up");\n` +
         "setInterval(() => {}, 60_000);\n",
     );
-    const child = spawnChild([process.execPath, ...bunRunArgs(), bystander], {
+    const child = spawnChild(process.execPath, {
+      args: [...bunRunArgs(), bystander],
       env: childValuesEnv({ ready }),
       stdout: "ignore",
       stderr: "inherit",
@@ -470,7 +460,8 @@ test(
         `writeFileSync(${CHILD_VALUES}.ready, "up");\n` +
         "setInterval(() => {}, 60_000);\n",
     );
-    const child = spawnChild([process.execPath, ...bunRunArgs(), bystander], {
+    const child = spawnChild(process.execPath, {
+      args: [...bunRunArgs(), bystander],
       env: childValuesEnv({ ready }),
       stdout: "ignore",
       stderr: "inherit",

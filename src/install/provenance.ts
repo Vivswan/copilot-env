@@ -2,10 +2,6 @@
 // what the attestation says and who may sign it. Loaded lazily by the update pipeline's default
 // verifier: the sigstore stack is well over a megabyte of CommonJS and `agent profile env` runs at every
 // shell start.
-//
-// The digest shim MUST load before the first sigstore import: tuf-js and @sigstore/core call
-// node:crypto verify() without a digest, which a runtime that infers no default rejects.
-import "../utils/node_crypto_digest_shim.ts";
 import { bundleFromJSON } from "@sigstore/bundle";
 import type { TrustedRoot } from "@sigstore/protobuf-specs";
 import { getTrustedRoot } from "@sigstore/tuf";

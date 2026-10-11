@@ -3,8 +3,9 @@
 // moved a port or built the farm, and nothing refreshes the shell's env between wiring and exec
 // inside one process.
 //
-// Neither deno nor node exposes an execve-style replacement, so the agent runs as a child with
-// inherited stdio and its exit code (or 128+signal) passes through.
+// A child with inherited stdio rather than an execve-style replacement, which Windows has no form
+// of: the agent's exit code (or 128+signal) passes through, and the parent's own exit still runs
+// (the write-report flush, the scratch cleanup).
 import { spawnSync } from "node:child_process";
 import { constants } from "node:os";
 import { assertNever } from "../utils/assert.ts";
@@ -233,33 +234,19 @@ export async function prepareLaunch(action: LaunchAction): Promise<LaunchPlan | 
 
 function spawnAgentCli(plan: LaunchPlan): number {
   const spawn = verbatimCliSpawn(plan.command, plan.args);
-  // A scrubbed key is also cleared from the parent for the child's span, then restored, so the
-  // child sees it under neither spawn semantics (an `env` merged over the parent's, or one
-  // replacing it).
-  const scrubbed: [string, string][] = [];
-  for (const [key, value] of Object.entries(process.env)) {
-    if (value !== undefined && plan.scrub.includes(key.toUpperCase())) {
-      scrubbed.push([key, value]);
-      delete process.env[key];
-    }
-  }
-  try {
-    // nosemgrep: javascript.lang.security.audit.spawn-shell-true.spawn-shell-true -- Windows-only, for .cmd shims; the spec quotes args
-    const result = spawnSync(spawn.file, spawn.args, {
-      stdio: "inherit",
-      shell: spawn.shell,
-      env: childEnvWithPath([spawn.binDir], {
-        extra: plan.env,
-        omit: (upper) => plan.scrub.includes(upper),
-      }),
-    });
-    if (result.error) throw result.error;
-    if (result.status !== null) return result.status;
-    const signalNumber = result.signal ? constants.signals[result.signal] : undefined;
-    return signalNumber === undefined ? 1 : 128 + signalNumber;
-  } finally {
-    for (const [key, value] of scrubbed) process.env[key] = value;
-  }
+  // nosemgrep: javascript.lang.security.audit.spawn-shell-true.spawn-shell-true -- Windows-only, for .cmd shims; the spec quotes args
+  const result = spawnSync(spawn.file, spawn.args, {
+    stdio: "inherit",
+    shell: spawn.shell,
+    env: childEnvWithPath([spawn.binDir], {
+      extra: plan.env,
+      omit: (upper) => plan.scrub.includes(upper),
+    }),
+  });
+  if (result.error) throw result.error;
+  if (result.status !== null) return result.status;
+  const signalNumber = result.signal ? constants.signals[result.signal] : undefined;
+  return signalNumber === undefined ? 1 : 128 + signalNumber;
 }
 
 /** The refusal every launch, real or dry, gives before preparing anything. A failed look must not

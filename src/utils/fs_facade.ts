@@ -234,8 +234,15 @@ export function openWriteFd(path: string): number {
   return disk.openWriteFd(path);
 }
 
+/** A file opened for streaming reads (a downloaded release's digest): the disk's, since a dry run
+ *  has no planned bytes to stream and refuses outside scratch. */
+export function openReadable(path: string): Promise<ReadableStream<Uint8Array>> {
+  refuseHandle(path);
+  return disk.openReadable(path);
+}
+
 function refuseHandle(path: string): void {
-  if (overlayFor(path) !== null) throw new Error(`${path}: a dry run opens no file for writing`);
+  if (overlayFor(path) !== null) throw new Error(`${path}: a dry run opens no file handle`);
 }
 
 /** A process-transient directory: real in every mode, never reported or planned, and taken away

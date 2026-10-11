@@ -1,10 +1,12 @@
-// Lock held = alive, enforced by the OS, so no unlock code has to run at death.
-//   a recycled pid                 -> holds no lock of its own
-//   SIGKILL                        -> the OS releases it anyway
-//   a daemon from an older release -> holds none, so consumers fall back to the pid table
-//   importing this module          -> acquires nothing; daemon_lock_preload.ts does
+// The daemon's liveness is its `daemon.lock` marker (src/utils/file_lock.ts): the file names the
+// daemon's pid, and a reader judges that pid, so no unlock code has to run at death.
+//   SIGKILL, a crash                -> the marker stays, naming a dead pid: read as dead
+//   a daemon from an older release  -> holds none, so consumers fall back to the pid table
+//   the daemon's own permission set -> cannot judge a pid, so it never takes a leftover over;
+//                                      the CLI clears one before the spawn (clearDeadDaemonLock)
+//   importing this module           -> acquires nothing; daemon_lock_preload.ts does
 import { join } from "node:path";
-import { probeFileLock, tryAcquireFileLock } from "../utils/file_lock.ts";
+import { probeFileLock, removeLeftoverLock, tryAcquireFileLock } from "../utils/file_lock.ts";
 import { sleepSync } from "../utils/time.ts";
 
 /** An on-disk contract: a rename would orphan every running daemon's lock. */
@@ -14,25 +16,27 @@ export function daemonLockPath(home: string): string {
   return join(home, DAEMON_LOCK_FILENAME);
 }
 
-// staleMs governs only a second acquire from the SAME process (another process's marker is never
-// judged, see file_lock.ts): 0 lets it refresh the marker rather than read its own hold as a
-// contender.
+// staleMs governs only a second acquire from the SAME process (another process's marker is judged
+// by its pid's liveness, never by its age, see file_lock.ts): 0 lets it refresh the marker rather
+// than read its own hold as a contender.
 const ACQUIRE_STALE_MS = 0;
 const ACQUIRE_RETRY_MS = 100;
 const ACQUIRE_WAIT_MS = 5_000;
 
-/** No release exists on purpose: the OS dropping the lock at death IS the liveness signal, which is
- *  why this uses the tryAcquireFileLock primitive rather than scoped withFileLock
- *  (test/utils/file_lock.test.ts pins this module as the primitive's one production consumer). The knobs
- *  are for tests. */
+/** No release exists on purpose: the marker left at death, naming a pid that is gone, IS the
+ *  liveness signal, which is why this uses the tryAcquireFileLock primitive rather than scoped
+ *  withFileLock (test/utils/file_lock.test.ts pins this module as the primitive's one production
+ *  consumer). The knobs are for tests. */
 export function acquireDaemonLockForLife(
   home: string,
   opts: { waitMs?: number; retryMs?: number } = {},
 ): boolean {
   const lockPath = daemonLockPath(home);
   const deadline = Date.now() + (opts.waitMs ?? ACQUIRE_WAIT_MS);
-  // The retries absorb a CLI probe's transient hold (probeFileLock acquires for a moment to
-  // observe); a holder still there after the budget is a live process in this home.
+  // Under the daemon's permission set every foreign pid reads unproven, so a marker still there
+  // after the budget is refused whatever its holder's fate: a dead predecessor's leftover is the
+  // CLI's to clear before the spawn (clearDeadDaemonLock), and a live holder is a second daemon in
+  // this home. The retries cover a CLI test acquiring over a predecessor that is still exiting.
   for (;;) {
     if (tryAcquireFileLock(lockPath, ACQUIRE_STALE_MS)) return true;
     if (Date.now() >= deadline) return false;
@@ -40,15 +44,21 @@ export function acquireDaemonLockForLife(
   }
 }
 
+/** The CLI's half of the takeover: a marker a dead daemon left is removed so the next daemon's
+ *  acquire, which cannot judge the pid itself, finds the way clear. launchDaemon
+ *  (src/copilot_api/process.ts) runs it before every spawn. */
+export function clearDeadDaemonLock(home: string): boolean {
+  return removeLeftoverLock(daemonLockPath(home));
+}
+
 type DaemonLockVerdict = "alive" | "dead" | "unproven";
 
 /**
  * Shared by every liveness site (proxyStatus, the stop paths, the launch cleanup) so the judgment
  * cannot drift.
- *   lock held, marker names pid        -> "alive": the OS proves the holder lives
- *   lock acquirable, marker names pid  -> "dead" whatever the pid table says; a recycled pid cannot
- *                                         resurrect it
- *   anything else                      -> "unproven": the caller falls back to the pid table
+ *   marker names pid, pid alive  -> "alive"
+ *   marker names pid, pid dead   -> "dead": the daemon that wrote it is gone
+ *   anything else                -> "unproven": the caller falls back to the pid table
  */
 export function daemonLockVerdict(home: string, pid: number): DaemonLockVerdict {
   const probe = probeFileLock(daemonLockPath(home));

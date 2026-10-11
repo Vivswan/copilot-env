@@ -4,8 +4,8 @@
 // changed. test/lint/no_unreported_fs_writes.ts refuses a raw node:fs filesystem call
 // anywhere else, bar the lock protocol's internals (file_lock.ts), the dry-run marker (dry_run.ts),
 // the preloads that run before the seam or patch the proxy's own stream (src/scripts/), the usage
-// scanners' partial reads (src/usage/), the two read handles no run plans (install/checksums.ts,
-// copilot_api/process.ts), and src/migrations/.
+// scanners' partial reads (src/usage/), the daemon spawn's raw `/dev/null` handle
+// (copilot_api/process.ts), and src/migrations/.
 //
 // What does not print:
 //
@@ -18,6 +18,7 @@ import {
   closeSync,
   copyFileSync,
   cpSync,
+  createReadStream,
   createWriteStream,
   fsyncSync,
   lstatSync,
@@ -38,7 +39,7 @@ import {
 } from "node:fs";
 import { once } from "node:events";
 import { basename, dirname, join } from "node:path";
-import { Writable } from "node:stream";
+import { Readable, Writable } from "node:stream";
 import { isEnoentOrNotdir, isOpenHandleRefusal, retryOpenHandleRefusal } from "./fs.ts";
 import {
   forgetReported,
@@ -492,6 +493,16 @@ export async function openWritable(path: string): Promise<WritableStream<Uint8Ar
   await once(file, "open");
   reportWrite(kindOf(was), path);
   return Writable.toWeb(file) as WritableStream<Uint8Array>;
+}
+
+/** The one way runtime code streams bytes FROM a path (a downloaded release's digest). The open is
+ *  awaited so a path that cannot be opened fails here, not inside the consumer's read. */
+export async function openReadable(path: string): Promise<ReadableStream<Uint8Array>> {
+  const file = createReadStream(path);
+  await once(file, "open");
+  // bun-types answers ReadableStream<any>, whose reader overloads do not narrow to the byte stream
+  // a file read is.
+  return Readable.toWeb(file) as unknown as ReadableStream<Uint8Array>;
 }
 
 /** openWritable as a node fd, for a child's stdio. */

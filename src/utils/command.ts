@@ -38,28 +38,18 @@ export type PowershellExe = "powershell" | "pwsh";
 
 /** Windows PowerShell 5.1 spawned from pwsh 7 inherits pwsh's PSModulePath and its in-box cmdlets
  *  fail to autoload, so a `powershell` child gets the variable under no casing and `pwsh` keeps
- *  its own. The key also leaves process.env for the span, so the child sees it under neither
- *  spawn semantics (an `env` merged over the parent's, or one replacing it). */
+ *  its own. */
 export function withPowershellChildEnv<T>(
   exe: PowershellExe,
   spawn: (env: Record<string, string>) => T,
 ): T {
   const env: Record<string, string> = {};
-  const parentKeys: [string, string][] = [];
   for (const [key, value] of Object.entries(process.env)) {
     if (value === undefined) continue;
-    if (exe === "powershell" && key.toUpperCase() === "PSMODULEPATH") {
-      parentKeys.push([key, value]);
-      delete process.env[key];
-      continue;
-    }
+    if (exe === "powershell" && key.toUpperCase() === "PSMODULEPATH") continue;
     env[key] = value;
   }
-  try {
-    return spawn(env);
-  } finally {
-    for (const [key, value] of parentKeys) process.env[key] = value;
-  }
+  return spawn(env);
 }
 
 /** A PowerShell process writes its profile scaffolding (AppData\\Roaming, the PSReadLine history)

@@ -298,7 +298,7 @@ test("a dry run refuses a write handle outside scratch and opens nothing; inside
   dir = isolateProxyHome("copilot-dry2-handle-");
   const path = join(dir, "stream.bin");
   await expect(dryRunChanges(() => fs.openWritable(path))).rejects.toThrow(
-    "a dry run opens no file for writing",
+    "a dry run opens no file handle",
   );
   expect(existsSync(path)).toBe(false);
   const scratch = fs.scratchDir(join(dir, "scratch-"));
@@ -570,7 +570,8 @@ test("stop --dry-run names the daemon it would signal and clears nothing: the tr
   dir = isolateProxyHome("copilot-dry2-stop-");
   const script = join(dir, "sleeper.ts");
   writeFileSync(script, "setInterval(() => {}, 60_000);\n");
-  const child = spawnChild([process.execPath, ...bunRunArgs(), script], {
+  const child = spawnChild(process.execPath, {
+      args: [...bunRunArgs(), script],
     stdout: "ignore",
     stderr: "ignore",
   });

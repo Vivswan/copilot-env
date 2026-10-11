@@ -64,25 +64,27 @@ function isVersionedInstallTop(top: string): boolean {
   return sameDir && !fs.entryAbsent(versionsDir);
 }
 
-/** This module's place in the source tree (`src/utils/`), so the asset root is the tree's root.
- *  Resolved from `import.meta.dir`, which the compile step (scripts/compile.ts, `bun build
- *  --compile`) keeps shaped like the checkout: an embedded module and the assets embedded beside
- *  it keep their tree paths under the binary's virtual filesystem root, so the same two steps up
- *  land on the asset root in both modes. */
-const ASSET_ROOT_FROM_HERE = ["..", ".."] as const;
-
-/** The compiled binary's embedded virtual filesystem, or the checkout root in dev. Readable
- *  in-process only: never hand an ASSET_ROOT path to another program, and never write under it.
- *  Distinct from PROJECT_ROOT because an install materializes only some assets onto disk;
- *  `copilot-env.config` in particular is read out of the binary. */
-export const ASSET_ROOT: string = resolve(import.meta.dir, ...ASSET_ROOT_FROM_HERE);
-
 /** Under a standalone, `process.execPath` is OUR binary, which cannot run `deno cache` or launch
  *  the proxy. Observed from the runtime's own report rather than sniffed from `import.meta.url`:
  *  the virtual filesystem root is a plain path whose spelling no contract pins. */
 export function isStandaloneBinary(): boolean {
   return Bun.isStandaloneExecutable;
 }
+
+/** This module's place in the source tree (`src/utils/`), so in a checkout the asset root is two
+ *  steps up. */
+const ASSET_ROOT_FROM_HERE = ["..", ".."] as const;
+
+/** The compiled binary's embedded virtual filesystem, or the checkout root in dev. Readable
+ *  in-process only: never hand an ASSET_ROOT path to another program, and never write under it.
+ *  Distinct from PROJECT_ROOT because an install materializes only some assets onto disk;
+ *  `copilot-env.config` in particular is read out of the binary. The compile step
+ *  (scripts/compile.ts) bundles every module into one file at the virtual root and embeds the
+ *  assets beside it at their repository paths, so under a standalone this module's own directory
+ *  IS the asset root. */
+export const ASSET_ROOT: string = isStandaloneBinary()
+  ? import.meta.dir
+  : resolve(import.meta.dir, ...ASSET_ROOT_FROM_HERE);
 
 /** `<root>/bin/copilot-env` -> `<root>`; nothing else may define the layout. In a versioned layout
  *  execPath resolves the `current` link, so the derivation lands on the version dir and the root

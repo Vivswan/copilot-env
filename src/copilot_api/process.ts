@@ -7,6 +7,7 @@ import { daemonConfigFile, readResolvedVersionRecord, writeDaemonConfig } from "
 import { runPowershell } from "../utils/app_scan.ts";
 import { runCaptured } from "../utils/command.ts";
 import { pidAlive } from "../utils/pid.ts";
+import { clearDeadDaemonLock } from "./daemon_lock.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { terminalWidth, wrapMessage } from "../utils/table.ts";
 import {
@@ -553,6 +554,9 @@ export function daemonArgv(spec: DaemonSpec): string[] {
 }
 
 export function launchDaemon(spec: DaemonSpec): number {
+  // A dead predecessor's marker would otherwise refuse the new daemon's acquire for its whole
+  // budget: the daemon cannot judge the pid, this process can.
+  clearDeadDaemonLock(spec.home);
   const logFd = fs.openWriteFd(spec.logFile);
   // The disk's `/dev/null` in every mode, a dry run included: the raw open the fs lint exempts.
   const devnull = openSync(devNull, "r");

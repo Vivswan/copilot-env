@@ -232,6 +232,17 @@ export function probeFileLock(
   }
 }
 
+/** A leftover (probeFileLock's `free`) is unlinked and true comes back; a holder, an absent file,
+ *  and a marker this process cannot judge are left alone. For a process that can judge liveness
+ *  to clear the way for one that cannot: the daemon's own acquire (src/copilot_api/daemon_lock.ts)
+ *  runs under a permission set that reads every pid as unproven, so the CLI clears a dead
+ *  daemon's leftover before the spawn. */
+export function removeLeftoverLock(lockPath: string): boolean {
+  if (probeFileLock(lockPath).kind !== "free") return false;
+  removeMarkerWithRetry(lockPath);
+  return true;
+}
+
 /** Lenient on purpose (ts ignored): a holder must still be able to delete its own marker even if
  *  the ts half got corrupted. */
 function markerPid(raw: string): number | null {

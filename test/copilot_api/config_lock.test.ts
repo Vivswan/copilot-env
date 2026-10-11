@@ -22,7 +22,8 @@ interface WorkerExit {
 }
 
 async function spawnWorker(worker: string, store: string): Promise<WorkerExit> {
-  const child = spawnChild([process.execPath, ...bunRunArgs(), worker], {
+  const child = spawnChild(process.execPath, {
+      args: [...bunRunArgs(), worker],
     env: childValuesEnv({ store }),
     stdout: "pipe",
     stderr: "pipe",

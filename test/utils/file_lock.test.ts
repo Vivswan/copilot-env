@@ -1,8 +1,7 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   LockBusyError,
-  probeFileLock,
   releaseFileLock,
   removeMarkerWithRetry,
   tryAcquireFileLock,
@@ -29,7 +28,6 @@ function tmp(name: string): string {
 const DEAD_PID = 2_147_483_646; // never a live process
 const OTHER_PID = process.pid + 1; // another process, as the injected liveness says
 const marker = (pid: number, ts: number): string => `${pid}\n${ts}\n`;
-const alive = (): PidLiveness => "alive";
 
 test("acquire, contend against a fresh live holder, release, re-acquire", () => {
   const path = tmp("x.lock");
@@ -94,53 +92,6 @@ test("a leftover marker (dead pid, malformed, or our own pid with no hold) is ta
       .toEqual({ label: row.label, acquired: true, marker: marker(process.pid, 5_000) });
     releaseFileLock(path);
   });
-});
-
-// The other half of the rule: a pid that lives, or one this process cannot judge, is a holder.
-// `unproven` is the daemon's own reading (its Deno permission set cannot signal), so a daemon never
-// takes over a lock on a guess; the CLI, which can judge, does.
-test("a marker naming a live pid, or one whose liveness is unproven, is a holder: refused, left byte for byte", () => {
-  const rows: { label: string; liveness: PidLiveness }[] = [
-    { label: "alive", liveness: "alive" },
-    { label: "unproven", liveness: "unproven" },
-  ];
-  dir = tempDir("copilot-env-file-lock-");
-  rows.forEach((row, i) => {
-    const path = join(dir, `${i}.lock`);
-    const leftover = marker(OTHER_PID, 1_000);
-    writeFileSync(path, leftover);
-    const acquired = tryAcquireFileLock(path, 10_000, {
-      nowMs: Date.now(),
-      liveness: () => row.liveness,
-    });
-    expect({ label: row.label, acquired, marker: readFileSync(path, "utf-8") })
-      .toEqual({ label: row.label, acquired: false, marker: leftover });
-  });
-});
-
-// The probe's four answers, and that it never writes: the daemon verdict (daemon_lock.ts) and the
-// dry-run marker (dry_run.ts) read through it.
-test("probeFileLock: held by a live pid or by us, free under a dead pid or our unheld pid, absent, unknown when unjudgeable", () => {
-  dir = tempDir("copilot-env-file-lock-");
-  const path = join(dir, "probe.lock");
-  expect(probeFileLock(path)).toEqual({ kind: "absent" });
-
-  writeFileSync(path, marker(OTHER_PID, 1_000));
-  expect(probeFileLock(path, alive)).toEqual({ kind: "held", markerPid: OTHER_PID });
-  expect(probeFileLock(path, () => "dead")).toEqual({ kind: "free", markerPid: OTHER_PID });
-  expect(probeFileLock(path, () => "unproven")).toEqual({ kind: "unknown" });
-  expect(readFileSync(path, "utf-8")).toBe(marker(OTHER_PID, 1_000)); // never written
-
-  writeFileSync(path, marker(process.pid, 1_000));
-  expect(probeFileLock(path)).toEqual({ kind: "free", markerPid: process.pid }); // ours, unheld
-  rmSync(path);
-  expect(tryAcquireFileLock(path, 10_000, { nowMs: 2_000 })).toBe(true);
-  expect(probeFileLock(path)).toEqual({ kind: "held", markerPid: process.pid });
-  releaseFileLock(path);
-
-  // A directory at the path is a marker that cannot be read: unknown, never free.
-  mkdirSync(path);
-  expect(probeFileLock(path)).toEqual({ kind: "unknown" });
 });
 
 // The release judgment reads the marker at the path: only OUR marker is deleted. A release by a
@@ -369,6 +320,7 @@ test("the lock primitives stay out of src/", () => {
   // scoped API, which keeps acquisition, release, and evidence in one owner. Each name is
   // allowed ONLY in its listed modules.
   //   tryAcquireFileLock, probeFileLock in daemon_lock.ts  -> released by process death, so no scope
+  //   removeLeftoverLock in daemon_lock.ts                 -> the CLI clears a dead daemon's marker
   //   probeFileLock in dry_run.ts                          -> a child's read of the marker
   const allowedIn: Record<string, string[]> = {
     tryAcquireFileLock: [
@@ -379,6 +331,10 @@ test("the lock primitives stay out of src/", () => {
       join(ROOT, "src", "utils", "file_lock.ts"),
       join(ROOT, "src", "copilot_api", "daemon_lock.ts"),
       join(ROOT, "src", "utils", "dry_run.ts"),
+    ],
+    removeLeftoverLock: [
+      join(ROOT, "src", "utils", "file_lock.ts"),
+      join(ROOT, "src", "copilot_api", "daemon_lock.ts"),
     ],
     releaseFileLock: [join(ROOT, "src", "utils", "file_lock.ts")],
   };

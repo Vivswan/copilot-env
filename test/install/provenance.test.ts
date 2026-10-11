@@ -1,5 +1,6 @@
 // Sigstore judges the certificate at the log-integrated time, not now, so the v4.0.0 fixtures never
-// expire. The test permission set has no network, which pins every case to the trust root passed in.
+// expire. Every case passes its trust root in, so none reaches the network; the one control that
+// must find no trust root fails the global fetch for its span.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { TrustedRoot } from "@sigstore/protobuf-specs";
@@ -145,9 +146,9 @@ describe("verifyReleaseProvenance", () => {
   });
 
   test("text that is not a Sigstore bundle is a FAILED verdict, decided before any network", async () => {
-    // No trustedRoot and an empty cache: reaching for the trust root would need
-    // the network the test permission set denies, and would surface as the
-    // "cannot verify" message instead (the control below proves that path).
+    // No trustedRoot and an empty cache: a bundle that parsed would reach for the trust root
+    // over the network and surface as the "cannot verify" message instead (the control below
+    // proves that path); the parse failure comes first.
     const cachePath = tempDir("copilot-tuf-");
     try {
       for (const text of ["not json", "{}", JSON.stringify({ mediaType: "x" })]) {

@@ -51,11 +51,16 @@ function semverValue(key: ProjectConfigKey, value: string, source: string): Semv
   return parsed;
 }
 
-export function parseProjectConfig(content: string, source = PROJECT_CONFIG_FILE): ProjectConfig {
+function knownKeys(content: string): Partial<Record<ProjectConfigKey, string>> {
   const raw: Partial<Record<ProjectConfigKey, string>> = {};
   for (const [key, value] of Object.entries(parse(content))) {
     if (isProjectConfigKey(key)) raw[key] = value;
   }
+  return raw;
+}
+
+export function parseProjectConfig(content: string, source = PROJECT_CONFIG_FILE): ProjectConfig {
+  const raw = knownKeys(content);
 
   const proxyMinVersion = semverValue(
     "PROXY_MIN_VERSION",
@@ -88,4 +93,17 @@ export function parseProjectConfig(content: string, source = PROJECT_CONFIG_FILE
 export function readProjectConfig(root: string = ASSET_ROOT): ProjectConfig {
   const path = join(root, PROJECT_CONFIG_FILE);
   return parseProjectConfig(fs.readText(path), path);
+}
+
+/** The sidecar pin alone, judged apart from the proxy bounds: health reports a malformed bound as
+ *  the proxy check's failure, and the sidecar row must still name the version it compares a found
+ *  deno against. */
+export function readSidecarDenoVersion(root: string = ASSET_ROOT): SemverString {
+  const path = join(root, PROJECT_CONFIG_FILE);
+  const raw = knownKeys(fs.readText(path));
+  return semverValue(
+    "SIDECAR_DENO_VERSION",
+    requiredValue(raw, "SIDECAR_DENO_VERSION", path),
+    path,
+  );
 }

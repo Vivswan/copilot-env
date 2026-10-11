@@ -7,12 +7,13 @@
 //   no sha256 expected    -> a REFUSAL, never a skip; the archive is hashed as it streams, so an
 //                            unverified byte never lands unpacked
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import { basename, isAbsolute, join } from "node:path";
+import { currentReleaseTarget, RELEASE_TARGETS, type ReleaseTarget } from "../install/targets.ts";
 import { isStandaloneBinary } from "../utils/root.ts";
 import { resolveExecutablePath } from "../utils/command.ts";
+import { sha256Hex } from "../utils/digest.ts";
 import { errMessage } from "../utils/error.ts";
-import { readProjectConfig } from "../utils/project_config.ts";
+import { readSidecarDenoVersion } from "../utils/project_config.ts";
 import { isStableVersion, versionLessThan } from "../utils/semver.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { resolveRootHome } from "./paths.ts";
@@ -138,37 +139,24 @@ export function parseDenoVersionLine(content: string, source: string): string {
   return trimmed;
 }
 
-/** The TESTED REFERENCE deno version: SIDECAR_DENO_VERSION in copilot-env.config, read out of the
- *  binary like the rest of that file. `root` is for test fixtures. */
-export function readSidecarDenoPin(root?: string): string {
-  return readProjectConfig(root).sidecarDenoVersion;
-}
-
-/** Keys follow process.platform/process.arch vocabulary. */
-export const DENO_RELEASE_TARGETS = {
-  "darwin-arm64": "aarch64-apple-darwin",
-  "darwin-x64": "x86_64-apple-darwin",
-  "linux-arm64": "aarch64-unknown-linux-gnu",
-  "linux-x64": "x86_64-unknown-linux-gnu",
-  "win32-x64": "x86_64-pc-windows-msvc",
-} as const;
-
-type DenoReleaseTarget = (typeof DENO_RELEASE_TARGETS)[keyof typeof DENO_RELEASE_TARGETS];
+/** Deno names its release archives by the same rust triples copilot-env's own binaries carry
+ *  (src/install/targets.ts), and ships one for every platform copilot-env does, so the release
+ *  target table is the one owner of the mapping. */
+type DenoReleaseTarget = ReleaseTarget["triple"];
 
 export function denoReleaseTarget(
   platform: string = process.platform,
   arch: string = process.arch,
 ): DenoReleaseTarget {
-  const key = `${platform}-${arch}`;
-  const target = (DENO_RELEASE_TARGETS as Record<string, DenoReleaseTarget | undefined>)[key];
-  if (target === undefined) {
+  const target = currentReleaseTarget(platform, arch);
+  if (target === null) {
     throw new Error(
-      `no Deno sidecar build for ${key} (supported: ${
-        Object.keys(DENO_RELEASE_TARGETS).join(", ")
+      `no Deno sidecar build for ${platform}-${arch} (supported: ${
+        RELEASE_TARGETS.map((known) => `${known.os}-${known.arch}`).join(", ")
       })`,
     );
   }
-  return target;
+  return target.triple;
 }
 
 /** Always a .zip; the Windows one contains deno.exe. */
@@ -251,12 +239,6 @@ function defaultUnzipRunner(command: string, args: string[]): UnzipRunResult {
 /** pipeTo closes the file with the stream, on success and on abort alike. */
 async function writeStreamToFile(stream: ReadableStream<Uint8Array>, path: string): Promise<void> {
   await stream.pipeTo(await fs.openWritable(path));
-}
-
-async function sha256Hex(stream: ReadableStream<Uint8Array>): Promise<string> {
-  const hash = createHash("sha256");
-  for await (const chunk of stream) hash.update(chunk);
-  return hash.digest("hex");
 }
 
 /**
@@ -368,8 +350,8 @@ export interface SidecarStatus {
   /** The provisioned dir's name, or `deno --version` for a path/override binary (null when it
    *  could not be read). */
   version: string | null;
-  /** True when the running process is a compiled binary: the proxy's import map then comes from
-   *  the float alone, with no node_modules to read a version from. */
+  /** True when the running process is a compiled binary: no node_modules exists to read an
+   *  installed proxy version from, so the proxy runs only once floated. */
   standalone: boolean;
 }
 
@@ -378,7 +360,7 @@ export function sidecarStatus(
   rootHome: string,
   denoVersionOf: (bin: string) => string | null = denoBinaryVersion,
 ): SidecarStatus {
-  const referenceVersion = readSidecarDenoPin();
+  const referenceVersion = readSidecarDenoVersion();
   const state = detectSidecar(rootHome);
   return {
     "kind": state.kind,

@@ -1,18 +1,19 @@
-# Repo-owned release gate: the slow, environment-heavy, and network-bound checks that qualify a
-# release but need not run on every merge. The managed ci.yml calls it on the release-please PR
-# and on a manual dispatch, where all-green blocks on it; nightly.yml calls it on the schedule so
-# a drift shows before the next release PR does. checks.yml never calls it: ci.yml already does,
-# and a second call runs every job twice.
+# Repo-owned release gate: the checks required before a release that run nowhere on PRs or
+# pushes to main. Everything that runs on every PR stays in checks.yml; this file holds only what
+# would otherwise first run after the tag exists (update-release.yml's upload-assets job) or only
+# on a push to main (the path-filtered floated lifecycle). The managed ci.yml calls it on the
+# release-please PR and on a manual dispatch, where all-green blocks on it; nightly.yml calls it
+# on the schedule so a break shows the next morning instead of on the release PR. checks.yml
+# never calls it: ci.yml already does, and a second call runs every job twice.
 #
-#   live-clis           -> the real-CLI test files against the current claude and codex releases:
-#                          upstream-CLI parity, catalog schema drift, the session-log recorder
-#   large-tree          -> the usage index and goldens over a large seeded tree
-#   test-container      -> the suite under a hermetic HOME, --network=none, the real proxy cached
-#   floated-lifecycle   -> the real proxy from the live registry, asserted up to auth
-#   session-log-corpus  -> the corpus recorder over the real CLIs, then `agent cost` over its HOME
+#   release-assets    -> the installer assets pinned to a synthetic tag and validated, the five
+#                        cross-compiled binaries with dist/checksums.txt verified, every asset
+#                        present at a real size, the host's binary running --help
+#   floated-lifecycle -> the real proxy from the live registry, asserted up to auth; checks.yml
+#                        runs the same smoke path-filtered on PRs, so this is the unconditional run
 #
 # The caller's contract: workflow_call only, no inputs, no secrets, contents: read, every job
-# bounded by timeout-minutes.
+# bounded by timeout-minutes (test/utils/release_gate.test.ts).
 
 name: Release Gate
 
@@ -26,102 +27,74 @@ env:
   DENO_NO_UPDATE_CHECK: "1"
 
 jobs:
-  # The real claude and codex CLIs run against the fake model endpoint
-  # (test/helpers/fake_model_endpoint.ts); each opt-in below makes a missing binary a failure,
-  # never a skip. Each file names its own opt-in; the Codex catalog generation and the corpus
-  # recorder have only ever run on Linux, so those two stay on that leg.
-  live-clis:
-    name: real CLIs against the fake / ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
-        with:
-          deno-version-file: .dvmrc
-          cache: true
-
-      - name: Install dependencies
-        run: deno ci
-
-      # UNPINNED on purpose: the latest release is the drift this gate exists to catch. The
-      # action's log carries the versions under test.
-      - uses: ./.github/actions/install-agent-clis
-
-      # The recorder's five turns per CLI plus a minute-boundary wait is this step's cost.
-      - name: Real-CLI tests (probe shapes, catalog schema, the session-log recorder)
-        timeout-minutes: 20
-        env:
-          COPILOT_ENV_LIVE_CLIS: "1"
-          COPILOT_ENV_LIVE_CODEX: ${{ runner.os == 'Linux' && '1' || '' }}
-          COPILOT_ENV_LIVE_CORPUS: ${{ runner.os == 'Linux' && '1' || '' }}
-        run: >-
-          deno test -P=test test/health/claude_cli_live.test.ts test/health/codex_cli_live.test.ts
-          test/codex/codex_catalog_live.test.ts test/usage/usage_corpus.test.ts
-
-  # The usage-index perf test and the goldens again over a large seeded tree (the Windows
-  # runner's disk is slower, so it gets a smaller one). Only these two files: the generator's
-  # own tests read the same knob and hold whole trees in memory.
-  large-tree:
-    name: usage index on a large tree / ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
-        with:
-          deno-version-file: .dvmrc
-          cache: true
-
-      - name: Install dependencies
-        run: deno ci
-
-      - name: Usage index on a large tree
-        timeout-minutes: 25
-        env:
-          COPILOT_ENV_USAGE_FIXTURE_MB: ${{ runner.os == 'Windows' && '100' || '1024' }}
-        run: deno test -P=test test/usage/usage_index_perf.test.ts test/usage/usage_golden.test.ts
-
-  # Not redundant with checks.yml's matrix: the container is where the throwaway HOME comes
-  # from, so this is the only run proving the suite is hermetic.
-  #
-  #   test-container    -> --network=none, the real proxy from the warmed cache; any network reach fails loudly
-  #   floated-lifecycle -> networked, the real proxy from the live registry; asserts only up to auth
-  test-container:
-    name: container suite (hermetic HOME)
+  # The build and validation half of update-release.yml's upload-assets job, run before any tag
+  # exists. The tag is synthetic: release-assets.ts only rewrites the installers' INSTALL_REF line
+  # to it and asserts the rewrite, with no network, so the version in package.json stands in for
+  # the one release-please is about to cut.
+  release-assets:
+    name: release assets build and validation
     runs-on: ubuntu-latest
-    # Dominated by the cold image build; the suite itself runs in well under a
-    # minute once the image exists.
-    timeout-minutes: 20
+    # Five cross-compiles, each downloading its target's denort on a cold cache.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # cache: true keys the DENO_DIR cache on deno.lock; the per-target
+      # denort archives deno compile downloads land there too.
       - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
         with:
           deno-version-file: .dvmrc
           cache: true
 
-      # docker is preinstalled on ubuntu runners; the task prefers podman and
-      # falls back, so no engine selection is needed here.
-      - name: Run the suite in a container
-        run: deno task test:docker
+      - name: Install dependencies
+        run: deno install --frozen
+
+      - name: Name the synthetic release tag
+        id: tag
+        run: echo "tag=v$(jq -r .version package.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Create installer assets
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: deno run --allow-read --allow-write --allow-env .github/scripts/release-assets.ts prepare "$TAG"
+
+      - name: Validate installer assets
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          deno run --allow-read --allow-env .github/scripts/release-assets.ts validate "$TAG"
+          bash -n release-assets/install.sh
+          pwsh -NoProfile -Command "[scriptblock]::Create((Get-Content -Raw release-assets/install.ps1)) | Out-Null"
+
+      - name: Compile agent binaries (all targets)
+        run: |
+          deno task compile
+          (cd dist && sha256sum -c checksums.txt)
+
+      # checksums.txt lists whatever compile produced, so a target that never compiled is absent
+      # from it rather than wrong in it: the expected names come from the targets' one source of
+      # truth (src/install/targets.ts) instead. A denort that failed to embed leaves a stub well
+      # under the floor; the host's binary also has to start.
+      - name: Prove every release asset exists and the host's runs
+        run: |
+          set -euo pipefail
+          assets="$(deno eval 'import { RELEASE_TARGETS, releaseAssetName } from "./src/install/targets.ts"; console.log(RELEASE_TARGETS.map(releaseAssetName).join("\n"));')"
+          host="$(deno eval 'import { currentReleaseTarget, releaseAssetName } from "./src/install/targets.ts"; const t = currentReleaseTarget(); if (t === null) throw new Error("no release target for this runner"); console.log(releaseAssetName(t));')"
+          for asset in $assets; do
+            size="$(stat -c %s "dist/$asset")"
+            echo "dist/$asset: $size bytes"
+            [ "$size" -gt 10000000 ] || { echo "::error::dist/$asset is $size bytes, not a compiled binary"; exit 1; }
+          done
+          chmod +x "dist/$host"
+          "./dist/$host" --help
 
   # The one job that floats the REAL proxy against the live registry and runs the daemon to auth.
   # It asserts up to auth, not through a lifecycle: there is no credential here.
   #
-  #   checks.yml lifecycle smoke -> the fake (COPILOT_API_ENTRY)                -> start/stop + health
-  #   test-container             -> the real proxy, offline from the warmed cache -> the suite is hermetic
-  #   floated-lifecycle          -> the real proxy, live registry                -> the float and spawn reach auth
+  #   checks.yml lifecycle smoke     -> the fake (COPILOT_API_ENTRY)                 -> start/stop + health
+  #   checks.yml test-container      -> the real proxy, offline from the warmed cache -> the suite is hermetic
+  #   checks.yml floated-lifecycle   -> the real proxy, live registry, path-filtered  -> a PR that can break the float
+  #   this floated-lifecycle         -> the real proxy, live registry, unconditional  -> the release and the night
   floated-lifecycle:
     name: floated lifecycle (real proxy)
     runs-on: ubuntu-latest
@@ -143,45 +116,3 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: deno run --allow-env --allow-read --allow-run=deno .github/scripts/floated-smoke.ts
-
-  # The session-log readers parse what the REAL Claude Code and Codex CLIs write today, so a
-  # log-format drift shows here and in the recorder's end-to-end test (live-clis,
-  # COPILOT_ENV_LIVE_CORPUS): this job installs the current CLI releases, drives them against a
-  # fake inference backend under a throwaway HOME (scripts/usage/corpus.ts over
-  # scripts/usage/corpus/), then asserts `agent cost` still sees usage from both.
-  session-log-corpus:
-    name: session-log format drift smoke (real CLIs, fake backend)
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
-        with:
-          deno-version-file: .dvmrc
-          cache: true
-
-      - name: Install dependencies
-        run: deno ci
-
-      - uses: ./.github/actions/install-agent-clis
-
-      # The corpus task prints one JSON summary line last and leaves a runnable
-      # HOME at <out>/home. HOME moves for the `agent cost` run so nothing on the
-      # runner leaks in; DENO_DIR is pinned first so the moved HOME does not also
-      # move the dependency cache `deno ci` just filled.
-      - name: Session-log format drift smoke (real CLIs, fake backend)
-        shell: bash
-        env:
-          OUT: ${{ runner.temp }}/usage-corpus
-        run: |
-          set -euo pipefail
-          summary="$(deno task usage:corpus -- --out "$OUT" | tail -n 1)"
-          echo "corpus summary: $summary"
-          printf '%s\n' "$summary" | jq -e '.usageLines.claude > 0 and .usageLines.codex > 0'
-          DENO_DIR="$(deno info --json | jq -r .denoDir)"
-          export DENO_DIR
-          HOME="$OUT/home" CODEX_HOME="$OUT/home/.codex" CLAUDE_CONFIG_DIR="$OUT/home/.claude" \
-            deno run -P=cli src/cli.ts cost --json --days 7 \
-            | jq -e '([.claudeSessions.usageByModel[].events] | add // 0) > 0
-                     and ([.codexSessions.providers[] | .usageByModel[].events] | add // 0) > 0'

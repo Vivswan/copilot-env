@@ -58,7 +58,7 @@ copilot-env wires the Codex and Claude CLIs to GitHub Copilot, either through a 
 - **The usage index is a pre-index, never a result cache.** Every `agent cost` report folds fresh from the files that exist now and must equal the full parse.
 - **Migrations** (`src/migrations/`): one file per from-version. Delete a step once its fix is re-derivable; the format it read goes with it, never into a reader.
 - **One env init**: every agent/dev environment and fresh worktree runs `scripts/setup-env.sh` (`.ps1` on Windows).
-- **The release gate is its own workflow** (`release-gate.yml`): the slow, environment-heavy, and network-bound jobs run on the release PR, a dispatch, and the nightly, never on every PR. `checks.yml` never calls it; the managed `ci.yml` does.
+- **The release gate holds only what runs nowhere before the tag** (`release-gate.yml`): the five-target build with checksums, the release-assets validation, and the unconditional floated lifecycle. Everything that runs on a PR stays in `checks.yml` for every PR. The managed `ci.yml` calls the gate on the release PR and a dispatch, `nightly.yml` on the schedule; `checks.yml` never calls it.
 
 ### Releases
 

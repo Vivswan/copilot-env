@@ -28,4 +28,4 @@ deno task typecheck
 
 The full task list is in `deno.json`. The pre-commit hook runs `typecheck`, `test`, and `lint`, deno's own checks. CI's `check` job adds `lint:sh` and `lint:ps`, which need shellcheck and PSScriptAnalyzer installed.
 
-The slow jobs run from `release-gate.yml` on the release PR and nightly, not on every PR.
+`release-gate.yml` holds only the checks required before a release that run nowhere on PRs or main (the five-target build, the release-assets validation, the unconditional floated lifecycle); `ci.yml` runs it on the release PR and `nightly.yml` every night. Every other check runs on every PR.

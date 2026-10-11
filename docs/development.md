@@ -58,13 +58,16 @@ Facts the tests rest on, verified against the installed releases:
 
 ### Real CLIs against the fake
 
-`test/health/claude_cli_live.test.ts` and `test/health/codex_cli_live.test.ts` run the installed CLIs with the Direct probe's own argv against the fake, in a scratch HOME, and pin the output shapes our probe and health checks parse. On a machine without a binary they skip; the release gate installs both through `.github/actions/install-agent-clis` and sets `COPILOT_ENV_LIVE_CLIS=1`, which turns a missing binary into a failure.
+`test/health/claude_cli_live.test.ts` and `test/health/codex_cli_live.test.ts` run the installed CLIs with the Direct probe's own argv against the fake, in a scratch HOME, and pin the output shapes our probe and health checks parse. On a machine without a binary they skip; CI installs both through `.github/actions/install-agent-clis` and sets `COPILOT_ENV_LIVE_CLIS=1`, which turns a missing binary into a failure.
 
-The nightly (`nightly` in `.repo-platform.yml`; the repo-owned `.github/workflows/nightly.yml`) calls the release gate on its schedule, so the latest CLI releases meet those tests every night.
+The nightly runs through repo-platform's fleet nightly module (`nightly` in `.repo-platform.yml`; the repo-owned `.github/workflows/nightly.yml`). Its `checks` job installs the latest CLI releases and runs only those two files; its `release-gate` job runs the release gate below.
 
 A red night opens or refreshes one `nightly-failure` issue naming the run; the next green night closes it. It gates no merge, but an open nightly issue blocks release-please releases until fixed or overridden (repo-platform docs/nightly.md, docs/tracking-issues.md).
 
-What a red means: usually a claude or codex release changed the shape our probe parses; an install or `deno ci` failure reads red too. Read the red job's log (the CLI versions and the test output), then fix the parser or record the change.
+What a red means: usually a claude or codex release changed the shape our probe parses; an install or `deno ci` failure reads red too. Read the run's `nightly-evidence` artifact (the CLI versions and the test log; present once the test step ran), then fix the parser or record the change.
 
 - The header comment of `.github/workflows/nightly.yml` lists what each red job points at.
-- `.github/workflows/release-gate.yml` names the jobs the release PR, a dispatch, and the nightly run; `checks.yml` is what every PR runs and never calls it.
+
+### The release gate
+
+`.github/workflows/release-gate.yml` holds the checks required before a release that run nowhere on PRs or pushes to main: the five-target cross-compile with `dist/checksums.txt` verified, every asset proven present and the host's binary proven to run, the installer assets pinned to a synthetic tag and validated (`.github/scripts/release-assets.ts`, the same steps `update-release.yml` runs after the tag), and the floated proxy lifecycle run unconditionally (`checks.yml` runs it path-filtered on PRs). The managed `ci.yml` calls it on the release-please PR and on a dispatch, where `all-green` blocks on it; `nightly.yml` calls it on the schedule. `checks.yml` is what every PR runs and never calls it.

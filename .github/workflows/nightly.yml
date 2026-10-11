@@ -1,20 +1,25 @@
 # Nightly CI: written once from repo-platform's starter (files/nightly/.github/workflows/nightly.yml
-# at `stable`), repo-owned from then on and never overwritten by a sync. The night runs the
-# release gate (release-gate.yml): the real-CLI test files against the CURRENT claude and codex
-# releases, the container suite, the floated proxy, and the session-log corpus, so a drift shows
-# before the next release PR does.
+# at `stable`), repo-owned from then on and never overwritten by a sync. Two jobs are this
+# repository's. `checks`: the CURRENT claude and codex releases against the fake model endpoint
+# (test/helpers/fake_model_endpoint.ts), no credential and no network past the installs.
+# `release-gate`: release-gate.yml, the checks required before a release that run nowhere on PRs
+# or main, so a break there shows the next morning instead of on the release PR.
 #
 # What a red night points at, in order of likelihood:
-#   live-clis red             -> a claude or codex release changed the output shape our Direct
-#                                probe, health checks, catalog writer, or session-log readers
-#                                parse (the job log carries the CLI versions and the test output)
-#   install-agent-clis red    -> npm could not download or install a CLI release
-#   floated lifecycle red     -> the proxy package on the live registry, or its spawn
-#   `deno ci` or setup red    -> the registry or the runner, not the CLIs
-#   a job CANCELLED           -> a hang hit timeout-minutes; the report job reads it as red too
+#   checks: the test step red     -> a claude or codex release changed the output shape our Direct
+#                                    probe and health checks parse (the `nightly-evidence` artifact
+#                                    holds the CLI versions and the test log)
+#   checks: the install step red  -> npm could not download or install a CLI release; the versions
+#                                    were never recorded, so there is no artifact
+#   release-assets red            -> a cross-compile target, a denort download, or the installer
+#                                    pinning (release-gate.yml names the steps)
+#   floated-lifecycle red         -> the proxy package on the live registry, or its spawn
+#   `deno ci` or setup red        -> the registry or the runner, not the CLIs
+#   a job CANCELLED               -> a hang hit timeout-minutes; the report job reads it as red too
 # The report job files one label-deduplicated tracking issue for any of these and closes it on
 # the next green (repo-platform docs/nightly.md, docs/tracking-issues.md). It gates no merge; the
-# same gate blocks the release PR through ci.yml.
+# same tests run inside checks.yml on every PR against that day's releases, and the same gate
+# blocks the release PR through ci.yml.
 name: Nightly
 
 on:
@@ -30,13 +35,59 @@ permissions:
   contents: read
 
 jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      DENO_NO_UPDATE_CHECK: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
+        with:
+          deno-version-file: .dvmrc
+          cache: true
+
+      - name: Install dependencies
+        run: deno ci
+
+      # UNPINNED on purpose: the latest release is the drift this run exists to catch. The same
+      # install checks.yml runs, so the nightly and the PR gate never install differently.
+      - uses: ./.github/actions/install-agent-clis
+
+      - name: Record the CLI versions under test
+        run: |
+          mkdir -p nightly-evidence
+          { echo "claude: $(claude --version)"; echo "codex: $(codex --version)"; } | tee nightly-evidence/cli-versions.txt
+
+      # Opted in: a missing binary is a failure, never a skip that lets the night pass vacuously.
+      # A hard timeout well under the job's: a hung CLI turns into a red, not a 60-minute hang
+      # (a job killed at timeout-minutes is CANCELLED, which the report job also reads as red).
+      - name: Run the real-CLI tests against the fake model endpoint
+        env:
+          COPILOT_ENV_LIVE_CLIS: "1"
+        run: |
+          set -o pipefail
+          timeout --kill-after=30 10m deno test -P=test test/health/claude_cli_live.test.ts test/health/codex_cli_live.test.ts 2>&1 \
+            | tee nightly-evidence/test-log.txt
+
+      # The tracking issue links this run; the run carries the evidence.
+      - name: Upload the CLI versions and the test log
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nightly-evidence
+          path: nightly-evidence/
+          if-no-files-found: ignore
+
   release-gate:
     uses: ./.github/workflows/release-gate.yml
 
-  # A CANCELLED gate counts as red: hitting the timeout cancels rather than fails, and a hang
-  # is exactly what a nightly exists to catch.
+  # A CANCELLED job counts as red: hitting the timeout cancels rather than fails, and a hang is
+  # exactly what a nightly exists to catch. The issue opens when either job is red and resolves
+  # only when both are green.
   report:
-    needs: [release-gate]
+    needs: [checks, release-gate]
     if: always()
     runs-on: ubuntu-latest
     # A hung reporter is the residual silence window; keep this tight.
@@ -46,7 +97,9 @@ jobs:
       issues: write
     steps:
       - name: File or update the nightly issue
-        if: needs.release-gate.result == 'failure' || needs.release-gate.result == 'cancelled'
+        if: >-
+          needs.checks.result == 'failure' || needs.checks.result == 'cancelled' ||
+          needs.release-gate.result == 'failure' || needs.release-gate.result == 'cancelled'
         uses: Vivswan/repo-platform/actions/fuzz-issue@stable
         with:
           mode: report
@@ -57,7 +110,7 @@ jobs:
           stream: generic
 
       - name: Close the nightly issue on a green night
-        if: needs.release-gate.result == 'success'
+        if: needs.checks.result == 'success' && needs.release-gate.result == 'success'
         uses: Vivswan/repo-platform/actions/fuzz-issue@stable
         with:
           mode: resolve

@@ -2,9 +2,9 @@
 // endpoint in a scratch HOME: the shapes our probe and health checks parse are pinned against
 // what the installed release prints today, and the fake's journal shows what the CLI sent.
 //
-// Opt-in only: COPILOT_ENV_LIVE_CLIS (set by the release gate, release-gate.yml, after installing
-// the CLIs) runs them, and a missing codex is then a failure, never a skip that lets the gate
-// pass vacuously. Unset, they skip even beside an installed codex: a release is what they qualify.
+// Skipped on a machine without the binary. COPILOT_ENV_LIVE_CLIS (set by checks.yml and the
+// fleet nightly after installing the CLIs) opts in: the tests run and a missing codex is a
+// failure, never a skip that lets the gate pass vacuously.
 import { join } from "node:path";
 import { CODEX_PROBE, PROBE_PROMPT, summarizeProbeFailure } from "../../src/agents/live_probe.ts";
 import { codexLiveLaunch } from "../../src/health/live_launch.ts";
@@ -24,7 +24,7 @@ import { afterEach, beforeEach, expect, tempDir, test } from "../helpers/testing
 
 const LIVE_ENV = "COPILOT_ENV_LIVE_CLIS";
 const codexPath = resolveCommand("codex");
-const live = test.skipIf(!process.env[LIVE_ENV]);
+const live = test.skipIf(codexPath === null && !process.env[LIVE_ENV]);
 /** Codex reconnects five times on a rejected request before it gives up; a cold start on a CI
  *  runner adds to that. */
 const TEST_TIMEOUT_MS = 180_000;

@@ -2,9 +2,9 @@
 // endpoint in a scratch HOME: the shapes our probe and health checks parse are pinned against
 // what the installed release prints today, and the fake's journal shows what the CLI sent.
 //
-// Opt-in only: COPILOT_ENV_LIVE_CLIS (set by the release gate, release-gate.yml, after installing
-// the CLIs) runs them, and a missing claude is then a failure, never a skip that lets the gate
-// pass vacuously. Unset, they skip even beside an installed claude: a release is what they qualify.
+// Skipped on a machine without the binary. COPILOT_ENV_LIVE_CLIS (set by checks.yml and the
+// fleet nightly after installing the CLIs) opts in: the tests run and a missing claude is a
+// failure, never a skip that lets the gate pass vacuously.
 import { join } from "node:path";
 import { CLAUDE_PROBE, PROBE_PROMPT } from "../../src/agents/live_probe.ts";
 import { claudeLiveLaunch } from "../../src/health/live_launch.ts";
@@ -23,7 +23,7 @@ import { afterEach, beforeEach, expect, tempDir, test } from "../helpers/testing
 
 const LIVE_ENV = "COPILOT_ENV_LIVE_CLIS";
 const claudePath = resolveCommand("claude");
-const live = test.skipIf(!process.env[LIVE_ENV]);
+const live = test.skipIf(claudePath === null && !process.env[LIVE_ENV]);
 /** A cold CLI start on a CI runner takes a while; the fake itself answers in milliseconds. */
 const TEST_TIMEOUT_MS = 120_000;
 

@@ -1,0 +1,42 @@
+# Repo-owned.
+
+name: Set up the sidecar deno
+description: |
+  Puts the daemon's Deno sidecar on the runner, at the version the binary pins.
+
+  The CLI, the tests, and the build run on bun. The proxy daemon still runs
+  under a Deno sidecar the binary downloads, and a job that spawns the daemon
+  on the runner needs that same deno on PATH. The pin is one line of
+  copilot-env.config, `SIDECAR_DENO_VERSION=<version>`, and this action reads
+  it there, so the workflows carry no second copy.
+
+  Its callers, each a job that starts the daemon:
+    - checks.yml `check` (the fake-proxy lifecycle smoke)
+    - release-gate.yml `live-clis`, `floated-lifecycle`, `session-log-corpus`
+
+  The step also exports DENO_NO_UPDATE_CHECK=1 to the rest of the job, so the
+  sidecar never prints an update nag into a log a test reads.
+
+  A config file without the line fails the step with the key named. No
+  inputs, no outputs, no permissions, no secrets; the caller owes a checkout.
+
+runs:
+  using: composite
+  steps:
+    - name: Read the sidecar deno pin from copilot-env.config
+      id: pin
+      shell: bash
+      run: |
+        version="$(sed -n 's/^SIDECAR_DENO_VERSION=//p' copilot-env.config)"
+        if [ -z "$version" ]; then
+          echo "::error file=copilot-env.config::SIDECAR_DENO_VERSION is not set in copilot-env.config"
+          exit 1
+        fi
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+        echo "DENO_NO_UPDATE_CHECK=1" >> "$GITHUB_ENV"
+
+    # No `cache: true`: the setup-deno cache keys on a deno.lock this tree no longer has, and the
+    # daemon fills its own DENO_DIR under the data home, never the runner's default.
+    - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
+      with:
+        deno-version: ${{ steps.pin.outputs.version }}

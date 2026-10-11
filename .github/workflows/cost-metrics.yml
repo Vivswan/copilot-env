@@ -12,14 +12,14 @@ on:
     # labeled/unlabeled: applying `cost-metrics: intended` re-runs the job with the new verdict.
     types: [opened, synchronize, reopened, labeled, unlabeled]
     # The cost command's wiring in src/cli.ts is deliberately not a trigger (it does not move
-    # the scan); deno.json and deno.lock are, because dependency or permission changes do.
+    # the scan); package.json and bun.lock are, because a dependency change does.
     paths:
       - "src/usage/**"
       - "scripts/usage/fixtures.ts"
       - "test/helpers/usage_fixtures.ts"
       - "test/fixtures/usage/**"
-      - "deno.json"
-      - "deno.lock"
+      - "package.json"
+      - "bun.lock"
       - ".github/scripts/cost-metrics.ts"
       - ".github/workflows/cost-metrics.yml"
 
@@ -31,9 +31,6 @@ permissions:
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
   cancel-in-progress: true
-
-env:
-  DENO_NO_UPDATE_CHECK: "1"
 
 jobs:
   metrics:
@@ -48,13 +45,18 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
-      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          deno-version-file: .dvmrc
-          cache: true
+          bun-version-file: .bun-version
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('**/bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
 
       - name: Install dependencies
-        run: deno ci
+        run: bun install --frozen-lockfile
 
       - name: Measure base vs head
         id: measure
@@ -62,9 +64,7 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
-        run: >-
-          deno run --allow-read --allow-write --allow-env --allow-run=git,deno
-          .github/scripts/cost-metrics.ts measure --out "$RUNNER_TEMP/cost-metrics"
+        run: bun .github/scripts/cost-metrics.ts measure --out "$RUNNER_TEMP/cost-metrics"
 
       # A fork's PR, or one Dependabot opened (whoever re-triggers it), runs with a read-only
       # token that cannot post, so the step is skipped there: the verdict below is the gate
@@ -78,6 +78,4 @@ jobs:
           path: ${{ steps.measure.outputs.comment }}
 
       - name: Apply the verdict
-        run: >-
-          deno run --allow-read
-          .github/scripts/cost-metrics.ts verdict --in "$RUNNER_TEMP/cost-metrics"
+        run: bun .github/scripts/cost-metrics.ts verdict --in "$RUNNER_TEMP/cost-metrics"

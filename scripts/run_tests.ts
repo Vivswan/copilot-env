@@ -5,16 +5,23 @@
 //                       never preempts the deadline race that tears a test's children down
 //   output           -> a file's stdout and stderr are kept in arrival order and printed as one
 //                       block when the file finishes, so parallel files never interleave
+//   *.e2e.test.ts    -> the realistic files (a process, a listener, a home-shaped sandbox, a real
+//                       CLI or the network) run in CI or under --e2e only; --unit leaves them out
 import { mkdirSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { availableParallelism, tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { Command, CommanderError, Option } from "commander";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const TEST_DIR = join(ROOT, "test");
 const TEST_GLOB = "**/*.test.ts";
+const TEST_SUFFIX = ".test.ts";
+const E2E_SUFFIX = ".e2e.test.ts";
 const JOBS_ENV = "COPILOT_ENV_TEST_JOBS";
-/** A persistent HOME for every `bun test` child, in place of the per-child scratch one. */
+/** A persistent HOME for every `bun test` child, in place of the per-child scratch one. Every
+ *  child also receives it set to the HOME it runs under: test/helpers/home_guard.ts refuses a
+ *  test file whose HOME this variable does not name. */
 const TEST_HOME_ENV = "COPILOT_ENV_TEST_HOME";
 // Windows runners are the slow leg.
 const PER_TEST_TIMEOUT_MS = process.platform === "win32" ? 120_000 : 60_000;
@@ -26,31 +33,79 @@ interface FileResult {
   ms: number;
 }
 
-function usage(): string {
-  return `Usage: bun scripts/run_tests.ts [PATH]...
+interface Selection {
+  paths: string[];
+  unit: boolean;
+  e2e: boolean;
+}
 
-Runs every ${TEST_GLOB} file under test/, or under each directory PATH, plus each file PATH,
-one \`bun test\` process per file, ${JOBS_ENV} files at a time (default: min(4, the CPU count)).`;
+function usage(): Command {
+  return new Command("bun scripts/run_tests.ts")
+    .description(
+      `Runs every ${TEST_GLOB} file under test/, or under each directory PATH, plus each file PATH, one \`bun test\` process per file, ${JOBS_ENV} files at a time (default: min(4, the CPU count)).`,
+    )
+    .argument("[path...]", "a test file, or a directory of them")
+    .addOption(
+      new Option("--unit", `only the unit files: every *${E2E_SUFFIX} file is left out`).conflicts(
+        "e2e",
+      ),
+    )
+    .option("--e2e", `run the *${E2E_SUFFIX} files outside CI (GITHUB_ACTIONS=true or CI=true)`)
+    .exitOverride();
+}
+
+/** Case-blind: on a case-insensitive filesystem a path spelled `.E2E.test.ts` names the same
+ *  realistic file, and a name that only looks like one costs nothing on the others. */
+function isE2e(file: string): boolean {
+  return file.toLowerCase().endsWith(E2E_SUFFIX);
 }
 
 function testFilesUnder(dir: string): string[] {
   return [...new Bun.Glob(TEST_GLOB).scanSync({ cwd: dir, absolute: true })].sort();
 }
 
-/** A directory expands to its test files here, never at `bun test`, which would run them all in
- *  one process. */
-function testFiles(args: string[]): string[] {
-  const flags = args.filter((arg) => arg.startsWith("-"));
-  if (flags.length > 0) {
-    throw new Error(`unknown flag ${flags[0]}: the launcher takes paths only\n\n${usage()}`);
+/** The selection, or the exit code commander settled on after printing its own message. */
+function parseArgs(args: string[]): Selection | number {
+  const program = usage();
+  try {
+    program.parse(args, { from: "user" });
+  } catch (err) {
+    if (!(err instanceof CommanderError)) throw err;
+    return err.exitCode === 0 ? 0 : 2;
   }
-  if (args.length === 0) return testFilesUnder(TEST_DIR);
-  return args.flatMap((arg) => {
+  const flags = program.opts<{ unit?: boolean; e2e?: boolean }>();
+  return { paths: program.args, unit: flags.unit === true, e2e: flags.e2e === true };
+}
+
+/** A directory expands to its test files here, never at `bun test`, which would run them all in
+ *  one process. A file named outright is held to the same name rule as a discovered one: a name
+ *  outside TEST_GLOB (an .spec.ts, say) would otherwise pass the e2e gate unexamined. A file
+ *  --unit leaves out is an error, not a silent skip. */
+function testFiles(selection: Selection): string[] {
+  const named: string[] = [];
+  const expanded: string[] = [];
+  for (const arg of selection.paths) {
     const path = resolve(arg);
     const entry = statSync(path, { throwIfNoEntry: false });
     if (entry === undefined) throw new Error(`no such test file or directory: ${path}`);
-    return entry.isDirectory() ? testFilesUnder(path) : [path];
-  });
+    if (entry.isDirectory()) expanded.push(...testFilesUnder(path));
+    else if (!path.endsWith(TEST_SUFFIX)) {
+      throw new Error(`not a test file (${TEST_GLOB}): ${displayName(path)}`);
+    } else named.push(path);
+  }
+  if (selection.paths.length === 0) expanded.push(...testFilesUnder(TEST_DIR));
+  if (selection.unit) {
+    const excluded = named.find(isE2e);
+    if (excluded !== undefined) {
+      throw new Error(`--unit leaves out ${displayName(excluded)}: it is a *${E2E_SUFFIX} file`);
+    }
+    return [...named, ...expanded.filter((file) => !isE2e(file))];
+  }
+  return [...named, ...expanded];
+}
+
+function e2eAllowed(selection: Selection): boolean {
+  return selection.e2e || process.env.GITHUB_ACTIONS === "true" || process.env.CI === "true";
 }
 
 function jobs(): number {
@@ -75,6 +130,7 @@ function childEnv(home: string): Record<string, string | undefined> {
     ...process.env,
     NODE_ENV: "development",
     HOME: home,
+    [TEST_HOME_ENV]: home,
   };
   if (process.platform === "win32") env.USERPROFILE = home;
   return env;
@@ -183,8 +239,16 @@ async function main(): Promise<number> {
   let files: string[];
   let limit: number;
   try {
-    files = testFiles(process.argv.slice(2));
+    const selection = parseArgs(process.argv.slice(2));
+    if (typeof selection === "number") return selection;
+    files = testFiles(selection);
     limit = jobs();
+    const e2e = files.filter(isE2e);
+    if (e2e.length > 0 && !e2eAllowed(selection)) {
+      throw new Error(
+        `${e2e.length} *${E2E_SUFFIX} file${e2e.length === 1 ? "" : "s"} selected: the realistic tests run in CI (GITHUB_ACTIONS=true or CI=true) or under --e2e; \`bun run test:unit\` runs the unit files alone`,
+      );
+    }
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
     return 2;

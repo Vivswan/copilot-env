@@ -1,13 +1,19 @@
 // What CI reads of the launcher is its exit code and its file count: a file whose tests fail must
 // fail the run whatever the other files did, a path that names nothing must fail it rather than
-// run nothing green, and a directory must run as one process PER FILE (handed to `bun test`
-// whole, it would run as one).
+// run nothing green, a directory must run as one process PER FILE (handed to `bun test` whole, it
+// would run as one), a *.e2e.test.ts file must run in CI and under --e2e only (on a developer
+// machine with neither, the run is refused before any test starts, and --unit leaves the file out),
+// and a file named outright must match **/*.test.ts, or it reaches `bun test` outside the gate.
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { bunRunArgs, ROOT, runSync } from "../helpers/run.ts";
 import { expect, tempDir, test } from "../helpers/testing.ts";
 
 const LAUNCHER = join(ROOT, "scripts", "run_tests.ts");
+
+/** The CI markers the launcher reads, each absent: a run of this file in CI must not open the
+ *  gate for the rows that expect it shut. */
+const OUTSIDE_CI = { GITHUB_ACTIONS: undefined, CI: undefined };
 
 function testFile(dir: string, name: string, expected: number): string {
   const path = join(dir, name);
@@ -27,24 +33,140 @@ function filesRan(stdout: string): number {
   return Number(/^(\d+) test files:/m.exec(stdout)?.[1] ?? 0);
 }
 
-test("the launcher's exit code and file count over files, a directory, and a missing path", () => {
+test("the launcher's exit code and file count over files, a directory, a missing path, and the e2e gate", () => {
   const dir = tempDir("run-tests-");
   const passing = testFile(dir, "passing.test.ts", 1);
   const failing = testFile(dir, "failing.test.ts", 2);
+  const realistic = testFile(dir, "realistic.e2e.test.ts", 1);
+  // A real test body under a name outside **/*.test.ts: discovery never finds it, and a name
+  // without the suffix is also outside the e2e gate's reach.
+  const spec = testFile(dir, "example.e2e.spec.ts", 1);
+  const none: string[] = [];
   const rows = [
-    { paths: [passing], exitCode: 0, ran: 1, failed: [] as string[] },
-    { paths: [passing, failing], exitCode: 1, ran: 2, failed: [failing] },
-    { paths: [dir], exitCode: 1, ran: 2, failed: [failing] },
-    { paths: [join(dir, "absent.test.ts")], exitCode: 2, ran: 0, failed: [] as string[] },
+    { args: [passing], env: OUTSIDE_CI, exitCode: 0, ran: 1, failed: none, mentions: none },
+    {
+      args: [passing, failing],
+      env: OUTSIDE_CI,
+      exitCode: 1,
+      ran: 2,
+      failed: [failing],
+      mentions: none,
+    },
+    {
+      args: [join(dir, "absent.test.ts")],
+      env: OUTSIDE_CI,
+      exitCode: 2,
+      ran: 0,
+      failed: none,
+      mentions: none,
+    },
+    // The directory holds an e2e file: shut outside CI, open under either marker or the flag.
+    {
+      args: [dir],
+      env: OUTSIDE_CI,
+      exitCode: 2,
+      ran: 0,
+      failed: none,
+      mentions: ["--e2e", "test:unit"],
+    },
+    {
+      args: [dir],
+      env: { ...OUTSIDE_CI, CI: "true" },
+      exitCode: 1,
+      ran: 3,
+      failed: [failing],
+      mentions: none,
+    },
+    {
+      args: [dir],
+      env: { ...OUTSIDE_CI, GITHUB_ACTIONS: "true" },
+      exitCode: 1,
+      ran: 3,
+      failed: [failing],
+      mentions: none,
+    },
+    {
+      args: ["--e2e", dir],
+      env: OUTSIDE_CI,
+      exitCode: 1,
+      ran: 3,
+      failed: [failing],
+      mentions: none,
+    },
+    // A file named outright is gated the same way.
+    { args: [realistic], env: OUTSIDE_CI, exitCode: 2, ran: 0, failed: none, mentions: ["--e2e"] },
+    {
+      args: ["--e2e", realistic],
+      env: OUTSIDE_CI,
+      exitCode: 0,
+      ran: 1,
+      failed: none,
+      mentions: none,
+    },
+    // A file outside the name rule is refused whatever the flags: never handed to `bun test`.
+    {
+      args: [spec],
+      env: OUTSIDE_CI,
+      exitCode: 2,
+      ran: 0,
+      failed: none,
+      mentions: ["example.e2e.spec.ts"],
+    },
+    {
+      args: ["--e2e", spec],
+      env: OUTSIDE_CI,
+      exitCode: 2,
+      ran: 0,
+      failed: none,
+      mentions: ["example.e2e.spec.ts"],
+    },
+    // --unit: the e2e file is left out of a directory and refused when named.
+    {
+      args: ["--unit", dir],
+      env: OUTSIDE_CI,
+      exitCode: 1,
+      ran: 2,
+      failed: [failing],
+      mentions: none,
+    },
+    {
+      args: ["--unit", realistic],
+      env: OUTSIDE_CI,
+      exitCode: 2,
+      ran: 0,
+      failed: none,
+      mentions: [".e2e.test.ts"],
+    },
+    {
+      args: ["--unit", "--e2e", dir],
+      env: OUTSIDE_CI,
+      exitCode: 2,
+      ran: 0,
+      failed: none,
+      mentions: none,
+    },
+    {
+      args: ["--help"],
+      env: OUTSIDE_CI,
+      exitCode: 0,
+      ran: 0,
+      failed: none,
+      mentions: ["--unit", "--e2e"],
+    },
   ];
-  for (const { paths, exitCode, ran, failed } of rows) {
-    const res = runSync(process.execPath, [...bunRunArgs(), LAUNCHER, ...paths]);
+  for (const { args, env, exitCode, ran, failed, mentions } of rows) {
+    const res = runSync(process.execPath, [...bunRunArgs(), LAUNCHER, ...args], {
+      env: { ...process.env, ...env },
+    });
     const named = failed.filter((file) => res.stdout.includes(`failed: ${file}`));
-    expect({ paths, exitCode: res.exitCode, ran: filesRan(res.stdout), named }).toEqual({
-      paths,
+    const text = res.stdout + res.stderr;
+    const mentioned = mentions.filter((word) => text.includes(word));
+    expect({ args, exitCode: res.exitCode, ran: filesRan(res.stdout), named, mentioned }).toEqual({
+      args,
       exitCode,
       ran,
       named: failed,
+      mentioned: mentions,
     });
   }
-}, 60_000);
+}, 180_000);

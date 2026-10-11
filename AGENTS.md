@@ -24,8 +24,8 @@ copilot-env: Points the Codex and Claude CLIs at GitHub Copilot: a managed copil
 
 ## Toolchain
 
-- Deno: `deno install`, `deno test`, `deno task <task>` (tasks, imports, and lint/format settings in `deno.json`)
-- `.dvmrc` is managed by sync; pin another version in a repo-owned workflow's version input, not in the dotfile.
+- bun: `bun install`, `bun run <script>` (scripts in `package.json`)
+- `.bun-version` is managed by sync; pin another version in a repo-owned workflow's version input, not in the dotfile.
 
 ## Repository-specific guidance
 

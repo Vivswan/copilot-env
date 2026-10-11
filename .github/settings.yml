@@ -42,9 +42,6 @@ labels:
       color: BFD4F2
       description: This PR changes agent cost's numbers on purpose; the Cost metrics
         check reports the diff and passes
-    - name: deno
-      color: 70ffaf
-      description: Pull requests that update deno code
     - name: dependencies
       color: 0366d6
       description: Dependency updates
@@ -60,12 +57,18 @@ labels:
     - name: github_actions
       color: "000000"
       description: Pull requests that update GitHub Actions code
+    - name: javascript
+      color: "168700"
+      description: Pull requests that update javascript code
     - name: merge-when-green
       color: 0e8a16
       description: "Owner approved: merge once every gate is green"
     - name: nightly-failure
       color: D93F0B
       description: Automated nightly CI failure
+    - name: parked
+      color: c2e0c6
+      description: Ready and mergeable, kept open by the owner on purpose; do not merge
     - name: release-blocker
       color: B60205
       description: Blocks releases while open - release-health fails release PRs and

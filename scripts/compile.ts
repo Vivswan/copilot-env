@@ -20,8 +20,8 @@ import {
 import {
   currentReleaseTarget,
   RELEASE_TARGETS,
-  releaseAssetName,
   type ReleaseTarget,
+  releaseAssetName,
 } from "../src/install/targets.ts";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
@@ -104,16 +104,20 @@ function build(target: ReleaseTarget, assetFlags: readonly string[]): number {
   console.error(`==> bun build --compile --target ${target.bunTarget} -> ${out}`);
   // The deno binary autoloaded nothing from the cwd; a `.env` or bunfig.toml there must not
   // reach the CLI's environment either.
-  const result = spawnSync(process.execPath, [
-    "build",
-    "--compile",
-    `--target=${target.bunTarget}`,
-    "--no-compile-autoload-dotenv",
-    "--no-compile-autoload-bunfig",
-    ...assetFlags,
-    `--outfile=${out}`,
-    ENTRY,
-  ], { cwd: ROOT, stdio: "inherit" });
+  const result = spawnSync(
+    process.execPath,
+    [
+      "build",
+      "--compile",
+      `--target=${target.bunTarget}`,
+      "--no-compile-autoload-dotenv",
+      "--no-compile-autoload-bunfig",
+      ...assetFlags,
+      `--outfile=${out}`,
+      ENTRY,
+    ],
+    { cwd: ROOT, stdio: "inherit" },
+  );
   if (result.error) throw result.error;
   return result.status ?? 1;
 }
@@ -124,7 +128,9 @@ const stage = mkdtempSync(join(tmpdir(), "copilot-env-assets-"));
 let status = 0;
 try {
   stageAssets(stage);
-  const assetFlags = readdirSync(stage).sort().map((entry) => `--asset=${join(stage, entry)}`);
+  const assetFlags = readdirSync(stage)
+    .sort()
+    .map((entry) => `--asset=${join(stage, entry)}`);
   for (const target of targets) {
     status = build(target, assetFlags);
     if (status !== 0) break;

@@ -39,8 +39,8 @@ export function ghAccountClause(pin: string | null, followed: string | null): st
   return pin !== null
     ? `account '${pin}'`
     : followed !== null
-    ? `AUTO - currently account ${followed}`
-    : "AUTO - follows gh's active account";
+      ? `AUTO - currently account ${followed}`
+      : "AUTO - follows gh's active account";
 }
 
 /**
@@ -66,23 +66,24 @@ function describeDirectGhAuth(a: CodexDirectAuthFacts): {
     case "unproven":
       return {
         ok: false,
-        detail: a.command === null
-          ? "gh auth: could not check for the GitHub CLI (the command probe failed to run)"
-          : `gh auth: ${ghCouldNotCheck(a.ghDetail, accountClause)}`,
+        detail:
+          a.command === null
+            ? "gh auth: could not check for the GitHub CLI (the command probe failed to run)"
+            : `gh auth: ${ghCouldNotCheck(a.ghDetail, accountClause)}`,
         ghFix: "re-run `agent health` (the gh check did not run to completion)",
       };
     case "absent":
       return a.command === null
         ? {
-          ok: false,
-          detail: "gh auth: GitHub CLI not found",
-          ghFix: "install gh and run gh auth login",
-        }
+            ok: false,
+            detail: "gh auth: GitHub CLI not found",
+            ghFix: "install gh and run gh auth login",
+          }
         : {
-          ok: false,
-          detail: `gh auth: ${a.command} is not authenticated${account}`,
-          ghFix: "gh auth login",
-        };
+            ok: false,
+            detail: `gh auth: ${a.command} is not authenticated${account}`,
+            ghFix: "gh auth login",
+          };
     case "found":
       return {
         ok: true,
@@ -213,9 +214,8 @@ function codexOtherLine(
   profile: Profile,
 ): { line: string; repair: string } | null {
   // The inspector mints a profile reason only for a named inspection, so the fallback is unreached.
-  const profileFile = profile === null
-    ? configPath
-    : codexProfileConfigPath(dirname(configPath), profile);
+  const profileFile =
+    profile === null ? configPath : codexProfileConfigPath(dirname(configPath), profile);
   switch (reason) {
     case "malformed":
       return { line: "config.toml is present but not valid TOML", repair: `repair ${configPath}` };
@@ -295,8 +295,7 @@ export function checkCodex(f: CodexFacts, profile: Profile): CheckResult {
       return {
         ...base,
         status: "warn",
-        detail:
-          `provider: none\nno Codex config at ${configPath} (profile '${profile}' is not wired into Codex)`,
+        detail: `provider: none\nno Codex config at ${configPath} (profile '${profile}' is not wired into Codex)`,
         fix: profileAddFix(profile),
       };
     }
@@ -385,9 +384,9 @@ export function checkCodex(f: CodexFacts, profile: Profile): CheckResult {
     ...fileLines,
     `model_provider ${codexProviderId(profile)} → ${f.baseUrl}`,
     f.credential === "static"
-      ? `auth: local proxy key baked into the config (static-key; the daemon must be running: \`${
-        agentStartCommand(profile)
-      }\`${baked.clause})`
+      ? `auth: local proxy key baked into the config (static-key; the daemon must be running: \`${agentStartCommand(
+          profile,
+        )}\`${baked.clause})`
       : "auth: local proxy key via the proxy-token resolver",
   ];
   return baked.stale
@@ -399,7 +398,8 @@ export function checkCodex(f: CodexFacts, profile: Profile): CheckResult {
  *  profile check --codex` prints). */
 export function checkCodexHost(f: CodexHostFacts): CheckResult {
   const configFile = codexConfigPath(f.hostHome);
-  const detail = (summary: string) => f.exists ? `${summary}\nconfig.toml: ${configFile}` : summary;
+  const detail = (summary: string) =>
+    f.exists ? `${summary}\nconfig.toml: ${configFile}` : summary;
   const base = {
     ...meta("setup.codex-host"),
     profile: null,
@@ -509,11 +509,12 @@ export function checkClaude(f: ClaudeFacts, profile: Profile): CheckResult {
     // (after `config port` changed and the daemon rebound) would send Claude to the wrong port,
     // so it must not read green. Reachability is the proxy check's job. Mirrors the Codex check.
     const baseUrlOk = f.baseUrl !== null && f.baseUrlMatches;
-    const proxyFix = profile === null
-      // --proxy explicitly: the bare commands auto-detect a mode, which is not guaranteed to
-      // re-bake the proxy wiring this fix is repairing.
-      ? "agent init --proxy"
-      : profileAddFix(profile);
+    const proxyFix =
+      profile === null
+        ? // --proxy explicitly: the bare commands auto-detect a mode, which is not guaranteed to
+          // re-bake the proxy wiring this fix is repairing.
+          "agent init --proxy"
+        : profileAddFix(profile);
     const baked = bakedCredentialClause(f.bakedCredential, proxyFix);
     const detail = [
       "provider: proxy",
@@ -522,9 +523,9 @@ export function checkClaude(f: ClaudeFacts, profile: Profile): CheckResult {
         baseUrlOk ? "" : " (does not match the resolved proxy port)"
       }`,
       f.credential === "static"
-        ? `credential → static ANTHROPIC_AUTH_TOKEN (static-key; the daemon must be running: \`${
-          agentStartCommand(profile)
-        }\`${baked.clause})`
+        ? `credential → static ANTHROPIC_AUTH_TOKEN (static-key; the daemon must be running: \`${agentStartCommand(
+            profile,
+          )}\`${baked.clause})`
         : `apiKeyHelper → ${f.helperPath ?? "(missing)"}`,
     ].join("\n");
     if (baseUrlOk && !baked.stale) return { ...base, status: "ok", detail };
@@ -535,8 +536,8 @@ export function checkClaude(f: ClaudeFacts, profile: Profile): CheckResult {
       fix: baked.stale
         ? proxyFix
         : `Re-run \`${proxyFix}\` to repoint ANTHROPIC_BASE_URL at the ${
-          profile === null ? "current proxy port" : "profile's proxy port"
-        }.`,
+            profile === null ? "current proxy port" : "profile's proxy port"
+          }.`,
     };
   }
   if (f.providerMode === "other") {
@@ -552,9 +553,9 @@ export function checkClaude(f: ClaudeFacts, profile: Profile): CheckResult {
           `settings.json: ${f.settingsPath}`,
           `${claudeOtherLine(f)}; profile '${profile}' expects managed wiring`,
         ].join("\n"),
-        fix: `remove ${f.settingsPath} (not managed by copilot-env), then ${
-          profileAddFix(profile)
-        }`,
+        fix: `remove ${f.settingsPath} (not managed by copilot-env), then ${profileAddFix(
+          profile,
+        )}`,
       };
     }
     // Default-profile exception to "the user's own business": a settings file that could not be
@@ -563,8 +564,9 @@ export function checkClaude(f: ClaudeFacts, profile: Profile): CheckResult {
       return {
         ...base,
         status: "warn",
-        detail: ["provider: other", `settings.json: ${f.settingsPath}`, claudeOtherLine(f)]
-          .join("\n"),
+        detail: ["provider: other", `settings.json: ${f.settingsPath}`, claudeOtherLine(f)].join(
+          "\n",
+        ),
         fix: `repair ${f.settingsPath}, then re-run \`agent profile sync --claude\``,
       };
     }
@@ -619,14 +621,14 @@ export function checkClaudeDesktop(f: ClaudeDesktopStatus): CheckResult {
       ...(f.kind === "unjudged" ? { reason: f.reason } : {}),
       ...(f.kind === "inspected"
         ? {
-          libraryDir: f.libraryDir,
-          owned: f.owned,
-          unlisted: f.unlisted,
-          entries: f.entries.map((e) => ({ profile: e.profile, mode: e.mode, ...e.verdict })),
-          orphans: f.orphans,
-          applied: f.applied,
-          app: f.app,
-        }
+            libraryDir: f.libraryDir,
+            owned: f.owned,
+            unlisted: f.unlisted,
+            entries: f.entries.map((e) => ({ profile: e.profile, mode: e.mode, ...e.verdict })),
+            orphans: f.orphans,
+            applied: f.applied,
+            app: f.app,
+          }
         : {}),
     },
   };

@@ -84,7 +84,9 @@ export function fakeCodexOnPath(dir: string, spec: Partial<FakeCodexSpec> = {}):
     },
     runs() {
       if (!existsSync(runsFile)) return [];
-      return readFileSync(runsFile, "utf8").split("\n").filter(Boolean)
+      return readFileSync(runsFile, "utf8")
+        .split("\n")
+        .filter(Boolean)
         .map((line) => JSON.parse(line) as FakeCodexRun);
     },
     seen() {

@@ -97,9 +97,10 @@ test.skipIf(!utcPinnable())(
     });
     const appendedTo = terminated.slice(0, 3);
     expect(appendedTo.length).toBe(3);
-    const line = `${
-      JSON.stringify({ type: "user", message: { role: "user", content: "more" } })
-    }\n`;
+    const line = `${JSON.stringify({
+      type: "user",
+      message: { role: "user", content: "more" },
+    })}\n`;
     for (const path of appendedTo) appendFileSync(path, line);
     const appended = await runCurrentCost(root, { copilotApiHome });
     log("after append", appended.runtime);

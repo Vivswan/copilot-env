@@ -1,13 +1,12 @@
 import { spawnSync } from "node:child_process";
 import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
-import { userHomeDir } from "../utils/home.ts";
 import { consola } from "consola";
-
 import { withPowershellChildEnv } from "../utils/command.ts";
 import { isEnoent } from "../utils/fs.ts";
+import * as fs from "../utils/fs_facade.ts";
+import { userHomeDir } from "../utils/home.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
 import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
-import * as fs from "../utils/fs_facade.ts";
 
 // `agent shell` owns wiring the copilot-env integration into the user's shell startup.
 // File wiring is done here in TS for BOTH platforms; we only shell out to tiny
@@ -114,9 +113,11 @@ function ownedLineIndexes(lines: string[]): { skip: Set<number>; leftBehind: str
     // would strip the file's final newline.
     const after = extent.end + 1;
     if (
-      after < lines.length && isBlankLine(lines[after]) &&
+      after < lines.length &&
+      isBlankLine(lines[after]) &&
       !(after === lines.length - 1 && lines[after] === "")
-    ) skip.add(after);
+    )
+      skip.add(after);
     if (extent.leftBehind !== null) leftBehind.push(extent.leftBehind);
   });
   return { skip, leftBehind };
@@ -159,8 +160,7 @@ export function upsertBlock(
   const idx = lines.findIndex((l) => lineIs(l, MARKER));
   if (idx === -1) {
     return {
-      content: content +
-        (dominantEol(content) === "\r\n" ? block.replaceAll("\n", "\r\n") : block),
+      content: content + (dominantEol(content) === "\r\n" ? block.replaceAll("\n", "\r\n") : block),
       leftBehind: [],
     };
   }
@@ -389,9 +389,7 @@ export function rcFiles(remove: boolean): string[] {
  *  `--all-hosts` wiring is still seen. */
 export function shellTargetFiles(): string[] {
   if (process.platform !== "win32") return rcFiles(true);
-  return [
-    ...new Set([...windowsProfileTarget(false).paths, ...windowsProfileTarget(true).paths]),
-  ];
+  return [...new Set([...windowsProfileTarget(false).paths, ...windowsProfileTarget(true).paths])];
 }
 
 // --- Windows $PROFILE vocabulary ------------------------------------------------
@@ -451,19 +449,20 @@ export function windowsProfileTarget(allHosts: boolean): WindowsProfileTarget {
 function psEval(command: string): string {
   const failures: string[] = [];
   for (const exe of PS_EXES) {
-    const result = withPowershellChildEnv(
-      exe,
-      (env) => spawnSync(exe, ["-NoProfile", "-Command", command], { encoding: "utf-8", env }),
+    const result = withPowershellChildEnv(exe, (env) =>
+      spawnSync(exe, ["-NoProfile", "-Command", command], { encoding: "utf-8", env }),
     );
     if (isEnoent(result.error)) {
       failures.push(`${exe}: not on PATH`);
       continue;
     }
     if (result.error || result.status !== 0) {
-      failures.push(`${exe}: ${
-        result.error?.message ??
+      failures.push(
+        `${exe}: ${
+          result.error?.message ??
           `exit ${result.status}: ${(result.stderr ?? "").toString().trim()}`
-      }`);
+        }`,
+      );
       continue;
     }
     return (result.stdout ?? "").toString().trim();
@@ -482,13 +481,11 @@ function relaxWindowsExecutionPolicy(_target: { source: "system" }): void {
     return;
   }
   for (const exe of PS_EXES) {
-    const result = withPowershellChildEnv(
-      exe,
-      (env) =>
-        spawnSync(exe, ["-NoProfile", "-Command", command], {
-          stdio: ["ignore", "inherit", "inherit"],
-          env,
-        }),
+    const result = withPowershellChildEnv(exe, (env) =>
+      spawnSync(exe, ["-NoProfile", "-Command", command], {
+        stdio: ["ignore", "inherit", "inherit"],
+        env,
+      }),
     );
     // Edition not installed (pwsh-only or 5.1-only machine): nothing to relax there.
     if (isEnoent(result.error)) continue;

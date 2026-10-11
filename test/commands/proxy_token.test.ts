@@ -9,10 +9,10 @@ import {
   resolveProxyToken,
 } from "../../src/commands/proxy_token.ts";
 import { CopilotApiPaths } from "../../src/copilot_api/paths.ts";
-import { parseProfileName, type Profile } from "../../src/copilot_api/profile.ts";
+import { type Profile, parseProfileName } from "../../src/copilot_api/profile.ts";
+import { sidecarTest, spawnDenoChild } from "../helpers/deno_sidecar.ts";
 import { agentHomeEnv, envSnapshot } from "../helpers/env.ts";
 import { writeRunState } from "../helpers/fixtures.ts";
-import { sidecarTest, spawnDenoChild } from "../helpers/deno_sidecar.ts";
 import { importSpecifier, ROOT, runCli, runScript } from "../helpers/run.ts";
 import { afterEach, expect, removeDir, tempDir, test } from "../helpers/testing.ts";
 
@@ -98,22 +98,26 @@ const START_FAILED = (profile: string | null) =>
 test("resolveProxyToken: each (up, auto-start, --yes, answer, profile) row yields its exact effect set", async () => {
   const none: Recorded = { launches: [], prompts: [], heartbeats: [null], printed: [], notes: [] };
   const rows: MatrixRow[] = [
-    ...[true, false].map((assumeYes): MatrixRow => ({
-      name: `already up, assumeYes=${assumeYes}: no launch, no prompt, heartbeat then the key`,
-      opts: { up: true, autoStart: false },
-      assumeYes,
-      profile: null,
-      exit: 0,
-      rec: { ...none, printed: [null] },
-    })),
-    ...[true, false].map((assumeYes): MatrixRow => ({
-      name: `down + managed, assumeYes=${assumeYes}: silent suppressed auto-start, never a prompt`,
-      opts: { autoStart: true },
-      assumeYes,
-      profile: null,
-      exit: 0,
-      rec: { ...none, launches: [{ profile: null, output: "suppressed" }], printed: [null] },
-    })),
+    ...[true, false].map(
+      (assumeYes): MatrixRow => ({
+        name: `already up, assumeYes=${assumeYes}: no launch, no prompt, heartbeat then the key`,
+        opts: { up: true, autoStart: false },
+        assumeYes,
+        profile: null,
+        exit: 0,
+        rec: { ...none, printed: [null] },
+      }),
+    ),
+    ...[true, false].map(
+      (assumeYes): MatrixRow => ({
+        name: `down + managed, assumeYes=${assumeYes}: silent suppressed auto-start, never a prompt`,
+        opts: { autoStart: true },
+        assumeYes,
+        profile: null,
+        exit: 0,
+        rec: { ...none, launches: [{ profile: null, output: "suppressed" }], printed: [null] },
+      }),
+    ),
     {
       name: "down + managed + start fails: exit 1, no key, the hidden failure gets a pointer",
       opts: { autoStart: true, launchBringsUp: false },
@@ -134,27 +138,31 @@ test("resolveProxyToken: each (up, auto-start, --yes, answer, profile) row yield
       exit: 1,
       rec: none,
     },
-    ...["", "y", "Y", "yes", "YES", "Yes", " y "].map((answer): MatrixRow => ({
-      name: `down + unmanaged + interactive ${JSON.stringify(answer)}: START, visibly`,
-      opts: { autoStart: false, answer },
-      assumeYes: false,
-      profile: null,
-      exit: 0,
-      rec: {
-        ...none,
-        prompts: [PROMPT],
-        launches: [{ profile: null, output: "visible" }],
-        printed: [null],
-      },
-    })),
-    ...["n", "N", "no", "x", "nope"].map((answer): MatrixRow => ({
-      name: `down + unmanaged + interactive ${JSON.stringify(answer)}: declines, no launch`,
-      opts: { autoStart: false, answer },
-      assumeYes: false,
-      profile: null,
-      exit: 1,
-      rec: { ...none, prompts: [PROMPT], notes: [DECLINED(null)] },
-    })),
+    ...["", "y", "Y", "yes", "YES", "Yes", " y "].map(
+      (answer): MatrixRow => ({
+        name: `down + unmanaged + interactive ${JSON.stringify(answer)}: START, visibly`,
+        opts: { autoStart: false, answer },
+        assumeYes: false,
+        profile: null,
+        exit: 0,
+        rec: {
+          ...none,
+          prompts: [PROMPT],
+          launches: [{ profile: null, output: "visible" }],
+          printed: [null],
+        },
+      }),
+    ),
+    ...["n", "N", "no", "x", "nope"].map(
+      (answer): MatrixRow => ({
+        name: `down + unmanaged + interactive ${JSON.stringify(answer)}: declines, no launch`,
+        opts: { autoStart: false, answer },
+        assumeYes: false,
+        profile: null,
+        exit: 1,
+        rec: { ...none, prompts: [PROMPT], notes: [DECLINED(null)] },
+      }),
+    ),
     {
       name: "a named profile, declined: the hint points at the PROFILE's daemon",
       opts: { autoStart: false, answer: "n" },
@@ -199,14 +207,12 @@ test("resolveProxyToken: each (up, auto-start, --yes, answer, profile) row yield
 // --- spawn level: the stdout contract ------------------------------------------
 
 function isolatedEnv(home: string): Record<string, string> {
-  return { ...process.env as Record<string, string>, CONSOLA_LEVEL: "5", ...agentHomeEnv(home) };
+  return { ...(process.env as Record<string, string>), CONSOLA_LEVEL: "5", ...agentHomeEnv(home) };
 }
 
 /** A daemon proxyStatus corroborates: a real deno process running a copilot-api-named entry with the
  *  `start` subcommand, plus a listening loopback port recorded in run state. */
-async function stageDecoyDaemon(
-  home: string,
-): Promise<{ teardown: () => Promise<void> }> {
+async function stageDecoyDaemon(home: string): Promise<{ teardown: () => Promise<void> }> {
   const decoy = join(home, "copilot-api-decoy.mjs");
   writeFileSync(decoy, "setTimeout(() => {}, 30_000);\n");
   const daemon = spawnDenoChild({ args: [decoy, "start"], stdout: "ignore", stderr: "ignore" });
@@ -309,9 +315,9 @@ test("readStartAnswer: the prompt goes to stderr, EOF reads as the empty (defaul
   writeFileSync(
     probe,
     [
-      `import { readStartAnswer } from ${
-        importSpecifier(join(ROOT, "src", "commands", "proxy_token.ts"))
-      };`,
+      `import { readStartAnswer } from ${importSpecifier(
+        join(ROOT, "src", "commands", "proxy_token.ts"),
+      )};`,
       'console.log(JSON.stringify(await readStartAnswer("ANSWER? ")));',
     ].join("\n"),
   );

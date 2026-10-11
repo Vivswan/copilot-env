@@ -1,6 +1,6 @@
 // The suite floor points CLAUDE_DESKTOP_DIR_ENV at a dir that is never created, so no test
 // can reach a real library; a test that wants Desktop installed makes its own data dir.
-import { directWiring } from "../../src/agents/configure.ts";
+
 import {
   chmodSync,
   existsSync,
@@ -14,6 +14,13 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, join } from "node:path";
+import {
+  claudeDesktopStatus,
+  reconcileClaudeDesktopWiring,
+  resolveClaudeDesktopTargets,
+} from "../../src/agents/claude_desktop.ts";
+import { directWiring } from "../../src/agents/configure.ts";
+import { runClaude } from "../../src/agents/configure_defaults.ts";
 import {
   type DesktopWireOptions,
   listClaudeDesktopOwnedArtifacts,
@@ -51,34 +58,28 @@ import {
   renderClaudeDesktopStatus,
 } from "../../src/claude/desktop_status.ts";
 import { resolveClaudeHome } from "../../src/claude/paths.ts";
-import {
-  claudeDesktopStatus,
-  reconcileClaudeDesktopWiring,
-  resolveClaudeDesktopTargets,
-} from "../../src/agents/claude_desktop.ts";
+import { writeProfileSettings } from "../../src/commands/launch.ts";
 import {
   addProfile,
   printClaudeDesktopCheck,
   syncNamedProfiles,
 } from "../../src/commands/profile.ts";
-import { runClaude } from "../../src/agents/configure_defaults.ts";
-import { writeProfileSettings } from "../../src/commands/launch.ts";
-import { CopilotApiPaths } from "../../src/copilot_api/paths.ts";
-import { CopilotEnvState } from "../../src/copilot_api/env_state.ts";
-import { setIntegrationProbeFetch } from "../../src/copilot_api/integration_identity.ts";
-import type { ProbeFetch } from "../../src/copilot_api/integration_identity.ts";
 import { CopilotEnvConfig } from "../../src/copilot_api/env_config.ts";
-import type { Profile } from "../../src/copilot_api/profile.ts";
-import { DEFAULT_COPILOT_API_BASE } from "../../src/copilot_api/integration_identity.ts";
+import { CopilotEnvState } from "../../src/copilot_api/env_state.ts";
+import type { ProbeFetch } from "../../src/copilot_api/integration_identity.ts";
+import {
+  DEFAULT_COPILOT_API_BASE,
+  setIntegrationProbeFetch,
+} from "../../src/copilot_api/integration_identity.ts";
 import { OwnershipLedger } from "../../src/copilot_api/ownership.ts";
-import { resolveRootHome } from "../../src/copilot_api/paths.ts";
-import { agentLauncherCommand } from "../../src/utils/root.ts";
+import { CopilotApiPaths, resolveRootHome } from "../../src/copilot_api/paths.ts";
+import type { Profile } from "../../src/copilot_api/profile.ts";
 import { parseProfileName } from "../../src/copilot_api/profile.ts";
-import { expect, removeDir, test } from "../helpers/testing.ts";
-import { afterEach } from "../helpers/testing.ts";
-import { envSnapshot, isolateAgentHomes, resetExitCode } from "../helpers/env.ts";
+import { agentLauncherCommand } from "../../src/utils/root.ts";
 import { linesNaming } from "../helpers/dry_run.ts";
+import { envSnapshot, isolateAgentHomes, resetExitCode } from "../helpers/env.ts";
 import { captureChannels } from "../helpers/output.ts";
+import { afterEach, expect, removeDir, test } from "../helpers/testing.ts";
 
 const restoreEnv = envSnapshot();
 const WORK = parseProfileName("work");
@@ -274,42 +275,42 @@ test("payload: direct shape (headers + models + no discovery), proxy shape (disc
   expect(headers["Copilot-Integration-Id"]).toBe("copilot-developer-cli");
   expect(headers["Openai-Intent"]).toBe("conversation-edits");
   expect(direct["modelDiscoveryEnabled"]).toBeUndefined(); // Copilot Direct 404s /v1/models
-  expect(direct["inferenceModels"]).toEqual([{
-    "name": "claude-fable-5",
-    "labelOverride": "Claude Fable 5",
-    "supports1m": true,
-    "prefer1m": true,
-    "anthropicFamilyTier": "fable",
-    "isFamilyDefault": true,
-  }]);
+  expect(direct["inferenceModels"]).toEqual([
+    {
+      name: "claude-fable-5",
+      labelOverride: "Claude Fable 5",
+      supports1m: true,
+      prefer1m: true,
+      anthropicFamilyTier: "fable",
+      isFamilyDefault: true,
+    },
+  ]);
   // All capability switches on, cost display on, all telemetry off (incl. essential).
-  for (
-    const key of [
-      "chatTabEnabled",
-      "coworkTabEnabled",
-      "isClaudeCodeForDesktopEnabled",
-      "isDesktopExtensionEnabled",
-      "chatAdvancedFileAnalysisEnabled",
-      "skillCreationEnabled",
-      "autoModeEnabled",
-      "userPluginMarketplacesEnabled",
-      "userPluginUploadsEnabled",
-      "inferenceModelPricingEnabled",
-      "modelPrefer1mContext",
-      "disableEssentialTelemetry",
-      "disableNonessentialTelemetry",
-      "disableNonessentialServices",
-    ]
-  ) {
+  for (const key of [
+    "chatTabEnabled",
+    "coworkTabEnabled",
+    "isClaudeCodeForDesktopEnabled",
+    "isDesktopExtensionEnabled",
+    "chatAdvancedFileAnalysisEnabled",
+    "skillCreationEnabled",
+    "autoModeEnabled",
+    "userPluginMarketplacesEnabled",
+    "userPluginUploadsEnabled",
+    "inferenceModelPricingEnabled",
+    "modelPrefer1mContext",
+    "disableEssentialTelemetry",
+    "disableNonessentialTelemetry",
+    "disableNonessentialServices",
+  ]) {
     expect(direct[key]).toBe(true);
   }
   // managedMcpServers is an ARRAY (the object shape is rejected as invalid_type and dropped).
   const servers = direct["managedMcpServers"] as { name: string; transport: string }[];
   expect(servers.map((s) => [s.name, s.transport])).toEqual([["copilot-env", "stdio"]]);
   expect(direct["claudeAiImport"]).toEqual({
-    "enabled": true,
-    "automatic3pImport": true,
-    "exportEnabled": true,
+    enabled: true,
+    automatic3pImport: true,
+    exportEnabled: true,
   });
 
   const proxy = desktopConfigPayload({
@@ -336,18 +337,18 @@ test("payload: foreign keys in the existing document survive the surgical merge"
     baseUrl: DEFAULT_COPILOT_API_BASE,
     credential: { kind: "command", helperPath: "/x/h.sh" },
     existing: {
-      "banner": { "enabled": true, "text": "keep me" },
-      "userKey": 42,
-      "claudeAiImport": { "bannerBehavior": "detect", "enabled": false },
+      banner: { enabled: true, text: "keep me" },
+      userKey: 42,
+      claudeAiImport: { bannerBehavior: "detect", enabled: false },
     },
   });
-  expect(merged["banner"]).toEqual({ "enabled": true, "text": "keep me" });
+  expect(merged["banner"]).toEqual({ enabled: true, text: "keep me" });
   expect(merged["userKey"]).toBe(42);
   expect(merged["claudeAiImport"]).toEqual({
-    "bannerBehavior": "detect", // hand-set sibling field kept
-    "enabled": true, // managed value wins over the stale hand-set one
-    "automatic3pImport": true,
-    "exportEnabled": true,
+    bannerBehavior: "detect", // hand-set sibling field kept
+    enabled: true, // managed value wins over the stale hand-set one
+    automatic3pImport: true,
+    exportEnabled: true,
   });
 });
 
@@ -358,7 +359,7 @@ test("payload: a rotation to a null integration id drops the stale header; forei
     baseUrl: DEFAULT_COPILOT_API_BASE,
     credential: { kind: "command", helperPath: "/x/h.sh" },
     direct: directWiring("copilot-developer-cli", DEFAULT_COPILOT_API_BASE),
-    existing: { "inferenceCustomHeaders": { "X-Custom": "keep" } },
+    existing: { inferenceCustomHeaders: { "X-Custom": "keep" } },
   });
   const before = withId["inferenceCustomHeaders"] as Record<string, string>;
   expect(before["Copilot-Integration-Id"]).toBe("copilot-developer-cli");
@@ -518,7 +519,7 @@ test("offline direct: a FRESH entry is never created; an owned entry keeps its r
   mkdirSync(library, { recursive: true });
   writeFileSync(
     join(library, "user-1.json"),
-    `${JSON.stringify({ "inferenceGatewayBaseUrl": "https://elsewhere.example" })}\n`,
+    `${JSON.stringify({ inferenceGatewayBaseUrl: "https://elsewhere.example" })}\n`,
   );
   writeFileSync(
     join(library, "_meta.json"),
@@ -556,7 +557,7 @@ test("offline direct: a FRESH entry is never created; an owned entry keeps its r
   expect(readJson(join(library, `${ours?.id}.json`))["inferenceModels"]).toEqual(wired);
   // The foreign entry is untouched (different gateway: not adoptable).
   expect(readJson(join(library, "user-1.json"))).toEqual({
-    "inferenceGatewayBaseUrl": "https://elsewhere.example",
+    inferenceGatewayBaseUrl: "https://elsewhere.example",
   });
 });
 
@@ -606,13 +607,11 @@ test("adopt-and-replace: same-gateway foreign entry is taken over in place, name
   writeFileSync(handMadeHelper, "#!/bin/sh\nexec gh auth token\n");
   writeFileSync(
     join(library, "hand-1.json"),
-    `${
-      JSON.stringify({
-        "inferenceGatewayBaseUrl": `${DEFAULT_COPILOT_API_BASE}/`, // trailing slash tolerated
-        "inferenceCredentialHelper": handMadeHelper,
-        "userKey": "keep",
-      })
-    }\n`,
+    `${JSON.stringify({
+      inferenceGatewayBaseUrl: `${DEFAULT_COPILOT_API_BASE}/`, // trailing slash tolerated
+      inferenceCredentialHelper: handMadeHelper,
+      userKey: "keep",
+    })}\n`,
   );
   writeFileSync(
     join(library, "_meta.json"),
@@ -643,7 +642,7 @@ test("never-clobber: a foreign entry carrying our name, or a malformed _meta.jso
   mkdirSync(library, { recursive: true });
   writeFileSync(
     join(library, "f-1.json"),
-    `${JSON.stringify({ "inferenceGatewayBaseUrl": "https://elsewhere.example" })}\n`,
+    `${JSON.stringify({ inferenceGatewayBaseUrl: "https://elsewhere.example" })}\n`,
   );
   writeFileSync(
     join(library, "_meta.json"),
@@ -730,9 +729,10 @@ test.skipIf(process.platform === "win32")(
       dir = removeDir(dir);
       const { library } = isolateWithDesktop();
       const target = await c.arrange(library);
-      const link = c.name === "_meta.json"
-        ? join(library, "_meta.json")
-        : join(library, `${(metaOf(library).entries as { id: string }[])[0]?.id}.json`);
+      const link =
+        c.name === "_meta.json"
+          ? join(library, "_meta.json")
+          : join(library, `${(metaOf(library).entries as { id: string }[])[0]?.id}.json`);
       rmSync(target);
       await expect(wireClaudeDesktopEntry(opts), c.name).rejects.toThrow("could not read");
       expect(lstatSync(link).isSymbolicLink(), c.name).toBe(true);
@@ -752,8 +752,9 @@ test("parseDesktopMeta: empty/missing is an empty library; anything not understo
   // filename-safe (path traversal, a _meta collision) all reject the whole document.
   expect(parseDesktopMeta(JSON.stringify({ appliedId: 7, entries: [] }))).toBeNull();
   expect(parseDesktopMeta(JSON.stringify({ entries: {} }))).toBeNull();
-  expect(parseDesktopMeta(JSON.stringify({ entries: [{ id: "../../victim", name: "N" }] })))
-    .toBeNull();
+  expect(
+    parseDesktopMeta(JSON.stringify({ entries: [{ id: "../../victim", name: "N" }] })),
+  ).toBeNull();
   expect(parseDesktopMeta(JSON.stringify({ entries: [{ id: "_meta", name: "N" }] }))).toBeNull();
   // Windows reserved device names (with or without an extension) are rejected:
   // `CON.json` is a device path on Windows filesystems.
@@ -762,17 +763,28 @@ test("parseDesktopMeta: empty/missing is an empty library; anything not understo
   expect(parseDesktopMeta(JSON.stringify({ appliedId: "../x", entries: [] }))).toBeNull();
   expect(
     parseDesktopMeta(
-      JSON.stringify({ entries: [{ id: "dup", name: "A" }, { id: "dup", name: "B" }] }),
+      JSON.stringify({
+        entries: [
+          { id: "dup", name: "A" },
+          { id: "dup", name: "B" },
+        ],
+      }),
     ),
   ).toBeNull();
   // Case-insensitive: Windows and default macOS filesystems fold Foo.json/foo.json.
   expect(
     parseDesktopMeta(
-      JSON.stringify({ entries: [{ id: "Dup", name: "A" }, { id: "dup", name: "B" }] }),
+      JSON.stringify({
+        entries: [
+          { id: "Dup", name: "A" },
+          { id: "dup", name: "B" },
+        ],
+      }),
     ),
   ).toBeNull();
-  expect(parseDesktopMeta(JSON.stringify({ appliedId: "x", entries: [{ id: "x", name: "N" }] })))
-    .toEqual({ appliedId: "x", entries: [{ id: "x", name: "N", extra: {} }], extra: {} });
+  expect(
+    parseDesktopMeta(JSON.stringify({ appliedId: "x", entries: [{ id: "x", name: "N" }] })),
+  ).toEqual({ appliedId: "x", entries: [{ id: "x", name: "N", extra: {} }], extra: {} });
   // Fields beyond the understood ones ride through extra (and survive a save).
   expect(
     parseDesktopMeta(
@@ -809,7 +821,7 @@ test("profile entries: named, removed owned-only, appliedId nulled when it was o
   // A foreign twin with the same name must survive removal (owned-only).
   writeFileSync(
     join(library, "twin.json"),
-    `${JSON.stringify({ "inferenceGatewayBaseUrl": "https://elsewhere.example" })}\n`,
+    `${JSON.stringify({ inferenceGatewayBaseUrl: "https://elsewhere.example" })}\n`,
   );
   const meta = metaOf(library);
   (meta.entries as unknown[]).push({ id: "twin", name: "copilot-env: work" });
@@ -880,11 +892,11 @@ test("payload: MCP entry carries the profile selector and merges over foreign se
     baseUrl: DEFAULT_COPILOT_API_BASE,
     credential: { kind: "command", helperPath: "/x/h.sh" },
     existing: {
-      "managedMcpServers": [
-        { "name": "their-server", "transport": "stdio", "command": "x" },
-        { "name": "copilot-env", "transport": "stdio", "command": "old", "args": [] },
+      managedMcpServers: [
+        { name: "their-server", transport: "stdio", command: "x" },
+        { name: "copilot-env", transport: "stdio", command: "old", args: [] },
       ],
-      "inferenceCustomHeaders": { "X-Custom": "keep" },
+      inferenceCustomHeaders: { "X-Custom": "keep" },
     },
   });
   const servers = doc["managedMcpServers"] as {
@@ -897,12 +909,12 @@ test("payload: MCP entry carries the profile selector and merges over foreign se
   // expectation comes from the same launcher-command builder the writer uses.
   const launcher = agentLauncherCommand(["profile", "work", "mcp", "--serve"]);
   expect(servers).toEqual([
-    { "name": "their-server", "transport": "stdio", "command": "x" },
+    { name: "their-server", transport: "stdio", command: "x" },
     {
-      "name": "copilot-env",
-      "transport": "stdio",
-      "command": launcher.command,
-      "args": launcher.args,
+      name: "copilot-env",
+      transport: "stdio",
+      command: launcher.command,
+      args: launcher.args,
     },
   ]);
   // Our former object shape is not foreign rows: it goes.
@@ -912,7 +924,7 @@ test("payload: MCP entry carries the profile selector and merges over foreign se
     profile: WORK,
     baseUrl: DEFAULT_COPILOT_API_BASE,
     credential: { kind: "command", helperPath: "/x/h.sh" },
-    existing: { "managedMcpServers": { "copilot-env": { "command": "old" } } },
+    existing: { managedMcpServers: { "copilot-env": { command: "old" } } },
   });
   expect((fromObject["managedMcpServers"] as unknown[]).length).toBe(1);
   // Foreign header names survive; ours are (re)written.
@@ -1033,19 +1045,19 @@ test("sync reconciles from the key: on wires (every write announced), off remove
     join(`${dataDir}-1p`, "developer_settings.json"),
     join(dataDir, "developer_settings.json"),
   ];
-  writeFileSync(appConfig, `${JSON.stringify({ "mcpServers": { "x": {} } })}\n`);
+  writeFileSync(appConfig, `${JSON.stringify({ mcpServers: { x: {} } })}\n`);
 
   // Key on: the entry lands; the library files are named, the in-home files are not.
   const wired = await captureAllWrites(() => syncClaudeDesktopWiring(directWire()));
   const configPath = firstEntryPath(library);
   expect(existsSync(configPath)).toBe(true);
   // The app boots third-party (no sign-in chooser) with the Developer menu on, both data dirs.
-  expect(readJson(appConfig)).toEqual({ "mcpServers": { "x": {} }, "deploymentMode": "3p" });
+  expect(readJson(appConfig)).toEqual({ mcpServers: { x: {} }, deploymentMode: "3p" });
   expect(linesNaming(wired, appConfig)).toEqual([
     `rewritten -> ${appConfig} (Claude Desktop starts in third-party mode, no sign-in chooser)`,
   ]);
   for (const path of devSettings) {
-    expect(readJson(path)).toEqual({ "allowDevTools": true });
+    expect(readJson(path)).toEqual({ allowDevTools: true });
     expect(linesNaming(wired, path)).toEqual([
       `created -> ${path} (Claude Desktop Developer Mode on)`,
     ]);
@@ -1072,8 +1084,9 @@ test("sync reconciles from the key: on wires (every write announced), off remove
   );
   expect(again).not.toContain(" -> ");
   // ... and a QUIET re-sync (the launcher hot path) says nothing at all.
-  expect(await captureAllWrites(() => syncClaudeDesktopWiring({ ...directWire(), quiet: true })))
-    .toBe("");
+  expect(
+    await captureAllWrites(() => syncClaudeDesktopWiring({ ...directWire(), quiet: true })),
+  ).toBe("");
 
   // Key off. The whole-library reconcile that follows every default write owns the notice.
   //   default's write  -> leaves its entry in place, silent
@@ -1147,7 +1160,7 @@ test.skipIf(NO_CHMOD_FAULTS)(
           mode: "proxy",
           credential: COMMAND,
           fetchImpl: catalogFetch(CATALOG),
-        })
+        }),
       );
     } finally {
       chmodSync(rootHome, 0o755);
@@ -1198,15 +1211,19 @@ test("inspect + render: wired, missing, stale, orphaned, disabled-but-owned, abs
   writeFileSync(join(library, "..", "claude_desktop_config.json"), "{ not json");
   rendered = renderClaudeDesktopStatus(inspectTargets(targets));
   expect(rendered.lines.slice(2)).toEqual([
-    `${
-      join(library, "..", "claude_desktop_config.json")
-    } is not valid JSON; what the app reads from it is unknown`,
+    `${join(
+      library,
+      "..",
+      "claude_desktop_config.json",
+    )} is not valid JSON; what the app reads from it is unknown`,
     `the app applies "Theirs" (not a copilot-env entry)`,
   ]);
   expect(rendered.fix).toBe(
-    `agent profile sync --claude, then agent profile work add, then repair ${
-      join(library, "..", "claude_desktop_config.json")
-    }, then re-run \`agent profile sync --claude\`, then after that wire, \`agent profile check --claude\` names the entry to select in Claude Desktop`,
+    `agent profile sync --claude, then agent profile work add, then repair ${join(
+      library,
+      "..",
+      "claude_desktop_config.json",
+    )}, then re-run \`agent profile sync --claude\`, then after that wire, \`agent profile check --claude\` names the entry to select in Claude Desktop`,
   );
   // The switch is never named for an entry that does not exist yet: its wire may adopt a
   // same-gateway entry under THAT entry's name (a seed-name prediction would be wrong there).
@@ -1236,13 +1253,11 @@ test("inspect + render: wired, missing, stale, orphaned, disabled-but-owned, abs
   const foreignId = "00000000-0000-4000-8000-000000000001";
   writeFileSync(
     join(library, "_meta.json"),
-    `${
-      JSON.stringify({
-        ...metaDoc,
-        "appliedId": foreignId,
-        "entries": [...(metaDoc.entries as unknown[]), { id: foreignId, name: "Elsewhere" }],
-      })
-    }\n`,
+    `${JSON.stringify({
+      ...metaDoc,
+      appliedId: foreignId,
+      entries: [...(metaDoc.entries as unknown[]), { id: foreignId, name: "Elsewhere" }],
+    })}\n`,
   );
   rendered = renderClaudeDesktopStatus(inspectTargets(targets));
   expect(rendered.lines[2]).toBe(`the app applies "Elsewhere" (not a copilot-env entry)`);
@@ -1277,7 +1292,7 @@ test("inspect + render: wired, missing, stale, orphaned, disabled-but-owned, abs
   const untouched = await captureAllWrites(() => wireClaudeDesktopEntry(directWire()));
   expect(untouched).toContain(`${appConfig} is not valid JSON; leaving it alone`);
   expect(readFileSync(appConfig, "utf8")).toBe("{ not json");
-  writeFileSync(appConfig, `${JSON.stringify({ "deploymentMode": "3p" })}\n`);
+  writeFileSync(appConfig, `${JSON.stringify({ deploymentMode: "3p" })}\n`);
 
   // Stale: the target's mode moved to proxy while the entry still points at Direct.
   status = inspected(inspectTargets([{ profile: null, mode: "proxy" }]));
@@ -1322,19 +1337,19 @@ test("inspect + render: wired, missing, stale, orphaned, disabled-but-owned, abs
     path: configPath,
     reason: "the managed keys drifted (a rewire would change the entry)",
   };
-  const drifted = { ...doc, "deploymentDisplayName": "Mine" };
+  const drifted = { ...doc, deploymentDisplayName: "Mine" };
   writeFileSync(configPath, `${JSON.stringify(drifted, null, 2)}\n`);
   expect(inspected(inspectTargets(targets)).entries[0]?.verdict).toEqual(managedDrift);
   const headers = { ...(doc["inferenceCustomHeaders"] as Record<string, string>) };
   headers["User-Agent"] = `${headers["User-Agent"]}-stale`;
   writeFileSync(
     configPath,
-    `${JSON.stringify({ ...doc, "inferenceCustomHeaders": headers }, null, 2)}\n`,
+    `${JSON.stringify({ ...doc, inferenceCustomHeaders: headers }, null, 2)}\n`,
   );
   expect(inspected(inspectTargets(targets)).entries[0]?.verdict).toEqual(managedDrift);
   writeFileSync(configPath, `${JSON.stringify(doc)}\n`);
   expect(inspected(inspectTargets(targets)).entries[0]?.verdict.kind).toBe("stale");
-  writeFileSync(configPath, `${JSON.stringify({ ...doc, "inferenceModels": [] }, null, 2)}\n`);
+  writeFileSync(configPath, `${JSON.stringify({ ...doc, inferenceModels: [] }, null, 2)}\n`);
   expect(inspected(inspectTargets(targets)).entries[0]?.verdict).toEqual({
     kind: "stale",
     path: configPath,
@@ -1470,7 +1485,7 @@ test("reconcileClaudeDesktopWiring: orphans go when the key is on, the profiles'
   await wireClaudeDesktopEntry(directWire());
   await wireClaudeDesktopEntry(directWire(WORK));
   const [configPath, workPath] = (metaOf(library).entries as { id: string }[]).map((e) =>
-    join(library, `${e.id}.json`)
+    join(library, `${e.id}.json`),
   );
   const helper = desktopHelperPath(resolveRootHome(), "direct", null);
   const workHelper = desktopHelperPath(resolveRootHome(), "direct", WORK);
@@ -1532,8 +1547,7 @@ test("reconcileClaudeDesktopWiring: orphans go when the key is on, the profiles'
   const off = await captureAllWrites(() => reconcileClaudeDesktopWiring());
   expect(
     count(off, `"copilot-env" at ${defaultPath} left in place, unmanaged (claude.desktop false)`),
-  )
-    .toBe(1);
+  ).toBe(1);
   expect((metaOf(library).entries as { name: string }[]).map((e) => e.name)).toEqual([
     "copilot-env",
   ]);
@@ -1694,10 +1708,12 @@ test("a renamed owned entry is ours by path: rewired in place, name kept, unmana
   expect(inspected(inspectTargets([target])).entries[0]?.verdict.kind).toBe("stale");
   const out = await captureAllWrites(() => wireClaudeDesktopEntry(directWire()));
   expect(out).toContain(`Claude Desktop entry "Mine now" (direct) wired at ${configPath} already.`);
-  expect(metaOf(library).entries).toEqual([{
-    id: basename(configPath, ".json"),
-    name: "Mine now",
-  }]);
+  expect(metaOf(library).entries).toEqual([
+    {
+      id: basename(configPath, ".json"),
+      name: "Mine now",
+    },
+  ]);
   expect(inspected(inspectTargets([target])).entries[0]?.verdict.kind).toBe("wired");
   // `--check` and health label it by the name the app shows, not the seed name.
   expect(renderClaudeDesktopStatus(inspectTargets([target])).lines).toEqual([
@@ -1710,17 +1726,13 @@ test("a renamed owned entry is ours by path: rewired in place, name kept, unmana
   const foreignId = "00000000-0000-4000-8000-000000000002";
   writeFileSync(
     join(library, "_meta.json"),
-    `${
-      JSON.stringify({
-        ...foreign,
-        "appliedId": foreignId,
-        "entries": [...(foreign.entries as unknown[]), { id: foreignId, name: "Theirs" }],
-      })
-    }\n`,
+    `${JSON.stringify({
+      ...foreign,
+      appliedId: foreignId,
+      entries: [...(foreign.entries as unknown[]), { id: foreignId, name: "Theirs" }],
+    })}\n`,
   );
-  expect(renderClaudeDesktopStatus(inspectTargets([target])).fix).toContain(
-    'select "Mine now"',
-  );
+  expect(renderClaudeDesktopStatus(inspectTargets([target])).fix).toContain('select "Mine now"');
   // With the Developer menu off, its rewire comes BEFORE the in-app switch that needs it.
   const dataDir = join(library, "..");
   rmSync(join(dataDir, "developer_settings.json"));
@@ -1731,7 +1743,7 @@ test("a renamed owned entry is ours by path: rewired in place, name kept, unmana
   // it, where a live foreign one is never displaced.
   writeFileSync(
     join(library, "_meta.json"),
-    `${JSON.stringify({ ...foreign, "appliedId": "00000000-0000-4000-8000-000000000003" })}\n`,
+    `${JSON.stringify({ ...foreign, appliedId: "00000000-0000-4000-8000-000000000003" })}\n`,
   );
   expect(inspected(inspectTargets([target])).applied).toBeNull();
   await wireClaudeDesktopEntry(directWire());
@@ -1753,8 +1765,9 @@ test("a renamed owned entry is ours by path: rewired in place, name kept, unmana
     "copilot-env: work",
   ]);
   expect(
-    inspected(inspectTargets([target, { profile: WORK, mode: "direct" }]))
-      .entries.map((e) => e.verdict.kind),
+    inspected(inspectTargets([target, { profile: WORK, mode: "direct" }])).entries.map(
+      (e) => e.verdict.kind,
+    ),
   ).toEqual(["wired", "wired"]);
   removeClaudeDesktopEntry(WORK);
   // Key off leaves the default's entry in place under the user's name, and says so.
@@ -1802,8 +1815,8 @@ test("a malformed profile store resolves nothing: no reconcile sweeps, key on or
         JSON.stringify({
           global: { "claude.desktop": enabled },
           profiles,
-        })
-      )
+        }),
+      ),
     ),
   ];
   for (const junk of junkStores) {
@@ -2091,8 +2104,9 @@ test("entryProfileAt attributes by the managed MCP server's profile word alone",
   expect(entryProfileAt(docAt("default.json", payload(null)))).toBeNull();
   expect(entryProfileAt(docAt("work.json", payload(WORK)))).toBe(WORK);
   // No copilot-env server: a helper path alone is not wiring of ours.
-  expect(entryProfileAt(docAt("theirs.json", { "inferenceCredentialHelper": "/x/h.sh" })))
-    .toBeUndefined();
+  expect(
+    entryProfileAt(docAt("theirs.json", { inferenceCredentialHelper: "/x/h.sh" })),
+  ).toBeUndefined();
 });
 
 test("a static wire bakes the key, writes no helper script, and takes a leftover one with it", async () => {

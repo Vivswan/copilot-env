@@ -1,16 +1,16 @@
 import { consola } from "consola";
-import { colorEnabled, statusPaint } from "../utils/ansi.ts";
 import { stopTrackedProxy } from "../copilot_api/daemon.ts";
 import { profileHomeNames } from "../copilot_api/paths.ts";
 import {
-  parseProfileFlag,
   type Profile,
-  profileLabel,
   type ProfileName,
+  parseProfileFlag,
+  profileLabel,
 } from "../copilot_api/profile.ts";
+import { colorEnabled, statusPaint } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
-import { PROJECT_ROOT } from "../utils/root.ts";
 import { dryRunActive } from "../utils/fs_facade.ts";
+import { PROJECT_ROOT } from "../utils/root.ts";
 import { runDryRun } from "./dry_run.ts";
 
 /** A status word in its tone, the edge's colorEnabled() resolved once here. */
@@ -23,16 +23,11 @@ interface StopArgs {
   dryRun?: boolean;
 }
 
-type StopAction =
-  | { kind: "all" }
-  | { kind: "profile"; name: ProfileName }
-  | { kind: "default" };
+type StopAction = { kind: "all" } | { kind: "profile"; name: ProfileName } | { kind: "default" };
 
 export function parseStopAction(args: StopArgs): StopAction {
   if (args.all && args.profile !== undefined) {
-    throw new Error(
-      "--all stops every daemon; it takes no profile name (`agent stop --all`)",
-    );
+    throw new Error("--all stops every daemon; it takes no profile name (`agent stop --all`)");
   }
   if (args.all) return { kind: "all" };
   const named = parseProfileFlag(args.profile);
@@ -57,12 +52,12 @@ async function stopOne(profile: Profile): Promise<{ stopped: boolean; narrate: (
       narrate: () =>
         consola.info(
           stopped
-            ? `The ${what} (PID ${trackedPid}) was already ${
-              status("stopped")
-            }; cleared stale tracking.`
-            // stopTrackedProxy already warned why the pid was not signalled; the summary must
-            // agree nothing changed.
-            : `The ${what} (PID ${trackedPid}) was left ${status("running")}; tracking kept.`,
+            ? `The ${what} (PID ${trackedPid}) was already ${status(
+                "stopped",
+              )}; cleared stale tracking.`
+            : // stopTrackedProxy already warned why the pid was not signalled; the summary must
+              // agree nothing changed.
+              `The ${what} (PID ${trackedPid}) was left ${status("running")}; tracking kept.`,
         ),
     };
   }

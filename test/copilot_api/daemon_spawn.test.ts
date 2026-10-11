@@ -8,15 +8,21 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { DRAIN_DEADLINE_MS } from "../../src/copilot_api/daemon_shutdown.ts";
+import {
+  DAEMON_CLIENT_HEADERS_ENV,
+  DAEMON_COPILOT_HOST_ENV,
+  daemonClientHeaders,
+} from "../../src/copilot_api/integration_identity.ts";
 import {
   classifyPidFromScan,
   copilotApiArgv,
   DAEMON_GH_TOKEN_ENV,
   DAEMON_SIGKILL_GRACE_MS,
+  type DaemonSpec,
   daemonArgv,
   daemonEnvironment,
   daemonPidsFromRows,
-  type DaemonSpec,
   isDaemonCommandLine,
   isDaemonProcess,
   launchDaemon,
@@ -25,29 +31,23 @@ import {
   resolveCopilotApiEntry,
 } from "../../src/copilot_api/process.ts";
 import { parseAbsolutePath } from "../../src/copilot_api/sidecar.ts";
-import { pidAlive } from "../../src/utils/pid.ts";
-import {
-  DAEMON_CLIENT_HEADERS_ENV,
-  DAEMON_COPILOT_HOST_ENV,
-  daemonClientHeaders,
-} from "../../src/copilot_api/integration_identity.ts";
-import { DRAIN_DEADLINE_MS } from "../../src/copilot_api/daemon_shutdown.ts";
 import { PROXY_PACKAGE_NAME } from "../../src/copilot_api/version.ts";
 import {
   daemonConfigFile,
   writeDaemonConfig,
   writeResolvedVersionRecord,
 } from "../../src/proxy_float.ts";
-import { CHILD_VALUES, childValuesEnv, importSpecifier, ROOT } from "../helpers/run.ts";
+import { pidAlive } from "../../src/utils/pid.ts";
+import { FAKE_DAEMON_CREDENTIAL, FAKE_DAEMON_HOST, until } from "../helpers/daemon.ts";
 import {
   runDenoScript,
   sidecarDeno,
   sidecarTest,
   spawnDenoChild,
 } from "../helpers/deno_sidecar.ts";
-import { afterEach, beforeEach, expect, tempDir, test } from "../helpers/testing.ts";
 import { envSnapshot, isolateProxyHome } from "../helpers/env.ts";
-import { FAKE_DAEMON_CREDENTIAL, FAKE_DAEMON_HOST, until } from "../helpers/daemon.ts";
+import { CHILD_VALUES, childValuesEnv, importSpecifier, ROOT } from "../helpers/run.ts";
+import { afterEach, beforeEach, expect, tempDir, test } from "../helpers/testing.ts";
 
 // Every daemon spawn derives from ONE DaemonSpec, so argv and environment are pinned against the
 // spec rather than a pile of optional arguments.
@@ -148,47 +148,53 @@ test("the preload set and its environment derive from the spec, in load order", 
       // for every credential.
       spec: { credential: { kind: "token", token: "gho_new", clientHeaders: CODEX_HEADERS } },
       preloads: base,
-      env: [{
-        inherited: stale,
-        keys: {
-          [DAEMON_GH_TOKEN_ENV]: "gho_new",
-          [DAEMON_CLIENT_HEADERS_ENV]: JSON.stringify(CODEX_HEADERS),
-          COPILOT_API_OAUTH_APP: undefined,
+      env: [
+        {
+          inherited: stale,
+          keys: {
+            [DAEMON_GH_TOKEN_ENV]: "gho_new",
+            [DAEMON_CLIENT_HEADERS_ENV]: JSON.stringify(CODEX_HEADERS),
+            COPILOT_API_OAUTH_APP: undefined,
+          },
         },
-      }],
+      ],
     },
     {
       spec: { credential: { kind: "pat", token: "ghp_x", clientHeaders: CLI_HEADERS } },
       preloads: [...base, "pat_passthrough_preload.ts"],
-      env: [{
-        inherited: stale,
-        keys: {
-          [DAEMON_GH_TOKEN_ENV]: "ghp_x",
-          [DAEMON_CLIENT_HEADERS_ENV]: JSON.stringify(CLI_HEADERS),
-          COPILOT_API_OAUTH_APP: undefined,
+      env: [
+        {
+          inherited: stale,
+          keys: {
+            [DAEMON_GH_TOKEN_ENV]: "ghp_x",
+            [DAEMON_CLIENT_HEADERS_ENV]: JSON.stringify(CLI_HEADERS),
+            COPILOT_API_OAUTH_APP: undefined,
+          },
         },
-      }],
+      ],
     },
     {
       // The daemon inherits our TLS/proxy environment; the spec's own wiring wins over an inherited
       // copy, and deno's release check stays off.
       spec: { home: "/profiles/work" },
       preloads: base,
-      env: [{
-        inherited: {
-          NODE_EXTRA_CA_CERTS: "/etc/corp.pem",
-          DENO_TLS_CA_STORE: "system",
-          HTTPS_PROXY: "http://corp:3128",
-          COPILOT_API_HOME: "/the/default/home",
+      env: [
+        {
+          inherited: {
+            NODE_EXTRA_CA_CERTS: "/etc/corp.pem",
+            DENO_TLS_CA_STORE: "system",
+            HTTPS_PROXY: "http://corp:3128",
+            COPILOT_API_HOME: "/the/default/home",
+          },
+          keys: {
+            NODE_EXTRA_CA_CERTS: "/etc/corp.pem",
+            DENO_TLS_CA_STORE: "system",
+            HTTPS_PROXY: "http://corp:3128",
+            COPILOT_API_HOME: "/profiles/work",
+            DENO_NO_UPDATE_CHECK: "1",
+          },
         },
-        keys: {
-          NODE_EXTRA_CA_CERTS: "/etc/corp.pem",
-          DENO_TLS_CA_STORE: "system",
-          HTTPS_PROXY: "http://corp:3128",
-          COPILOT_API_HOME: "/profiles/work",
-          DENO_NO_UPDATE_CHECK: "1",
-        },
-      }],
+      ],
     },
     {
       spec: { idleWatchdog: true },
@@ -260,13 +266,7 @@ test("with no float record the argv runs the mapped package, offline-only, endin
   ]);
   // The generated config's import map is the single source of the proxy version, so no version
   // string is restated on the command line.
-  expect(argv.slice(-5)).toEqual([
-    PROXY_PACKAGE_NAME,
-    "start",
-    "--verbose",
-    "--port",
-    "4242",
-  ]);
+  expect(argv.slice(-5)).toEqual([PROXY_PACKAGE_NAME, "start", "--verbose", "--port", "4242"]);
   // Nothing to point a resolve at: the mapped entry resolves through node_modules.
   expect(daemonEnvironment(BASE, {}).DENO_DIR).toBeUndefined();
 });
@@ -373,45 +373,49 @@ test("copilotApiArgv runs any proxy subcommand through the same entry and permis
 
 // --- the launched binary ---------------------------------------------------------------
 
-sidecarTest("launchDaemon spawns exactly the spec's denoBin, never a re-derived one", async () => {
-  // A re-derived resolveDenoBin() can land on the PATH deno, so only a COPY at a different path
-  // makes this discriminating.
-  const sidecar = join(dir, process.platform === "win32" ? "sidecar-deno.exe" : "sidecar-deno");
-  copyFileSync(sidecarDeno(), sidecar);
-  if (process.platform !== "win32") chmodSync(sidecar, 0o755);
-  const entryFile = join(dir, "report-exec-path.ts");
-  writeFileSync(entryFile, "console.log('EXEC:' + Deno.execPath());\n");
-  const logFile = join(dir, "spawn.log");
-  writeDaemonConfig(dir);
-  const pid = launchDaemon({
-    ...BASE,
-    denoBin: parseAbsolutePath(sidecar),
-    home: dir,
-    logFile,
-    entry: { kind: "file", path: entryFile, configFile: daemonConfigFile(dir) },
-  });
-  try {
-    expect(pid).toBeGreaterThan(0);
-    let logged = "";
-    await until(() => {
-      logged = readFileSync(logFile, "utf8");
-      return logged.includes("EXEC:");
+sidecarTest(
+  "launchDaemon spawns exactly the spec's denoBin, never a re-derived one",
+  async () => {
+    // A re-derived resolveDenoBin() can land on the PATH deno, so only a COPY at a different path
+    // makes this discriminating.
+    const sidecar = join(dir, process.platform === "win32" ? "sidecar-deno.exe" : "sidecar-deno");
+    copyFileSync(sidecarDeno(), sidecar);
+    if (process.platform !== "win32") chmodSync(sidecar, 0o755);
+    const entryFile = join(dir, "report-exec-path.ts");
+    writeFileSync(entryFile, "console.log('EXEC:' + Deno.execPath());\n");
+    const logFile = join(dir, "spawn.log");
+    writeDaemonConfig(dir);
+    const pid = launchDaemon({
+      ...BASE,
+      denoBin: parseAbsolutePath(sidecar),
+      home: dir,
+      logFile,
+      entry: { kind: "file", path: entryFile, configFile: daemonConfigFile(dir) },
     });
-    const reported = /EXEC:(.+)/.exec(logged)?.[1]?.trim();
-    if (reported === undefined) throw new Error(`no EXEC line; log was: ${logged}`);
-    // realpath both sides: Deno.execPath() canonicalizes, and the OS tmpdir may be a symlink.
-    expect(realpathSync(reported)).toBe(realpathSync(sidecar));
-  } finally {
-    // On Windows the isolate root's removal would race a still-running copied deno.exe, so wait until
-    // the pid is genuinely gone.
     try {
-      process.kill(pid, "SIGKILL");
-    } catch {
-      /* already gone */
+      expect(pid).toBeGreaterThan(0);
+      let logged = "";
+      await until(() => {
+        logged = readFileSync(logFile, "utf8");
+        return logged.includes("EXEC:");
+      });
+      const reported = /EXEC:(.+)/.exec(logged)?.[1]?.trim();
+      if (reported === undefined) throw new Error(`no EXEC line; log was: ${logged}`);
+      // realpath both sides: Deno.execPath() canonicalizes, and the OS tmpdir may be a symlink.
+      expect(realpathSync(reported)).toBe(realpathSync(sidecar));
+    } finally {
+      // On Windows the isolate root's removal would race a still-running copied deno.exe, so wait until
+      // the pid is genuinely gone.
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        /* already gone */
+      }
+      await until(() => !pidAlive(pid));
     }
-    await until(() => !pidAlive(pid));
-  }
-}, 30_000); // a real daemon boot on a loaded runner
+  },
+  30_000,
+); // a real daemon boot on a loaded runner
 
 // --- the daemon environment ----------------------------------------------------------
 
@@ -517,7 +521,8 @@ test("the sweep signature matches every real daemon shape, straight from daemonA
     isDaemonProcess({
       pid: 1,
       ucomm: "deno",
-      command: "/Users/John Smith/.local/share/copilot-api/deno/2.1.4/deno run " +
+      command:
+        "/Users/John Smith/.local/share/copilot-api/deno/2.1.4/deno run " +
         "--config /Users/John Smith/.local/share/copilot-api/proxy/deno.json --cached-only " +
         "npm:@jeffreycao/copilot-api@1.14.30 start --verbose --port 4141",
     }),
@@ -528,7 +533,8 @@ test("the sweep signature matches every real daemon shape, straight from daemonA
     isDaemonProcess({
       pid: 1,
       ucomm: "deno",
-      command: "/Applications/Deno Runtime Tools/deno run --cached-only " +
+      command:
+        "/Applications/Deno Runtime Tools/deno run --cached-only " +
         "npm:@jeffreycao/copilot-api@1.14.30 start --verbose --port 4141",
     }),
   ).toBe(false);
@@ -636,9 +642,10 @@ test("impostor argv that merely mentions copilot-api and start survives the swee
   // Every middle alternative consumes exactly one token and the classes are disjoint (`--flag=/path`
   // reads as a flag only), so a failing scan is linear. The bound catches a polynomially-slow
   // regression; an exponential one hangs the suite, still a failure.
-  const pathHeavy = `deno run ${
-    Array.from({ length: 60 }, (_v, i) => `/dir${i}/file${i}.ts --flag${i}=/opt/val${i}`).join(" ")
-  } tail`;
+  const pathHeavy = `deno run ${Array.from(
+    { length: 60 },
+    (_v, i) => `/dir${i}/file${i}.ts --flag${i}=/opt/val${i}`,
+  ).join(" ")} tail`;
   const startedMs = Date.now();
   expect(isDaemonProcess({ pid: 1, ucomm: "deno", command: pathHeavy })).toBe(false);
   expect(Date.now() - startedMs).toBeLessThan(1_000);
@@ -648,26 +655,29 @@ test("impostor argv that merely mentions copilot-api and start survives the swee
 
 const SHUTDOWN_MODULE = importSpecifier(join(ROOT, "src", "copilot_api", "daemon_shutdown.ts"));
 
-sidecarTest("a wedged drain still exits: the deadline is what keeps `agent stop` able to stop us", () => {
-  // A SIGTERM listener REPLACES deno's terminate-on-signal, and `agent stop` sends a single SIGTERM
-  // with no SIGKILL escalation, so a shutdown() that never settles must not keep the daemon alive.
-  dir = tempDir("copilot-shutdown-");
-  const target = join(dir, "wedged.ts");
-  writeFileSync(
-    target,
-    `import { recordDaemonServer, shutdownDaemon, DRAIN_DEADLINE_MS } from ${SHUTDOWN_MODULE};\n` +
-      "recordDaemonServer({ shutdown: () => new Promise(() => {}) });\n" +
-      "const started = Date.now();\n" +
-      "globalThis.addEventListener('unload', () => console.log(String(Date.now() - started)));\n" +
-      "await shutdownDaemon(0);\n" +
-      "console.log('UNREACHABLE');\n",
-  );
-  const res = runDenoScript(target, [], { timeoutMs: 30_000 });
-  expect(res.exitCode).toBe(0);
-  expect(res.stdout).not.toContain("UNREACHABLE"); // the path never returns
-  // It waited the full drain window (small margin for timer coarseness).
-  expect(Number(res.stdout.trim())).toBeGreaterThanOrEqual(DRAIN_DEADLINE_MS - 100);
-});
+sidecarTest(
+  "a wedged drain still exits: the deadline is what keeps `agent stop` able to stop us",
+  () => {
+    // A SIGTERM listener REPLACES deno's terminate-on-signal, and `agent stop` sends a single SIGTERM
+    // with no SIGKILL escalation, so a shutdown() that never settles must not keep the daemon alive.
+    dir = tempDir("copilot-shutdown-");
+    const target = join(dir, "wedged.ts");
+    writeFileSync(
+      target,
+      `import { recordDaemonServer, shutdownDaemon, DRAIN_DEADLINE_MS } from ${SHUTDOWN_MODULE};\n` +
+        "recordDaemonServer({ shutdown: () => new Promise(() => {}) });\n" +
+        "const started = Date.now();\n" +
+        "globalThis.addEventListener('unload', () => console.log(String(Date.now() - started)));\n" +
+        "await shutdownDaemon(0);\n" +
+        "console.log('UNREACHABLE');\n",
+    );
+    const res = runDenoScript(target, [], { timeoutMs: 30_000 });
+    expect(res.exitCode).toBe(0);
+    expect(res.stdout).not.toContain("UNREACHABLE"); // the path never returns
+    // It waited the full drain window (small margin for timer coarseness).
+    expect(Number(res.stdout.trim())).toBeGreaterThanOrEqual(DRAIN_DEADLINE_MS - 100);
+  },
+);
 
 (process.platform === "win32" ? test.skipIf(true) : sidecarTest)(
   "SIGTERM drains an IN-FLIGHT request before the daemon exits",
@@ -681,9 +691,9 @@ sidecarTest("a wedged drain still exits: the deadline is what keeps `agent stop`
     writeFileSync(
       target,
       `import { installTerminationHandler } from ${SHUTDOWN_MODULE};\n` +
-        `import { installInferenceObserver } from ${
-          importSpecifier(join(ROOT, "src", "copilot_api", "inference_activity.ts"))
-        };\n` +
+        `import { installInferenceObserver } from ${importSpecifier(
+          join(ROOT, "src", "copilot_api", "inference_activity.ts"),
+        )};\n` +
         `const release = ${CHILD_VALUES}.release;\n` +
         "installInferenceObserver();\n" +
         "installTerminationHandler();\n" +
@@ -764,7 +774,10 @@ sidecarTest("a wedged drain still exits: the deadline is what keeps `agent stop`
     } finally {
       // An assertion that threw before the request was consumed would otherwise hold the
       // connection -- and the child -- open.
-      await inFlight?.then((r) => r.body?.cancel(), () => {});
+      await inFlight?.then(
+        (r) => r.body?.cancel(),
+        () => {},
+      );
       await (child.stderr as ReadableStream<Uint8Array>).cancel();
     }
   },

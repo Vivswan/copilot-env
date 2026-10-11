@@ -14,8 +14,8 @@ import { homedir } from "node:os";
 import { dirname, join, parse } from "node:path";
 import {
   applyInstallPlan,
-  buildInstallPlan,
   BUNDLED_ONLY_ASSETS,
+  buildInstallPlan,
   CHECKOUT_MARKERS,
   currentLinkPath,
   INSTALL_ROOT_ENV,
@@ -24,16 +24,16 @@ import {
   isCheckoutShapedRoot,
   MATERIALIZED_ASSET_DIRS,
   MATERIALIZED_ASSET_FILES,
-  pointCurrentAt,
   POWERSHELL_SHIM,
+  pointCurrentAt,
   readCurrentVersionName,
   removeVersionDirsExcept,
   versionDirName,
   writeTopLevelShims,
 } from "../../src/install/installer.ts";
-import { deferWriteReports, flushWriteReports } from "../../src/utils/report_write.ts";
 import { installedBinaryName } from "../../src/install/targets.ts";
 import { CI_PS_DOCUMENTS_DIR_ENV, CI_RC_DIR_ENV } from "../../src/shell/integration.ts";
+import { deferWriteReports, flushWriteReports } from "../../src/utils/report_write.ts";
 import {
   CURRENT_LINK,
   INSTALL_MANIFEST_FILE,
@@ -220,9 +220,7 @@ describe("the versioned full-install plan", () => {
     // PowerShell executes this file, and no test on a POSIX runner can run it: the pin is its bytes.
     expect(readFileSync(join(versionRoot, "bin", "agent.ps1"), "utf8")).toBe(POWERSHELL_SHIM);
     expect(readFileSync(join(versionRoot, "bin", installedBinaryName()), "utf8")).toBe("BINARY");
-    const manifest = JSON.parse(
-      readFileSync(join(versionRoot, INSTALL_MANIFEST_FILE), "utf8"),
-    );
+    const manifest = JSON.parse(readFileSync(join(versionRoot, INSTALL_MANIFEST_FILE), "utf8"));
     expect(manifest.version).toBe(packageVersion());
 
     // The top carries only the layout: the current link and the stable shims.
@@ -580,7 +578,7 @@ describe("the checkout guard and the install manifest sentinel", () => {
       { name: "fresh root", prior: null },
       {
         name: "stale manifest",
-        prior: JSON.stringify({ "version": "0.0.1", "kind": "installed", "assets": [] }),
+        prior: JSON.stringify({ version: "0.0.1", kind: "installed", assets: [] }),
       },
     ];
     for (const { name, prior } of rows) {

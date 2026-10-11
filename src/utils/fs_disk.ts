@@ -13,6 +13,8 @@
 //   scratch this process creates and removes     -> silent
 //   a recipe's transient side (a temp file)      -> silent
 //   a write that failed                          -> only what a before/after look PROVES changed
+
+import { once } from "node:events";
 import {
   chmodSync,
   closeSync,
@@ -37,7 +39,6 @@ import {
   writeFileSync,
   writeSync,
 } from "node:fs";
-import { once } from "node:events";
 import { basename, dirname, join } from "node:path";
 import { Readable, Writable } from "node:stream";
 import { isEnoentOrNotdir, isOpenHandleRefusal, retryOpenHandleRefusal } from "./fs.ts";
@@ -222,7 +223,7 @@ export function rmDirectoryRefused(path: string): Error {
  */
 export function missingDirectories(path: string): string[] {
   const missing: string[] = [];
-  for (let cur = path;; cur = dirname(cur)) {
+  for (let cur = path; ; cur = dirname(cur)) {
     const entry = lookEntry(cur);
     if (entry === "unreadable") return missing;
     if (entry !== "absent") {
@@ -324,7 +325,7 @@ function writeStaged(path: string, data: string | Uint8Array, options: WriteOpti
     const bytes = typeof data === "string" ? new TextEncoder().encode(data) : data;
     const fd = openSync(tmp, "w", options.mode);
     try {
-      for (let written = 0; written < bytes.length;) {
+      for (let written = 0; written < bytes.length; ) {
         written += writeSync(fd, bytes, written, bytes.length - written);
       }
       fsyncSync(fd);
@@ -533,7 +534,10 @@ export function removeScratchDir(dir: ScratchDir): void {
  *  is reported. The one failure a caller may answer with a direct write (the installer's launcher
  *  shims); every other failure propagates as itself. */
 export class RenameRefusedError extends Error {
-  constructor(readonly path: string, cause: unknown) {
+  constructor(
+    readonly path: string,
+    cause: unknown,
+  ) {
     super(`rename over ${path} refused (the file is held open)`, { cause });
     this.name = "RenameRefusedError";
   }

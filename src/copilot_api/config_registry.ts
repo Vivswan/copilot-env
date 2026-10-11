@@ -37,9 +37,9 @@ export interface ConfigValueTypes {
   "daemon.release-cooldown": number;
   "daemon.strict-port": boolean;
   "daemon.version": string;
-  "host": string;
-  "identity": string;
-  "passthrough": PassthroughPref;
+  host: string;
+  identity: string;
+  passthrough: PassthroughPref;
   "probe.claude-model": string;
   "probe.codex-model": string;
   "proxy.alpha-search.codex-priority": boolean;
@@ -157,15 +157,15 @@ interface DefaultSpec<K extends ConfigKey = ConfigKey> {
  *  the restart hint, and a key with neither applies immediately. */
 type ApplySpec =
   | {
-    /** Read only when a daemon launches, though not projected into config.json. */
-    restartToApply: true;
-    applyHint?: undefined;
-  }
+      /** Read only when a daemon launches, though not projected into config.json. */
+      restartToApply: true;
+      applyHint?: undefined;
+    }
   | {
-    /** Replaces the proxy-restart hint for keys that apply through another mechanism. */
-    applyHint: string;
-    restartToApply?: undefined;
-  }
+      /** Replaces the proxy-restart hint for keys that apply through another mechanism. */
+      applyHint: string;
+      restartToApply?: undefined;
+    }
   | { restartToApply?: undefined; applyHint?: undefined };
 
 interface ProjectedKeyFields {
@@ -174,22 +174,18 @@ interface ProjectedKeyFields {
 }
 
 /** Our own code reads it; nothing is written into the proxy config.json for it. */
-type InternalConfigKeyDef<K extends ConfigKey = ConfigKey> =
-  & ConfigKeyDefCore<K>
-  & DefaultSpec<K>
-  & ApplySpec
-  & {
+type InternalConfigKeyDef<K extends ConfigKey = ConfigKey> = ConfigKeyDefCore<K> &
+  DefaultSpec<K> &
+  ApplySpec & {
     proxyDefault?: undefined;
     proxyProjected?: undefined;
     proxyPath?: undefined;
   };
 
 /** Always written at `agent start` as `resolved ?? proxyDefault`, for keys copilot-env has an opinion on. */
-type ForceProjectedConfigKeyDef<K extends ConfigKey = ConfigKey> =
-  & ConfigKeyDefCore<K>
-  & ApplySpec
-  & ProjectedKeyFields
-  & {
+type ForceProjectedConfigKeyDef<K extends ConfigKey = ConfigKey> = ConfigKeyDefCore<K> &
+  ApplySpec &
+  ProjectedKeyFields & {
     proxyDefault: ConfigValueTypes[K];
     defaultValue?: undefined;
     proxyProjected?: undefined;
@@ -197,12 +193,10 @@ type ForceProjectedConfigKeyDef<K extends ConfigKey = ConfigKey> =
 
 /** Written only while a value is stored for the daemon's profile, so the proxy's own default stands
  *  otherwise: every start clears the path while the key is unset (applyDefaultConfig in launch.ts). */
-type OptInProjectedConfigKeyDef<K extends ConfigKey = ConfigKey> =
-  & ConfigKeyDefCore<K>
-  & DefaultSpec<K>
-  & ApplySpec
-  & ProjectedKeyFields
-  & {
+type OptInProjectedConfigKeyDef<K extends ConfigKey = ConfigKey> = ConfigKeyDefCore<K> &
+  DefaultSpec<K> &
+  ApplySpec &
+  ProjectedKeyFields & {
     proxyProjected: true;
     proxyDefault?: undefined;
   };
@@ -253,12 +247,16 @@ function domain<T extends ConfigValue>(
 const TRUE_WORDS = new Set(["true", "1", "yes", "on", "enable", "enabled"]);
 const FALSE_WORDS = new Set(["false", "0", "no", "off", "disable", "disabled"]);
 
-const BOOL_DOMAIN: ConfigDomain<boolean> = domain(v.boolean(), (raw) => {
-  const t = raw.trim().toLowerCase();
-  if (TRUE_WORDS.has(t)) return true;
-  if (FALSE_WORDS.has(t)) return false;
-  throw new Error(`expected a boolean (true/false), got '${raw}'`);
-}, "bool");
+const BOOL_DOMAIN: ConfigDomain<boolean> = domain(
+  v.boolean(),
+  (raw) => {
+    const t = raw.trim().toLowerCase();
+    if (TRUE_WORDS.has(t)) return true;
+    if (FALSE_WORDS.has(t)) return false;
+    throw new Error(`expected a boolean (true/false), got '${raw}'`);
+  },
+  "bool",
+);
 
 function wholeNumberDomain(min: number, max: number, unit?: string): ConfigDomain<number> {
   const range = (issue: { input: unknown }) =>
@@ -441,11 +439,12 @@ export function isLoopbackHostname(hostname: string): boolean {
   // An IPv4-mapped address arrives as the URL parser serialises it: two hex groups (`::ffff:7f00:1`),
   // or dotted when hand-spelled elsewhere.
   const mapped = bare.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
-  const v4 = mapped !== null
-    ? `${Number.parseInt(mapped[1] ?? "0", 16) >> 8}.0.0.0`
-    : bare.startsWith("::ffff:")
-    ? bare.slice("::ffff:".length)
-    : bare;
+  const v4 =
+    mapped !== null
+      ? `${Number.parseInt(mapped[1] ?? "0", 16) >> 8}.0.0.0`
+      : bare.startsWith("::ffff:")
+        ? bare.slice("::ffff:".length)
+        : bare;
   return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(v4);
 }
 
@@ -763,7 +762,8 @@ const CONFIG_REGISTRY_LITERAL = [
     describe: "Shell launchers cl / co / cx",
     ...BOOL_DOMAIN,
     defaultValue: false,
-    applyHint: "New shells pick a change up; the current one picks up an ENABLE on the next " +
+    applyHint:
+      "New shells pick a change up; the current one picks up an ENABLE on the next " +
       "`agent` command (a disable applies to new shells only).",
   },
   {
@@ -772,7 +772,8 @@ const CONFIG_REGISTRY_LITERAL = [
     describe: "Which configs bake the token",
     ...STATIC_KEY_DOMAIN,
     defaultValue: STATIC_KEY_DEFAULT,
-    applyHint: `${WIRING_HINT}. ` +
+    applyHint:
+      `${WIRING_HINT}. ` +
       "A baked value does not follow a credential change: re-run the wiring after `agent auth`.",
   },
   {
@@ -809,9 +810,7 @@ export type TotalOverConfigKeys<Pin extends { [K in ConfigKey]: K }> = Pin;
 /** Every ConfigValueTypes key is optional in the stores, so a key omitted from the registry would
  *  still compile: written by set() yet silently stripped by CONFIG_SCHEMA on every read. This pin
  *  names the omission. */
-type _RegistryIsTotalOverConfigKeys = TotalOverConfigKeys<
-  { [K in RegistryEntry["key"]]: K }
->;
+type _RegistryIsTotalOverConfigKeys = TotalOverConfigKeys<{ [K in RegistryEntry["key"]]: K }>;
 
 export const CONFIG_REGISTRY: readonly ConfigKeyDef[] = CONFIG_REGISTRY_LITERAL;
 

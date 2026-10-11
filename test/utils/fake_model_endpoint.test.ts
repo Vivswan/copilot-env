@@ -5,6 +5,12 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
 import { join } from "node:path";
+import { jsonLines, startFakeEndpoint } from "../helpers/fake_endpoint.ts";
+import {
+  awaitListening,
+  type FakeModelEndpoint,
+  SCENARIO_HEADER,
+} from "../helpers/fake_model_endpoint.ts";
 import {
   bunRunArgs,
   CHILD_VALUES,
@@ -13,12 +19,6 @@ import {
   ROOT,
   spawnChild,
 } from "../helpers/run.ts";
-import {
-  awaitListening,
-  type FakeModelEndpoint,
-  SCENARIO_HEADER,
-} from "../helpers/fake_model_endpoint.ts";
-import { jsonLines, startFakeEndpoint } from "../helpers/fake_endpoint.ts";
 import { afterEach, beforeEach, expect, tempDir, test } from "../helpers/testing.ts";
 
 let fake: FakeModelEndpoint;
@@ -51,23 +51,26 @@ async function eventTypes(body: Record<string, unknown>): Promise<string[]> {
   } catch {
     // the cut
   }
-  return text.split("\n").filter((line) => line.startsWith("data: ")).map((line) =>
-    String((JSON.parse(line.slice("data: ".length)) as { type: string }).type)
-  );
+  return text
+    .split("\n")
+    .filter((line) => line.startsWith("data: "))
+    .map((line) => String((JSON.parse(line.slice("data: ".length)) as { type: string }).type));
 }
 
 test("the truncate scenario cuts a codex-shaped stream right after its FIRST content delta", async () => {
   // codex's shape: the encrypted-reasoning include, which puts a 2-frame reasoning item first.
   const codexShaped = await eventTypes({
-    "model": "gpt-5.4",
-    "stream": true,
-    "include": ["reasoning.encrypted_content"],
-    "reasoning": { "effort": "medium" },
-    "input": [{
-      "type": "message",
-      "role": "user",
-      "content": [{ "type": "input_text", "text": "hi" }],
-    }],
+    model: "gpt-5.4",
+    stream: true,
+    include: ["reasoning.encrypted_content"],
+    reasoning: { effort: "medium" },
+    input: [
+      {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: "hi" }],
+      },
+    ],
   });
   expect(codexShaped).toEqual([
     "response.created",
@@ -80,7 +83,7 @@ test("the truncate scenario cuts a codex-shaped stream right after its FIRST con
   ]);
   // Control: without the include there is no reasoning item, so the same cut lands three deltas
   // in; the constant is codex's request shape, not a universal "first delta".
-  const plain = await eventTypes({ "model": "gpt-5.4", "stream": true, "input": "hi" });
+  const plain = await eventTypes({ model: "gpt-5.4", stream: true, input: "hi" });
   expect(plain.filter((t) => t === "response.output_text.delta")).toHaveLength(3);
   expect(plain).not.toContain("response.output_item.done");
 });
@@ -133,9 +136,9 @@ test("aimock dies with the process that started it, even one killed outright", a
   writeFileSync(
     program,
     [
-      `import { startFakeEndpoint } from ${
-        importSpecifier(join(ROOT, "test", "helpers", "fake_endpoint.ts"))
-      };`,
+      `import { startFakeEndpoint } from ${importSpecifier(
+        join(ROOT, "test", "helpers", "fake_endpoint.ts"),
+      )};`,
       `const fake = await startFakeEndpoint(${CHILD_VALUES}.dir);`,
       `console.log(JSON.stringify({ pid: fake.pid, aimockUrl: fake.aimockUrl }));`,
       `await new Promise(() => {});`,

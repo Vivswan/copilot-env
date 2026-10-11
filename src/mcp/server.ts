@@ -6,7 +6,7 @@
 // probe-then-fallback opening, so the factory must stay cheap and side-effect-free. stdout carries
 // only JSON-RPC; logs go to stderr.
 import { fromJsonSchema, McpServer } from "@modelcontextprotocol/server";
-import { serveStdio, StdioServerTransport } from "@modelcontextprotocol/server/stdio";
+import { StdioServerTransport, serveStdio } from "@modelcontextprotocol/server/stdio";
 import type { Profile } from "../copilot_api/profile.ts";
 import { webSearch } from "../copilot_api/web_search.ts";
 import { errMessage } from "../utils/error.ts";
@@ -33,24 +33,25 @@ export async function runMcpServer(opts: McpServerOptions): Promise<void> {
   const factory = () => {
     const server = new McpServer(
       { name: MCP_SERVER_NAME, version: packageVersion() },
-      { capabilities: { "tools": {} } },
+      { capabilities: { tools: {} } },
     );
 
     server.registerTool(
       WEB_SEARCH_TOOL,
       {
-        description: "Search the web via GitHub Copilot (the /responses web_search tool) and " +
+        description:
+          "Search the web via GitHub Copilot (the /responses web_search tool) and " +
           "return a concise answer with a Sources list of cited URLs.",
         // fromJsonSchema keeps the schema a plain JSON-Schema literal rather than pulling in a
         // schema library.
         inputSchema: fromJsonSchema<{ query: string }>({
-          "type": "object",
-          "properties": {
-            "query": { "type": "string", "description": "The web search query." },
+          type: "object",
+          properties: {
+            query: { type: "string", description: "The web search query." },
           },
-          "required": ["query"],
+          required: ["query"],
         }),
-        annotations: { "readOnlyHint": true, "openWorldHint": true },
+        annotations: { readOnlyHint: true, openWorldHint: true },
       },
       async ({ query }, ctx) => {
         // The SDK rejects unknown tools and schema violations before this runs; blank-but-valid

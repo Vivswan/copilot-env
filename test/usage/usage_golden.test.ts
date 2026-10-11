@@ -10,14 +10,14 @@ import {
   canonicalLedger,
   describeMismatch,
   expectedCurrent,
-  generateGoldenTree,
   GOLDEN_COST_ARGS,
   GOLDEN_MATRIX,
   type GoldenCase,
-  goldenFilesFor,
   type GoldenTree,
-  parseCostPayload,
+  generateGoldenTree,
+  goldenFilesFor,
   PRE_INDEX_COMMIT,
+  parseCostPayload,
   readRecording,
   readText,
   runCurrentCost,
@@ -59,8 +59,7 @@ function loadGolden(entry: GoldenCase): Promise<Golden> {
       expect(
         treeSha256(generated.tree),
         `${entry.name}: the generator no longer writes the recorded tree`,
-      )
-        .toBe(recording.treeSha256);
+      ).toBe(recording.treeSha256);
       return { entry, golden, generated };
     })();
     loaded.set(entry.name, promise);
@@ -89,10 +88,12 @@ function blocksFromReports(
     buildSourceJson(report, estimateCost(report, NO_PRICING), NO_PRICING, {
       perDay: true,
     });
-  return JSON.parse(JSON.stringify({
-    codex: Object.fromEntries([...codex.keys()].sort().map((p) => [p, block(codex.get(p)!)])),
-    claude: block(claude),
-  }));
+  return JSON.parse(
+    JSON.stringify({
+      codex: Object.fromEntries([...codex.keys()].sort().map((p) => [p, block(codex.get(p)!)])),
+      claude: block(claude),
+    }),
+  );
 }
 
 /** The generator's own ledger for a tree, as source blocks. */

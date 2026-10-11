@@ -166,18 +166,21 @@ test("renderModelTable groups by vendor, chat first, unknown vendor last", () =>
     preview: false,
     ...over,
   });
-  const table = renderModelTable([
-    entry({ id: "mystery-model" }),
-    entry({ id: "text-embedding-3-small", vendor: "OpenAI", type: "embeddings" }),
-    entry({
-      id: "gpt-5.5",
-      name: "GPT-5.5",
-      vendor: "OpenAI",
-      contextWindow: 128000,
-      preview: true,
-    }),
-    entry({ id: "claude-opus-4.8", vendor: "Anthropic", maxOutput: 32000 }),
-  ], null);
+  const table = renderModelTable(
+    [
+      entry({ id: "mystery-model" }),
+      entry({ id: "text-embedding-3-small", vendor: "OpenAI", type: "embeddings" }),
+      entry({
+        id: "gpt-5.5",
+        name: "GPT-5.5",
+        vendor: "OpenAI",
+        contextWindow: 128000,
+        preview: true,
+      }),
+      entry({ id: "claude-opus-4.8", vendor: "Anthropic", maxOutput: 32000 }),
+    ],
+    null,
+  );
   // Strip ANSI styling (the local run may have color enabled) so the
   // plain-text assertions hold everywhere. The escape byte is built with
   // fromCharCode: a literal control character in a regex is a lint error.
@@ -217,12 +220,9 @@ function runProfileVerb(
   const home = tempDir("copilot-models-");
   try {
     seed?.(home);
-    const proc = runCli(
-      ["profile", ...(profile === undefined ? [] : [profile]), verb, ...args],
-      {
-        env: { ...process.env, CONSOLA_LEVEL: "5", COPILOT_API_HOME: home },
-      },
-    );
+    const proc = runCli(["profile", ...(profile === undefined ? [] : [profile]), verb, ...args], {
+      env: { ...process.env, CONSOLA_LEVEL: "5", COPILOT_API_HOME: home },
+    });
     return { exitCode: proc.exitCode, out: proc.stdout + proc.stderr };
   } finally {
     rmSync(home, { recursive: true, force: true });
@@ -239,10 +239,10 @@ function seedDirectProfile(home: string, name: string): void {
     JSON.stringify({
       profiles: {
         default: {
-          "githubToken": "gho_default-credential-must-never-be-used",
-          "authProvider": "gh-token",
+          githubToken: "gho_default-credential-must-never-be-used",
+          authProvider: "gh-token",
         },
-        [name]: { "mode": "direct" },
+        [name]: { mode: "direct" },
       },
     }),
   );

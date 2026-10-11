@@ -1,15 +1,16 @@
 // No wall-clock timestamp (noise on short-lived CLI output that wraps awkwardly), stderr for the
 // per-module loggers so the eval'd `agent profile env` stdout is never polluted, and every message wrapped
 // to the terminal it lands on.
+
+import { format } from "node:util";
 import {
-  consola,
   type ConsolaInstance,
   type ConsolaReporter,
+  consola,
   createConsola,
   LogLevels,
   type LogObject,
 } from "consola";
-import { format } from "node:util";
 import { colorEnabled, FG_CLOSE, palette, sgrOpen, type Tone } from "./ansi.ts";
 import { terminalWidth, wrapMessage } from "./table.ts";
 
@@ -99,7 +100,7 @@ export class WrappingReporter implements ConsolaReporter {
     // One string as consola would make it (printf substitution included), formatted here so the
     // wrap sees the final text; a lone string is left for consola's own pass.
     const [only] = logObj.args;
-    const text = logObj.args.length === 1 ? only ?? "" : format(...logObj.args);
+    const text = logObj.args.length === 1 ? (only ?? "") : format(...logObj.args);
     const tone = this.color ? LEVEL_TONES[logObj.type] : undefined;
     const body = tone === undefined ? text : inlinePaint(text, tone);
     const wrapped = this.wrapArgs(logObj, body, width);
@@ -136,11 +137,14 @@ function inlinePaint(text: string, tone: Tone): string {
  *  closes the ones it splits, a raw newline does not) is re-opened on the next. */
 function perLine(text: string, tone: Tone): string {
   let carried = "";
-  return text.split("\n").map((line) => {
-    const body = `${carried}${line}`;
-    carried = openForeground(body);
-    return body === "" ? body : palette[tone](body);
-  }).join("\n");
+  return text
+    .split("\n")
+    .map((line) => {
+      const body = `${carried}${line}`;
+      carried = openForeground(body);
+      return body === "" ? body : palette[tone](body);
+    })
+    .join("\n");
 }
 
 const SGR_CODE = new RegExp(`${String.fromCharCode(27)}\\[(\\d+)m`, "g");
@@ -231,7 +235,7 @@ export function promptLayout<T extends PromptOptions>(
   const labeled = options.options.map((option) =>
     typeof option === "string"
       ? { label: wrapMessage(option, width, OPTION_LEAD), value: option }
-      : { ...option, label: wrapMessage(option.label, width, OPTION_LEAD) }
+      : { ...option, label: wrapMessage(option.label, width, OPTION_LEAD) },
   );
   return { message: question, options: { ...options, options: labeled } };
 }

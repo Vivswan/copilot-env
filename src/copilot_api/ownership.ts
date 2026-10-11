@@ -38,9 +38,9 @@ export const LEDGER_KEY_NAMES: readonly string[] = Object.values(LEDGER_KEYS);
 function ownedPathList(value: unknown): string[] {
   return Array.isArray(value)
     ? value
-      .filter((p): p is string => typeof p === "string")
-      .map((p) => p.trim())
-      .filter((p) => p !== "")
+        .filter((p): p is string => typeof p === "string")
+        .map((p) => p.trim())
+        .filter((p) => p !== "")
     : [];
 }
 
@@ -58,9 +58,10 @@ export class OwnershipLedger {
   private readonly store: CopilotApiConfig;
 
   constructor(paths?: CopilotApiPaths) {
-    this.store = paths === undefined
-      ? rootStateStore()
-      : new CopilotApiConfig(paths.stateStoreFile, paths.stateStoreLock);
+    this.store =
+      paths === undefined
+        ? rootStateStore()
+        : new CopilotApiConfig(paths.stateStoreFile, paths.stateStoreLock);
   }
 
   /** STRICT: this feeds owns(), the predicate every take-back gates on, and an unreadable store must

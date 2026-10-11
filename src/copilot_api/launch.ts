@@ -5,30 +5,29 @@ import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { consola } from "consola";
 import { floatProxy, proxyFloatVerifyStatus } from "../proxy_float.ts";
+import { colorEnabled, paintFor } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import { withFileLock } from "../utils/file_lock.ts";
-import { pidAlive } from "../utils/pid.ts";
+import * as fs from "../utils/fs_facade.ts";
 import { isRecord } from "../utils/json.ts";
+import { pidAlive } from "../utils/pid.ts";
 import { type ProjectConfig, readProjectConfig } from "../utils/project_config.ts";
+import { formatTable, terminalWidth } from "../utils/table.ts";
 import { CopilotAdminClient } from "./admin.ts";
 import { CopilotApiConfig, ensureDict } from "./config.ts";
-import { Credential } from "./credential.ts";
-import { assertProfileSlot, type AuthProvider } from "./env_state.ts";
-import { directOverlay, landDirectPair, renderDirectPair } from "./direct_pair.ts";
 import type { ConfigValue, ProxyConfigPath } from "./config_registry.ts";
-import { configSetCommand, CopilotEnvConfig, projectedProxyConfig } from "./env_config.ts";
+import { Credential } from "./credential.ts";
+import { directOverlay, landDirectPair, renderDirectPair } from "./direct_pair.ts";
+import { CopilotEnvConfig, configSetCommand, projectedProxyConfig } from "./env_config.ts";
+import { type AuthProvider, assertProfileSlot } from "./env_state.ts";
 import {
   daemonClientHeaders,
   type selectDirectIdentityAndHost,
   usePatPassthrough,
 } from "./integration_identity.ts";
 import { generateAliases } from "./models.ts";
-import { CopilotApiPaths, DAEMON_KEEP_PORT_ENV, resolveRootHome, ROOT_HOME_ENV } from "./paths.ts";
-import { colorEnabled, paintFor } from "../utils/ansi.ts";
-import { formatTable, terminalWidth } from "../utils/table.ts";
-import * as fs from "../utils/fs_facade.ts";
-import { detectSidecar, ensureSidecar, resolveDenoBin } from "./sidecar.ts";
+import { CopilotApiPaths, DAEMON_KEEP_PORT_ENV, ROOT_HOME_ENV, resolveRootHome } from "./paths.ts";
 import {
   checkProxyPort,
   copilotApiFindPort,
@@ -48,6 +47,7 @@ import {
 } from "./process.ts";
 import { agentAuthCommand, type Profile } from "./profile.ts";
 import { CopilotEnvRunState } from "./run_state.ts";
+import { detectSidecar, ensureSidecar, resolveDenoBin } from "./sidecar.ts";
 import { installedProxyVersion, PROXY_PACKAGE_NAME, proxyVersionFloorStatus } from "./version.ts";
 
 // --- the start lock -----------------------------------------------------------
@@ -73,14 +73,18 @@ export function startLockPath(): string {
 export function withStartLock<T>(fn: () => Promise<T>): Promise<T> {
   const lockPath = startLockPath();
   fs.mkdir(dirname(lockPath));
-  return withFileLock(lockPath, {
-    staleMs: Number.POSITIVE_INFINITY,
-    waitMs: Number.POSITIVE_INFINITY,
-    retryMs: START_LOCK_RETRY_MS,
-    noticeAfterMs: START_LOCK_NOTICE_MS,
-    onWait: () =>
-      consola.info("Another `agent start` is in progress; waiting for it to finish ..."),
-  }, fn);
+  return withFileLock(
+    lockPath,
+    {
+      staleMs: Number.POSITIVE_INFINITY,
+      waitMs: Number.POSITIVE_INFINITY,
+      retryMs: START_LOCK_RETRY_MS,
+      noticeAfterMs: START_LOCK_NOTICE_MS,
+      onWait: () =>
+        consola.info("Another `agent start` is in progress; waiting for it to finish ..."),
+    },
+    fn,
+  );
 }
 
 // --- the proxy freshness + floor gate ---------------------------------------------
@@ -191,9 +195,10 @@ export async function resolveStartPort(
       case "out-of-range":
         throw new Error(
           `requested port ${pinned} is out of range; the proxy port must be between ${min} and ${max} ` +
-            `(\`${configSetCommand("daemon.min-port", "<n>")}\` / \`${
-              configSetCommand("daemon.max-port", "<n>")
-            }\` change the range).`,
+            `(\`${configSetCommand("daemon.min-port", "<n>")}\` / \`${configSetCommand(
+              "daemon.max-port",
+              "<n>",
+            )}\` change the range).`,
         );
       case "busy":
         throw new Error(
@@ -214,8 +219,7 @@ export async function resolveStartPort(
     const name = policy.port.name;
     const recorded = CopilotEnvRunState.forProfile(name).read().port;
     honoredReservation = recorded !== undefined;
-    def = recorded ??
-      (reserve ? reserveProfilePort(name) : Number(copilotApiResolvePort(name)));
+    def = recorded ?? (reserve ? reserveProfilePort(name) : Number(copilotApiResolvePort(name)));
   }
   switch (await checkProxyPort(def)) {
     case "free":
@@ -227,9 +231,10 @@ export async function resolveStartPort(
       }
       throw new Error(
         `configured port ${def} is outside the allowed range ${min}-${max}; run ` +
-          `\`${
-            configSetCommand("daemon.port", "<n>")
-          }\` within the range, or adjust daemon.min-port/daemon.max-port.`,
+          `\`${configSetCommand(
+            "daemon.port",
+            "<n>",
+          )}\` within the range, or adjust daemon.min-port/daemon.max-port.`,
       );
     case "busy":
       break;
@@ -330,11 +335,12 @@ export async function resolveLaunchCredential(
   }
   // A half the slot never probed is landed here, BEFORE launching, so an unusable credential fails
   // with the real reason instead of an opaque daemon-side "Failed to get models".
-  const { integrationId, apiBase } = renderDirectPair(profile, overlay) ??
-    await landDirectPair(profile, githubToken, deps.userAgent, {
+  const { integrationId, apiBase } =
+    renderDirectPair(profile, overlay) ??
+    (await landDirectPair(profile, githubToken, deps.userAgent, {
       ...overlay,
       selectIdentity: deps.selectIdentity,
-    });
+    }));
   const clientHeaders = daemonClientHeaders(deps.userAgent, integrationId);
   return {
     credential: patPassthrough
@@ -429,9 +435,11 @@ function copilotTokenFailureHint(log: string, profile: Profile): string | null {
   const authCommand = agentAuthCommand(profile);
   return (
     "The credential was not accepted by Copilot's token exchange. For a gh-cli or PAT credential, " +
-    `enable passthrough (\`${
-      configSetCommand("passthrough", "on", profile)
-    }\`); otherwise re-authenticate with a ` +
+    `enable passthrough (\`${configSetCommand(
+      "passthrough",
+      "on",
+      profile,
+    )}\`); otherwise re-authenticate with a ` +
     `Copilot-capable login (\`${authCommand} --provider copilot\`).`
   );
 }

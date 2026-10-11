@@ -339,7 +339,11 @@ test("the proxy reader sums tokens per canonical model across DBs and splits the
   const gpt = { input: 200, output: 0, cacheRead: 0, cacheCreation: 0, events: 1 };
   const gemini = { input: 9, output: 0, cacheRead: 0, cacheCreation: 0, events: 1 };
   expect(report.byModel).toEqual(
-    new Map([["claude-opus-4.8", claude], ["gpt-5.5", gpt], ["gemini-3.0", gemini]]),
+    new Map([
+      ["claude-opus-4.8", claude],
+      ["gpt-5.5", gpt],
+      ["gemini-3.0", gemini],
+    ]),
   );
   // Every model's usage sits on one day, so each day's row is that model's byModel row.
   expect(report.perDay).toEqual(
@@ -394,8 +398,9 @@ test("the proxy reader buckets by the user's local day, not the UTC day", () => 
   // The zone is NAMED rather than pinned through process.env.TZ, so this runs on Windows too
   // (deno honours the TZ env var on unix only). The SAME row in two zones keeps the teeth: a
   // reader that ignored the zone or sliced by UTC would return one key for both.
-  expect([...readProxy([path], undefined, "America/New_York").perDay.keys()])
-    .toEqual(["2026-06-01"]);
+  expect([...readProxy([path], undefined, "America/New_York").perDay.keys()]).toEqual([
+    "2026-06-01",
+  ]);
   expect([...readProxy([path], undefined, "UTC").perDay.keys()]).toEqual(["2026-06-02"]);
 });
 

@@ -3,6 +3,8 @@
 // models_fetch.ts's. Failures THROW with actionable messages; best-effort callers catch.
 //   proxy  -> the running local daemon's GET /models
 //   direct -> the resolved Copilot host under the identity the CONSUMER names (DirectCatalogIdentity)
+
+import { createStderrLogger } from "../utils/logger.ts";
 import { CopilotAdminClient } from "./admin.ts";
 import { CopilotApiConfig } from "./config.ts";
 import { Credential } from "./credential.ts";
@@ -18,7 +20,6 @@ import {
 import { fetchModelCatalog } from "./models_fetch.ts";
 import { copilotApiResolvePort } from "./port.ts";
 import type { Profile } from "./profile.ts";
-import { createStderrLogger } from "../utils/logger.ts";
 
 export type CatalogSource = "direct" | "proxy";
 
@@ -28,9 +29,7 @@ export type CatalogSource = "direct" | "proxy";
  * the version-free codex UA for consumers that feed no agent's requests (Desktop's fallback) and
  * must not resolve the versioned one, whose lookup can spawn `codex --version` and `npm view`.
  */
-export type DirectCatalogIdentity =
-  | { kind: "passthrough" }
-  | { kind: "agents"; userAgent: string };
+export type DirectCatalogIdentity = { kind: "passthrough" } | { kind: "agents"; userAgent: string };
 
 export interface FetchRawModelsOptions {
   /** Skips re-resolving, which for a gh-cli provider re-runs `gh auth token` (up to 5s). */
@@ -69,14 +68,16 @@ export async function directRequestIdentity(
   opts: DirectRequestIdentityOptions = {},
 ): Promise<IdentityAndHost> {
   const overlay = directOverlay(profile);
-  return renderDirectPair(profile, overlay) ??
-    await selectDirectIdentityAndHost(token, userAgent, {
+  return (
+    renderDirectPair(profile, overlay) ??
+    (await selectDirectIdentityAndHost(token, userAgent, {
       pinned: overlay.pinned,
       fixedHost: overlay.literal,
       fetchImpl: opts.fetchImpl,
       signal: opts.signal,
       narrator: opts.narrator,
-    });
+    }))
+  );
 }
 
 export async function fetchRawModels(
@@ -93,20 +94,22 @@ export async function fetchRawModels(
     });
     return admin.getRawModels();
   }
-  const resolved = typeof opts.directToken === "string"
-    ? { token: opts.directToken, reason: null }
-    : new Credential(undefined, profile).resolveWithReason();
+  const resolved =
+    typeof opts.directToken === "string"
+      ? { token: opts.directToken, reason: null }
+      : new Credential(undefined, profile).resolveWithReason();
   if (resolved.token === null) throw new Error(resolved.reason);
   const token = resolved.token;
   const identity = opts.identity ?? { kind: "passthrough" };
   const userAgent = identity.kind === "agents" ? identity.userAgent : CODEX_EXEC_USER_AGENT;
   // Narration goes to stderr: `agent auth --get` runs this fetch and its stdout is the token.
-  const { integrationId, apiBase } = opts.pair ??
-    await directRequestIdentity(profile, token, userAgent, {
+  const { integrationId, apiBase } =
+    opts.pair ??
+    (await directRequestIdentity(profile, token, userAgent, {
       fetchImpl: opts.fetchImpl,
       signal: opts.signal,
       narrator: createStderrLogger(),
-    });
+    }));
   const got = await fetchModelCatalog({
     host: apiBase,
     token,

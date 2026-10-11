@@ -10,7 +10,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { runWithDenoPreload, sidecarTest } from "../helpers/deno_sidecar.ts";
-import { resolvePackageDir, ROOT } from "../helpers/run.ts";
+import { ROOT, resolvePackageDir } from "../helpers/run.ts";
 import { expect, tempDir, test } from "../helpers/testing.ts";
 
 // The shim patches `node:fs` at import, so any import would show it; the subprocess proves it

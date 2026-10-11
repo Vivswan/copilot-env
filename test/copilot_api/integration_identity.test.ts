@@ -1,3 +1,4 @@
+import { codexUserAgent } from "../../src/codex/user_agent.ts";
 import { CODEX_IDENTITY_NAME } from "../../src/copilot_api/config_registry.ts";
 import {
   CODEX_EXEC_USER_AGENT,
@@ -5,10 +6,10 @@ import {
   COPILOT_SANDBOX_INTEGRATION_ID,
   DEFAULT_COPILOT_API_BASE,
   directClientHeaders,
-  identityCandidates,
   type IdentitySurvey,
   type IdentityVerdict,
   INTEGRATION_ID_HEADER,
+  identityCandidates,
   type ProbeFetch,
   probeIntegrationIdentity,
   resetIntegrationIdentityCache,
@@ -17,7 +18,6 @@ import {
   surveyIntegrationIdentities,
   VSCODE_CHAT_INTEGRATION_ID,
 } from "../../src/copilot_api/integration_identity.ts";
-import { codexUserAgent } from "../../src/codex/user_agent.ts";
 import { withNarrationMuted } from "../../src/utils/logger.ts";
 import { captureChannels } from "../helpers/output.ts";
 import { expect, test } from "../helpers/testing.ts";
@@ -25,10 +25,7 @@ import { expect, test } from "../helpers/testing.ts";
 /** THE candidate list, as every mode probes it. */
 const CANDIDATES = identityCandidates("codex_exec/1");
 
-function stubFetch(opts: {
-  accept: (id: string | null) => boolean;
-  seen?: string[];
-}): ProbeFetch {
+function stubFetch(opts: { accept: (id: string | null) => boolean; seen?: string[] }): ProbeFetch {
   return (_input, init) => {
     const headers = new Headers(init?.headers);
     const id = headers.get(INTEGRATION_ID_HEADER);
@@ -191,14 +188,16 @@ test("surveyIntegrationIdentities: every candidate on every host that matters, n
 });
 
 test("surveyIntegrationIdentities: the designated and configured columns appear only when they add a host", async () => {
-  const stub = (lookup: Response): ProbeFetch => (input) => {
-    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-    return Promise.resolve(
-      url.includes("/copilot_internal/user")
-        ? lookup
-        : new Response(JSON.stringify({ data: [] }), { status: 200 }),
-    );
-  };
+  const stub =
+    (lookup: Response): ProbeFetch =>
+    (input) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      return Promise.resolve(
+        url.includes("/copilot_internal/user")
+          ? lookup
+          : new Response(JSON.stringify({ data: [] }), { status: 200 }),
+      );
+    };
   const rows = SURVEY_ROWS.slice(0, 1);
   const designated = (api: string): Response =>
     new Response(JSON.stringify({ endpoints: { api } }), { status: 200 });
@@ -241,8 +240,8 @@ test("host rule: 2xx/400/401 keep the generic host; 403/404/5xx/network move to 
         return Promise.resolve(
           lookup === "ok"
             ? new Response(JSON.stringify({ endpoints: { api: ENTERPRISE_API_BASE } }), {
-              status: 200,
-            })
+                status: 200,
+              })
             : new Response("upstream", { status: 503 }),
         );
       }
@@ -413,7 +412,10 @@ test("selectDirectIdentityAndHost: every credential is probed through the one ca
     if (c.seen !== undefined) expect(seen, c.name).toEqual(c.seen);
     if (c.genericOnly) {
       expect(urls.length, c.name).toBeGreaterThan(0);
-      expect(urls.every((u) => u === `${DEFAULT_COPILOT_API_BASE}/models`), c.name).toBe(true);
+      expect(
+        urls.every((u) => u === `${DEFAULT_COPILOT_API_BASE}/models`),
+        c.name,
+      ).toBe(true);
     }
   }
 });
@@ -421,8 +423,10 @@ test("selectDirectIdentityAndHost: every credential is probed through the one ca
 /** A request's header set lower-cased the way `Headers` reports names, Authorization included. */
 function wireHeaders(headers: Record<string, string>, token: string): Record<string, string> {
   return Object.fromEntries(
-    Object.entries({ ...headers, Authorization: `Bearer ${token}` })
-      .map(([name, value]) => [name.toLowerCase(), value]),
+    Object.entries({ ...headers, Authorization: `Bearer ${token}` }).map(([name, value]) => [
+      name.toLowerCase(),
+      value,
+    ]),
   );
 }
 
@@ -451,8 +455,9 @@ test("fetchRawModels(direct): a caller deadline aborts the identity probe chain 
   const realFetch = globalThis.fetch;
   globalThis.fetch = hang as typeof fetch;
   try {
-    await expect(fetchRawModels("direct", { directToken: "github_pat_x", signal: deadline.signal }))
-      .rejects.toThrow();
+    await expect(
+      fetchRawModels("direct", { directToken: "github_pat_x", signal: deadline.signal }),
+    ).rejects.toThrow();
   } finally {
     globalThis.fetch = realFetch;
     setIntegrationProbeFetch(null);
@@ -486,9 +491,8 @@ test("fetchRawModels(direct) probes and fetches ONE host; with no consumer named
   };
   setIntegrationProbeFetch((input, init) => Promise.resolve(respond(input, init)));
   const realFetch = globalThis.fetch;
-  globalThis.fetch =
-    ((input: string | URL | Request, init?: RequestInit) =>
-      Promise.resolve(respond(input, init))) as typeof fetch;
+  globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) =>
+    Promise.resolve(respond(input, init))) as typeof fetch;
   try {
     const body = await fetchRawModels("direct", { directToken: "github_pat_x" });
     expect(body).toEqual({ data: [{ id: "gpt-5-mini" }] });
@@ -584,7 +588,8 @@ test("fetchRawModels(direct) under the agents' identity sends the exact header s
         const headers = new Headers(init?.headers);
         sent.push(Object.fromEntries(headers.entries()));
         // A PAT is refused under the default identity and accepted under the CLI one.
-        const ok = !c.token.startsWith("github_pat_") ||
+        const ok =
+          !c.token.startsWith("github_pat_") ||
           headers.get(INTEGRATION_ID_HEADER) === COPILOT_CLI_INTEGRATION_ID;
         return Promise.resolve(
           ok
@@ -615,8 +620,9 @@ test("the host note is said once per process, by the first caller that is not mu
   });
   // The default narrator (consola) is what the mute silences; a hand-made one would not be.
   const resolve = (): Promise<string> =>
-    selectDirectIdentityAndHost("ghp_once", "codex_exec/1", { pinned: COPILOT_CLI_INTEGRATION_ID })
-      .then((selected) => selected.apiBase);
+    selectDirectIdentityAndHost("ghp_once", "codex_exec/1", {
+      pinned: COPILOT_CLI_INTEGRATION_ID,
+    }).then((selected) => selected.apiBase);
   try {
     const { all } = await captureChannels(async () => {
       await withNarrationMuted(async () => {

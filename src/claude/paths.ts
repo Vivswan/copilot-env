@@ -1,8 +1,8 @@
 // Dependency-light on purpose (node builtins plus the profile vocabulary) so any layer names the
 // same files without importing the config writer in src/claude/config.ts.
 import { join, resolve } from "node:path";
-import { userHomeDir } from "../utils/home.ts";
 import type { Profile } from "../copilot_api/profile.ts";
+import { userHomeDir } from "../utils/home.ts";
 
 /** THE single reader of CLAUDE_CONFIG_DIR: claudeJsonPath (mcp_registration.ts) and
  *  resolveClaudeHome derive from it with different fallbacks. Resolved absolute because the

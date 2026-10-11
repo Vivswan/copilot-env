@@ -12,9 +12,9 @@ import { isDir } from "../utils/fs.ts";
 import { isRecord } from "../utils/json.ts";
 import { type DayKey, dayKeyIn, MILLISECONDS_PER_DAY } from "../utils/time.ts";
 import {
+  CONTRIBUTION_VERSION,
   type CodexContribution,
   type CodexEvent,
-  CONTRIBUTION_VERSION,
   dedupKey,
   type FileRecord,
   type ParsedFile,
@@ -166,14 +166,17 @@ export function foldCodex(
   // Every info hash seen per session, counted or not, so a later fork can drop the events it
   // copied.
   const infoHashesBySession = new Map<string, Set<string>>();
-  for (const { contribution: { state, events } } of records) {
+  for (const {
+    contribution: { state, events },
+  } of records) {
     const { fork, metaTsMs } = state;
     const parentHashes = fork === undefined ? undefined : infoHashesBySession.get(fork.parentHash);
     const ownHashes = new Set<string>();
     for (let index = 0; index < events.length; index++) {
       const [tsMs, rawProvider, rawModel, infoHash, input, output, cacheRead] = events[index]!;
       const forked = fork !== undefined && index >= fork.knownAfter;
-      const duplicate = ownHashes.has(infoHash) ||
+      const duplicate =
+        ownHashes.has(infoHash) ||
         (forked &&
           (parentHashes?.has(infoHash) === true ||
             (parentHashes === undefined &&
@@ -197,9 +200,15 @@ export function foldCodex(
       // INCLUDING the cached part (tokenBuckets split them), which is the size the tier is cut on.
       const model = canonical(rawModel);
       const buckets = { input, output, cacheRead, cacheCreation: 0 };
-      record(report, tsMs === null ? null : dayKey(tsMs), model, { ...buckets, events: 1 }, {
-        longContext: input + cacheRead > LONG_CONTEXT_PROMPT_TOKENS,
-      });
+      record(
+        report,
+        tsMs === null ? null : dayKey(tsMs),
+        model,
+        { ...buckets, events: 1 },
+        {
+          longContext: input + cacheRead > LONG_CONTEXT_PROMPT_TOKENS,
+        },
+      );
       onCounted?.({ id: null, tsMs, model, buckets });
     }
     if (state.sessionIdHash !== undefined && ownHashes.size > 0) {

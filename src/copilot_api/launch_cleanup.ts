@@ -3,13 +3,13 @@
 // every target's identity at its own signal boundary.
 import { setTimeout as sleep } from "node:timers/promises";
 import { consola } from "consola";
-import { daemonLockHold, daemonLockHolderPid, daemonLockVerdict } from "./daemon_lock.ts";
 import { assertNever } from "../utils/assert.ts";
 import { pidAlive } from "../utils/pid.ts";
+import { daemonLockHold, daemonLockHolderPid, daemonLockVerdict } from "./daemon_lock.ts";
 import { allDaemonHomes, CopilotApiPaths, profileHomeNames } from "./paths.ts";
 import { daemonPolicy } from "./port.ts";
 import {
-  classifyDaemonPid,
+  type classifyDaemonPid,
   classifyOwnedDaemonPid,
   DAEMON_SIGKILL_GRACE_MS,
   getOrphanPids,
@@ -134,10 +134,7 @@ async function stopLockHolder(home: string, holder: number): Promise<void> {
   const deadline = Date.now() + DAEMON_SIGKILL_GRACE_MS;
   while (daemonLockHolderPid(home) === holder) {
     if (Date.now() >= deadline) {
-      if (
-        await corroborateLockHolder(home, holder) &&
-        daemonLockHolderPid(home) === holder
-      ) {
+      if ((await corroborateLockHolder(home, holder)) && daemonLockHolderPid(home) === holder) {
         try {
           process.kill(holder, "SIGKILL");
         } catch {
@@ -207,12 +204,7 @@ export async function planCleanup(
         : { kind: "leave-holder", pid: holder },
     );
   }
-  const orphans = await listUntrackedOrphans(
-    process.pid,
-    process.ppid,
-    postClearTracked,
-    listPids,
-  );
+  const orphans = await listUntrackedOrphans(process.pid, process.ppid, postClearTracked, listPids);
   for (const pid of orphans) {
     if (pidAlive(pid)) actions.push({ kind: "stop-orphan", pid });
   }
@@ -307,12 +299,9 @@ export async function cleanupExistingProxies(
     // Only pids in both the plan and a FRESH scan are signalled: the tracked and holder stops above
     // can take a grace, so a pid recycled since planning is never TERM'd off the stale snapshot.
     const planned = new Set(orphans);
-    const confirmed = (await listUntrackedOrphans(
-      process.pid,
-      process.ppid,
-      trackedDaemonPids(),
-      listPids,
-    )).filter((p) => planned.has(p));
+    const confirmed = (
+      await listUntrackedOrphans(process.pid, process.ppid, trackedDaemonPids(), listPids)
+    ).filter((p) => planned.has(p));
     if (confirmed.length > 0) {
       for (const opid of confirmed) {
         if (pidAlive(opid)) {
@@ -325,12 +314,9 @@ export async function cleanupExistingProxies(
         }
       }
       await sleep(DAEMON_SIGKILL_GRACE_MS);
-      const survivors = (await listUntrackedOrphans(
-        process.pid,
-        process.ppid,
-        trackedDaemonPids(),
-        listPids,
-      )).filter((p) => planned.has(p));
+      const survivors = (
+        await listUntrackedOrphans(process.pid, process.ppid, trackedDaemonPids(), listPids)
+      ).filter((p) => planned.has(p));
       for (const opid of survivors) {
         if (pidAlive(opid)) {
           try {

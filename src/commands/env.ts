@@ -12,7 +12,7 @@ import { BASE_URL_ENV, managedClaudeBaseUrl } from "../claude/config.ts";
 import { managedCodexHome } from "../codex/host.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { assertKnownProfile } from "../copilot_api/env_state.ts";
-import { parseProfileFlag, type Profile } from "../copilot_api/profile.ts";
+import { type Profile, parseProfileFlag } from "../copilot_api/profile.ts";
 import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
 
 interface EnvArgs {
@@ -64,19 +64,23 @@ export function runEnv(args: EnvArgs): void {
   const codexHome = managedCodexHome();
   if (codexHome !== null) {
     directives.push(
-      "unset" in codexHome ? { key: "CODEX_HOME", unset: true } : {
-        key: "CODEX_HOME",
-        value: codexHome.value,
-      },
+      "unset" in codexHome
+        ? { key: "CODEX_HOME", unset: true }
+        : {
+            key: "CODEX_HOME",
+            value: codexHome.value,
+          },
     );
   }
   const baseUrl = managedClaudeBaseUrl(profile);
   if (baseUrl !== null) {
     directives.push(
-      "unset" in baseUrl ? { key: BASE_URL_ENV, unset: true } : {
-        key: BASE_URL_ENV,
-        value: baseUrl.value,
-      },
+      "unset" in baseUrl
+        ? { key: BASE_URL_ENV, unset: true }
+        : {
+            key: BASE_URL_ENV,
+            value: baseUrl.value,
+          },
     );
   }
 

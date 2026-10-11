@@ -60,9 +60,10 @@ function extractStringConst(source: string, name: string, file: string): string 
   visit(parseModule(file, source).program, {
     VariableDeclarator(node) {
       if (node.id.type !== "Identifier" || node.id.name !== name) return;
-      const literal = node.init?.type === "Literal" && typeof node.init.value === "string"
-        ? node.init.value
-        : null;
+      const literal =
+        node.init?.type === "Literal" && typeof node.init.value === "string"
+          ? node.init.value
+          : null;
       if (literal === null) {
         throw new Error(
           `${file}: const ${name} must be initialized with one plain string literal -- ` +

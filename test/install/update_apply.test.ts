@@ -1,17 +1,17 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
-  applyUpdate,
   type ApplyUpdateOptions,
+  applyUpdate,
   type ProvenanceVerifier,
   resolveProvenanceDecision,
 } from "../../src/autoupdate/apply.ts";
 import { ATTESTATION_NAME } from "../../src/install/attestation.ts";
 import { parseChecksums } from "../../src/install/checksums.ts";
 import {
-  pointCurrentAt,
   POSIX_CURRENT_SHIM,
+  pointCurrentAt,
   readCurrentVersionName,
 } from "../../src/install/installer.ts";
 import {
@@ -133,12 +133,11 @@ test("parseChecksums reads shasum and sha256sum output, binary-mode names includ
     // The leading "*" marks binary mode and is not part of the name.
     {
       name: "text and binary mode",
-      text:
-        `${a}  copilot-env-x86_64-unknown-linux-gnu\n${b} *copilot-env-x86_64-pc-windows-msvc.exe\n`,
-      parsed: [["copilot-env-x86_64-unknown-linux-gnu", a], [
-        "copilot-env-x86_64-pc-windows-msvc.exe",
-        b,
-      ]],
+      text: `${a}  copilot-env-x86_64-unknown-linux-gnu\n${b} *copilot-env-x86_64-pc-windows-msvc.exe\n`,
+      parsed: [
+        ["copilot-env-x86_64-unknown-linux-gnu", a],
+        ["copilot-env-x86_64-pc-windows-msvc.exe", b],
+      ],
     },
     {
       name: "malformed lines are skipped, never thrown",
@@ -215,9 +214,12 @@ test("release targets: each shipped (platform, arch) maps to its distinct triple
   const assets = RELEASE_TARGETS.map(releaseAssetName);
   expect(new Set(triples).size).toBe(RELEASE_TARGETS.length);
   expect(new Set(assets).size).toBe(RELEASE_TARGETS.length);
-  expect(rows.filter((r) => r.triple !== null).map((r) => r.triple).sort()).toEqual(
-    [...triples].sort(),
-  );
+  expect(
+    rows
+      .filter((r) => r.triple !== null)
+      .map((r) => r.triple)
+      .sort(),
+  ).toEqual([...triples].sort());
   // If this fails, copilot-env cannot update itself on the machine running
   // the suite -- which is also a machine we claim to support.
   expect(currentReleaseTarget()).not.toBeNull();
@@ -278,14 +280,19 @@ describe("applyUpdate", () => {
       },
     });
 
-    expect(calls).toEqual([[
-      "v9.9.9",
-      FAKE_BUNDLE,
+    expect(calls).toEqual([
       [
-        { name: asset, sha256: sha256Hex(RECORDING_BINARY) },
-        { name: "checksums.txt", sha256: sha256Hex(`${sha256Hex(RECORDING_BINARY)}  ${asset}\n`) },
+        "v9.9.9",
+        FAKE_BUNDLE,
+        [
+          { name: asset, sha256: sha256Hex(RECORDING_BINARY) },
+          {
+            name: "checksums.txt",
+            sha256: sha256Hex(`${sha256Hex(RECORDING_BINARY)}  ${asset}\n`),
+          },
+        ],
       ],
-    ]]);
+    ]);
     expect(readCurrentVersionName(installDir)).toBe("v9.9.9");
     expect(successes).toContain(
       `Build provenance verified: attested by GitHub Actions for Vivswan/copilot-env (${signerIdentity}).`,
@@ -325,8 +332,9 @@ describe("applyUpdate", () => {
       seedVersion("v9.9.8", "OLD");
       pointCurrentAt(installDir, "v9.9.8");
 
-      const err = await apply("v9.9.8", { root: installDir, logger: quiet })
-        .catch((e: unknown) => e as Error);
+      const err = await apply("v9.9.8", { root: installDir, logger: quiet }).catch(
+        (e: unknown) => e as Error,
+      );
       expect((err as Error).message, attestation).toContain("SHA256 verification failed");
       expect((err as Error).message, attestation).not.toContain("--no-verify");
       expect(readCurrentVersionName(installDir), attestation).toBe("v9.9.8");
@@ -427,17 +435,14 @@ describe("applyUpdate", () => {
       RECORDING_BINARY,
     );
     expect(
-      readFileSync(
-        join(installDir, VERSIONS_DIR, "v9.9.8", "bin", installedBinaryName()),
-        "utf8",
-      ),
+      readFileSync(join(installDir, VERSIONS_DIR, "v9.9.8", "bin", installedBinaryName()), "utf8"),
     ).toBe("OLD");
 
     // Reads THROUGH the link reach the new binary: the shim dispatch path.
     expect(readCurrentVersionName(installDir)).toBe("v9.9.9");
-    expect(
-      readFileSync(join(installDir, CURRENT_LINK, "bin", installedBinaryName()), "utf8"),
-    ).toBe(RECORDING_BINARY);
+    expect(readFileSync(join(installDir, CURRENT_LINK, "bin", installedBinaryName()), "utf8")).toBe(
+      RECORDING_BINARY,
+    );
     expect(readFileSync(join(installDir, "bin", "agent"), "utf8")).toBe(POSIX_CURRENT_SHIM);
     // The shim writes are announced on the UPDATE's logger (stderr-only from the
     // preflight), never on the global stdout consola.
@@ -488,9 +493,9 @@ describe("applyUpdate", () => {
     // ROLLBACK: the kept previous version is actually usable -- pointing the
     // link back at it dispatches its binary again.
     pointCurrentAt(installDir, "v9.9.8");
-    expect(
-      readFileSync(join(installDir, CURRENT_LINK, "bin", installedBinaryName()), "utf8"),
-    ).toBe("OLD");
+    expect(readFileSync(join(installDir, CURRENT_LINK, "bin", installedBinaryName()), "utf8")).toBe(
+      "OLD",
+    );
   });
 
   skipWin(
@@ -549,17 +554,12 @@ describe("applyUpdate", () => {
     seedVersion("v9.9.9", "ALREADY");
     pointCurrentAt(installDir, "v9.9.9");
 
-    await expect(
-      apply("v9.9.8", { root: installDir, logger: quiet }),
-    ).rejects.toThrow(
+    await expect(apply("v9.9.8", { root: installDir, logger: quiet })).rejects.toThrow(
       "already points at v9.9.9; to refresh this version in place, re-run `agent install`",
     );
     // The live version dir was NOT clobbered by staging.
     expect(
-      readFileSync(
-        join(installDir, VERSIONS_DIR, "v9.9.9", "bin", installedBinaryName()),
-        "utf8",
-      ),
+      readFileSync(join(installDir, VERSIONS_DIR, "v9.9.9", "bin", installedBinaryName()), "utf8"),
     ).toBe("ALREADY");
   });
 
@@ -568,9 +568,9 @@ describe("applyUpdate", () => {
     writeFileSync(join(releaseDir, "checksums.txt"), `${"a".repeat(64)}  agent-other\n`);
     writeFileSync(join(releaseDir, releaseAssetName(hostTarget())), "x");
 
-    await expect(
-      apply("v9.9.8", { root: installDir, logger: quiet }),
-    ).rejects.toThrow(`checksums.txt has no entry for ${releaseAssetName(hostTarget())}`);
+    await expect(apply("v9.9.8", { root: installDir, logger: quiet })).rejects.toThrow(
+      `checksums.txt has no entry for ${releaseAssetName(hostTarget())}`,
+    );
   });
 });
 

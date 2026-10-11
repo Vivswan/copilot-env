@@ -37,10 +37,10 @@
 // header values (`authorization`, `x-api-key` read "[REDACTED]"), so a test asserts their
 // presence there and their value only on a catalog entry, which the front journals in full.
 import { readFileSync, writeFileSync } from "node:fs";
-import { createServer, type IncomingMessage, request as httpRequest } from "node:http";
+import { createServer, request as httpRequest, type IncomingMessage } from "node:http";
 import { join } from "node:path";
 import { isRecord } from "../../src/utils/json.ts";
-import { bunRunArgs, resolvePackageDir, ROOT, spawnChild } from "./run.ts";
+import { bunRunArgs, ROOT, resolvePackageDir, spawnChild } from "./run.ts";
 
 /** The header aimock matches a fixture's `context` against, exact string match. */
 export const SCENARIO_HEADER = "X-AIMock-Context";
@@ -98,29 +98,31 @@ export type Scenarios = Record<string, ScenarioSpec>;
 function fixtureFile(scenarios: Scenarios): { fixtures: Record<string, unknown>[] } {
   const fixtures: Record<string, unknown>[] = [];
   for (const [context, spec] of Object.entries(scenarios)) {
-    const match = { "context": context };
+    const match = { context: context };
     switch (spec.kind) {
       case "text":
         fixtures.push({
           match,
-          "response": {
-            "content": spec.text,
-            ...(spec.usage === undefined ? {} : {
-              "usage": { "input_tokens": spec.usage.input, "output_tokens": spec.usage.output },
-            }),
+          response: {
+            content: spec.text,
+            ...(spec.usage === undefined
+              ? {}
+              : {
+                  usage: { input_tokens: spec.usage.input, output_tokens: spec.usage.output },
+                }),
           },
-          "latency": 1,
+          latency: 1,
         });
         break;
       case "error":
         fixtures.push({
           match,
-          "response": {
-            "status": spec.status,
-            "error": {
-              "type": spec.type,
-              "message": spec.message,
-              ...(spec.code === undefined ? {} : { "code": spec.code }),
+          response: {
+            status: spec.status,
+            error: {
+              type: spec.type,
+              message: spec.message,
+              ...(spec.code === undefined ? {} : { code: spec.code }),
             },
           },
         });
@@ -128,15 +130,15 @@ function fixtureFile(scenarios: Scenarios): { fixtures: Record<string, unknown>[
       case "truncate":
         fixtures.push({
           match,
-          "response": { "content": spec.text },
-          "latency": Math.min(20, MAX_LATENCY_MS),
-          "chunkSize": 5,
-          "truncateAfterChunks": spec.afterFrames,
+          response: { content: spec.text },
+          latency: Math.min(20, MAX_LATENCY_MS),
+          chunkSize: 5,
+          truncateAfterChunks: spec.afterFrames,
         });
         break;
     }
   }
-  fixtures.push({ "match": {}, "response": { "content": DEFAULT_REPLY }, "latency": 1 });
+  fixtures.push({ match: {}, response: { content: DEFAULT_REPLY }, latency: 1 });
   return { fixtures };
 }
 
@@ -192,27 +194,27 @@ const CATALOG: readonly {
 
 function catalogBody(): unknown {
   return {
-    "object": "list",
-    "data": CATALOG.map((m) => ({
-      "id": m.id,
-      "object": "model",
-      "created": 1_700_000_000,
-      "owned_by": m.vendor.toLowerCase(),
-      "name": m.name,
-      "vendor": m.vendor,
-      "version": m.id,
-      "preview": false,
-      "model_picker_enabled": true,
-      "supported_endpoints": m.endpoints,
-      "capabilities": {
-        "type": "chat",
-        "family": m.id,
-        "limits": {
-          "max_context_window_tokens": m.window,
-          "max_prompt_tokens": m.prompt,
-          "max_output_tokens": m.output,
+    object: "list",
+    data: CATALOG.map((m) => ({
+      id: m.id,
+      object: "model",
+      created: 1_700_000_000,
+      owned_by: m.vendor.toLowerCase(),
+      name: m.name,
+      vendor: m.vendor,
+      version: m.id,
+      preview: false,
+      model_picker_enabled: true,
+      supported_endpoints: m.endpoints,
+      capabilities: {
+        type: "chat",
+        family: m.id,
+        limits: {
+          max_context_window_tokens: m.window,
+          max_prompt_tokens: m.prompt,
+          max_output_tokens: m.output,
         },
-        "supports": { "streaming": true, "tool_calls": true, "parallel_tool_calls": true },
+        supports: { streaming: true, tool_calls: true, parallel_tool_calls: true },
       },
     })),
   };
@@ -297,7 +299,7 @@ export async function awaitListening(child: Bun.Subprocess): Promise<number> {
     const timer = setTimeout(
       () =>
         settle(() =>
-          reject(new Error(`aimock did not report a listening port within ${START_TIMEOUT_MS}ms`))
+          reject(new Error(`aimock did not report a listening port within ${START_TIMEOUT_MS}ms`)),
         ),
       START_TIMEOUT_MS,
     );
@@ -321,13 +323,15 @@ export async function awaitListening(child: Bun.Subprocess): Promise<number> {
         settle(() =>
           reject(
             new Error(
-              `aimock exited with code ${code} before listening: ${
-                (printed.stderr || printed.stdout).trim().slice(0, 400)
-              }`,
+              `aimock exited with code ${code} before listening: ${(
+                printed.stderr || printed.stdout
+              )
+                .trim()
+                .slice(0, 400)}`,
             ),
-          )
-        )
-      )
+          ),
+        ),
+      ),
     );
   });
 }
@@ -407,7 +411,7 @@ export async function startFakeModelEndpoint(
     );
     upstream.on("error", () => {
       if (!res.headersSent) res.writeHead(502, { "content-type": "application/json" });
-      res.end(JSON.stringify({ "error": { "message": "aimock unreachable", "type": "front" } }));
+      res.end(JSON.stringify({ error: { message: "aimock unreachable", type: "front" } }));
     });
     // A client that goes away mid-stream takes its upstream with it.
     res.on("close", () => {
@@ -434,9 +438,7 @@ export async function startFakeModelEndpoint(
           method: typeof entry.method === "string" ? entry.method : "",
           path: entry.path,
           headers: isRecord(entry.headers)
-            ? Object.fromEntries(
-              Object.entries(entry.headers).map(([k, v]) => [k, String(v)]),
-            )
+            ? Object.fromEntries(Object.entries(entry.headers).map(([k, v]) => [k, String(v)]))
             : {},
           body: entry.body ?? null,
           status: typeof response.status === "number" ? response.status : 0,

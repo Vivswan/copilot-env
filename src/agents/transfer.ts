@@ -17,8 +17,6 @@
 //   bundle mode "none"                  -> that agent left alone
 import { basename, join, posix, win32 } from "node:path";
 import * as v from "valibot";
-import { Credential, ghAuthToken } from "../copilot_api/credential.ts";
-import { GH_LOGIN_RE } from "../copilot_api/gh_cli.ts";
 import {
   CONFIG_REGISTRY,
   type ConfigKeyDef,
@@ -27,6 +25,8 @@ import {
   type GlobalMapKey,
   type ProfileConfigData,
 } from "../copilot_api/config_registry.ts";
+import { Credential, ghAuthToken } from "../copilot_api/credential.ts";
+import { directOverlayIn } from "../copilot_api/direct_pair.ts";
 import { CopilotEnvConfig, type CopilotEnvConfigData } from "../copilot_api/env_config.ts";
 import {
   AUTH_PROVIDERS,
@@ -36,13 +36,14 @@ import {
   type ProfileSlotData,
   type ProvisionedCredential,
 } from "../copilot_api/env_state.ts";
+import { GH_LOGIN_RE } from "../copilot_api/gh_cli.ts";
 import { resolveRootHome } from "../copilot_api/paths.ts";
 import {
   DEFAULT_PROFILE_NAME,
   isValidProfileName,
-  parseProfileName,
   type Profile,
   type ProfileName,
+  parseProfileName,
 } from "../copilot_api/profile.ts";
 import { type FileChange, underDryRunMarker, withDryRun } from "../utils/dry_run.ts";
 import { errMessage } from "../utils/error.ts";
@@ -51,10 +52,9 @@ import { isRecord } from "../utils/json.ts";
 import { withNarrationMuted } from "../utils/logger.ts";
 import { underInternalRoot } from "../utils/report_write.ts";
 import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
-import { configureDefaultAgents } from "./configure_defaults.ts";
 import { reconcileClaudeDesktopWiring } from "./claude_desktop.ts";
+import { configureDefaultAgents } from "./configure_defaults.ts";
 import { bothAgents, directPairIncomplete, wireBothAgents } from "./profile_wiring.ts";
-import { directOverlayIn } from "../copilot_api/direct_pair.ts";
 import {
   AGENT_PROVIDER_MODES,
   type AgentProviderMode,
@@ -319,9 +319,7 @@ const PROFILE_SECTIONS = v.pipe(
   ),
   v.objectWithRest(
     {
-      [DEFAULT_PROFILE_NAME]: v.optional(
-        strictMap<ProfileConfigData>(DEFAULT_SECTION_DEFS),
-      ),
+      [DEFAULT_PROFILE_NAME]: v.optional(strictMap<ProfileConfigData>(DEFAULT_SECTION_DEFS)),
     },
     strictMap<ProfileConfigData>(PROFILE_DEFS),
   ),
@@ -354,9 +352,10 @@ function liftForeignCodexHome(raw: unknown): { input: unknown; skipped: string[]
   if (!isRecord(raw) || !isRecord(raw.config) || !isRecord(raw.config.global)) return kept;
   const { "codex.home": home, ...global } = raw.config.global;
   if (typeof home !== "string" || v.is(GLOBAL_MAP, { "codex.home": home })) return kept;
-  const foreign = process.platform === "win32"
-    ? posix.isAbsolute(home)
-    : win32.isAbsolute(home) && win32.parse(home).root.length > 1;
+  const foreign =
+    process.platform === "win32"
+      ? posix.isAbsolute(home)
+      : win32.isAbsolute(home) && win32.parse(home).root.length > 1;
   if (!foreign) return kept;
   return {
     input: { ...raw, config: { ...raw.config, global } },
@@ -380,9 +379,10 @@ function bundleError(issue: v.BaseIssue<unknown>): Error {
         `version ${SETTINGS_BUNDLE_FORMAT_VERSION}`,
     );
   }
-  const detail = issue.expected === "never"
-    ? `unknown key under ${dotted(path.slice(0, -1)) || "the bundle root"}`
-    : `${dotted(path)} ${issue.message}`;
+  const detail =
+    issue.expected === "never"
+      ? `unknown key under ${dotted(path.slice(0, -1)) || "the bundle root"}`
+      : `${dotted(path)} ${issue.message}`;
   return new Error(`invalid settings bundle: ${detail}`);
 }
 
@@ -464,7 +464,8 @@ function planSlotCredential(
     if (local !== null) return { action: "keep", resolvedToken: local };
     return {
       action: "skip",
-      reason: "the bundle relies on the gh CLI login, which does not resolve a token on this " +
+      reason:
+        "the bundle relies on the gh CLI login, which does not resolve a token on this " +
         "machine (`gh auth login`), and no stored credential resolves either",
     };
   }
@@ -594,7 +595,9 @@ export function planImport(
     modes.codex = mode;
     modes.claude = mode;
   };
-  const pairUnstored = scope.defaultWiring && recorded === "direct" &&
+  const pairUnstored =
+    scope.defaultWiring &&
+    recorded === "direct" &&
     (defaultSlot.action === "write" ||
       directPairIncomplete(null, directOverlayIn(bundle.config, null)));
   if (bundle.modes.codex === "none" && bundle.modes.claude === "none" && pairUnstored) {
@@ -611,10 +614,7 @@ export function planImport(
   for (const [rawName, slot] of Object.entries(bundle.profiles)) {
     const name = parseProfileName(rawName);
     let landing = planSlotCredential(slot, name, gh);
-    if (
-      landing.action === "write" && slot.mode === null &&
-      !state.profileSlotStatus(name).exists
-    ) {
+    if (landing.action === "write" && slot.mode === null && !state.profileSlotStatus(name).exists) {
       // A credential with no mode can only RE-AUTH an existing profile; with none here, writing
       // it would create the half profile the atomic slot commit exists to prevent.
       landing = {
@@ -681,9 +681,8 @@ async function importProfiles(plan: ImportPlan, outcome: ImportOutcome): Promise
       }
       continue;
     }
-    const credential = landing.action === "write"
-      ? landing.credential
-      : keptCredential(state, name);
+    const credential =
+      landing.action === "write" ? landing.credential : keptCredential(state, name);
     if (credential === null) {
       // Only reachable if the local credential vanished between plan and apply.
       outcome.failures.push(`profile '${name}': its stored credential no longer resolves`);
@@ -774,12 +773,14 @@ export async function previewImportChanges(
   apply: typeof applyImportPlan = applyImportPlan,
 ): Promise<FileChange[]> {
   const run = await withNarrationMuted(() =>
-    underDryRunMarker(() => withDryRun(() => apply(plan, scope)))
+    underDryRunMarker(() => withDryRun(() => apply(plan, scope))),
   );
   if (run.status === "failed") throw run.error;
-  return run.changes.filter((change) =>
-    change.verdict === "rewrite" || change.verdict === "delete" ||
-    (change.verdict === "create" && !underInternalRoot(change.path))
+  return run.changes.filter(
+    (change) =>
+      change.verdict === "rewrite" ||
+      change.verdict === "delete" ||
+      (change.verdict === "create" && !underInternalRoot(change.path)),
   );
 }
 
@@ -787,9 +788,8 @@ export async function previewImportChanges(
 
 /** The rollback invocation, path quoted for THIS machine's shell. */
 export function rollbackCommand(backupPath: string): string {
-  const quoted = process.platform === "win32"
-    ? quotePowerShell(backupPath)
-    : quotePosix(backupPath);
+  const quoted =
+    process.platform === "win32" ? quotePowerShell(backupPath) : quotePosix(backupPath);
   return `agent settings --import ${quoted}`;
 }
 

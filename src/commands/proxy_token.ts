@@ -12,20 +12,20 @@
 import { spawnSync } from "node:child_process";
 import { CopilotApiConfig } from "../copilot_api/config.ts";
 import { proxyStatus, recordHeartbeat } from "../copilot_api/daemon.ts";
-import { configSetCommand, CopilotEnvConfig } from "../copilot_api/env_config.ts";
+import { CopilotEnvConfig, configSetCommand } from "../copilot_api/env_config.ts";
 import {
   agentAuthCommand,
   agentStartCommand,
-  parseProfileFlag,
   type Profile,
+  parseProfileFlag,
 } from "../copilot_api/profile.ts";
 import { assertNever } from "../utils/assert.ts";
 import { withPowershellChildEnv } from "../utils/command.ts";
+import { promptRefusedInDryRun } from "../utils/dry_run.ts";
 import { errMessage } from "../utils/error.ts";
+import { dryRunActive } from "../utils/fs_facade.ts";
 import { agentLauncherCommand } from "../utils/root.ts";
 import { printWrappedToStderr, terminalWidth, wrapMessage } from "../utils/table.ts";
-import { promptRefusedInDryRun } from "../utils/dry_run.ts";
-import { dryRunActive } from "../utils/fs_facade.ts";
 import { runDryRun } from "./dry_run.ts";
 import { runStart } from "./start.ts";
 
@@ -193,7 +193,7 @@ export async function resolveProxyToken(
     }
   }
   deps.recordHeartbeat(profile);
-  if (plannedStart || await deps.proxyUp(profile)) {
+  if (plannedStart || (await deps.proxyUp(profile))) {
     await deps.printProxyToken(profile);
     return 0;
   }

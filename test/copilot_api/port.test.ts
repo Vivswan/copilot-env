@@ -8,8 +8,8 @@ import {
   proxyLoopbackOrigin,
   proxyPortRange,
 } from "../../src/copilot_api/port.ts";
-import { afterEach, expect, test } from "../helpers/testing.ts";
 import { envSnapshot, isolateProxyHome } from "../helpers/env.ts";
+import { afterEach, expect, test } from "../helpers/testing.ts";
 
 const restoreEnv = envSnapshot();
 

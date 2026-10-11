@@ -9,15 +9,15 @@
 import { spawnSync } from "node:child_process";
 import { basename, isAbsolute, join } from "node:path";
 import { currentReleaseTarget, RELEASE_TARGETS, type ReleaseTarget } from "../install/targets.ts";
-import { isStandaloneBinary } from "../utils/root.ts";
 import { resolveExecutablePath } from "../utils/command.ts";
 import { sha256Hex } from "../utils/digest.ts";
 import { errMessage } from "../utils/error.ts";
-import { readSidecarDenoVersion } from "../utils/project_config.ts";
-import { isStableVersion, versionLessThan } from "../utils/semver.ts";
 import * as fs from "../utils/fs_facade.ts";
-import { resolveRootHome } from "./paths.ts";
+import { readSidecarDenoVersion } from "../utils/project_config.ts";
+import { isStandaloneBinary } from "../utils/root.ts";
+import { isStableVersion, versionLessThan } from "../utils/semver.ts";
 import type { ProbeFetch } from "./integration_identity.ts";
+import { resolveRootHome } from "./paths.ts";
 
 /** Set by the compiled launcher. */
 export const SIDECAR_DENO_ENV = "COPILOT_ENV_SIDECAR_DENO";
@@ -42,7 +42,7 @@ function sidecarOverride(
   env: Record<string, string | undefined>,
 ): { kind: "override"; denoBin: AbsolutePath } | null {
   const override = env[SIDECAR_DENO_ENV]?.trim();
-  if (override) return { "kind": "override", "denoBin": parseAbsolutePath(override) };
+  if (override) return { kind: "override", denoBin: parseAbsolutePath(override) };
   return null;
 }
 
@@ -57,7 +57,7 @@ export function resolveDenoBin(
   rootHome: string = resolveRootHome(),
   opts: Omit<SidecarDetectOptions, "env"> = {},
 ): AbsolutePath {
-  const state = detectSidecar(rootHome, { ...opts, "env": env });
+  const state = detectSidecar(rootHome, { ...opts, env: env });
   if (state.kind !== "absent") return state.denoBin;
   throw new Error(
     `no usable deno binary: no deno is on PATH, and no sidecar is provisioned. Install deno ` +
@@ -92,17 +92,14 @@ interface SidecarDetectOptions {
   findDeno?: () => string | null;
 }
 
-export function detectSidecar(
-  rootHome: string,
-  opts: SidecarDetectOptions = {},
-): SidecarState {
+export function detectSidecar(rootHome: string, opts: SidecarDetectOptions = {}): SidecarState {
   const env = opts.env ?? process.env;
   const override = sidecarOverride(env);
   if (override !== null) return override;
   const findDeno = opts.findDeno ?? (() => resolveExecutablePath("deno"));
   const onPath = findDeno();
-  if (onPath !== null) return { "kind": "path", "denoBin": parseAbsolutePath(onPath) };
-  return provisionedSidecar(rootHome, opts.platform) ?? { "kind": "absent" };
+  if (onPath !== null) return { kind: "path", denoBin: parseAbsolutePath(onPath) };
+  return provisionedSidecar(rootHome, opts.platform) ?? { kind: "absent" };
 }
 
 /** Highest version wins, so a copy provisioned under an older release stays usable and a fresh
@@ -120,12 +117,12 @@ export function provisionedSidecar(
   const best = entries
     .filter(isStableVersion)
     .filter((version) => fs.exists(sidecarBinPath(rootHome, version, platform)))
-    .sort((a, b) => versionLessThan(a, b) ? 1 : versionLessThan(b, a) ? -1 : 0)[0];
+    .sort((a, b) => (versionLessThan(a, b) ? 1 : versionLessThan(b, a) ? -1 : 0))[0];
   if (best === undefined) return null;
   return {
-    "kind": "provisioned",
-    "denoBin": parseAbsolutePath(sidecarBinPath(rootHome, best, platform)),
-    "version": best,
+    kind: "provisioned",
+    denoBin: parseAbsolutePath(sidecarBinPath(rootHome, best, platform)),
+    version: best,
   };
 }
 
@@ -152,9 +149,9 @@ export function denoReleaseTarget(
   const target = currentReleaseTarget(platform, arch);
   if (target === null) {
     throw new Error(
-      `no Deno sidecar build for ${platform}-${arch} (supported: ${
-        RELEASE_TARGETS.map((known) => `${known.os}-${known.arch}`).join(", ")
-      })`,
+      `no Deno sidecar build for ${platform}-${arch} (supported: ${RELEASE_TARGETS.map(
+        (known) => `${known.os}-${known.arch}`,
+      ).join(", ")})`,
     );
   }
   return target.triple;
@@ -215,9 +212,9 @@ export function unzipCommand(
   platform: string = process.platform,
 ): { command: string; args: string[] } {
   if (platform === "win32") {
-    return { "command": "tar", "args": ["-xf", zipPath, "-C", destDir] };
+    return { command: "tar", args: ["-xf", zipPath, "-C", destDir] };
   }
-  return { "command": "unzip", "args": ["-o", "-q", zipPath, "-d", destDir] };
+  return { command: "unzip", args: ["-o", "-q", zipPath, "-d", destDir] };
 }
 
 interface UnzipRunResult {
@@ -233,8 +230,8 @@ interface SidecarDownloadSeams {
 }
 
 function defaultUnzipRunner(command: string, args: string[]): UnzipRunResult {
-  const result = spawnSync(command, args, { "stdio": ["ignore", "ignore", "pipe"] });
-  return { "status": result.status ?? 1, "stderr": result.stderr?.toString() ?? "" };
+  const result = spawnSync(command, args, { stdio: ["ignore", "ignore", "pipe"] });
+  return { status: result.status ?? 1, stderr: result.stderr?.toString() ?? "" };
 }
 
 /** pipeTo closes the file with the stream, on success and on abort alike. */
@@ -320,7 +317,7 @@ export async function ensureSidecar(
   seams: SidecarDownloadSeams & Pick<SidecarDetectOptions, "findDeno"> = {},
 ): Promise<AbsolutePath> {
   const { findDeno, ...download } = seams;
-  const state = detectSidecar(rootHome, { "platform": download.platform, "findDeno": findDeno });
+  const state = detectSidecar(rootHome, { platform: download.platform, findDeno: findDeno });
   if (state.kind !== "absent") return state.denoBin;
   const fetchLike = download.fetchLike ?? fetch;
   const version = await fetchLatestDenoVersion(fetchLike);
@@ -334,10 +331,10 @@ export async function ensureSidecar(
 
 function denoBinaryVersion(bin: string): string | null {
   const result = spawnSync(bin, ["--version"], {
-    "encoding": "utf8",
-    "stdio": ["ignore", "pipe", "ignore"],
-    "windowsHide": true,
-    "timeout": 5000,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+    windowsHide: true,
+    timeout: 5000,
   });
   if (result.error || result.status !== 0) return null;
   return /^deno (\S+)/.exec(result.stdout ?? "")?.[1] ?? null;
@@ -364,14 +361,15 @@ export function sidecarStatus(
   const referenceVersion = readSidecarDenoVersion();
   const state = detectSidecar(rootHome);
   return {
-    "kind": state.kind,
-    "referenceVersion": referenceVersion,
-    "denoBin": state.kind === "absent" ? null : state.denoBin,
-    "version": state.kind === "absent"
-      ? null
-      : state.kind === "provisioned"
-      ? state.version
-      : denoVersionOf(state.denoBin),
-    "standalone": isStandaloneBinary(),
+    kind: state.kind,
+    referenceVersion: referenceVersion,
+    denoBin: state.kind === "absent" ? null : state.denoBin,
+    version:
+      state.kind === "absent"
+        ? null
+        : state.kind === "provisioned"
+          ? state.version
+          : denoVersionOf(state.denoBin),
+    standalone: isStandaloneBinary(),
   };
 }

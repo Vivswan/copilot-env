@@ -1,7 +1,7 @@
 import { dirname, join } from "node:path";
 import { runSync, spawnChild } from "../helpers/run.ts";
 import { outputOf } from "../helpers/subprocess.ts";
-import { expect, tempDir, test, TEST_ROOT_ENV } from "../helpers/testing.ts";
+import { expect, TEST_ROOT_ENV, tempDir, test } from "../helpers/testing.ts";
 
 // The env contract of the suite's one synchronous spawn: `undefined` means the key is really
 // absent in the child, not merely unmentioned. Every isolation harness that spells an unset
@@ -11,9 +11,9 @@ const PROBE = "COPILOT_ENV_RUN_HELPER_PROBE";
 
 function childSees(key: string, env: Record<string, string | undefined>): string {
   // hasOwn, not `??`: bun's process.env answers an unset "toString" with Object.prototype's.
-  const readProbe = `console.log("V=" + (Object.hasOwn(process.env, ${JSON.stringify(key)}) ? process.env[${
-    JSON.stringify(key)
-  }] : "<unset>"))`;
+  const readProbe = `console.log("V=" + (Object.hasOwn(process.env, ${JSON.stringify(key)}) ? process.env[${JSON.stringify(
+    key,
+  )}] : "<unset>"))`;
   const result = runSync(process.execPath, ["-e", readProbe], { env });
   expect(result.exitCode).toBe(0);
   return result.stdout.trim();
@@ -114,9 +114,9 @@ test("runSync: the child gets EXACTLY the requested env, and the parent's is res
 
 // --- the harness key: on every child, over whatever env the caller gave ------------------
 
-const READ_HARNESS_KEY = `console.log(JSON.stringify(process.env[${
-  JSON.stringify(TEST_ROOT_ENV)
-}]))`;
+const READ_HARNESS_KEY = `console.log(JSON.stringify(process.env[${JSON.stringify(
+  TEST_ROOT_ENV,
+)}]))`;
 
 test("both spawns put the temp root on the child, whatever the caller's env says", async () => {
   const root = dirname(tempDir("copilot-env-harness-"));
@@ -124,8 +124,9 @@ test("both spawns put the temp root on the child, whatever the caller's env says
   // ours, outside everything that removes it.
   const hostile = { ...platformEssentials(), [TEST_ROOT_ENV]: undefined };
   for (const env of [platformEssentials(), hostile]) {
-    expect(JSON.parse(runSync(process.execPath, ["-e", READ_HARNESS_KEY], { env }).stdout))
-      .toBe(root);
+    expect(JSON.parse(runSync(process.execPath, ["-e", READ_HARNESS_KEY], { env }).stdout)).toBe(
+      root,
+    );
   }
   const child = spawnChild(process.execPath, {
     args: ["-e", READ_HARNESS_KEY],

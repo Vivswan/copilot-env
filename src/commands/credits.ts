@@ -11,8 +11,8 @@ import {
 } from "../copilot_api/profile.ts";
 import {
   type CreditsFetch,
-  creditsJson,
   type CreditsPace,
+  creditsJson,
   creditsPace,
   fetchCopilotCredits,
   loadCreditsPace,
@@ -97,9 +97,8 @@ export async function runCreditsEverywhere(
   const meters: AccountMeter[] = [];
   for (const { profiles, credits } of fetched) {
     const pace = creditsPace(credits, target, (deps.nowMs ?? Date.now)());
-    const same = pace.login === null
-      ? undefined
-      : meters.find((meter) => meter.pace.login === pace.login);
+    const same =
+      pace.login === null ? undefined : meters.find((meter) => meter.pace.login === pace.login);
     if (same === undefined) meters.push({ pace, profiles });
     else same.profiles.push(...profiles);
   }
@@ -107,7 +106,7 @@ export async function runCreditsEverywhere(
   // (the default, then the names sorted) whatever order the tokens were met in.
   for (const meter of meters) {
     meter.profiles.sort((a, b) =>
-      a === DEFAULT_PROFILE_NAME ? -1 : b === DEFAULT_PROFILE_NAME ? 1 : a.localeCompare(b)
+      a === DEFAULT_PROFILE_NAME ? -1 : b === DEFAULT_PROFILE_NAME ? 1 : a.localeCompare(b),
     );
   }
   if (args.json) {

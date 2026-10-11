@@ -23,12 +23,10 @@ export async function runPowershell(
 ): Promise<{ exitCode: number; stdout: string; launchFailed?: true }> {
   const profile = scratchPowershellProfile();
   try {
-    return await withPowershellChildEnv(
-      "powershell",
-      (env) =>
-        exec("powershell", ["-NoProfile", "-NonInteractive", "-Command", script], {
-          env: { ...env, ...profile.env },
-        }),
+    return await withPowershellChildEnv("powershell", (env) =>
+      exec("powershell", ["-NoProfile", "-NonInteractive", "-Command", script], {
+        env: { ...env, ...profile.env },
+      }),
     );
   } finally {
     profile.dispose();
@@ -57,8 +55,10 @@ export function appScanFromExit(result: { exitCode: number; launchFailed?: true 
 /** 'absent' ONLY on the SPECIFIC no-match error id, a nonzero verdict-less exit for every other
  *  failure, so no real Get-Process error can flatten into a proven reading. */
 export function processScanScript(appName: string): string {
-  return `try { $null = Get-Process -Name '${appName}' -ErrorAction Stop; 'present' } ` +
-    "catch { if ($_.FullyQualifiedErrorId -like 'NoProcessFoundForGivenName*') { 'absent' } else { exit 1 } }";
+  return (
+    `try { $null = Get-Process -Name '${appName}' -ErrorAction Stop; 'present' } ` +
+    "catch { if ($_.FullyQualifiedErrorId -like 'NoProcessFoundForGivenName*') { 'absent' } else { exit 1 } }"
+  );
 }
 
 /** Whether a desktop app is running now, by its process name. */

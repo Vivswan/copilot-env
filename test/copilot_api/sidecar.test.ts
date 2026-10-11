@@ -1,5 +1,7 @@
 import { existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import type { ProbeFetch } from "../../src/copilot_api/integration_identity.ts";
+import { resolveRootHome } from "../../src/copilot_api/paths.ts";
 import {
   DENO_LATEST_URL,
   denoReleaseTarget,
@@ -16,19 +18,17 @@ import {
   sidecarBinPath,
   unzipCommand,
 } from "../../src/copilot_api/sidecar.ts";
-import { resolveRootHome } from "../../src/copilot_api/paths.ts";
 import { RELEASE_TARGETS } from "../../src/install/targets.ts";
+import { envSnapshot } from "../helpers/env.ts";
 import {
   afterEach,
   beforeEach,
+  outcomeOf as caught,
   describe,
   expect,
-  outcomeOf as caught,
   tempDir,
   test,
 } from "../helpers/testing.ts";
-import { envSnapshot } from "../helpers/env.ts";
-import type { ProbeFetch } from "../../src/copilot_api/integration_identity.ts";
 
 const PIN = "2.9.5";
 // sha256("hello"), the classic test vector -- the fake download below serves "hello".
@@ -80,7 +80,11 @@ describe("parseAbsolutePath", () => {
       { input: "  ", expected: { error: "absolute path" } },
     ];
     for (const row of rows) {
-      expectOutcome(row.input, outcomeOf(() => parseAbsolutePath(row.input)), row.expected);
+      expectOutcome(
+        row.input,
+        outcomeOf(() => parseAbsolutePath(row.input)),
+        row.expected,
+      );
     }
   });
 });
@@ -120,16 +124,16 @@ describe("the sidecar ladder", () => {
         label:
           "the COPILOT_ENV_SIDECAR_DENO env override wins over everything and never probes PATH",
         rootHome: empty,
-        opts: { "env": { [SIDECAR_DENO_ENV]: "/opt/deno/bin/deno" }, "findDeno": neverProbed },
+        opts: { env: { [SIDECAR_DENO_ENV]: "/opt/deno/bin/deno" }, findDeno: neverProbed },
         state: {
-          value: { "kind": "override", "denoBin": parseAbsolutePath("/opt/deno/bin/deno") },
+          value: { kind: "override", denoBin: parseAbsolutePath("/opt/deno/bin/deno") },
         },
         resolved: { value: "/opt/deno/bin/deno" },
       },
       {
         label: "a relative override is rejected at the boundary, never resolved against a cwd",
         rootHome: empty,
-        opts: { "env": { [SIDECAR_DENO_ENV]: "deno" }, "findDeno": neverProbed },
+        opts: { env: { [SIDECAR_DENO_ENV]: "deno" }, findDeno: neverProbed },
         state: { error: "absolute path" },
         resolved: { error: "absolute path" },
       },
@@ -137,30 +141,31 @@ describe("the sidecar ladder", () => {
         label: "a bare call reads the override from the process environment",
         ambient: "/opt/deno/bin/deno",
         state: {
-          value: { "kind": "override", "denoBin": parseAbsolutePath("/opt/deno/bin/deno") },
+          value: { kind: "override", denoBin: parseAbsolutePath("/opt/deno/bin/deno") },
         },
         resolved: { value: "/opt/deno/bin/deno" },
       },
       {
-        label: "the deno already on PATH answers, over a provisioned copy: the user's toolchain wins",
+        label:
+          "the deno already on PATH answers, over a provisioned copy: the user's toolchain wins",
         rootHome: versions,
         opts: {
-          "env": {},
-            "platform": "darwin",
-          "findDeno": () => "/usr/local/bin/deno",
+          env: {},
+          platform: "darwin",
+          findDeno: () => "/usr/local/bin/deno",
         },
-        state: { value: { "kind": "path", "denoBin": parseAbsolutePath("/usr/local/bin/deno") } },
+        state: { value: { kind: "path", denoBin: parseAbsolutePath("/usr/local/bin/deno") } },
         resolved: { value: "/usr/local/bin/deno" },
       },
       {
         label: "no PATH deno: the NEWEST provisioned sidecar under the root home answers",
         rootHome: versions,
-        opts: { "env": {}, "platform": "darwin", "findDeno": () => null },
+        opts: { env: {}, platform: "darwin", findDeno: () => null },
         state: {
           value: {
-            "kind": "provisioned",
-            "denoBin": parseAbsolutePath(newest),
-            "version": "2.10.1",
+            kind: "provisioned",
+            denoBin: parseAbsolutePath(newest),
+            version: "2.10.1",
           },
         },
         resolved: { value: newest },
@@ -168,24 +173,24 @@ describe("the sidecar ladder", () => {
       {
         label: "a provisioned binary on win32 carries the .exe suffix",
         rootHome: windowsHome,
-        opts: { "env": {}, "platform": "win32", "findDeno": () => null },
+        opts: { env: {}, platform: "win32", findDeno: () => null },
         state: {
           value: {
-            "kind": "provisioned",
-            "denoBin": parseAbsolutePath(join(windowsHome, "deno", PIN, "deno.exe")),
-            "version": PIN,
+            kind: "provisioned",
+            denoBin: parseAbsolutePath(join(windowsHome, "deno", PIN, "deno.exe")),
+            version: PIN,
           },
         },
         resolved: { value: join(windowsHome, "deno", PIN, "deno.exe") },
       },
       {
         label: "rootHome DEFAULTS to the resolved root home, so bare call sites find the sidecar",
-        opts: { "env": {}, "platform": "linux", "findDeno": () => null },
+        opts: { env: {}, platform: "linux", findDeno: () => null },
         state: {
           value: {
-            "kind": "provisioned",
-            "denoBin": parseAbsolutePath(provisioned),
-            "version": PIN,
+            kind: "provisioned",
+            denoBin: parseAbsolutePath(provisioned),
+            version: PIN,
           },
         },
         resolved: { value: provisioned },
@@ -193,8 +198,8 @@ describe("the sidecar ladder", () => {
       {
         label: "no deno anywhere is absent: a hard, actionable error, checkout and binary alike",
         rootHome: empty,
-        opts: { "env": {}, "platform": "linux", "findDeno": () => null },
-        state: { value: { "kind": "absent" } },
+        opts: { env: {}, platform: "linux", findDeno: () => null },
+        state: { value: { kind: "absent" } },
         resolved: absent,
       },
     ];
@@ -208,7 +213,7 @@ describe("the sidecar ladder", () => {
       const state = outcomeOf(() =>
         opts === undefined
           ? detectSidecar(resolveRootHome())
-          : detectSidecar(rootHome ?? resolveRootHome(), opts)
+          : detectSidecar(rootHome ?? resolveRootHome(), opts),
       );
       expectOutcome(row.label, state, row.state);
       const resolved = outcomeOf(() => {
@@ -230,9 +235,9 @@ describe("provisionedSidecar", () => {
     mkdirSync(join(dir, "deno", "2.99.0"), { recursive: true }); // dir with no binary
     mkdirSync(join(dir, "deno", "junk"), { recursive: true }); // non-version dir
     expect(provisionedSidecar(dir, "darwin")).toEqual({
-      "kind": "provisioned",
-      "denoBin": newest,
-      "version": "2.10.2",
+      kind: "provisioned",
+      denoBin: newest,
+      version: "2.10.2",
     });
   });
 });
@@ -261,9 +266,9 @@ describe("latest-release resolution", () => {
       const key = String(url);
       calls.push(key);
       const route = routes[key];
-      if (route === undefined) return Promise.resolve(new Response(null, { "status": 404 }));
+      if (route === undefined) return Promise.resolve(new Response(null, { status: 404 }));
       if (typeof route === "string") return Promise.resolve(new Response(route));
-      return Promise.resolve(new Response(null, { "status": route.status }));
+      return Promise.resolve(new Response(null, { status: route.status }));
     }) as ProbeFetch;
     return { calls, fetchLike };
   }
@@ -271,7 +276,7 @@ describe("latest-release resolution", () => {
   test("fetchLatestDenoVersion parses the one-line pointer and strips the v; a dead endpoint or garbage names the manual escapes", async () => {
     const { fetchLike } = fetchServing({ [DENO_LATEST_URL]: "v2.11.3\n" });
     expect(await fetchLatestDenoVersion(fetchLike)).toBe("2.11.3");
-    const { fetchLike: dead } = fetchServing({ [DENO_LATEST_URL]: { "status": 500 } });
+    const { fetchLike: dead } = fetchServing({ [DENO_LATEST_URL]: { status: 500 } });
     await expect(fetchLatestDenoVersion(dead)).rejects.toThrow(SIDECAR_DENO_ENV);
     // A malformed 200 body carries the SAME recovery guidance as a dead endpoint
     // (a deno-less machine has nothing else to act on), plus the parse detail.
@@ -292,20 +297,21 @@ describe("latest-release resolution", () => {
       HELLO_SHA256,
     );
     const empty = fetchServing({ [url]: "no digest here" });
-    await expect(fetchReleaseSha256("2.11.3", "x86_64-unknown-linux-gnu", empty.fetchLike))
-      .rejects.toThrow("did not yield a sha256");
+    await expect(
+      fetchReleaseSha256("2.11.3", "x86_64-unknown-linux-gnu", empty.fetchLike),
+    ).rejects.toThrow("did not yield a sha256");
   });
 });
 
 describe("unzipCommand", () => {
   test("uses bsdtar on Windows and unzip elsewhere", () => {
     expect(unzipCommand("/z.zip", "/dest", "win32")).toEqual({
-      "command": "tar",
-      "args": ["-xf", "/z.zip", "-C", "/dest"],
+      command: "tar",
+      args: ["-xf", "/z.zip", "-C", "/dest"],
     });
     expect(unzipCommand("/z.zip", "/dest", "linux")).toEqual({
-      "command": "unzip",
-      "args": ["-o", "-q", "/z.zip", "-d", "/dest"],
+      command: "unzip",
+      args: ["-o", "-q", "/z.zip", "-d", "/dest"],
     });
   });
 });
@@ -315,7 +321,7 @@ describe("downloadSidecar", () => {
     const calls: string[] = [];
     const fetchLike: ProbeFetch = ((url: string | URL | Request) => {
       calls.push(String(url));
-      return Promise.resolve(new Response(body, { "status": status }));
+      return Promise.resolve(new Response(body, { status: status }));
     }) as ProbeFetch;
     return { calls, fetchLike };
   }
@@ -324,9 +330,9 @@ describe("downloadSidecar", () => {
     const { calls, fetchLike } = fakeFetch("hello");
     await expect(
       downloadSidecar(PIN, dir, undefined, {
-        "fetchLike": fetchLike,
-        "platform": "darwin",
-        "arch": "arm64",
+        fetchLike: fetchLike,
+        platform: "darwin",
+        arch: "arm64",
       }),
     ).rejects.toThrow("refusing to download");
     expect(calls).toEqual([]);
@@ -336,10 +342,10 @@ describe("downloadSidecar", () => {
     const { fetchLike } = fakeFetch("hello");
     await expect(
       downloadSidecar(PIN, dir, "0".repeat(64), {
-        "fetchLike": fetchLike,
-        "platform": "darwin",
-        "arch": "arm64",
-        "runner": () => ({ "status": 0, "stderr": "" }),
+        fetchLike: fetchLike,
+        platform: "darwin",
+        arch: "arm64",
+        runner: () => ({ status: 0, stderr: "" }),
       }),
     ).rejects.toThrow("sha256 mismatch");
     const leftovers = readdirSync(join(dir, "deno", PIN)).filter((n) => n.includes(".zip"));
@@ -350,16 +356,16 @@ describe("downloadSidecar", () => {
     const { calls, fetchLike } = fakeFetch("hello");
     const runnerCalls: { command: string; args: string[] }[] = [];
     const bin = await downloadSidecar(PIN, dir, HELLO_SHA256.toUpperCase(), {
-      "fetchLike": fetchLike,
-      "platform": "darwin",
-      "arch": "arm64",
-      "runner": (command, args) => {
-        runnerCalls.push({ command, "args": [...args] });
+      fetchLike: fetchLike,
+      platform: "darwin",
+      arch: "arm64",
+      runner: (command, args) => {
+        runnerCalls.push({ command, args: [...args] });
         // The zip must be fully on disk when the extractor runs, and the extraction
         // target (`-d`) is where the binary appears before it is moved into place.
         expect(existsSync(args[2] ?? "")).toBe(true);
         writeFileSync(join(args[4] ?? "", "deno"), "#!fake deno");
-        return { "status": 0, "stderr": "" };
+        return { status: 0, stderr: "" };
       },
     });
 
@@ -387,14 +393,14 @@ describe("downloadSidecar", () => {
         label: "a failing extractor is surfaced with its stderr",
         body: "hello",
         status: 200,
-        runner: () => ({ "status": 9, "stderr": "bad zip" }),
+        runner: () => ({ status: 9, stderr: "bad zip" }),
         error: "bad zip",
       },
       {
         label: "an extractor that does not produce the binary fails loud",
         body: "hello",
         status: 200,
-        runner: () => ({ "status": 0, "stderr": "" }),
+        runner: () => ({ status: 0, stderr: "" }),
         error: "did not produce",
       },
       {
@@ -407,11 +413,14 @@ describe("downloadSidecar", () => {
     for (const row of rows) {
       const { fetchLike } = fakeFetch(row.body, row.status);
       const failure = await downloadSidecar(PIN, dir, HELLO_SHA256, {
-        "fetchLike": fetchLike,
-        "platform": "darwin",
-        "arch": "arm64",
-        ...(row.runner === undefined ? {} : { "runner": row.runner }),
-      }).then(() => "(resolved)", (err: Error) => err.message);
+        fetchLike: fetchLike,
+        platform: "darwin",
+        arch: "arm64",
+        ...(row.runner === undefined ? {} : { runner: row.runner }),
+      }).then(
+        () => "(resolved)",
+        (err: Error) => err.message,
+      );
       expect({ label: row.label, failure }).toEqual({
         label: row.label,
         failure: expect.stringContaining(row.error),
@@ -439,7 +448,7 @@ describe("ensureSidecar", () => {
       },
       {
         label: "a PATH deno answers with no download -- the user's toolchain wins",
-        opts: { "findDeno": () => "/opt/homebrew/bin/deno" },
+        opts: { findDeno: () => "/opt/homebrew/bin/deno" },
         bin: "/opt/homebrew/bin/deno",
       },
     ];
@@ -465,16 +474,16 @@ describe("ensureSidecar", () => {
       if (key === denoReleaseUrl(latest, target)) {
         return Promise.resolve(new Response("hello"));
       }
-      return Promise.resolve(new Response(null, { "status": 404 }));
+      return Promise.resolve(new Response(null, { status: 404 }));
     }) as ProbeFetch;
     const bin = await ensureSidecar(dir, {
-            "findDeno": () => null,
-      "platform": "linux",
-      "arch": "x64",
-      "fetchLike": fetchLike,
-      "runner": (_command, args) => {
+      findDeno: () => null,
+      platform: "linux",
+      arch: "x64",
+      fetchLike: fetchLike,
+      runner: (_command, args) => {
         writeFileSync(join(args[4] ?? "", "deno"), "#!fake deno");
-        return { "status": 0, "stderr": "" };
+        return { status: 0, stderr: "" };
       },
     });
     expect(bin).toBe(sidecarBinPath(dir, latest, "linux"));

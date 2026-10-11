@@ -4,8 +4,11 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
 
 /** `actual` is a parsed document's field, so a non-array is a plain false, never a throw. */
 export function sameStrings(actual: unknown, expected: readonly string[]): boolean {
-  return Array.isArray(actual) && actual.length === expected.length &&
-    expected.every((v, i) => actual[i] === v);
+  return (
+    Array.isArray(actual) &&
+    actual.length === expected.length &&
+    expected.every((v, i) => actual[i] === v)
+  );
 }
 
 /** `value` with every object's keys sorted at every level, arrays kept in order, so two
@@ -14,7 +17,11 @@ export function sortKeys(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(sortKeys);
   // fromEntries, not assignment into {}: an own "__proto__" key stays a key.
   if (isRecord(value)) {
-    return Object.fromEntries(Object.keys(value).sort().map((key) => [key, sortKeys(value[key])]));
+    return Object.fromEntries(
+      Object.keys(value)
+        .sort()
+        .map((key) => [key, sortKeys(value[key])]),
+    );
   }
   return value;
 }

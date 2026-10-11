@@ -96,7 +96,7 @@ export function ghAuthStatusSpawnSpec(ghPath: string): GhSpawnSpec {
     ...s,
     timeout: GH_AUTH_TIMEOUT_MS,
     env: childEnvWithPath([dirname(ghPath)], {
-      extra: { "NO_COLOR": "1" },
+      extra: { NO_COLOR: "1" },
       omit: (upper) => colorForcers.includes(upper),
     }),
   };
@@ -165,7 +165,7 @@ export function parseGhAuthStatusAccounts(output: string): GhAccount[] {
     const failed = line.match(/\blog in to (\S+)(?: account (\S+)| using \S+)?(?: \(([^)]*)\))?/);
     if (failed) {
       const [, host = "", name, source = ""] = failed;
-      current = push({ host, "login": name ?? "", active: false, source, "broken": true });
+      current = push({ host, login: name ?? "", active: false, source, broken: true });
       continue;
     }
     if (current !== null && /Active account:\s*true/.test(line)) current.active = true;
@@ -175,9 +175,10 @@ export function parseGhAuthStatusAccounts(output: string): GhAccount[] {
 
 /** Exported for tests. A spawn that never completed (an error, the timeout kill) proves NOTHING, and
  *  "unproven" keeps the caller from handing out false "run `gh auth login`" advice. */
-export function ghAuthVerdict(
-  result: { status: number | null; error?: unknown },
-): boolean | "unproven" {
+export function ghAuthVerdict(result: {
+  status: number | null;
+  error?: unknown;
+}): boolean | "unproven" {
   if (result.error || result.status === null) return "unproven";
   return result.status === 0;
 }

@@ -5,7 +5,7 @@
 // is visible in the run, never a silent green.
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { type RunOptions, runSync, spawnChild, type SpawnChildOptions } from "./run.ts";
+import { type RunOptions, runSync, type SpawnChildOptions, spawnChild } from "./run.ts";
 import { sidecarDenoOnPath } from "./sidecar.ts";
 import { tempDir, test } from "./testing.ts";
 

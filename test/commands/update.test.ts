@@ -1,11 +1,11 @@
 import { parseUpdateAction, recheckVerdict } from "../../src/commands/update.ts";
+import { CopilotEnvState } from "../../src/copilot_api/env_state.ts";
 import {
   parseReleasesJson,
   pickAged,
   type Release,
   resolveTarget,
 } from "../../src/install/resolve-release.ts";
-import { CopilotEnvState } from "../../src/copilot_api/env_state.ts";
 import { envSnapshot, isolateProxyHome } from "../helpers/env.ts";
 import { describe, expect, removeDir, test } from "../helpers/testing.ts";
 

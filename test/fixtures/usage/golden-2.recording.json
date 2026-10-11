@@ -1,11 +1,5 @@
 {
-  "args": [
-    "cost",
-    "--json",
-    "--per-day",
-    "--pricing-url",
-    "https://127.0.0.1:1/unreachable"
-  ],
+  "args": ["cost", "--json", "--per-day", "--pricing-url", "https://127.0.0.1:1/unreachable"],
   "generator": {
     "adversarial": true,
     "days": 40,

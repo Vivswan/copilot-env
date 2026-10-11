@@ -10,10 +10,10 @@ import {
   persistedInferenceMs,
   resetInferenceActivityForTests,
 } from "../../src/copilot_api/inference_activity.ts";
-import { importSpecifier, resolvePackageDir, ROOT, runSync } from "../helpers/run.ts";
 import { denoRunArgs, sidecarDeno, sidecarTest } from "../helpers/deno_sidecar.ts";
-import { afterEach, expect, test } from "../helpers/testing.ts";
 import { envSnapshot, isolateProxyHome } from "../helpers/env.ts";
+import { importSpecifier, ROOT, resolvePackageDir, runSync } from "../helpers/run.ts";
+import { afterEach, expect, test } from "../helpers/testing.ts";
 
 const PRELOAD = join(ROOT, "src", "scripts", "daemon_runtime_preload.ts");
 
@@ -128,9 +128,9 @@ test("observeServeArgs substitutes the handler in every Deno.serve calling shape
 // A real `--preload` subprocess, as launchDaemon loads it: the patch must land before srvx runs.
 // The target shares the preloaded module instance, so it can read the in-memory mark.
 const TARGET_SCRIPT = `
-import { lastObservedInferenceMs, persistedInferenceMs } from ${
-  importSpecifier(join(ROOT, "src", "copilot_api", "inference_activity.ts"))
-};
+import { lastObservedInferenceMs, persistedInferenceMs } from ${importSpecifier(
+  join(ROOT, "src", "copilot_api", "inference_activity.ts"),
+)};
 const server = Deno.serve({ hostname: "127.0.0.1", port: 0, onListen: () => {} }, () => new Response("ok"));
 const base = "http://127.0.0.1:" + server.addr.port;
 const out = {};
@@ -144,26 +144,29 @@ await server.shutdown();
 console.log(JSON.stringify(out));
 `;
 
-sidecarTest("the preloaded observer marks inference POSTs through a real Deno.serve, not GETs", () => {
-  tmpHome();
-  const target = join(dir, "target.ts");
-  writeFileSync(target, TARGET_SCRIPT);
-  const before = Date.now();
-  const res = runSync(sidecarDeno(), [...denoRunArgs("--preload", PRELOAD), target], {
-    env: { ...process.env, COPILOT_API_HOME: dir },
-  });
-  if (res.exitCode !== 0) throw new Error(`preloaded target failed: ${res.stderr}`);
-  const out = JSON.parse(res.stdout.trim()) as {
-    afterGet: number;
-    afterPost: number;
-    body: string;
-    persisted: number;
-  };
-  expect(out.body).toBe("ok"); // observation never broke serving
-  expect(out.afterGet).toBe(0);
-  expect(out.afterPost).toBeGreaterThanOrEqual(before);
-  expect(out.persisted).toBe(out.afterPost); // the first mark persists immediately
-});
+sidecarTest(
+  "the preloaded observer marks inference POSTs through a real Deno.serve, not GETs",
+  () => {
+    tmpHome();
+    const target = join(dir, "target.ts");
+    writeFileSync(target, TARGET_SCRIPT);
+    const before = Date.now();
+    const res = runSync(sidecarDeno(), [...denoRunArgs("--preload", PRELOAD), target], {
+      env: { ...process.env, COPILOT_API_HOME: dir },
+    });
+    if (res.exitCode !== 0) throw new Error(`preloaded target failed: ${res.stderr}`);
+    const out = JSON.parse(res.stdout.trim()) as {
+      afterGet: number;
+      afterPost: number;
+      body: string;
+      persisted: number;
+    };
+    expect(out.body).toBe("ok"); // observation never broke serving
+    expect(out.afterGet).toBe(0);
+    expect(out.afterPost).toBeGreaterThanOrEqual(before);
+    expect(out.persisted).toBe(out.afterPost); // the first mark persists immediately
+  },
+);
 
 // Drift alarm: the observer wraps Deno.serve from a preload, and srvx's Deno adapter looks
 // Deno.serve up at serve time, so the wrapper is what serves. A release that drops srvx or

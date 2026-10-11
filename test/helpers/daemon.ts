@@ -4,10 +4,11 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { abortable, delay } from "@std/async";
+import { acquireDaemonLockForLife, daemonLockPath } from "../../src/copilot_api/daemon_lock.ts";
 import { CopilotEnvConfig } from "../../src/copilot_api/env_config.ts";
 import {
-  daemonClientHeaders,
   DEFAULT_COPILOT_API_BASE,
+  daemonClientHeaders,
 } from "../../src/copilot_api/integration_identity.ts";
 import {
   type DaemonLaunchAuth,
@@ -15,13 +16,12 @@ import {
   readLaunchToken,
   resolveLaunchCredential,
 } from "../../src/copilot_api/launch.ts";
+import { resolveRootHome } from "../../src/copilot_api/paths.ts";
 import type { DaemonCredential } from "../../src/copilot_api/process.ts";
 import { launchDaemon } from "../../src/copilot_api/process.ts";
 import type { Profile, ProfileName } from "../../src/copilot_api/profile.ts";
 import { resolveDenoBin } from "../../src/copilot_api/sidecar.ts";
-import { resolveRootHome } from "../../src/copilot_api/paths.ts";
 import { daemonConfigFile, writeDaemonConfig } from "../../src/proxy_float.ts";
-import { acquireDaemonLockForLife, daemonLockPath } from "../../src/copilot_api/daemon_lock.ts";
 import { releaseFileLock } from "../../src/utils/file_lock.ts";
 import { pidAlive } from "../../src/utils/pid.ts";
 import { writeRunState } from "./fixtures.ts";

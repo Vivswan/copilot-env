@@ -17,22 +17,22 @@ import {
 } from "node:fs";
 import { basename, dirname, join, sep } from "node:path";
 import { claudeDesktopStatus } from "../../src/agents/claude_desktop.ts";
+import { runCodex } from "../../src/agents/configure_defaults.ts";
 import { type ProbeDescriptor, probeDirectWorks } from "../../src/agents/live_probe.ts";
 import { SETTINGS_BACKUP_KEEP, settingsBackupDir } from "../../src/agents/transfer.ts";
+import { desktopHelperPath } from "../../src/claude/desktop_helper_scripts.ts";
+import { CLAUDE_DESKTOP_DIR_ENV } from "../../src/claude/desktop_library.ts";
+import { claudeJsonPath } from "../../src/claude/mcp_registration.ts";
+import { settingsPathFor } from "../../src/claude/paths.ts";
 import { syncCodexCatalogReference } from "../../src/codex/catalog_reference.ts";
+import { getHostLocalCodexHome, withCodexHostFarm } from "../../src/codex/host.ts";
+import { codexConfigPath } from "../../src/codex/paths.ts";
 import { acquireCredential, runAuth } from "../../src/commands/auth.ts";
 import { runConfig } from "../../src/commands/config.ts";
 import { runDryRun } from "../../src/commands/dry_run.ts";
 import { runMcp } from "../../src/commands/mcp.ts";
 import { addProfile, delProfile } from "../../src/commands/profile.ts";
 import { runSettings } from "../../src/commands/settings.ts";
-import { desktopHelperPath } from "../../src/claude/desktop_helper_scripts.ts";
-import { CLAUDE_DESKTOP_DIR_ENV } from "../../src/claude/desktop_library.ts";
-import { claudeJsonPath } from "../../src/claude/mcp_registration.ts";
-import { runCodex } from "../../src/agents/configure_defaults.ts";
-import { getHostLocalCodexHome, withCodexHostFarm } from "../../src/codex/host.ts";
-import { codexConfigPath } from "../../src/codex/paths.ts";
-import { settingsPathFor } from "../../src/claude/paths.ts";
 import type { DirectSmoke } from "../../src/copilot_api/endpoint_smoke.ts";
 import { CopilotEnvConfig } from "../../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../../src/copilot_api/env_state.ts";
@@ -44,25 +44,25 @@ import {
 import { CopilotApiPaths, profileHome, resolveRootHome } from "../../src/copilot_api/paths.ts";
 import { parseProfileName } from "../../src/copilot_api/profile.ts";
 import { appRunning, type ScanExec } from "../../src/utils/app_scan.ts";
+import { DRY_RUN_ENV, spawnedByDryRun } from "../../src/utils/dry_run.ts";
 import { errMessage } from "../../src/utils/error.ts";
 import { missingDirectories } from "../../src/utils/fs_disk.ts";
 import * as fs from "../../src/utils/fs_facade.ts";
-import { wrapLine } from "../../src/utils/table.ts";
-import { DRY_RUN_ENV, spawnedByDryRun } from "../../src/utils/dry_run.ts";
 import { deferWriteReports, flushWriteReports } from "../../src/utils/report_write.ts";
-import { captureChannels } from "../helpers/output.ts";
-import { runCli } from "../helpers/run.ts";
-import { afterEach, beforeEach, expect, removeDir, test } from "../helpers/testing.ts";
+import { wrapLine } from "../../src/utils/table.ts";
+import { stageRefusedStop } from "../helpers/daemon.ts";
+import { dryRunChanges, fingerprintTree } from "../helpers/dry_run.ts";
 import {
-  agentHomeEnv,
   type AgentHomes,
+  agentHomeEnv,
   envSnapshot,
   isolateAgentHomes,
   resetExitCode,
 } from "../helpers/env.ts";
 import { stubGithubLogins, writeCodexConfigToml } from "../helpers/fixtures.ts";
-import { dryRunChanges, fingerprintTree } from "../helpers/dry_run.ts";
-import { stageRefusedStop } from "../helpers/daemon.ts";
+import { captureChannels } from "../helpers/output.ts";
+import { runCli } from "../helpers/run.ts";
+import { afterEach, beforeEach, expect, removeDir, test } from "../helpers/testing.ts";
 
 const WORK = parseProfileName("work");
 const WORK_TOKEN = "ghp_worktoken";
@@ -84,7 +84,7 @@ beforeEach(() => {
   // Every Direct landing selects its identity and host over the network; the stub accepts the first
   // candidate on the default host, offline.
   setIntegrationProbeFetch(() =>
-    Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 }))
+    Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 })),
   );
   stubGithubLogins({ [WORK_TOKEN]: "work-bot" });
   homes = isolateAgentHomes("copilot-dry-run-", { mkdirs: true });
@@ -232,7 +232,7 @@ test("`agent auth --dry-run` runs no login and makes no network call: it plans t
 test("a named `auth --provider copilot --dry-run` names the wiring it cannot plan (the login has not landed, so the identity and Claude Desktop's rows are unselected)", async () => {
   await captureChannels(() => addProfile(WORK, { mode: "proxy", noAuth: true }));
   const { stdout, stderr } = await captureChannels(() =>
-    runAuth({ provider: "copilot", profile: "work", dryRun: true })
+    runAuth({ provider: "copilot", profile: "work", dryRun: true }),
   );
   expect(stdout).toContain('profiles.work.authProvider  (absent) -> "copilot"');
   expect(stderr).toContain("Would wire profile 'work''s proxy mode into both agents");
@@ -289,9 +289,10 @@ test("`auth --provider <gh-cli|gh-env> --dry-run` resolves what the real command
     Object.assign(process.env, env);
     const acquire = () => acquireCredential(acquisition, null, seams);
     if ("refusal" in outcome) {
-      await expect(captureChannels(async () => void await acquire()), name).rejects.toThrow(
-        outcome.refusal,
-      );
+      await expect(
+        captureChannels(async () => void (await acquire())),
+        name,
+      ).rejects.toThrow(outcome.refusal);
       await expect(dryRunChanges(acquire), name).rejects.toThrow(outcome.refusal);
     } else {
       let real: unknown;
@@ -311,7 +312,12 @@ test("wrapLine splits an over-wide path at the width with every character kept: 
   // The word break after "rewrite" is the one character the wrap consumes; the path's pieces
   // reassemble byte for byte.
   expect(lines[0]?.trim()).toBe("rewrite");
-  expect(lines.slice(1).map((line) => line.trimStart()).join("")).toBe(path);
+  expect(
+    lines
+      .slice(1)
+      .map((line) => line.trimStart())
+      .join(""),
+  ).toBe(path);
 });
 
 test("a dry run's auto-mode decision is the real one: the CLI smoke runs and its failure is final, whatever the endpoint says", async () => {
@@ -355,9 +361,7 @@ test("`profile <name> del --dry-run` takes the real refusal: a daemon that canno
   const fx = stageRefusedStop(profileHome(WORK), WORK);
   try {
     const before = fingerprint(scratch().dir);
-    await expect(
-      captureChannels(() => delProfile(WORK, true)),
-    ).rejects.toThrow("did not stop");
+    await expect(captureChannels(() => delProfile(WORK, true))).rejects.toThrow("did not stop");
     expect(fingerprint(scratch().dir)).toEqual(before);
     expect(new CopilotEnvState().profileNames()).toEqual([WORK]);
   } finally {
@@ -563,7 +567,7 @@ test("`agent config set --dry-run` shows the preference's stored value moving, a
         view: { kind: "config" },
         dryRun: true,
       }),
-    )
+    ),
   );
   expect(out).toContain(`rewrite ${new CopilotApiPaths().stateStoreFile}`);
   expect(out).toContain('global."daemon.idle-timeout"  30 -> 45');
@@ -583,7 +587,7 @@ for (const key of ["cost.pricing-url", "cost.github-pricing-url"] as const) {
           view: { kind: "config" },
           dryRun: true,
         }),
-      )
+      ),
     );
     expect(out).toContain(`global."${key}"  (absent) -> <redacted>`);
     expect(out).not.toContain("SECRET-URL-TOKEN");
@@ -735,9 +739,13 @@ test("the dry-run marker a child honours is one a live run holds: an ambient `1`
   writeFileSync(join(crashed, "held"), `${2_147_483_646}\n${Date.now()}\n`);
   // No dry run of ours spawned these: a shell's export, a pid (init's `1` is a live process of the
   // container's root), a nonce with no run behind it, or the unheld markers.
-  for (
-    const marker of ["1", String(process.pid), randomBytes(16).toString("hex"), forged, crashed]
-  ) {
+  for (const marker of [
+    "1",
+    String(process.pid),
+    randomBytes(16).toString("hex"),
+    forged,
+    crashed,
+  ]) {
     rmSync(store, { force: true });
     expect(spawnedByDryRun({ [DRY_RUN_ENV]: marker })).toBe(false);
     expect(set(marker).exitCode).toBe(0);
@@ -752,7 +760,7 @@ test("the dry-run marker a child honours is one a live run holds: an ambient `1`
       expect(spawnedByDryRun()).toBe(true);
       expect(set(minted).exitCode).toBe(0);
       return Promise.resolve();
-    })
+    }),
   );
   expect(existsSync(store)).toBe(false);
   // The marker dies with the run: the same value afterwards names nothing.

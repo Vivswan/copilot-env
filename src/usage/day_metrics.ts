@@ -104,9 +104,7 @@ export interface DayMetrics extends DayTotals {
 
 /** The discriminant replaces a magic day label; the "(undated)" spelling is applied at render time
  *  only. */
-type PerDayRow =
-  | ({ kind: "dated" } & DayMetrics)
-  | ({ kind: "undated" } & DayTotals);
+type PerDayRow = ({ kind: "dated" } & DayMetrics) | ({ kind: "undated" } & DayTotals);
 
 /** Dated days only, so the per-day medians stay per-DAY statistics (avg/day spreads the aggregate,
  *  undated included, over the active days). Cost is priced per day only for models the aggregate
@@ -218,9 +216,10 @@ export function median(values: number[]): number {
 }
 
 /** The inclusive min..max calendar span of the active days, and what fraction of it was active. */
-export function activeDayCoverage(
-  report: ReadonlyUsageReport,
-): { spanDays: number; percent: number } {
+export function activeDayCoverage(report: ReadonlyUsageReport): {
+  spanDays: number;
+  percent: number;
+} {
   const days = [...report.perDay.keys()].sort();
   if (days.length === 0) {
     return { spanDays: 0, percent: 100 };

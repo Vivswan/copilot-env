@@ -68,9 +68,8 @@ export function parseProjectConfig(content: string, source = PROJECT_CONFIG_FILE
     source,
   );
   const rawMaxVersion = optionalValue(raw.PROXY_MAX_VERSION);
-  const proxyMaxVersion = rawMaxVersion === null
-    ? null
-    : semverValue("PROXY_MAX_VERSION", rawMaxVersion, source);
+  const proxyMaxVersion =
+    rawMaxVersion === null ? null : semverValue("PROXY_MAX_VERSION", rawMaxVersion, source);
   // This parser is the only production producer of a ProjectConfig, so consumers never see floor >
   // ceiling.
   if (proxyMaxVersion !== null && versionLessThan(proxyMaxVersion, proxyMinVersion)) {

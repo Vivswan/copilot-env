@@ -3,8 +3,8 @@
 // restores it. There is no Linux Codex app, so it is gated to macOS/Windows.
 import { setTimeout as sleep } from "node:timers/promises";
 import {
-  appRunning,
   type AppScan,
+  appRunning,
   appScanFromExit,
   appScanVerdict,
   processScanScript,
@@ -71,8 +71,7 @@ export function restoreModelProvider(
 
 // --- desktop app control ----------------------------------------------------
 
-const RUNNING_SCAN_UNPROVEN_WARN =
-  `The process scan failed, so it could not prove the ${APP_NAME} app is closed.`;
+const RUNNING_SCAN_UNPROVEN_WARN = `The process scan failed, so it could not prove the ${APP_NAME} app is closed.`;
 
 /** A PROVEN absence is the only silent proceed. An UNPROVEN look warns and takes the SAME gate as a
  *  proven-present app: a scan that failed to run never authorizes swapping config under a possibly
@@ -109,8 +108,7 @@ export function installGateFromScan(
   }
   return {
     kind: "confirm",
-    warn:
-      `The install scan failed, so it could not check whether the ${APP_NAME} app is installed.`,
+    warn: `The install scan failed, so it could not check whether the ${APP_NAME} app is installed.`,
     prompt: "Continue with pairing anyway?",
   };
 }
@@ -158,13 +156,18 @@ export function runningState(): Promise<AppScan> {
 async function openApp(): Promise<void> {
   if (process.platform === "win32") {
     const r = await withPowershellChildEnv("powershell", (env) =>
-      runCaptured("powershell", [
-        "-NoProfile",
-        "-NonInteractive",
-        "-Command",
-        `$a = Get-StartApps | Where-Object { $_.Name -like '${APP_NAME}*' } | Select-Object -First 1;` +
-        `if ($a) { Start-Process ('shell:AppsFolder\\' + $a.AppID) } else { Start-Process '${APP_NAME}' }`,
-      ], { env }));
+      runCaptured(
+        "powershell",
+        [
+          "-NoProfile",
+          "-NonInteractive",
+          "-Command",
+          `$a = Get-StartApps | Where-Object { $_.Name -like '${APP_NAME}*' } | Select-Object -First 1;` +
+            `if ($a) { Start-Process ('shell:AppsFolder\\' + $a.AppID) } else { Start-Process '${APP_NAME}' }`,
+        ],
+        { env },
+      ),
+    );
     if (r.exitCode !== 0) {
       await prompt(`Open the ${APP_NAME} app, then press Enter.`, { type: "text" });
     }

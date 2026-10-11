@@ -33,7 +33,10 @@ test("save sorts keys recursively (nested objects and array elements alike), kee
     {
       name: "nested object",
       doc: { zebra: 1, alpha: { y: 2, x: 1 } },
-      before: [['"alpha"', '"zebra"'], ['"x"', '"y"']],
+      before: [
+        ['"alpha"', '"zebra"'],
+        ['"x"', '"y"'],
+      ],
     },
     {
       name: "array elements",
@@ -43,7 +46,11 @@ test("save sorts keys recursively (nested objects and array elements alike), kee
           { delta: 3, bravo: 4 },
         ],
       },
-      before: [['"zulu": 1', '"delta": 3'], ['"alpha"', '"zulu"'], ['"bravo"', '"delta"']],
+      before: [
+        ['"zulu": 1', '"delta": 3'],
+        ['"alpha"', '"zulu"'],
+        ['"bravo"', '"delta"'],
+      ],
     },
   ];
   for (const row of rows) {
@@ -249,7 +256,7 @@ test.skipIf(process.platform === "win32")(
     expect(() =>
       cfg.update((d) => {
         d.smallModel = "gpt-6";
-      })
+      }),
     ).toThrow("refusing to overwrite it");
     // THE outcome: the entry is still the user's symlink, pointing where it did.
     expect(lstatSync(path).isSymbolicLink()).toBe(true);

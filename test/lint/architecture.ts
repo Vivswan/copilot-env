@@ -32,8 +32,12 @@ function isStringList(value: unknown): value is string[] {
 }
 
 function isStringListRecord(value: unknown): value is Record<string, string[]> {
-  return typeof value === "object" && value !== null && !Array.isArray(value) &&
-    Object.values(value).every(isStringList);
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Object.values(value).every(isStringList)
+  );
 }
 
 /** The declaration under `root`, shape-checked: a typo in a layer name under `edges`, or two layers
@@ -61,12 +65,13 @@ export function readArchitecture(root: string): Architecture {
     }
   }
   const owned = Object.entries(layers).flatMap(([layer, paths]) =>
-    paths.map((path) => ({ layer, path }))
+    paths.map((path) => ({ layer, path })),
   );
   for (const [i, a] of owned.entries()) {
     for (const b of owned.slice(i + 1)) {
       if (a.layer === b.layer) continue;
-      const overlap = a.path === b.path ||
+      const overlap =
+        a.path === b.path ||
         (a.path.endsWith("/") && b.path.startsWith(a.path)) ||
         (b.path.endsWith("/") && a.path.startsWith(b.path));
       if (overlap) {
@@ -80,7 +85,7 @@ export function readArchitecture(root: string): Architecture {
 }
 
 function owns(paths: readonly string[], file: string): boolean {
-  return paths.some((owned) => owned.endsWith("/") ? file.startsWith(owned) : file === owned);
+  return paths.some((owned) => (owned.endsWith("/") ? file.startsWith(owned) : file === owned));
 }
 
 /** `file` is repo-relative, as the graph's keys are. */
@@ -124,7 +129,7 @@ export function lintArchitecture(arch: Architecture, graph: ImportGraph): string
   }
   const declared = new Set(
     Object.entries(arch.edges).flatMap(([from, targets]) =>
-      targets.map((to) => `${from} -> ${to}`)
+      targets.map((to) => `${from} -> ${to}`),
     ),
   );
   for (const [key, sites] of [...drawn].sort()) {
@@ -159,7 +164,7 @@ export function renderArchitectureMap(arch: Architecture): string {
     "graph TD",
     ...Object.entries(arch.layers).map(([name, paths]) => `  ${name}["${paths.join("<br>")}"]`),
     ...Object.entries(arch.edges).flatMap(([from, targets]) =>
-      targets.map((to) => `  ${from} --> ${to}`)
+      targets.map((to) => `  ${from} --> ${to}`),
     ),
   ].join("\n");
 }

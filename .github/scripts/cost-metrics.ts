@@ -192,8 +192,8 @@ function parseMeasureOptions(argv: readonly string[]): MeasureOptions {
     headSha,
     mb: mb === undefined ? DEFAULT_TREE_MB : nonNegativeInt(mb, "the tree size (MB)"),
     seed: nonNegativeInt(flags.get("seed") ?? String(DEFAULT_SEED), "--seed"),
-    fixturesScript: setting(flags, "fixtures", "COST_METRICS_FIXTURES_SCRIPT") ??
-      DEFAULT_FIXTURES_SCRIPT,
+    fixturesScript:
+      setting(flags, "fixtures", "COST_METRICS_FIXTURES_SCRIPT") ?? DEFAULT_FIXTURES_SCRIPT,
     intended: (setting(flags, "labels", "PR_LABELS") ?? "").split(",").includes(INTENDED_LABEL),
   };
 }
@@ -244,9 +244,8 @@ export async function run(
     () => timeout.abort(new Error(`timed out after ${timeoutMs} ms`)),
     timeoutMs,
   );
-  const signal = opts.signal === undefined
-    ? timeout.signal
-    : AbortSignal.any([timeout.signal, opts.signal]);
+  const signal =
+    opts.signal === undefined ? timeout.signal : AbortSignal.any([timeout.signal, opts.signal]);
   const kill = (): void => {
     try {
       child.kill("SIGKILL");
@@ -351,8 +350,10 @@ function localMidnightMs(day: string, what: string): number {
   const date = new Date(Number(y), Number(m) - 1, Number(d));
   // Years 0..99 would otherwise be read as 1900..1999.
   if (y !== undefined) date.setFullYear(Number(y));
-  const valid = match !== null &&
-    date.getFullYear() === Number(y) && date.getMonth() === Number(m) - 1 &&
+  const valid =
+    match !== null &&
+    date.getFullYear() === Number(y) &&
+    date.getMonth() === Number(m) - 1 &&
     date.getDate() === Number(d);
   if (!valid) throw new Error(`${what} is not a calendar YYYY-MM-DD day: ${JSON.stringify(day)}`);
   return date.getTime();
@@ -392,15 +393,11 @@ function parseTreeSummary(line: string): TreeSummary {
 async function generateTree(opts: MeasureOptions, treeHome: string): Promise<TreeSummary> {
   const script = resolve(REPO_ROOT, opts.fixturesScript);
   if (!existsSync(script)) throw new Error(`fixtures script not found: ${script}`);
-  const result = await mustRun("bun", [
-    script,
-    "--out",
-    treeHome,
-    "--mb",
-    String(opts.mb),
-    "--seed",
-    String(opts.seed),
-  ], { env: setupEnv() });
+  const result = await mustRun(
+    "bun",
+    [script, "--out", treeHome, "--mb", String(opts.mb), "--seed", String(opts.seed)],
+    { env: setupEnv() },
+  );
   const lines = result.stdout.trim().split("\n");
   return parseTreeSummary(lines[lines.length - 1] ?? "");
 }
@@ -438,7 +435,7 @@ function treeEntries(root: string): { rel: string; path: string }[] {
       const path = join(entry.parentPath, entry.name);
       return { rel: relative(root, path), path };
     })
-    .sort((a, b) => a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0);
+    .sort((a, b) => (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0));
 }
 
 /** Read-only tree while it is measured: a cost run must not write the sessions it reads. */
@@ -622,12 +619,7 @@ const BLOCK_MIN_LINES = 3;
  * A fenced block of `text` whose RENDERED form fits `maxLines` lines and `maxBytes` bytes.
  * A budget too small for even an empty block is a caller bug and throws.
  */
-function boundedBlock(
-  text: string,
-  info: string,
-  maxLines: number,
-  maxBytes: number,
-): string {
+function boundedBlock(text: string, info: string, maxLines: number, maxBytes: number): string {
   const minOverhead = 3 + byteLength(info) + 1 + 1 + 3;
   if (maxLines < BLOCK_MIN_LINES || maxBytes < minOverhead) {
     throw new RangeError(
@@ -683,15 +675,11 @@ async function unifiedDiff(scratch: string, baseText: string, headText: string):
   writeFileSync(join(scratch, "head.json"), headText);
   // --no-index compares two paths outside any repo; exit 1 is "they differ".
   // Relative names from the scratch dir keep the temp path out of the header.
-  const result = await run("git", [
-    "diff",
-    "--no-index",
-    "--no-color",
-    "--unified=3",
-    "--",
-    "base.json",
-    "head.json",
-  ], { cwd: scratch, env: setupEnv() });
+  const result = await run(
+    "git",
+    ["diff", "--no-index", "--no-color", "--unified=3", "--", "base.json", "head.json"],
+    { cwd: scratch, env: setupEnv() },
+  );
   if (result.status > 1) throw new Error(`git diff exited ${result.status}\n${result.stderr}`);
   return result.stdout;
 }
@@ -846,7 +834,7 @@ export function deltaCell(
   const signed = (value: number, digits: number): string =>
     `${value < 0 ? "-" : "+"}${Math.abs(value).toFixed(digits)}`;
   if (base === 0) return `${signed(delta, 0)}${unit}`;
-  const percent = Number((delta / base * 100).toFixed(1));
+  const percent = Number(((delta / base) * 100).toFixed(1));
   return `${signed(delta, 0)}${unit} (${signed(percent, 1)}%)`;
 }
 
@@ -885,28 +873,29 @@ function renderComment(
 ): string {
   if (results.length === 0) throw new Error("no windows measured");
   const anyDiffers = results.some((result) => result.outcome.kind === "differs");
-  const headLabel = opts.headSha !== undefined && shortSha(opts.headSha) !== shortSha(measuredSha)
-    ? `${shortSha(measuredSha)} (merge of PR head ${shortSha(opts.headSha)})`
-    : shortSha(measuredSha);
+  const headLabel =
+    opts.headSha !== undefined && shortSha(opts.headSha) !== shortSha(measuredSha)
+      ? `${shortSha(measuredSha)} (merge of PR head ${shortSha(opts.headSha)})`
+      : shortSha(measuredSha);
   const lines = [
     COMMENT_MARKER,
     `## Cost metrics: ${anyDiffers ? "JSON DIFFERS from base" : "JSON matches base"}`,
     "",
     ...(anyDiffers && opts.intended
       ? [
-        `The diff is declared intended via the \`${INTENDED_LABEL}\` label, so the check passes.`,
-        "",
-      ]
+          `The diff is declared intended via the \`${INTENDED_LABEL}\` label, so the check passes.`,
+          "",
+        ]
       : []),
     "`agent cost --json --per-day` over one synthetic tree, base and head back to back on one runner.",
     "",
     ...results.flatMap((result) => [...renderWindowTable(result), ""]),
     `- base \`${shortSha(baseSha)}\`, head \`${headLabel}\``,
     `- tree: ${opts.mb} MB requested, seed ${opts.seed}; ${tree.files} files, ${tree.bytes} bytes, ` +
-    `days ${tree.firstDay}..${tree.lastDay}`,
+      `days ${tree.firstDay}..${tree.lastDay}`,
     "- cold: first run in a fresh copilot-env home; warm: second run in the same home; " +
-    `${NO_INDEX_FLAG}: a third run there with the index bypassed. Both checkouts were primed ` +
-    "untimed first, so the numbers compare the scans, not the disk.",
+      `${NO_INDEX_FLAG}: a third run there with the index bypassed. Both checkouts were primed ` +
+      "untimed first, so the numbers compare the scans, not the disk.",
   ];
   if (results.some((result) => result.runtimeKeyPresent)) {
     lines.push(`- compared with the \`${RUNTIME_KEY}\` key dropped`);
@@ -1011,7 +1000,9 @@ async function runMeasure(opts: MeasureOptions): Promise<void> {
 
     const body = renderComment(results, opts, baseSha, measuredSha, tree);
     const verdict: Verdict = results.some((result) => result.outcome.kind === "differs")
-      ? (opts.intended ? "intended" : "differs")
+      ? opts.intended
+        ? "intended"
+        : "differs"
       : "match";
     console.log(body);
     mkdirSync(opts.out, { recursive: true });

@@ -16,23 +16,26 @@ import { refreshCodexCatalogAndSync } from "../../src/codex/catalog_reference.ts
 import { codexConfigPath } from "../../src/codex/paths.ts";
 import { CI_NO_LIVE_LOOKUPS_ENV, codexUserAgent } from "../../src/codex/user_agent.ts";
 import { runDryRun } from "../../src/commands/dry_run.ts";
-import { directClientHeaders, type ProbeFetch } from "../../src/copilot_api/integration_identity.ts";
 import { CopilotEnvConfig } from "../../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../../src/copilot_api/env_state.ts";
+import {
+  directClientHeaders,
+  type ProbeFetch,
+} from "../../src/copilot_api/integration_identity.ts";
 import { OwnershipLedger } from "../../src/copilot_api/ownership.ts";
 import { CopilotApiPaths } from "../../src/copilot_api/paths.ts";
 import { withDryRun } from "../../src/utils/dry_run.ts";
 import { MILLISECONDS_PER_DAY } from "../../src/utils/time.ts";
+import { linesNaming } from "../helpers/dry_run.ts";
+import { envSnapshot, isolateProxyHome } from "../helpers/env.ts";
 import {
   type FakeCodex,
-  fakeCodexOnPath,
   type FakeCodexProbe,
   type FakeCodexSpec,
+  fakeCodexOnPath,
 } from "../helpers/fake_codex.ts";
 import { captureChannels } from "../helpers/output.ts";
 import { afterEach, expect, test } from "../helpers/testing.ts";
-import { envSnapshot, isolateProxyHome } from "../helpers/env.ts";
-import { linesNaming } from "../helpers/dry_run.ts";
 
 const restoreEnv = envSnapshot(["PATH", CI_NO_LIVE_LOOKUPS_ENV]);
 let dir = "";
@@ -98,37 +101,41 @@ const ASTRA_LIMITS: CopilotModelLimits = {
 function syntheticDump(): string {
   const entry = (slug: string, priority: number): Model => ({
     slug,
-    "display_name": slug.toUpperCase(),
+    display_name: slug.toUpperCase(),
     description: `${slug} bundled`,
-    "default_reasoning_level": "medium",
-    "supported_reasoning_levels": [{ effort: "low" }, { effort: "medium" }, { effort: "high" }],
-    "shell_type": "unified_exec",
+    default_reasoning_level: "medium",
+    supported_reasoning_levels: [{ effort: "low" }, { effort: "medium" }, { effort: "high" }],
+    shell_type: "unified_exec",
     visibility: "list",
-    "supported_in_api": true,
+    supported_in_api: true,
     priority,
-    "additional_speed_tiers": ["fast"],
-    "service_tiers": [{ id: "priority", name: "Fast" }],
+    additional_speed_tiers: ["fast"],
+    service_tiers: [{ id: "priority", name: "Fast" }],
     // Non-null sentinels: a bundled entry's own claims must survive untouched
     // (only a CLONE drops them).
-    "availability_nux": { text: `try ${slug}` },
+    availability_nux: { text: `try ${slug}` },
     upgrade: { model: `${slug}-next` },
-    "model_messages": { "persistent_instructions": `persist ${slug}` },
-    "truncation_policy": { mode: "bytes", limit: 10_000 },
-    "context_window": 272_000,
-    "max_context_window": 272_000,
-    "effective_context_window_percent": 95,
-    "comp_hash": `hash-${slug}`,
-    "experimental_supported_tools": ["read_file"],
-    "input_modalities": ["text", "image"],
-    "base_instructions": `instructions for ${slug}`,
+    model_messages: { persistent_instructions: `persist ${slug}` },
+    truncation_policy: { mode: "bytes", limit: 10_000 },
+    context_window: 272_000,
+    max_context_window: 272_000,
+    effective_context_window_percent: 95,
+    comp_hash: `hash-${slug}`,
+    experimental_supported_tools: ["read_file"],
+    input_modalities: ["text", "image"],
+    base_instructions: `instructions for ${slug}`,
   });
   return JSON.stringify({
-    models: [entry("gpt-5.6-sol", 1), entry("gpt-5.4", 2), {
-      slug: "codex-auto-review",
-      visibility: "hide",
-      priority: 9,
-      "truncation_policy": { mode: "bytes", limit: 10_000 },
-    }],
+    models: [
+      entry("gpt-5.6-sol", 1),
+      entry("gpt-5.4", 2),
+      {
+        slug: "codex-auto-review",
+        visibility: "hide",
+        priority: 9,
+        truncation_policy: { mode: "bytes", limit: 10_000 },
+      },
+    ],
   });
 }
 
@@ -271,10 +278,12 @@ test("parseCopilotModels merges a [1m] twin into its base: larger window, every 
     ...twin,
     capabilities: { ...twin.capabilities, supports: { reasoning_effort: [] } },
   };
-  expect(parseCopilotModels({ data: [base, emptyTwin] }).get("claude-x")?.reasoningEfforts)
-    .toEqual(["low"]);
-  expect(parseCopilotModels({ data: [emptyTwin, base] }).get("claude-x")?.reasoningEfforts)
-    .toEqual(["low"]);
+  expect(parseCopilotModels({ data: [base, emptyTwin] }).get("claude-x")?.reasoningEfforts).toEqual(
+    ["low"],
+  );
+  expect(parseCopilotModels({ data: [emptyTwin, base] }).get("claude-x")?.reasoningEfforts).toEqual(
+    ["low"],
+  );
 });
 
 // --- patchModelCatalog: the bundled entries --------------------------------------
@@ -605,10 +614,11 @@ test("every field of every bundled entry survives (tiers emptied, limits overlai
     overlaid.context_window,
     overlaid.max_context_window,
     overlaid.effective_context_window_percent,
-  ])
-    .toEqual([1_050_000, 1_050_000, 87]);
+  ]).toEqual([1_050_000, 1_050_000, 87]);
   const cloneKeys = Object.keys(bySlug(doc, "gpt-5.6-sol-fast")).sort();
-  const donorKeys = Object.keys(bySlug(doc, "gpt-5.6-sol")).filter((k) => k !== "comp_hash").sort();
+  const donorKeys = Object.keys(bySlug(doc, "gpt-5.6-sol"))
+    .filter((k) => k !== "comp_hash")
+    .sort();
   expect(cloneKeys).toEqual(donorKeys);
 });
 
@@ -621,15 +631,17 @@ const BUNDLED = JSON.stringify({
 });
 /** Copilot's `/models` body serving gpt-5.5 alone, at GPT55_LIMITS. */
 const GPT55_BODY = {
-  data: [{
-    id: "gpt-5.5",
-    "model_picker_enabled": true,
-    "supported_endpoints": ["/responses"],
-    capabilities: {
-      type: "chat",
-      limits: { "max_context_window_tokens": 1_050_000, "max_prompt_tokens": 922_000 },
+  data: [
+    {
+      id: "gpt-5.5",
+      model_picker_enabled: true,
+      supported_endpoints: ["/responses"],
+      capabilities: {
+        type: "chat",
+        limits: { max_context_window_tokens: 1_050_000, max_prompt_tokens: 922_000 },
+      },
     },
-  }],
+  ],
 };
 const TOKEN = "gho_x";
 
@@ -665,8 +677,9 @@ function storeCredential(): void {
 }
 
 function generate(body: unknown = GPT55_BODY): Promise<boolean> {
-  return withCopilot(body, () => generateCodexModelCatalog("direct", TOKEN))
-    .then(({ result }) => result);
+  return withCopilot(body, () => generateCodexModelCatalog("direct", TOKEN)).then(
+    ({ result }) => result,
+  );
 }
 
 /** The write reports land on stderr too, after the narration. */
@@ -683,7 +696,7 @@ test("the Copilot seed asks the direct catalog with the exact header set Codex b
   // signal keeps them off the process memo, so each is its own request here).
   catalogFixture();
   const { sent } = await withCopilot(
-    { data: [{ "id": "gpt-5.5", "capabilities": { "type": "chat" } }] },
+    { data: [{ id: "gpt-5.5", capabilities: { type: "chat" } }] },
     () => generateCodexModelCatalog("direct", TOKEN),
   );
   const asCodex = { ...directClientHeaders(codexUserAgent()), Authorization: `Bearer ${TOKEN}` };
@@ -732,9 +745,12 @@ test("a regenerated catalog identical to the one on disk previews as unchanged",
   const { stdout } = await captureChannels(() => runDryRun(() => generate()));
   // The print wraps to the terminal width (mid-path, or at the space after the verdict): the rows
   // are re-joined by their two-space indent, then the catalog's row is matched exactly.
-  const rows = stdout.split("\n").slice(1).join("\n").split(/\n {2}(?! )/).map((row) =>
-    row.replace(/\s+/g, "")
-  );
+  const rows = stdout
+    .split("\n")
+    .slice(1)
+    .join("\n")
+    .split(/\n {2}(?! )/)
+    .map((row) => row.replace(/\s+/g, ""));
   expect(rows).toEqual([`unchanged${file}`.replace(/\s+/g, "")]);
   expect(readFileSync(file, "utf8")).toBe(before);
 });
@@ -808,8 +824,7 @@ test("past the refresh deadline the catalog is still written, but neither the ac
   const catalogFile = new CopilotApiPaths().codexModelCatalogFile;
   writeFileSync(configPath, 'model_provider = "copilot-env"\n');
   const reference = () =>
-    (parse(readFileSync(configPath, "utf8")) as Record<string, unknown>)
-      .model_catalog_json;
+    (parse(readFileSync(configPath, "utf8")) as Record<string, unknown>).model_catalog_json;
   // The deadline is taken as the refresh starts; the clock then jumps past it while Copilot
   // answers, so the probe, the memo, and the reference sync all run late.
   const realNow = Date.now;
@@ -833,10 +848,12 @@ test("past the refresh deadline the catalog is still written, but neither the ac
   expect(new OwnershipLedger().owns("codexCatalog", configPath)).toBe(false);
   // The logger wraps to the terminal width (mid-path included), so both sides drop whitespace.
   const unwrapped = (text: string) => text.replace(/\s+/g, "");
-  expect(unwrapped(said)).toContain(unwrapped(
-    `catalog reference not set in ${configPath}: ownership could not be recorded; ` +
-      "the next wiring or direct launch retries",
-  ));
+  expect(unwrapped(said)).toContain(
+    unwrapped(
+      `catalog reference not set in ${configPath}: ownership could not be recorded; ` +
+        "the next wiring or direct launch retries",
+    ),
+  );
   // Control: inside the deadline the same run records the acceptance, the reference, and the claim.
   new CopilotEnvState().set({ codexCatalogLastAttemptMs: Date.now() - MILLISECONDS_PER_DAY - 1 });
   await withCopilot(GPT55_BODY, () => refreshCodexCatalogAndSync("direct"));
@@ -974,8 +991,10 @@ test("unverifiable: a run that proves nothing either way never becomes a verdict
   for (const probe of cases) {
     writeCatalog(probe);
     codex.script({ probe });
-    expect([probe, inspectCatalogFile(new CopilotApiPaths().codexModelCatalogFile)])
-      .toEqual([probe, "unverifiable"]);
+    expect([probe, inspectCatalogFile(new CopilotApiPaths().codexModelCatalogFile)]).toEqual([
+      probe,
+      "unverifiable",
+    ]);
   }
 });
 
@@ -1066,9 +1085,8 @@ test("a failed post-upgrade regeneration does not retry on the next same-version
 test("generate is a no-op when the catalog is not opted in", async () => {
   const codex = catalogFixture();
   new CopilotEnvConfig().del("codex.model-catalog");
-  const { result, sent } = await withCopilot(
-    GPT55_BODY,
-    () => generateCodexModelCatalog("direct", TOKEN),
+  const { result, sent } = await withCopilot(GPT55_BODY, () =>
+    generateCodexModelCatalog("direct", TOKEN),
   );
   expect(result).toBe(false);
   expect(sent).toEqual([]);
@@ -1080,9 +1098,8 @@ test("refresh is a no-op when disabled: no throttle state write", async () => {
   const codex = catalogFixture({ version: "1.0.0" });
   storeCredential();
   new CopilotEnvConfig().set({ "codex.model-catalog": false });
-  const { result, sent } = await withCopilot(
-    GPT55_BODY,
-    () => refreshCodexModelCatalogIfStale("direct"),
+  const { result, sent } = await withCopilot(GPT55_BODY, () =>
+    refreshCodexModelCatalogIfStale("direct"),
   );
   expect(result).toBe(false);
   expect(sent).toEqual([]);

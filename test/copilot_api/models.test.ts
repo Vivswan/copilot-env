@@ -29,7 +29,10 @@ const ALIAS_ROWS: {
   },
   {
     name: "[1m] requests resolve to the 1m sibling, and opus prefers it",
-    catalog: [{ id: "claude-opus-4.8", is1m: false }, { id: "claude-opus-4.8-1m", is1m: true }],
+    catalog: [
+      { id: "claude-opus-4.8", is1m: false },
+      { id: "claude-opus-4.8-1m", is1m: true },
+    ],
     aliases: {
       "claude-opus-4-8": "claude-opus-4.8",
       "claude-opus-4-8[1m]": "claude-opus-4.8-1m",
@@ -43,7 +46,10 @@ const ALIAS_ROWS: {
   },
   {
     name: "family shorthand picks the newest version",
-    catalog: [{ id: "claude-sonnet-4.5", is1m: false }, { id: "claude-sonnet-4.6", is1m: false }],
+    catalog: [
+      { id: "claude-sonnet-4.5", is1m: false },
+      { id: "claude-sonnet-4.6", is1m: false },
+    ],
     aliases: {
       "claude-sonnet-4-5": "claude-sonnet-4.5",
       "claude-sonnet-4-5[1m]": "claude-sonnet-4.5",
@@ -68,7 +74,10 @@ const ALIAS_ROWS: {
   },
   {
     name: "non-claude models produce no claude aliases, but GPTs get gpt-latest",
-    catalog: [{ id: "gpt-5.5", is1m: false }, { id: "gemini-2.5-pro", is1m: false }],
+    catalog: [
+      { id: "gpt-5.5", is1m: false },
+      { id: "gemini-2.5-pro", is1m: false },
+    ],
     aliases: { "gpt-latest": "gpt-5.5" },
   },
   {
@@ -84,18 +93,27 @@ const ALIAS_ROWS: {
   },
   {
     name: "gpt-latest is absent when every GPT is a mini/nano tier",
-    catalog: [{ id: "gpt-5-mini", is1m: false }, { id: "gpt-5-nano", is1m: false }],
+    catalog: [
+      { id: "gpt-5-mini", is1m: false },
+      { id: "gpt-5-nano", is1m: false },
+    ],
     aliases: {},
   },
   {
     name: "gpt-latest tiebreak prefers the bare id over a same-version qualifier (bare first)",
-    catalog: [{ id: "gpt-6", is1m: false }, { id: "gpt-6-foo", is1m: false }],
+    catalog: [
+      { id: "gpt-6", is1m: false },
+      { id: "gpt-6-foo", is1m: false },
+    ],
     aliases: { "gpt-latest": "gpt-6" },
   },
   {
     // Reversed order catches a 'last match wins' bug: the bare id must still win.
     name: "gpt-latest tiebreak prefers the bare id even when the qualifier appears first",
-    catalog: [{ id: "gpt-6-foo", is1m: false }, { id: "gpt-6", is1m: false }],
+    catalog: [
+      { id: "gpt-6-foo", is1m: false },
+      { id: "gpt-6", is1m: false },
+    ],
     aliases: { "gpt-latest": "gpt-6" },
   },
   {
@@ -138,7 +156,10 @@ const ALIAS_ROWS: {
   },
   {
     name: "dash-form [1m] requests resolve to a distinct dash-form 1m sibling",
-    catalog: [{ id: "claude-opus-4-8", is1m: false }, { id: "claude-opus-4-8-1m", is1m: true }],
+    catalog: [
+      { id: "claude-opus-4-8", is1m: false },
+      { id: "claude-opus-4-8-1m", is1m: true },
+    ],
     aliases: {
       "claude-opus-4-8[1m]": "claude-opus-4-8-1m",
       "claude-opus-4.8[1m]": "claude-opus-4-8-1m",
@@ -153,7 +174,10 @@ const ALIAS_ROWS: {
     // regex must parse them or every alias silently vanishes. Dash and dot forms coincide for a
     // single-number version: no identity alias.
     name: "single-number version wins the family shorthand over an older major.minor",
-    catalog: [{ id: "claude-sonnet-4-6", is1m: true }, { id: "claude-sonnet-5", is1m: true }],
+    catalog: [
+      { id: "claude-sonnet-4-6", is1m: true },
+      { id: "claude-sonnet-5", is1m: true },
+    ],
     aliases: {
       "claude-sonnet-4-6[1m]": "claude-sonnet-4-6",
       "claude-sonnet-4.6[1m]": "claude-sonnet-4-6",
@@ -165,7 +189,10 @@ const ALIAS_ROWS: {
   {
     // `claude-fable-5-1m` must backtrack to version 5 + qualifier `1m`.
     name: "fable links its 1m sibling through the single-number version",
-    catalog: [{ id: "claude-fable-5", is1m: false }, { id: "claude-fable-5-1m", is1m: true }],
+    catalog: [
+      { id: "claude-fable-5", is1m: false },
+      { id: "claude-fable-5-1m", is1m: true },
+    ],
     aliases: {
       "claude-fable-5[1m]": "claude-fable-5-1m",
       fable: "claude-fable-5-1m",
@@ -264,7 +291,10 @@ const ALIAS_ROWS: {
   {
     // Sonnet/haiku are excluded from claude-latest; they keep their shorthands.
     name: "claude-latest is absent when only reduced families are present",
-    catalog: [{ id: "claude-sonnet-5", is1m: true }, { id: "claude-haiku-4-5", is1m: false }],
+    catalog: [
+      { id: "claude-sonnet-5", is1m: true },
+      { id: "claude-haiku-4-5", is1m: false },
+    ],
     aliases: {
       "claude-sonnet-5[1m]": "claude-sonnet-5",
       "claude-haiku-4-5[1m]": "claude-haiku-4-5",
@@ -289,7 +319,10 @@ const ALIAS_ROWS: {
   },
   {
     name: "gpt-latest never picks terra over an older bare flagship",
-    catalog: [{ id: "gpt-5.4", is1m: false }, { id: "gpt-5.6-terra", is1m: false }],
+    catalog: [
+      { id: "gpt-5.4", is1m: false },
+      { id: "gpt-5.6-terra", is1m: false },
+    ],
     aliases: { "gpt-latest": "gpt-5.4" },
   },
   {
@@ -299,7 +332,10 @@ const ALIAS_ROWS: {
   },
   {
     name: "gpt-latest never picks luna over an older bare flagship",
-    catalog: [{ id: "gpt-5.3", is1m: false }, { id: "gpt-5.6-luna", is1m: false }],
+    catalog: [
+      { id: "gpt-5.3", is1m: false },
+      { id: "gpt-5.6-luna", is1m: false },
+    ],
     aliases: { "gpt-latest": "gpt-5.3" },
   },
   {
@@ -352,7 +388,10 @@ const ALIAS_ROWS: {
   {
     // Only reduced tiers remain: no flagship at all.
     name: "gpt-latest falls back through bare flagships as models are removed: none left",
-    catalog: [{ id: "gpt-5.6-terra", is1m: false }, { id: "gpt-5.6-luna", is1m: false }],
+    catalog: [
+      { id: "gpt-5.6-terra", is1m: false },
+      { id: "gpt-5.6-luna", is1m: false },
+    ],
     aliases: {},
   },
   {
@@ -366,7 +405,10 @@ const ALIAS_ROWS: {
   },
   {
     name: "a terra qualifier with a suffix is still excluded",
-    catalog: [{ id: "gpt-5.6-terra-preview", is1m: false }, { id: "gpt-5.4", is1m: false }],
+    catalog: [
+      { id: "gpt-5.6-terra-preview", is1m: false },
+      { id: "gpt-5.4", is1m: false },
+    ],
     aliases: { "gpt-latest": "gpt-5.4" },
   },
   {
@@ -390,7 +432,10 @@ const ALIAS_ROWS: {
     // Without the two-digit minor cap, `claude-fable-5-20251001` would parse as version
     // 5.20251001 and hijack the family shorthand.
     name: "a dated snapshot of a single-number version stays a qualifier",
-    catalog: [{ id: "claude-fable-5", is1m: true }, { id: "claude-fable-5-20251001", is1m: false }],
+    catalog: [
+      { id: "claude-fable-5", is1m: true },
+      { id: "claude-fable-5-20251001", is1m: false },
+    ],
     aliases: {
       "claude-fable-5[1m]": "claude-fable-5",
       fable: "claude-fable-5",
@@ -402,12 +447,18 @@ const ALIAS_ROWS: {
   {
     // `minimax` merely contains `mini`; it is an unknown qualifier, not a tier.
     name: "reduced GPT tiers match whole qualifier tokens: minimax is not the mini tier",
-    catalog: [{ id: "gpt-5.5", is1m: false }, { id: "gpt-5.6-minimax", is1m: false }],
+    catalog: [
+      { id: "gpt-5.5", is1m: false },
+      { id: "gpt-5.6-minimax", is1m: false },
+    ],
     aliases: { "gpt-latest": "gpt-5.6-minimax" },
   },
   {
     name: "reduced GPT tiers match whole qualifier tokens: mini-high is the mini tier",
-    catalog: [{ id: "gpt-5.5", is1m: false }, { id: "gpt-5.6-mini-high", is1m: false }],
+    catalog: [
+      { id: "gpt-5.5", is1m: false },
+      { id: "gpt-5.6-mini-high", is1m: false },
+    ],
     aliases: { "gpt-latest": "gpt-5.5" },
   },
 ];
@@ -435,10 +486,13 @@ test("newestClaudeModel: the highest version across families, a dated snapshot o
   const noFable = catalog.filter((m) => m.id !== "claude-fable-5-1");
   expect(newestClaudeModel(noFable)).toBe("claude-opus-5-20260301");
   expect(
-    newestClaudeModel([{ id: "claude-sonnet-5", is1m: false }, {
-      id: "claude-opus-5",
-      is1m: false,
-    }]),
+    newestClaudeModel([
+      { id: "claude-sonnet-5", is1m: false },
+      {
+        id: "claude-opus-5",
+        is1m: false,
+      },
+    ]),
   ).toBe("claude-sonnet-5");
   expect(newestClaudeModel([{ id: "gpt-6", is1m: false }])).toBeNull();
 });
@@ -448,31 +502,37 @@ test("newestClaudeModel: the highest version across families, a dated snapshot o
 const CATALOG_ROWS: { name: string; body: unknown; models: CatalogModel[] }[] = [
   {
     name: "the [1m] suffix is stripped and flags the entry 1m",
-    body: { "data": [{ "id": "claude-opus-4.8[1m]" }, { "id": "claude-opus-4.8" }] },
-    models: [{ id: "claude-opus-4.8", is1m: true }, { id: "claude-opus-4.8", is1m: false }],
+    body: { data: [{ id: "claude-opus-4.8[1m]" }, { id: "claude-opus-4.8" }] },
+    models: [
+      { id: "claude-opus-4.8", is1m: true },
+      { id: "claude-opus-4.8", is1m: false },
+    ],
   },
   {
     name: "a 1M context window is read from capabilities.limits",
     body: {
-      "data": [
+      data: [
         {
-          "id": "claude-fable-5",
-          "capabilities": { "limits": { "max_context_window_tokens": 1_000_000 } },
+          id: "claude-fable-5",
+          capabilities: { limits: { max_context_window_tokens: 1_000_000 } },
         },
         {
-          "id": "gpt-5.6-sol",
-          "capabilities": { "limits": { "max_context_window_tokens": 400_000 } },
+          id: "gpt-5.6-sol",
+          capabilities: { limits: { max_context_window_tokens: 400_000 } },
         },
       ],
     },
-    models: [{ id: "claude-fable-5", is1m: true }, { id: "gpt-5.6-sol", is1m: false }],
+    models: [
+      { id: "claude-fable-5", is1m: true },
+      { id: "gpt-5.6-sol", is1m: false },
+    ],
   },
   { name: "no body", body: undefined, models: [] },
   { name: "a string body", body: "nope", models: [] },
-  { name: "a data field that is not an array", body: { "data": "nope" }, models: [] },
+  { name: "a data field that is not an array", body: { data: "nope" }, models: [] },
   {
     name: "malformed entries are skipped, the well-formed one kept",
-    body: { "data": [null, 5, { "id": 7 }, { "id": "gpt-6" }] },
+    body: { data: [null, 5, { id: 7 }, { id: "gpt-6" }] },
     models: [{ id: "gpt-6", is1m: false }],
   },
 ];
@@ -511,17 +571,22 @@ test("claudeCatalogRows: every Claude model, deduped, most capable family first 
 
 test("mergeUnlistedModels appends verified extras as tagged Anthropic rows, id-sorted", () => {
   const merged = mergeUnlistedModels(
-    [{
-      id: "claude-haiku-4.5",
-      name: "Claude Haiku 4.5",
-      vendor: "Anthropic",
-      type: "chat",
-      contextWindow: 200_000,
-      maxOutput: 64_000,
-      preview: false,
-    }],
+    [
+      {
+        id: "claude-haiku-4.5",
+        name: "Claude Haiku 4.5",
+        vendor: "Anthropic",
+        type: "chat",
+        contextWindow: 200_000,
+        maxOutput: 64_000,
+        preview: false,
+      },
+    ],
     {
-      models: [{ id: "claude-haiku-4.5", is1m: false }, { id: "claude-fable-5", is1m: true }],
+      models: [
+        { id: "claude-haiku-4.5", is1m: false },
+        { id: "claude-fable-5", is1m: true },
+      ],
       unlisted: ["claude-fable-5"],
     },
   );

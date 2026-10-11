@@ -7,7 +7,7 @@ import {
   resetIntegrationIdentityCache,
 } from "../../src/copilot_api/integration_identity.ts";
 import { generateAliases, parseCatalogModels } from "../../src/copilot_api/models.ts";
-import { parseProfileName, type ProfileName } from "../../src/copilot_api/profile.ts";
+import { type ProfileName, parseProfileName } from "../../src/copilot_api/profile.ts";
 import {
   DEFAULT_WEB_SEARCH_MODEL,
   parseResponsesOutput,
@@ -15,8 +15,8 @@ import {
   resolveWebSearchCredential,
   webSearch,
 } from "../../src/copilot_api/web_search.ts";
-import { afterEach, expect, removeDir, test } from "../helpers/testing.ts";
 import { envSnapshot, isolateProxyHome } from "../helpers/env.ts";
+import { afterEach, expect, removeDir, test } from "../helpers/testing.ts";
 
 // The credential/config stores live under COPILOT_API_HOME, and the env-token
 // fallback reads the GH token env vars -- isolate both per test (isolateProxyHome
@@ -55,23 +55,23 @@ function fetchStub(responses: Response[]): {
 
 function responsesFixture(): unknown {
   return {
-    "output": [
-      { "type": "web_search_call", "status": "completed" },
+    output: [
+      { type: "web_search_call", status: "completed" },
       {
-        "type": "message",
-        "content": [
+        type: "message",
+        content: [
           {
-            "type": "output_text",
-            "text": "Bun 1.3 shipped.",
-            "annotations": [
-              { "type": "url_citation", "url": "https://bun.sh/blog", "title": "Bun Blog" },
-              { "type": "url_citation", "url": "https://bun.sh/blog", "title": "Bun Blog (dupe)" },
+            type: "output_text",
+            text: "Bun 1.3 shipped.",
+            annotations: [
+              { type: "url_citation", url: "https://bun.sh/blog", title: "Bun Blog" },
+              { type: "url_citation", url: "https://bun.sh/blog", title: "Bun Blog (dupe)" },
             ],
           },
           {
-            "type": "output_text",
-            "text": "It is faster.",
-            "annotations": [{ "type": "url_citation", "url": "https://example.com/x" }],
+            type: "output_text",
+            text: "It is faster.",
+            annotations: [{ type: "url_citation", url: "https://example.com/x" }],
           },
         ],
       },
@@ -99,21 +99,20 @@ test("parseResponsesOutput: message text concatenated with deduped sources appen
     {
       name: "citations",
       body: responsesFixture(),
-      text: "Bun 1.3 shipped.\nIt is faster." +
+      text:
+        "Bun 1.3 shipped.\nIt is faster." +
         "\n\nSources:\n- Bun Blog: https://bun.sh/blog\n- https://example.com/x",
     },
     {
       name: "no citations",
       body: {
-        "output": [
-          { "type": "message", "content": [{ "type": "output_text", "text": "plain answer" }] },
-        ],
+        output: [{ type: "message", content: [{ type: "output_text", text: "plain answer" }] }],
       },
       text: "plain answer",
     },
     {
       name: "no message item",
-      body: { "output": [{ "type": "web_search_call" }] },
+      body: { output: [{ type: "web_search_call" }] },
       throws: /no answer text/,
     },
     { name: "no output at all", body: {}, throws: /no answer text/ },
@@ -136,7 +135,7 @@ const QUERY = "bun release";
 /** A raw direct-catalog body for the alias-resolution tests. */
 function catalogFixture(): unknown {
   return {
-    "data": [{ "id": "gpt-6" }, { "id": "gpt-6-mini" }, { "id": "claude-fable-5" }],
+    data: [{ id: "gpt-6" }, { id: "gpt-6-mini" }, { id: "claude-fable-5" }],
   };
 }
 
@@ -231,13 +230,13 @@ test("webSearch sends the verified request shape under the identity/host pair th
     expect(headers["User-Agent"], c.name).toBe("codex_exec");
     const body = JSON.parse(String(post.init.body)) as Record<string, unknown>;
     expect(body, c.name).toEqual({
-      "model": c.model,
-      "stream": false,
-      "reasoning": { "effort": "low" },
-      "tools": [{ "type": "web_search" }],
-      "tool_choice": { "type": "web_search" }, // forced: the answer must come from a real search
-      "instructions": body.instructions,
-      "input": QUERY,
+      model: c.model,
+      stream: false,
+      reasoning: { effort: "low" },
+      tools: [{ type: "web_search" }],
+      tool_choice: { type: "web_search" }, // forced: the answer must come from a real search
+      instructions: body.instructions,
+      input: QUERY,
     });
     expect(String(body.instructions), c.name).toContain("cite");
   }
@@ -338,12 +337,10 @@ test("webSearch model resolution: the flag beats the stored key, aliases resolve
     expect(answer, c.name).toContain("Bun 1.3 shipped.");
     // After the two probes: the catalog GET, asked under the SAME identity the /responses call
     // sends (Copilot gates the list per identity), then the POST.
-    expect(stub.calls.map((call) => call.url), c.name).toEqual([
-      MODELS_URL,
-      MODELS_URL,
-      MODELS_URL,
-      RESPONSES_URL,
-    ]);
+    expect(
+      stub.calls.map((call) => call.url),
+      c.name,
+    ).toEqual([MODELS_URL, MODELS_URL, MODELS_URL, RESPONSES_URL]);
     expect(stub.calls[2]?.init.headers, c.name).toEqual({
       ...directClientHeaders(CODEX_EXEC_USER_AGENT),
       Authorization: "Bearer gho_stored",
@@ -501,12 +498,16 @@ test("a cancelled call stops waiting for a hanging fetch instead of sitting it o
     // The caller's reason is preserved: MCP cancellations carry a plain string.
     const plain = new AbortController();
     plain.abort();
-    await expect(webSearch("q", { fetchImpl: neverFetch, signal: plain.signal }), c.name).rejects
-      .toThrow(/aborted|cancelled/i);
+    await expect(
+      webSearch("q", { fetchImpl: neverFetch, signal: plain.signal }),
+      c.name,
+    ).rejects.toThrow(/aborted|cancelled/i);
     const reasoned = new AbortController();
     reasoned.abort("client went away");
-    await expect(webSearch("q", { fetchImpl: neverFetch, signal: reasoned.signal }), c.name)
-      .rejects.toThrow("web_search was cancelled: client went away");
+    await expect(
+      webSearch("q", { fetchImpl: neverFetch, signal: reasoned.signal }),
+      c.name,
+    ).rejects.toThrow("web_search was cancelled: client went away");
   }
 });
 
@@ -515,12 +516,12 @@ test("DEFAULT_WEB_SEARCH_MODEL is a raw catalog id, never an alias", () => {
   // default must never be a value the alias map would remap (e.g. `gpt-latest`).
   const aliases = generateAliases(
     parseCatalogModels({
-      "data": [
-        { "id": DEFAULT_WEB_SEARCH_MODEL },
-        { "id": "gpt-6" },
-        { "id": "gpt-6-mini" },
-        { "id": "claude-fable-5" },
-        { "id": "claude-opus-4.8" },
+      data: [
+        { id: DEFAULT_WEB_SEARCH_MODEL },
+        { id: "gpt-6" },
+        { id: "gpt-6-mini" },
+        { id: "claude-fable-5" },
+        { id: "claude-opus-4.8" },
       ],
     }),
   );

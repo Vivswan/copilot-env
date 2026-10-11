@@ -11,13 +11,13 @@ import {
 } from "../../src/codex/catalog.ts";
 import { CI_NO_LIVE_LOOKUPS_ENV } from "../../src/codex/user_agent.ts";
 import { CopilotEnvConfig } from "../../src/copilot_api/env_config.ts";
+import type { ProbeFetch } from "../../src/copilot_api/integration_identity.ts";
 import { CopilotApiPaths } from "../../src/copilot_api/paths.ts";
 import { childEnvWithPath, cliSpawn, resolveCommand } from "../../src/utils/command.ts";
 import { PROJECT_ROOT } from "../../src/utils/root.ts";
+import { envSnapshot, isolateAgentHomes } from "../helpers/env.ts";
 import { runSync } from "../helpers/run.ts";
 import { afterEach, expect, test } from "../helpers/testing.ts";
-import { envSnapshot, isolateAgentHomes } from "../helpers/env.ts";
-import type { ProbeFetch } from "../../src/copilot_api/integration_identity.ts";
 
 // Opted in: the test RUNS, and a missing codex is a failure (CI installs it right
 // before), never a skip that lets the gate pass vacuously.

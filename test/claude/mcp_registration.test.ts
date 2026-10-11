@@ -19,8 +19,8 @@ import {
 } from "../../src/claude/mcp_registration.ts";
 import { resolveExecutablePath } from "../../src/utils/command.ts";
 import { agentLauncherCommand } from "../../src/utils/root.ts";
-import { afterEach, expect, removeDir, tempDir, test } from "../helpers/testing.ts";
 import { envSnapshot } from "../helpers/env.ts";
+import { afterEach, expect, removeDir, tempDir, test } from "../helpers/testing.ts";
 
 const restoreEnv = envSnapshot();
 let dir = "";
@@ -52,21 +52,21 @@ function writeDoc(doc: Record<string, unknown>): void {
 function movedCheckout(entry: Record<string, unknown>): Record<string, unknown> {
   return process.platform === "win32"
     ? {
-      ...entry,
-      "args": (entry.args as string[]).map((a) =>
-        /[\\/]bin[\\/]agent\.ps1$/i.test(a) ? "C:\\somewhere\\else\\bin\\agent.ps1" : a
-      ),
-    }
-    : { ...entry, "command": "/somewhere/else/bin/agent" };
+        ...entry,
+        args: (entry.args as string[]).map((a) =>
+          /[\\/]bin[\\/]agent\.ps1$/i.test(a) ? "C:\\somewhere\\else\\bin\\agent.ps1" : a,
+        ),
+      }
+    : { ...entry, command: "/somewhere/else/bin/agent" };
 }
 
 function managedEntry(): Record<string, unknown> {
   const { command, args } = agentLauncherCommand(["profile", "mcp", "--serve"]);
   const env = serverPathEnv(resolveExecutablePath("gh"));
-  return { "type": "stdio", "command": command, "args": args, ...(env ? { env } : {}) };
+  return { type: "stdio", command: command, args: args, ...(env ? { env } : {}) };
 }
 
-const OTHER_SERVER = { "type": "stdio", "command": "x", "args": [] };
+const OTHER_SERVER = { type: "stdio", command: "x", args: [] };
 
 test("serverPathEnv puts gh's directory in front of the client's PATH by expansion, or nothing", () => {
   const gh = join(delimiter === ";" ? "C:\\tools\\gh" : "/opt/homebrew/bin", "gh");
@@ -79,7 +79,7 @@ test("serverPathEnv puts gh's directory in front of the client's PATH by expansi
 // second row needs a real gh on PATH (CI has one).
 test("the PATH env follows gh's visibility: kept when gh is unseen, restored when it is seen", () => {
   const { command, args } = agentLauncherCommand(["profile", "mcp", "--serve"]);
-  const bare = { "type": "stdio", "command": command, "args": args };
+  const bare = { type: "stdio", command: command, args: args };
   const recorded = { ...bare, env: { PATH: `/somewhere/bin${delimiter}\${PATH}` } };
   const gh = resolveExecutablePath("gh");
   const rows: {
@@ -101,7 +101,7 @@ test("the PATH env follows gh's visibility: kept when gh is unseen, restored whe
       visibility,
       status: "ours-stale",
     });
-    writeDoc({ "mcpServers": { "copilot-env": before } });
+    writeDoc({ mcpServers: { "copilot-env": before } });
     expect({ visibility, registered: registerClaudeMcpServer(gh) }).toEqual({
       visibility,
       registered: true,
@@ -117,12 +117,12 @@ test("the PATH env follows gh's visibility: kept when gh is unseen, restored whe
 // What register finds at the path decides what it writes around the managed entry.
 test("register writes the managed entry into a missing file or an existing one, keeping the rest", () => {
   const rows: { existing: Record<string, unknown> | null; doc: Record<string, unknown> }[] = [
-    { existing: null, doc: { "mcpServers": { "copilot-env": managedEntry() } } },
+    { existing: null, doc: { mcpServers: { "copilot-env": managedEntry() } } },
     {
-      existing: { "numStartups": 42, "mcpServers": { "other": OTHER_SERVER } },
+      existing: { numStartups: 42, mcpServers: { other: OTHER_SERVER } },
       doc: {
-        "numStartups": 42,
-        "mcpServers": { "other": OTHER_SERVER, "copilot-env": managedEntry() },
+        numStartups: 42,
+        mcpServers: { other: OTHER_SERVER, "copilot-env": managedEntry() },
       },
     },
   ];
@@ -151,7 +151,7 @@ test("register is byte-idempotent: a second run does not rewrite the file", () =
 // all: someone else's entry and an unparseable file are left byte-for-byte; an entry of ours from
 // a moved checkout is reclaimed by both.
 test("register and remove act only on an entry that is ours: foreign and malformed stay untouched", () => {
-  const foreign = { "type": "stdio", "command": "npx", "args": ["someone-elses-server"] };
+  const foreign = { type: "stdio", command: "npx", args: ["someone-elses-server"] };
   const stale = movedCheckout(managedEntry());
   expect(classifyMcpEntry(stale)).toBe("ours-stale");
   type Observed = { entry: unknown } | { raw: string };
@@ -164,7 +164,7 @@ test("register and remove act only on an entry that is ours: foreign and malform
   }[] = [
     {
       state: "foreign entry",
-      raw: `${JSON.stringify({ "mcpServers": { "copilot-env": foreign } })}\n`,
+      raw: `${JSON.stringify({ mcpServers: { "copilot-env": foreign } })}\n`,
       registered: false,
       afterRegister: { entry: foreign },
       afterRemove: { entry: foreign },
@@ -178,7 +178,7 @@ test("register and remove act only on an entry that is ours: foreign and malform
     },
     {
       state: "ours-stale entry",
-      raw: `${JSON.stringify({ "mcpServers": { "copilot-env": stale } })}\n`,
+      raw: `${JSON.stringify({ mcpServers: { "copilot-env": stale } })}\n`,
       registered: true,
       afterRegister: { entry: managedEntry() },
       afterRemove: { entry: undefined },
@@ -204,10 +204,10 @@ test("remove deletes only ours, drops an emptied mcpServers, and never creates o
     {
       setup: () =>
         writeDoc({
-          "numStartups": 1,
-          "mcpServers": { "copilot-env": managedEntry(), "other": OTHER_SERVER },
+          numStartups: 1,
+          mcpServers: { "copilot-env": managedEntry(), other: OTHER_SERVER },
         }),
-      doc: { "numStartups": 1, "mcpServers": { "other": OTHER_SERVER } },
+      doc: { numStartups: 1, mcpServers: { other: OTHER_SERVER } },
     },
     { setup: () => {}, doc: null },
   ];
@@ -228,41 +228,41 @@ test("classifyMcpEntry: ours-current, ours-stale, foreign, and absent, from the 
     { entry: managed, status: "ours-current" },
     // Missing type counts as stdio (Claude's own default).
     { entry: untyped, status: "ours-current" },
-    { entry: { ...managed, "type": "http" }, status: "foreign" },
-    { entry: { "command": 5 }, status: "foreign" },
+    { entry: { ...managed, type: "http" }, status: "foreign" },
+    { entry: { command: 5 }, status: "foreign" },
     { entry: "nope", status: "foreign" },
     // A bare `agent` from someone's PATH is foreign, not ours-stale; only a launcher path shaped
     // like ours, running our subcommand, is a moved checkout.
     {
-      entry: { "type": "stdio", "command": "agent", "args": ["mcp"] },
+      entry: { type: "stdio", command: "agent", args: ["mcp"] },
       status: "foreign",
       posix: true,
     },
     {
-      entry: { "type": "stdio", "command": "agent", "args": ["profile", "mcp", "--serve"] },
+      entry: { type: "stdio", command: "agent", args: ["profile", "mcp", "--serve"] },
       status: "foreign",
       posix: true,
     },
     {
-      entry: { "type": "stdio", "command": "/usr/local/agent", "args": ["mcp"] },
+      entry: { type: "stdio", command: "/usr/local/agent", args: ["mcp"] },
       status: "foreign",
       posix: true,
     },
     {
       entry: {
-        "type": "stdio",
-        "command": "/elsewhere/bin/agent",
-        "args": ["profile", "mcp", "--serve"],
+        type: "stdio",
+        command: "/elsewhere/bin/agent",
+        args: ["profile", "mcp", "--serve"],
       },
       status: "ours-stale",
       posix: true,
     },
     // Malformed launcher argvs are never reclaimed; our launcher shape running some OTHER
     // subcommand is not a registration of ours either.
-    { entry: { ...managed, "args": [...args, "extra"] }, status: "foreign" },
-    { entry: { ...managed, "args": args.slice(0, -2) }, status: "foreign" },
+    { entry: { ...managed, args: [...args, "extra"] }, status: "foreign" },
+    { entry: { ...managed, args: args.slice(0, -2) }, status: "foreign" },
     {
-      entry: { ...managed, "args": args.map((a) => (a === "--serve" ? "--verbose" : a)) },
+      entry: { ...managed, args: args.map((a) => (a === "--serve" ? "--verbose" : a)) },
       status: "foreign",
     },
   ];
@@ -271,11 +271,11 @@ test("classifyMcpEntry: ours-current, ours-stale, foreign, and absent, from the 
     rows.push(
       // Missing script path: -File runs straight into the subargs.
       {
-        entry: { ...managed, "args": [...args.slice(0, fileIdx + 1), ...args.slice(fileIdx + 2)] },
+        entry: { ...managed, args: [...args.slice(0, fileIdx + 1), ...args.slice(fileIdx + 2)] },
         status: "foreign",
       },
       {
-        entry: { ...managed, "args": args.map((a) => (a === "-NoProfile" ? "-Profile" : a)) },
+        entry: { ...managed, args: args.map((a) => (a === "-NoProfile" ? "-Profile" : a)) },
         status: "foreign",
       },
     );
@@ -289,7 +289,7 @@ test("classifyMcpEntry: ours-current, ours-stale, foreign, and absent, from the 
 
 test("a file Claude wrote without a trailing newline keeps its convention", () => {
   const home = tmpConfigDir();
-  writeFileSync(join(home, ".claude.json"), JSON.stringify({ "numStartups": 7 }, null, 2)); // no \n
+  writeFileSync(join(home, ".claude.json"), JSON.stringify({ numStartups: 7 }, null, 2)); // no \n
   expect(registerClaudeMcpServer()).toBe(true);
   const raw = readFileSync(claudeJsonPath(), "utf8");
   expect(raw.endsWith("\n")).toBe(false);
@@ -316,7 +316,7 @@ test.skipIf(process.platform === "win32")(
     // A link whose target existed and was removed: the entry AT the path
     // remains (lstat), but every follow -- existsSync included -- reads ENOENT.
     const target = join(home, "real-claude.json");
-    writeFileSync(target, `${JSON.stringify({ "numStartups": 3 })}\n`);
+    writeFileSync(target, `${JSON.stringify({ numStartups: 3 })}\n`);
     symlinkSync(target, claudeJsonPath());
     rmSync(target);
 

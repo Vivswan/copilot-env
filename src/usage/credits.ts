@@ -2,13 +2,14 @@
 // /copilot_internal/user is undocumented: only `premium_interactions` is metered (chat
 // and completions are unlimited), and the period is the calendar month ending at
 // 00:00 UTC on `quota_reset_date`, which is how GitHub's own meter counts it.
-import { isRecord } from "../utils/json.ts";
-import { Credential } from "../copilot_api/credential.ts";
+
 import { configKeyDef } from "../copilot_api/config_registry.ts";
+import { Credential } from "../copilot_api/credential.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { COPILOT_USER_URL } from "../copilot_api/integration_identity.ts";
 import { blue, cyan, green, red } from "../utils/ansi.ts";
 import { errMessage } from "../utils/error.ts";
+import { isRecord } from "../utils/json.ts";
 import { MILLISECONDS_PER_DAY as DAY_MS } from "../utils/time.ts";
 import { COPILOT_ENV_USER_AGENT } from "../utils/user_agent.ts";
 
@@ -30,9 +31,10 @@ const FETCH_TIMEOUT_MS = 5000;
 export function parseCopilotCredits(body: unknown): CopilotCredits {
   if (!isRecord(body)) throw new Error("the response is not a JSON object");
   const snapshots = isRecord(body.quota_snapshots) ? body.quota_snapshots : undefined;
-  const quota = snapshots && isRecord(snapshots.premium_interactions)
-    ? snapshots.premium_interactions
-    : undefined;
+  const quota =
+    snapshots && isRecord(snapshots.premium_interactions)
+      ? snapshots.premium_interactions
+      : undefined;
   const entitlement = quota?.entitlement;
   if (typeof entitlement !== "number" || !Number.isFinite(entitlement) || entitlement <= 0) {
     throw new Error("no metered premium_interactions quota in the response");
@@ -74,11 +76,12 @@ export function resolveCreditsTarget(
   config: CopilotEnvConfig = new CopilotEnvConfig(),
   env: Record<string, string | undefined> = process.env,
 ): number | null {
-  const explicit = flag !== undefined
-    ? { raw: flag, source: "--target" }
-    : env[CREDITS_TARGET_ENV] !== undefined
-    ? { raw: env[CREDITS_TARGET_ENV] as string, source: CREDITS_TARGET_ENV }
-    : null;
+  const explicit =
+    flag !== undefined
+      ? { raw: flag, source: "--target" }
+      : env[CREDITS_TARGET_ENV] !== undefined
+        ? { raw: env[CREDITS_TARGET_ENV] as string, source: CREDITS_TARGET_ENV }
+        : null;
   if (explicit === null) return config.creditsTarget();
   const parse = configKeyDef("cost.credits-target")?.parse;
   if (parse === undefined) throw new Error("config key 'cost.credits-target' is not registered");
@@ -107,7 +110,7 @@ export async function loadCreditsPace(
 export function creditsJson(pace: CreditsPace): Record<string, unknown> {
   const { periodStartMs, resetMs, ...rest } = pace;
   const day = (ms: number): string => new Date(ms).toISOString().slice(0, 10);
-  const dollars = (n: number | null): number | null => n === null ? null : creditsUsd(n);
+  const dollars = (n: number | null): number | null => (n === null ? null : creditsUsd(n));
   return {
     ...rest,
     entitlementUsd: creditsUsd(pace.entitlement),
@@ -195,9 +198,10 @@ export function creditsPace(
     totalMark: Math.round(credits.entitlement * elapsed),
     // Never below the spend: rounding a fractional spend's projection down would draw a bar shorter
     // than what is already used.
-    projected: elapsedMs > 0
-      ? Math.max(credits.used, Math.round(credits.used / (elapsedMs / DAY_MS) * daysTotal))
-      : null,
+    projected:
+      elapsedMs > 0
+        ? Math.max(credits.used, Math.round((credits.used / (elapsedMs / DAY_MS)) * daysTotal))
+        : null,
   };
 }
 
@@ -208,18 +212,17 @@ const BAD = "✗";
 const ARROW = "→";
 
 const commas = (n: number): string =>
-  Math.floor(Math.abs(n)).toLocaleString("en-US")
+  Math.floor(Math.abs(n))
+    .toLocaleString("en-US")
     .replace(/^/, n < 0 ? "-" : "");
 const usd = (credits: number): string =>
-  `$${
-    creditsUsd(credits).toLocaleString("en-US", {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    })
-  }`;
+  `$${creditsUsd(credits).toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
 const pct = (share: number): string => `${Math.round(share * 100)}%`;
 const clamp = (n: number, lo: number, hi: number): number => Math.min(Math.max(n, lo), hi);
-const delta = (n: number): string => n > 0 ? `${BAD} +${commas(n)}` : `${OK} ${commas(n)}`;
+const delta = (n: number): string => (n > 0 ? `${BAD} +${commas(n)}` : `${OK} ${commas(n)}`);
 
 /** Colour goes on after every width is settled, so padding never counts an escape. */
 const paintBar = (bar: string): string =>
@@ -249,10 +252,7 @@ export function renderCredits(pace: CreditsPace): string[] {
   const wNow = Math.max(3, ...[used, reach].map((n) => commas(n).length));
   const wUsd = Math.max(1, ...[used, reach].map((n) => usd(n).length));
   const wMark = Math.max(pct(pace.elapsed).length, ...marks.map((n) => commas(n).length));
-  const deltas = [
-    ...marks.map((m) => used - m),
-    ...(projected === null ? [] : [projected - goal]),
-  ];
+  const deltas = [...marks.map((m) => used - m), ...(projected === null ? [] : [projected - goal])];
   const wDelta = Math.max(5, ...deltas.map((n) => delta(n).length));
   const wPct = Math.max(
     4,
@@ -286,9 +286,9 @@ export function renderCredits(pace: CreditsPace): string[] {
     at: string,
     d: string,
   ): string =>
-    `  ${name.padEnd(9)}  ${ceiling.padStart(wEnd)}        ${now.padStart(wNow)}     ${
-      dollars.padStart(wUsd)
-    }     ${at.padStart(wMark)}     ${paintDelta(d.padStart(wDelta))}`;
+    `  ${name.padEnd(9)}  ${ceiling.padStart(wEnd)}        ${now.padStart(wNow)}     ${dollars.padStart(
+      wUsd,
+    )}     ${at.padStart(wMark)}     ${paintDelta(d.padStart(wDelta))}`;
   const legend = [
     "# used",
     ...(projected === null ? [] : ["+ projected"]),
@@ -302,27 +302,33 @@ export function renderCredits(pace: CreditsPace): string[] {
     header,
     "",
     `  time    ${paintBar(bar(pace.elapsed, pace.elapsed))} ${pct(pace.elapsed).padStart(wPct)}`,
-    ...(target === null ? [] : [
-      `  target  ${paintBar(bar(used / target, reach / target))} ${
-        shares(used / target, reach / target)
-      }`,
-    ]),
-    `  total   ${paintBar(target === null ? totalBar : mark(totalBar, target / total))} ${
-      shares(used / total, reach / total)
-    }`,
+    ...(target === null
+      ? []
+      : [
+          `  target  ${paintBar(bar(used / target, reach / target))} ${shares(
+            used / target,
+            reach / target,
+          )}`,
+        ]),
+    `  total   ${paintBar(target === null ? totalBar : mark(totalBar, target / total))} ${shares(
+      used / total,
+      reach / total,
+    )}`,
     `           ${legend}`,
     "",
     row("", "", "now", "$", pct(pace.elapsed), "delta"),
-    ...(target === null || pace.targetMark === null ? [] : [
-      row(
-        "target",
-        commas(target),
-        commas(used),
-        usd(used),
-        commas(pace.targetMark),
-        delta(used - pace.targetMark),
-      ),
-    ]),
+    ...(target === null || pace.targetMark === null
+      ? []
+      : [
+          row(
+            "target",
+            commas(target),
+            commas(used),
+            usd(used),
+            commas(pace.targetMark),
+            delta(used - pace.targetMark),
+          ),
+        ]),
     row(
       "total",
       commas(total),

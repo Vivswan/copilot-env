@@ -16,9 +16,9 @@ import {
 import { runShell } from "../../src/commands/setup.ts";
 import { CopilotEnvConfig } from "../../src/copilot_api/env_config.ts";
 import { CI_RC_DIR_ENV, MARKER } from "../../src/shell/integration.ts";
-import { expect, removeDir, tempDir, test } from "../helpers/testing.ts";
 import { envSnapshot, isolateProxyHome } from "../helpers/env.ts";
 import { captureChannelsSync } from "../helpers/output.ts";
+import { expect, removeDir, tempDir, test } from "../helpers/testing.ts";
 
 // runShell's flag validation throws BEFORE any install or rc wiring, so these
 // need no filesystem/network isolation.
@@ -125,8 +125,10 @@ function stageCliInstallFixture(opts: {
   const installArms = AGENT_CLIS.map((cli) => {
     if (opts.failInstalls?.includes(cli.packageName)) return `  "${cli.packageName}"@*) exit 1 ;;`;
     const target = `"${globalBin}/${cli.command}"`;
-    return `  "${cli.packageName}"@*) printf '#!/bin/sh\\n# %s\\nexit 0\\n' "$3" > ${target}` +
-      `; chmod +x ${target}; exit 0 ;;`;
+    return (
+      `  "${cli.packageName}"@*) printf '#!/bin/sh\\n# %s\\nexit 0\\n' "$3" > ${target}` +
+      `; chmod +x ${target}; exit 0 ;;`
+    );
   });
   // The real `npm ls -g --json` shapes: no `dependencies` key for an empty tree, a
   // version-less entry for a package whose package.json it could not read, and only an
@@ -136,12 +138,15 @@ function stageCliInstallFixture(opts: {
     opts.lsFails
       ? { error: { code: "ENOTDIR", summary: "", detail: "" } }
       : installedEntries.length === 0
-      ? {}
-      : {
-        dependencies: Object.fromEntries(
-          installedEntries.map(([name, version]) => [name, version === null ? {} : { version }]),
-        ),
-      },
+        ? {}
+        : {
+            dependencies: Object.fromEntries(
+              installedEntries.map(([name, version]) => [
+                name,
+                version === null ? {} : { version },
+              ]),
+            ),
+          },
   );
   writeFileSync(
     join(pathBin, "npm"),
@@ -221,8 +226,8 @@ const CLI_INSTALL_ROWS: readonly CliInstallRow[] = [
   {
     name: "the all-good run installs every CLI and extends PATH, warn-free",
     opts: {},
-    lines: AGENT_CLIS.map((cli) =>
-      `Installing ${cli.name} (${cli.packageName}@${FAKE_LATEST}) ...`
+    lines: AGENT_CLIS.map(
+      (cli) => `Installing ${cli.name} (${cli.packageName}@${FAKE_LATEST}) ...`,
     ),
     never: ["Could not"],
     installed: AGENT_CLIS.map((cli) => cli.command),
@@ -251,8 +256,7 @@ const CLI_INSTALL_ROWS: readonly CliInstallRow[] = [
     shimSpec: [FIRST.command, `${FIRST.packageName}@${FAKE_LATEST}`],
   },
   {
-    name:
-      "an npm-installed CLI whose command is off PATH, or whose version is unreadable, is never downgraded",
+    name: "an npm-installed CLI whose command is off PATH, or whose version is unreadable, is never downgraded",
     opts: { npmInstalled: { [FIRST.packageName]: null, [THIRD.packageName]: "3.0.0" } },
     lines: [
       `${THIRD.name} 3.0.0 is installed by npm, but '${THIRD.command}' is not on PATH; leaving it as it is.`,
@@ -322,31 +326,49 @@ test("computePathRefresh: win32 writes BOTH Path and PATH with ';' off the prefi
   const winOld = "C:\\Windows;C:\\Windows\\System32";
   const prefix = "/home/me/.npm-global";
   const old = "/usr/bin:/bin";
-  const rows: Array<
-    [NodeJS.Platform, string, string, ReturnType<typeof computePathRefresh>]
-  > = [
+  const rows: Array<[NodeJS.Platform, string, string, ReturnType<typeof computePathRefresh>]> = [
     // On Windows the npm prefix IS the bin dir (no /bin suffix).
-    ["win32", winPrefix, winOld, {
-      bin: winPrefix,
-      separator: ";",
-      assignments: { PATH: `${winPrefix};${winOld}`, Path: `${winPrefix};${winOld}` },
-    }],
-    ["linux", prefix, old, {
-      bin: `${prefix}/bin`,
-      separator: ":",
-      assignments: { PATH: `${prefix}/bin:${old}`, Path: `${prefix}/bin:${old}` },
-    }],
+    [
+      "win32",
+      winPrefix,
+      winOld,
+      {
+        bin: winPrefix,
+        separator: ";",
+        assignments: { PATH: `${winPrefix};${winOld}`, Path: `${winPrefix};${winOld}` },
+      },
+    ],
+    [
+      "linux",
+      prefix,
+      old,
+      {
+        bin: `${prefix}/bin`,
+        separator: ":",
+        assignments: { PATH: `${prefix}/bin:${old}`, Path: `${prefix}/bin:${old}` },
+      },
+    ],
     // darwin behaves like linux (any non-win32 platform).
-    ["darwin", prefix, old, {
-      bin: `${prefix}/bin`,
-      separator: ":",
-      assignments: { PATH: `${prefix}/bin:${old}`, Path: `${prefix}/bin:${old}` },
-    }],
-    ["linux", prefix, `${prefix}/bin:/usr/bin`, {
-      bin: `${prefix}/bin`,
-      separator: ":",
-      assignments: {},
-    }],
+    [
+      "darwin",
+      prefix,
+      old,
+      {
+        bin: `${prefix}/bin`,
+        separator: ":",
+        assignments: { PATH: `${prefix}/bin:${old}`, Path: `${prefix}/bin:${old}` },
+      },
+    ],
+    [
+      "linux",
+      prefix,
+      `${prefix}/bin:/usr/bin`,
+      {
+        bin: `${prefix}/bin`,
+        separator: ":",
+        assignments: {},
+      },
+    ],
   ];
   for (const [platform, npmPrefix, oldPath, expected] of rows) {
     expect(computePathRefresh(platform, npmPrefix, oldPath), `${platform} ${oldPath}`).toEqual(

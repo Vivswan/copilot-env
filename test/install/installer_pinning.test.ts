@@ -9,8 +9,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join, parse, posix } from "node:path";
-import { INSTALLER_PINS } from "../../.github/scripts/release-assets.ts";
 import { compiledHealthFailures } from "../../.github/scripts/installer-smoke.ts";
+import { INSTALLER_PINS } from "../../.github/scripts/release-assets.ts";
 import {
   BUNDLED_ONLY_ASSETS,
   CHECKOUT_MARKERS,
@@ -207,8 +207,8 @@ describe("the materialized files are the shims' import closure", () => {
       .map((name) => `src/scripts/${name}`);
     expect(seeds.length).toBeGreaterThan(0);
     const closure = localImportClosure(seeds);
-    const outside = [...closure].filter((rel) =>
-      !MATERIALIZED_ASSET_DIRS.some((dir) => rel.startsWith(`${dir}/`))
+    const outside = [...closure].filter(
+      (rel) => !MATERIALIZED_ASSET_DIRS.some((dir) => rel.startsWith(`${dir}/`)),
     );
     expect(outside.sort()).toEqual([...MATERIALIZED_ASSET_FILES].sort());
   });
@@ -247,7 +247,9 @@ describe("installer checkout guard refuses before mutating, proceeds on legacy r
       if (entry.isDirectory()) {
         out.push(`${rel}/`, ...snapshotTree(join(dir, entry.name), rel));
       } else {
-        const hash = createHash("sha256").update(readFileSync(join(dir, entry.name))).digest("hex");
+        const hash = createHash("sha256")
+          .update(readFileSync(join(dir, entry.name)))
+          .digest("hex");
         out.push(`${rel} ${hash}`);
       }
     }
@@ -261,9 +263,10 @@ describe("installer checkout guard refuses before mutating, proceeds on legacy r
     if (target === null) throw new Error("no release target for this platform");
     const dir = tempDir("ce-guard-dl-");
     const asset = releaseAssetName(target);
-    const body = process.platform === "win32"
-      ? "not a real executable\n"
-      : '#!/usr/bin/env bash\ntouch "$0.invoked"\nexit 0\n';
+    const body =
+      process.platform === "win32"
+        ? "not a real executable\n"
+        : '#!/usr/bin/env bash\ntouch "$0.invoked"\nexit 0\n';
     writeFileSync(join(dir, asset), body);
     const sha = createHash("sha256").update(body).digest("hex");
     writeFileSync(join(dir, "checksums.txt"), `${sha}  ${asset}\n`);
@@ -291,20 +294,25 @@ describe("installer checkout guard refuses before mutating, proceeds on legacy r
     extraEnv: Record<string, string> = {},
     extraArgs: string[] = [],
   ): ReturnType<typeof runSync> {
-    const extra = { "COPILOT_ENV_DOWNLOAD_BASE": downloadDir, "CI": "1", ...extraEnv };
+    const extra = { COPILOT_ENV_DOWNLOAD_BASE: downloadDir, CI: "1", ...extraEnv };
     if (process.platform === "win32") {
       return withPowershellChildEnv("powershell", (env) =>
-        runSync("powershell", [
-          "-NoProfile",
-          "-NonInteractive",
-          "-ExecutionPolicy",
-          "Bypass",
-          "-File",
-          join(ROOT, "install.ps1"),
-          "-InstallDir",
-          root,
-          ...extraArgs,
-        ], { env: { ...env, ...extra } }));
+        runSync(
+          "powershell",
+          [
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            join(ROOT, "install.ps1"),
+            "-InstallDir",
+            root,
+            ...extraArgs,
+          ],
+          { env: { ...env, ...extra } },
+        ),
+      );
     }
     return runSync("bash", [join(ROOT, "install.sh"), "--dir", root, ...extraArgs], {
       env: { ...process.env, ...extra },
@@ -334,14 +342,15 @@ describe("installer checkout guard refuses before mutating, proceeds on legacy r
     ];
     const env: Record<string, string | undefined> = {
       ...process.env,
-      "COPILOT_ENV_DOWNLOAD_BASE": downloadDir,
-      "CI": undefined,
-      "COPILOT_ENV_NO_EXEC_SHELL": undefined,
+      COPILOT_ENV_DOWNLOAD_BASE: downloadDir,
+      CI: undefined,
+      COPILOT_ENV_NO_EXEC_SHELL: undefined,
     };
     // BSD script (macOS) takes the command as trailing argv; util-linux takes one -c string.
-    const res = process.platform === "darwin"
-      ? runSync("script", ["-q", "/dev/null", ...command], { env })
-      : runSync("script", ["-qec", command.map((a) => `'${a}'`).join(" "), "/dev/null"], { env });
+    const res =
+      process.platform === "darwin"
+        ? runSync("script", ["-q", "/dev/null", ...command], { env })
+        : runSync("script", ["-qec", command.map((a) => `'${a}'`).join(" "), "/dev/null"], { env });
     return { res, reloaded: existsSync(`${shell}.ran`) };
   }
 
@@ -355,9 +364,9 @@ describe("installer checkout guard refuses before mutating, proceeds on legacy r
     const at = (...parts: string[]) => existsSync(join(root, ...parts));
     return [
       `installer exit=${res.exitCode}`,
-      `root exists=${existsSync(root)}; mutations: node_modules=${
-        at("node_modules")
-      } bin/${installedBinaryName()}=${at("bin", installedBinaryName())}`,
+      `root exists=${existsSync(root)}; mutations: node_modules=${at(
+        "node_modules",
+      )} bin/${installedBinaryName()}=${at("bin", installedBinaryName())}`,
       "--- installer stdout ---",
       res.stdout,
       "--- installer stderr ---",
@@ -510,30 +519,30 @@ describe("installer checkout guard refuses before mutating, proceeds on legacy r
     const home = (win ? process.env.USERPROFILE : process.env.HOME) ?? "";
     expect(home.length).toBeGreaterThan(0);
     const unsafe = win
-      // The ps1 guard collapses separators and dot components via GetFullPath, so those
-      // spellings land on the same refusals.
-      ? [
-        parse(home).root, // the filesystem root, e.g. C:\
-        home,
-        `${home}\\`, // trailing separator must not defeat the compare
-        `${home}/`, // the alt separator spelling of the same
-        home.replaceAll("\\", "\\\\"), // internal doubled separators
-        `${home}\\.`, // GetFullPath collapses the dot component back to home
-        `${home}\\*`, // wildcard rejection
-      ]
-      //   "/Users//me"                  -> distinct from home unless separators collapse first
-      //   internal-only doubled slash   -> pinned apart, or a leading-"//" rejection alone passes
-      : [
-        "/",
-        "//",
-        home,
-        `${home}/`,
-        home.replaceAll("/", "//"),
-        home.replace(/\/(?=[^/]*$)/, "//"), // internal-only: double just the last slash
-        "/tmp/..",
-        `${home}/.`,
-        ".",
-      ];
+      ? // The ps1 guard collapses separators and dot components via GetFullPath, so those
+        // spellings land on the same refusals.
+        [
+          parse(home).root, // the filesystem root, e.g. C:\
+          home,
+          `${home}\\`, // trailing separator must not defeat the compare
+          `${home}/`, // the alt separator spelling of the same
+          home.replaceAll("\\", "\\\\"), // internal doubled separators
+          `${home}\\.`, // GetFullPath collapses the dot component back to home
+          `${home}\\*`, // wildcard rejection
+        ]
+      : //   "/Users//me"                  -> distinct from home unless separators collapse first
+        //   internal-only doubled slash   -> pinned apart, or a leading-"//" rejection alone passes
+        [
+          "/",
+          "//",
+          home,
+          `${home}/`,
+          home.replaceAll("/", "//"),
+          home.replace(/\/(?=[^/]*$)/, "//"), // internal-only: double just the last slash
+          "/tmp/..",
+          `${home}/.`,
+          ".",
+        ];
     const emptyDownloadDir = tempDir("ce-lexical-dl-");
     try {
       for (const dir of unsafe) {
@@ -550,9 +559,10 @@ describe("installer checkout guard refuses before mutating, proceeds on legacy r
   // PowerShell 7's own module directory: prepended onto a 5.1 child's
   // PSModulePath (what a pwsh parent does), its Core-edition in-box modules
   // shadow 5.1's and cannot load there, so autoload of Get-FileHash dies.
-  const ps7Modules = process.platform === "win32"
-    ? join(process.env.ProgramFiles ?? "C:\\Program Files", "PowerShell", "7", "Modules")
-    : "";
+  const ps7Modules =
+    process.platform === "win32"
+      ? join(process.env.ProgramFiles ?? "C:\\Program Files", "PowerShell", "7", "Modules")
+      : "";
   // Off CI a machine without pwsh 7 genuinely cannot host the poison; on CI a
   // missing directory must fail the test below instead, or a runner-image
   // change would silently retire this coverage.
@@ -568,12 +578,16 @@ describe("installer checkout guard refuses before mutating, proceeds on legacy r
     // Negative control: the poison must bite on this machine, or the run below
     // proves nothing about the reset. Pin the failure to the Get-FileHash
     // autoload itself, so a timeout or an unrelated error cannot stand in.
-    const probe = runSync("powershell", [
-      "-NoProfile",
-      "-NonInteractive",
-      "-Command",
-      "Get-FileHash -LiteralPath $PSHOME\\powershell.exe -Algorithm SHA256",
-    ], { env: { ...process.env, "PSModulePath": poisoned } });
+    const probe = runSync(
+      "powershell",
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "Get-FileHash -LiteralPath $PSHOME\\powershell.exe -Algorithm SHA256",
+      ],
+      { env: { ...process.env, PSModulePath: poisoned } },
+    );
     const probeWhy = `unshielded probe exit=${probe.exitCode}:\n${probe.stderr}`;
     expect(probe.exitCode, probeWhy).not.toBe(0);
     expect(probe.stderr, probeWhy).toContain("Get-FileHash");
@@ -581,7 +595,7 @@ describe("installer checkout guard refuses before mutating, proceeds on legacy r
     const downloadDir = makeDownloadDir();
     const root = makeRoot(MARKER, "none");
     try {
-      const res = runInstaller(root, downloadDir, { "PSModulePath": poisoned });
+      const res = runInstaller(root, downloadDir, { PSModulePath: poisoned });
       const why = evidence(res, root);
       expect(existsSync(join(root, "bin", installedBinaryName())), why).toBe(true);
     } finally {
@@ -611,7 +625,7 @@ describe("the install script's arguments", () => {
       });
     }
     return {
-      env: { ...process.env, "PATH": `${bin}:${process.env.PATH ?? ""}` },
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}` },
       argvOf: (name) => {
         const file = join(bin, `${name}.argv`);
         return existsSync(file) ? readFileSync(file, "utf8").split("\n").slice(0, -1) : null;

@@ -23,7 +23,7 @@ interface WorkerExit {
 
 async function spawnWorker(worker: string, store: string): Promise<WorkerExit> {
   const child = spawnChild(process.execPath, {
-      args: [...bunRunArgs(), worker],
+    args: [...bunRunArgs(), worker],
     env: childValuesEnv({ store }),
     stdout: "pipe",
     stderr: "pipe",
@@ -96,35 +96,31 @@ test("update() lands at once over a fresh leftover marker of its own pid", () =>
   }
 });
 
-test(
-  "concurrent ensureApiKey callers converge on ONE key (no dropped/overwritten key)",
-  async () => {
-    const dir = tempDir("copilot-lock-");
-    try {
-      const store = join(dir, "config.json");
-      const worker = join(dir, "keyworker.ts");
-      writeFileSync(
-        worker,
-        [
-          `import { CopilotApiConfig } from ${importSpecifier(CONFIG_MODULE)};`,
-          `const cfg = new CopilotApiConfig(${CHILD_VALUES}.store);`,
-          "console.log(cfg.ensureApiKey() + ' ' + cfg.ensureAdminApiKey());",
-        ].join("\n"),
-      );
+test("concurrent ensureApiKey callers converge on ONE key (no dropped/overwritten key)", async () => {
+  const dir = tempDir("copilot-lock-");
+  try {
+    const store = join(dir, "config.json");
+    const worker = join(dir, "keyworker.ts");
+    writeFileSync(
+      worker,
+      [
+        `import { CopilotApiConfig } from ${importSpecifier(CONFIG_MODULE)};`,
+        `const cfg = new CopilotApiConfig(${CHILD_VALUES}.store);`,
+        "console.log(cfg.ensureApiKey() + ' ' + cfg.ensureAdminApiKey());",
+      ].join("\n"),
+    );
 
-      const procs = Array.from({ length: 6 }, () => spawnWorker(worker, store));
-      const outs = (await Promise.all(procs)).map((p) => p.stdout.trim());
-      const unique = new Set(outs);
-      expect(unique.size).toBe(1);
-      const doc = JSON.parse(readFileSync(store, "utf8"));
-      const apiKey = doc.auth.apiKeys[0];
-      const adminKey = doc.auth.adminApiKey;
-      expect(outs[0]).toBe(`${apiKey} ${adminKey}`);
-      // Racing creators would each append their own api key.
-      expect(doc.auth.apiKeys.length).toBe(1);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  },
-  30_000,
-);
+    const procs = Array.from({ length: 6 }, () => spawnWorker(worker, store));
+    const outs = (await Promise.all(procs)).map((p) => p.stdout.trim());
+    const unique = new Set(outs);
+    expect(unique.size).toBe(1);
+    const doc = JSON.parse(readFileSync(store, "utf8"));
+    const apiKey = doc.auth.apiKeys[0];
+    const adminKey = doc.auth.adminApiKey;
+    expect(outs[0]).toBe(`${apiKey} ${adminKey}`);
+    // Racing creators would each append their own api key.
+    expect(doc.auth.apiKeys.length).toBe(1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}, 30_000);

@@ -6,14 +6,16 @@
 // keys (contribution.ts), the tail probe is stored hashed, and secure_delete plus a truncating
 // checkpoint keep deleted rows out of free pages and old WAL frames. The open and each run's one
 // write transaction take the advisory lock; without it a run keeps its results and saves nothing.
-import { DatabaseSync } from "node:sqlite";
+
 import { closeSync, openSync, readSync } from "node:fs";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { usageIndexDir } from "../copilot_api/paths.ts";
 import { errMessage } from "../utils/error.ts";
-import { isRecord } from "../utils/json.ts";
 import { BOUNDED_LOCK_POLICY, type LockPolicy, withFileLockSync } from "../utils/file_lock.ts";
-import { createStderrLogger } from "../utils/logger.ts";
 import * as fs from "../utils/fs_facade.ts";
+import { isRecord } from "../utils/json.ts";
+import { createStderrLogger } from "../utils/logger.ts";
 import {
   CONTRIBUTION_VERSION,
   type ContributionOf,
@@ -30,7 +32,6 @@ import {
   type UsageSource,
   type WalkedFile,
 } from "./contribution.ts";
-import { usageIndexDir } from "../copilot_api/paths.ts";
 
 // `cost --json` owns stdout and its consumers parse the whole of it.
 const logger = createStderrLogger();
@@ -95,7 +96,7 @@ function parseStoredContribution<S extends UsageSource>(text: string): Contribut
     return null;
   }
   return isRecord(doc) && doc.v === CONTRIBUTION_VERSION
-    ? doc as unknown as ContributionOf<S>
+    ? (doc as unknown as ContributionOf<S>)
     : null;
 }
 
@@ -119,9 +120,8 @@ function tailProbeMatches(
   const fd = openSync(path, "r");
   try {
     const buffer = Buffer.alloc(probeBytes);
-    const read = probeBytes === 0
-      ? 0
-      : readSync(fd, buffer, 0, probeBytes, parsedThrough - probeBytes);
+    const read =
+      probeBytes === 0 ? 0 : readSync(fd, buffer, 0, probeBytes, parsedThrough - probeBytes);
     stats.bytesRead += read;
     return read === probeBytes && dedupKey(buffer.toString("hex")) === tailProbeKey;
   } finally {
@@ -133,15 +133,15 @@ function tailProbeMatches(
  *  row, uncounted. */
 type PendingWrite =
   | {
-    kind: "upsert";
-    source: UsageSource;
-    path: string;
-    size: number;
-    mtimeMs: number;
-    parsedThrough: number;
-    tailProbeKey: string;
-    record: string;
-  }
+      kind: "upsert";
+      source: UsageSource;
+      path: string;
+      size: number;
+      mtimeMs: number;
+      parsedThrough: number;
+      tailProbeKey: string;
+      record: string;
+    }
   | { kind: "delete"; path: string; unwalked: boolean };
 
 /** One instance belongs to one run: open, reconcile per source, close. Only `openUsageIndex` mints
@@ -165,11 +165,13 @@ class SqliteUsageIndex implements UsageIndex {
 
   /** One query for the not-walked deletion set and the reuse/resume decisions alike. */
   #knownFiles(source: UsageSource): Map<string, KnownFile> {
-    const rows = this.#db.prepare(
-      `SELECT "path", "size", "mtime_ms" AS mtimeMs, "parsed_through" AS parsedThrough,
+    const rows = this.#db
+      .prepare(
+        `SELECT "path", "size", "mtime_ms" AS mtimeMs, "parsed_through" AS parsedThrough,
               "tail_probe" AS tailProbeKey
          FROM "files" WHERE "source" = ?`,
-    ).all(source) as unknown as (KnownFile & { path: string })[];
+      )
+      .all(source) as unknown as (KnownFile & { path: string })[];
     return new Map(rows.map(({ path, ...known }) => [path, known]));
   }
 
@@ -254,10 +256,12 @@ class SqliteUsageIndex implements UsageIndex {
       null,
     );
     const stored = (path: string): ContributionOf<S> | null =>
-      recordStatement === null ? null : indexRead(() => {
-        const row = recordStatement.get(path, source) as { record: string } | undefined;
-        return row === undefined ? null : parseStoredContribution<S>(row.record);
-      }, null);
+      recordStatement === null
+        ? null
+        : indexRead(() => {
+            const row = recordStatement.get(path, source) as { record: string } | undefined;
+            return row === undefined ? null : parseStoredContribution<S>(row.record);
+          }, null);
 
     for (const file of walked) {
       if (!file.candidate) continue;
@@ -275,7 +279,8 @@ class SqliteUsageIndex implements UsageIndex {
               continue;
             }
           } else if (
-            file.size > known.size && file.resumable &&
+            file.size > known.size &&
+            file.resumable &&
             tailProbeMatches(file.path, known.parsedThrough, known.tailProbeKey, stats)
           ) {
             const prior = stored(file.path);
@@ -337,8 +342,11 @@ class SqliteUsageIndex implements UsageIndex {
  *  SQLite emits counts too. Anything else (a corrupt database, say) is left as it is. */
 function isRebuildable(e: unknown): boolean {
   const message = errMessage(e);
-  return (e as { errcode?: unknown }).errcode === SQLITE_NOTADB ||
-    message === "file is not a database" || LAYOUT_MISMATCH_RE.test(message);
+  return (
+    (e as { errcode?: unknown }).errcode === SQLITE_NOTADB ||
+    message === "file is not a database" ||
+    LAYOUT_MISMATCH_RE.test(message)
+  );
 }
 
 /** Configures and stamps a fresh connection, or closes it and throws. Rows under another stamp, or
@@ -350,21 +358,23 @@ function stamped(db: DatabaseSync, fingerprint: string): DatabaseSync {
     db.exec("PRAGMA journal_mode = WAL");
     db.exec("PRAGMA secure_delete = ON");
     db.exec(SCHEMA_SQL);
-    const stamp = db.prepare(`SELECT "value" FROM "meta" WHERE "key" = ?`)
+    const stamp = db
+      .prepare(`SELECT "value" FROM "meta" WHERE "key" = ?`)
       .get(META_PARSER_FINGERPRINT) as { value: string } | undefined;
     if (stamp?.value === fingerprint) return db;
     const hasRows = db.prepare(`SELECT 1 FROM "files" LIMIT 1`).get() !== undefined;
     if (stamp !== undefined || hasRows) {
-      const detail = stamp === undefined
-        ? "unstamped rows"
-        : `${META_PARSER_FINGERPRINT} ${stamp.value}`;
+      const detail =
+        stamp === undefined ? "unstamped rows" : `${META_PARSER_FINGERPRINT} ${stamp.value}`;
       logger.info(`rebuilding the usage index (${detail}).`);
     }
     // A fresh database recreates an empty table, silently.
     db.exec(`DROP TABLE "files"`);
     db.exec(SCHEMA_SQL);
-    db.prepare(`INSERT OR REPLACE INTO "meta" ("key", "value") VALUES (?, ?)`)
-      .run(META_PARSER_FINGERPRINT, fingerprint);
+    db.prepare(`INSERT OR REPLACE INTO "meta" ("key", "value") VALUES (?, ?)`).run(
+      META_PARSER_FINGERPRINT,
+      fingerprint,
+    );
     return db;
   } catch (e) {
     try {

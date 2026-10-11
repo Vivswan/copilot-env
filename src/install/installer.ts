@@ -14,10 +14,10 @@
 //
 // Every path that outlives a release goes through `<top>/current/...`, so flipping the link is
 // the whole commit of an update and old version dirs can be garbage-collected safely.
-import { spawnSync, type StdioOptions } from "node:child_process";
-import { configSetCommand } from "../copilot_api/env_config.ts";
+import { type StdioOptions, spawnSync } from "node:child_process";
 import { basename, dirname, join, resolve } from "node:path";
 import { consola } from "consola";
+import { configSetCommand } from "../copilot_api/env_config.ts";
 
 import { runShellIntegration } from "../shell/integration.ts";
 import { errMessage } from "../utils/error.ts";
@@ -261,8 +261,10 @@ export function writeTopLevelShims(top: string, logger: Logger = consola): void 
 /** Markers + .git: the shape of a LIVE source checkout (see CHECKOUT_MARKERS).
  *  Every destructive sweep in this module refuses such a root outright. */
 export function isCheckoutShapedRoot(root: string): boolean {
-  return CHECKOUT_MARKERS.some((marker) => fs.exists(join(root, marker))) &&
-    fs.exists(join(root, ".git"));
+  return (
+    CHECKOUT_MARKERS.some((marker) => fs.exists(join(root, marker))) &&
+    fs.exists(join(root, ".git"))
+  );
 }
 
 /** The bootstrap `copilot-env(.exe)` install.sh / install.ps1 downloaded to `<top>/bin`, superseded
@@ -320,8 +322,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 exec "$HERE/${INSTALLED_BINARY_POSIX}" "$@"
 `;
 
-export const POWERSHELL_SHIM =
-  `# copilot-env launcher (installed): dispatch to the compiled agent binary.
+export const POWERSHELL_SHIM = `# copilot-env launcher (installed): dispatch to the compiled agent binary.
 $Here = Split-Path -Parent $MyInvocation.MyCommand.Path
 & (Join-Path $Here '${INSTALLED_BINARY_WINDOWS}') @args
 exit $LASTEXITCODE
@@ -338,8 +339,7 @@ exec "$HERE/../${CURRENT_LINK}/bin/${INSTALLED_BINARY_POSIX}" "$@"
 
 /** Top-level bin/agent.ps1 (Windows twin of POSIX_CURRENT_SHIM; the junction
  *  resolves through every Win32 path API, PowerShell 5.1 included). */
-export const POWERSHELL_CURRENT_SHIM =
-  `# copilot-env launcher (installed): dispatch through the current version link.
+export const POWERSHELL_CURRENT_SHIM = `# copilot-env launcher (installed): dispatch through the current version link.
 $Here = Split-Path -Parent $MyInvocation.MyCommand.Path
 & (Join-Path (Split-Path -Parent $Here) '${CURRENT_LINK}\\bin\\${INSTALLED_BINARY_WINDOWS}') @args
 exit $LASTEXITCODE
@@ -384,34 +384,34 @@ interface Materialization {
 export type InstallPlan =
   | { kind: "in-place"; root: string; shell: ShellWiring | null }
   | {
-    kind: "installed";
-    root: string;
-    writes: FileWrite[];
-    shell: ShellWiring | null;
-  }
+      kind: "installed";
+      root: string;
+      writes: FileWrite[];
+      shell: ShellWiring | null;
+    }
   | {
-    kind: "versioned";
-    top: string;
-    versionName: string;
-    versionRoot: string;
-    writes: FileWrite[];
-    /** Null when the binary is already in the version root, or when no standalone binary is
-     *  running (a dev process aimed at a foreign root has none). */
-    binary: { from: string; to: string } | null;
-    /** The commit step (pointCurrentAt). */
-    currentLink: { path: string; target: string };
-    topShims: FileWrite<string>[];
-    /** The bootstrap binary at `<top>/bin`, swept once the top shims dispatch through the link. */
-    bootstrapBinaryRemovals: string[];
-    /** The version range this install leaves behind, run post-flip by runPostFlipMigrations: the
-     *  version `current` named before (`from`) to this one (`to`). Null when nothing was live
-     *  (a fresh install) or the same version is refreshed in place. */
-    migration: { from: string; to: string } | null;
-    /** Run through the INSTALLED binary post-flip: this process may be rooted at the top itself
-     *  (the bootstrap), so its own PROJECT_ROOT-derived rc paths would not survive the layout
-     *  change. */
-    shellWires: ShellWiring[];
-  };
+      kind: "versioned";
+      top: string;
+      versionName: string;
+      versionRoot: string;
+      writes: FileWrite[];
+      /** Null when the binary is already in the version root, or when no standalone binary is
+       *  running (a dev process aimed at a foreign root has none). */
+      binary: { from: string; to: string } | null;
+      /** The commit step (pointCurrentAt). */
+      currentLink: { path: string; target: string };
+      topShims: FileWrite<string>[];
+      /** The bootstrap binary at `<top>/bin`, swept once the top shims dispatch through the link. */
+      bootstrapBinaryRemovals: string[];
+      /** The version range this install leaves behind, run post-flip by runPostFlipMigrations: the
+       *  version `current` named before (`from`) to this one (`to`). Null when nothing was live
+       *  (a fresh install) or the same version is refreshed in place. */
+      migration: { from: string; to: string } | null;
+      /** Run through the INSTALLED binary post-flip: this process may be rooted at the top itself
+       *  (the bootstrap), so its own PROJECT_ROOT-derived rc paths would not survive the layout
+       *  change. */
+      shellWires: ShellWiring[];
+    };
 
 /** Canonicalize for the unsafe-target guard: the longest existing prefix resolved physically
  *  (symlinks; on Windows also junctions and 8.3 short names, via the OS realpath), the
@@ -445,9 +445,10 @@ function unsafeRootReason(root: string): string | null {
   if (canonical === dirname(canonical)) return "it is a filesystem root";
   const home = canonicalizeForGuard(userHomeDir());
   if (home !== null) {
-    const sameAsHome = process.platform === "win32"
-      ? canonical.toLowerCase() === home.toLowerCase()
-      : canonical === home;
+    const sameAsHome =
+      process.platform === "win32"
+        ? canonical.toLowerCase() === home.toLowerCase()
+        : canonical === home;
     if (sameAsHome) return "it is the home directory";
   }
   return null;
@@ -492,9 +493,9 @@ function guardInstalledTarget(root: string): void {
   // a worktree).
   if (isCheckoutShapedRoot(root)) {
     throw new Error(
-      `refusing to install into ${root}: it holds ${
-        CHECKOUT_MARKERS.join(" or ")
-      } beside .git, so it is a source checkout, and installing would overwrite its bin/agent ` +
+      `refusing to install into ${root}: it holds ${CHECKOUT_MARKERS.join(
+        " or ",
+      )} beside .git, so it is a source checkout, and installing would overwrite its bin/agent ` +
         `and working files`,
     );
   }
@@ -546,9 +547,8 @@ export function buildInstallPlan(
   sourceRoot: string = ASSET_ROOT,
   binarySource: string | null = defaultBinarySource(),
 ): InstallPlan {
-  const shell: ShellWiring | null = options.noShellIntegration || options.assetsOnly
-    ? null
-    : { allHosts: options.allHosts };
+  const shell: ShellWiring | null =
+    options.noShellIntegration || options.assetsOnly ? null : { allHosts: options.allHosts };
 
   // The discriminant IS rootMode's, over the arguments: root.ts sets ASSET_ROOT === PROJECT_ROOT
   // for a checkout and splits them for a compiled binary (embedded files vs install root). Gating
@@ -581,12 +581,12 @@ export function buildInstallPlan(
   // CANONICAL identity, not lexical: a binary running through the `current` link names its own
   // file twice (`<top>/current/bin/...` vs the version path), and copyFileSync onto the same
   // inode TRUNCATES it before reading.
-  const sameFile = binarySource !== null &&
+  const sameFile =
+    binarySource !== null &&
     canonicalizeForGuard(binarySource) !== null &&
     canonicalizeForGuard(binarySource) === canonicalizeForGuard(binaryTarget);
-  const binary = binarySource !== null && !sameFile
-    ? { from: binarySource, to: binaryTarget }
-    : null;
+  const binary =
+    binarySource !== null && !sameFile ? { from: binarySource, to: binaryTarget } : null;
 
   return {
     kind: "versioned",
@@ -598,9 +598,8 @@ export function buildInstallPlan(
     currentLink: { path: currentLinkPath(top), target: currentLinkTarget(top, versionName) },
     topShims: topLevelShims(top),
     bootstrapBinaryRemovals: bootstrapBinaryPaths(top),
-    migration: previous === null || previous === versionName
-      ? null
-      : { from: previous, to: versionName },
+    migration:
+      previous === null || previous === versionName ? null : { from: previous, to: versionName },
     shellWires: shell === null ? [] : [shell],
   };
 }
@@ -635,9 +634,9 @@ export function runPostFlipMigrations(
   const retry = `re-run it with \`agent ${args.join(" ")}\``;
   if (fs.dryRunActive()) {
     logger.warn(
-      `Would run the new release's migrations through ${binary}: agent ${
-        args.join(" ")
-      } (preview them: agent ${args.join(" ")} --dry-run).`,
+      `Would run the new release's migrations through ${binary}: agent ${args.join(
+        " ",
+      )} (preview them: agent ${args.join(" ")} --dry-run).`,
     );
     return;
   }
@@ -676,9 +675,9 @@ function wireShellsThroughInstalledBinary(
     const args = ["shell", ...(wire.allHosts ? ["--all-hosts"] : [])];
     if (fs.dryRunActive()) {
       consola.info(
-        `Would wire the shell integration through ${binary}: agent ${
-          args.join(" ")
-        } (preview it: agent ${args.join(" ")} --dry-run).`,
+        `Would wire the shell integration through ${binary}: agent ${args.join(
+          " ",
+        )} (preview it: agent ${args.join(" ")} --dry-run).`,
       );
       continue;
     }
@@ -749,9 +748,10 @@ function printEpilogue(options: InstallOptions): void {
   // CLIs first: `agent init` auto-detects Direct by smoke-testing the installed CLI, so a
   // machine without one lands on the proxy.
   printWrapped(
-    `  1. Run 'agent shell --clis' to install the Claude and Codex CLIs ('${
-      configSetCommand("shell.launchers", "true")
-    }' adds the cl/co/cx shortcuts).`,
+    `  1. Run 'agent shell --clis' to install the Claude and Codex CLIs ('${configSetCommand(
+      "shell.launchers",
+      "true",
+    )}' adds the cl/co/cx shortcuts).`,
   );
   printWrapped(
     "  2. Run 'agent init' to set up Codex + Claude (it picks GitHub Copilot Direct or the local proxy), then tells you whether you need 'agent start' (only for the proxy).",

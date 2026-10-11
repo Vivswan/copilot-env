@@ -10,18 +10,18 @@ import { parseModeFlags } from "../agents/provider_mode.ts";
 import { configKeyDef } from "../copilot_api/config_registry.ts";
 import { configDelCommand, configGetCommand, configSetCommand } from "../copilot_api/env_config.ts";
 import {
-  assertKnownProfile,
   AUTH_PROVIDERS,
   type AuthProvider,
+  assertKnownProfile,
   CopilotEnvState,
 } from "../copilot_api/env_state.ts";
 import { ghTokenEnvVarsLabel } from "../copilot_api/gh_cli.ts";
 import {
   isReservedProfileWord,
-  parseProfileName,
-  type Profile,
   PROFILE_VERBS,
+  type Profile,
   type ProfileVerb,
+  parseProfileName,
 } from "../copilot_api/profile.ts";
 import { prompt } from "../utils/logger.ts";
 import { runAuth } from "./auth.ts";
@@ -48,7 +48,7 @@ const AUTO_HELP = "Probe Direct vs the proxy and record the verdict.";
 // Keyed exhaustively on AuthProvider so a membership change in env_state.ts fails the compile here
 // instead of drifting the help.
 const AUTH_PROVIDER_HELP: Record<AuthProvider, string> = {
-  "copilot": "device flow in the browser",
+  copilot: "device flow in the browser",
   "gh-cli": "the machine's gh login",
   "gh-token": "paste a GitHub token (or --set <token>)",
   "gh-env": ghTokenEnvVarsLabel(),
@@ -69,7 +69,9 @@ export interface ProfileInvocation {
 export function splitProfileInvocation(args: readonly string[]): ProfileInvocation {
   const [command, word, ...rest] = args;
   if (
-    command !== "profile" || word === undefined || word.startsWith("-") ||
+    command !== "profile" ||
+    word === undefined ||
+    word.startsWith("-") ||
     isReservedProfileWord(word)
   ) {
     return { args: [...args], profile: null };
@@ -90,9 +92,7 @@ function refuseStrayWords(cmd: Command, verb: ProfileVerb, rawProfile: string | 
   if (word === undefined) return;
   if (isReservedProfileWord(word)) throw reservedWordError(word);
   if (rawProfile === null) {
-    throw new Error(
-      `the profile name goes before the verb: \`agent profile ${word} ${verb} ...\``,
-    );
+    throw new Error(`the profile name goes before the verb: \`agent profile ${word} ${verb} ...\``);
   }
   throw new Error(`\`agent profile ${rawProfile} ${verb}\` takes no '${word}' argument`);
 }
@@ -102,9 +102,9 @@ function refuseGlobalKey(key: string): void {
   const def = configKeyDef(key);
   if (def === undefined || def.scope !== "global") return;
   throw new Error(
-    `'${def.key}' is a global preference (this machine, every profile): \`${
-      configGetCommand(def.key)
-    }\`, \`${configSetCommand(def.key, "<value>")}\`, or \`${configDelCommand(def.key)}\``,
+    `'${def.key}' is a global preference (this machine, every profile): \`${configGetCommand(
+      def.key,
+    )}\`, \`${configSetCommand(def.key, "<value>")}\`, or \`${configDelCommand(def.key)}\``,
   );
 }
 
@@ -164,7 +164,7 @@ const PROFILE_VERB_GROUP = "Profile:";
 /** The name from the word position is passed on as the string the owning function takes, so both
  *  it and the verb validate the name in one order; a verb that owns its own read mints it. */
 export function registerProfileCommand(program: Command, rawProfile: string | null): Command {
-  const minted = (): Profile => rawProfile === null ? null : parseProfileName(rawProfile);
+  const minted = (): Profile => (rawProfile === null ? null : parseProfileName(rawProfile));
 
   const profile = program
     .command("profile")
@@ -260,11 +260,10 @@ export function registerProfileCommand(program: Command, rawProfile: string | nu
     "show",
     "Show its mode, provider, and daemon status",
     "Show this profile's mode, provider, and daemon status.",
-  )
-    .action((_opts: Opts, cmd: Command) => {
-      refuseStrayWords(cmd, "show", rawProfile);
-      return showProfile(minted());
-    });
+  ).action((_opts: Opts, cmd: Command) => {
+    refuseStrayWords(cmd, "show", rawProfile);
+    return showProfile(minted());
+  });
 
   addAuthOptions(
     verb(

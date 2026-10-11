@@ -27,11 +27,11 @@ import { settingsPathFor } from "../claude/paths.ts";
 import type { DirectSmoke } from "../copilot_api/endpoint_smoke.ts";
 import type { ProbeFetch } from "../copilot_api/integration_identity.ts";
 import { assertNever } from "../utils/assert.ts";
-import { childEnvWithPath, cliSpawn, type CommandLook, findCommand } from "../utils/command.ts";
+import { type CommandLook, childEnvWithPath, cliSpawn, findCommand } from "../utils/command.ts";
 import { errMessage } from "../utils/error.ts";
+import { removeScratchDir, type ScratchDir, scratchDir } from "../utils/fs_facade.ts";
 import { isRecord, parseJsonRecord } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
-import { removeScratchDir, type ScratchDir, scratchDir } from "../utils/fs_facade.ts";
 
 // Narration goes to stderr, never stdout: the machine-readable `--check` / `env` paths must
 // stay clean.
@@ -52,8 +52,9 @@ function isModelRejection(detail: string | undefined, model: string): boolean {
   if (detail === undefined || /\b5\d\d\b/.test(detail)) return false;
   const namesModel = detail.includes(model) || /\bmodel\b/i.test(detail);
   const refused =
-    /\b40[04]\b|not found|does not support|unknown|unrecognized|unsupported|may not exist/i
-      .test(detail);
+    /\b40[04]\b|not found|does not support|unknown|unrecognized|unsupported|may not exist/i.test(
+      detail,
+    );
   return namesModel && refused;
 }
 
@@ -228,8 +229,7 @@ export function jsonOutputReason(line: string): string | null {
   if (!line.startsWith("{")) return null;
   const doc = parseJsonRecord(line);
   if (doc === null) return null;
-  const failed = doc.is_error === true || isRecord(doc.error) ||
-    doc.is_api_error_message === true;
+  const failed = doc.is_error === true || isRecord(doc.error) || doc.is_api_error_message === true;
   if (!failed) return null;
   const message = isRecord(doc.message) ? doc.message : null;
   const texts = Array.isArray(message?.content)
@@ -416,13 +416,10 @@ export async function probeDirectWorks(
     const home: ScratchDir = tmpHome;
     // Provider families stripped (why: PROVIDER_ENV_PREFIXES); the resolved CLI's and gh's bin
     // dirs lead PATH so an nvm-only toolchain resolves (why: childEnvWithPath).
-    const childEnv = childEnvWithPath(
-      [binDir(cliPath), ghPath === null ? null : binDir(ghPath)],
-      {
-        extra: { [descriptor.homeEnvVar]: tmpHome },
-        omit: (upper) => PROVIDER_ENV_PREFIXES.some((prefix) => upper.startsWith(prefix)),
-      },
-    );
+    const childEnv = childEnvWithPath([binDir(cliPath), ghPath === null ? null : binDir(ghPath)], {
+      extra: { [descriptor.homeEnvVar]: tmpHome },
+      omit: (upper) => PROVIDER_ENV_PREFIXES.some((prefix) => upper.startsWith(prefix)),
+    });
 
     const run = async (model: string): Promise<ProbeOutcome> => {
       logger.log(

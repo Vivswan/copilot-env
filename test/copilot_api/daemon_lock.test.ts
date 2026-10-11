@@ -5,22 +5,30 @@ import {
   proxyStatus,
   stopTrackedProxy,
 } from "../../src/copilot_api/daemon.ts";
-import { CopilotApiPaths } from "../../src/copilot_api/paths.ts";
-import { parseProfileName } from "../../src/copilot_api/profile.ts";
-import { launchDaemon } from "../../src/copilot_api/process.ts";
-import { pidAlive } from "../../src/utils/pid.ts";
-import { parseAbsolutePath } from "../../src/copilot_api/sidecar.ts";
-import { sidecarDenoOnPath } from "../helpers/sidecar.ts";
-import { daemonConfigFile, writeDaemonConfig } from "../../src/proxy_float.ts";
-import { resolveRootHome } from "../../src/copilot_api/paths.ts";
-import { CopilotEnvRunState } from "../../src/copilot_api/run_state.ts";
 import {
   acquireDaemonLockForLife,
   daemonLockHolderPid,
   daemonLockPath,
   daemonLockVerdict,
 } from "../../src/copilot_api/daemon_lock.ts";
+import { CopilotApiPaths, resolveRootHome } from "../../src/copilot_api/paths.ts";
+import { launchDaemon } from "../../src/copilot_api/process.ts";
+import { parseProfileName } from "../../src/copilot_api/profile.ts";
+import { CopilotEnvRunState } from "../../src/copilot_api/run_state.ts";
+import { parseAbsolutePath } from "../../src/copilot_api/sidecar.ts";
+import { daemonConfigFile, writeDaemonConfig } from "../../src/proxy_float.ts";
 import { releaseFileLock } from "../../src/utils/file_lock.ts";
+import { pidAlive } from "../../src/utils/pid.ts";
+import {
+  FAKE_DAEMON_CREDENTIAL,
+  FAKE_DAEMON_HOST,
+  until,
+  withUnprovablePidProbe,
+} from "../helpers/daemon.ts";
+import { defaultHomeDir, envSnapshot, isolateProxyHome } from "../helpers/env.ts";
+import { writeRunState } from "../helpers/fixtures.ts";
+import { closeServer, freePort, listenEphemeral } from "../helpers/net.ts";
+import { captureAllWrites } from "../helpers/output.ts";
 import {
   bunRunArgs,
   CHILD_VALUES,
@@ -29,17 +37,8 @@ import {
   ROOT,
   spawnChild,
 } from "../helpers/run.ts";
+import { sidecarDenoOnPath } from "../helpers/sidecar.ts";
 import { afterEach, expect, tempDir, test } from "../helpers/testing.ts";
-import { defaultHomeDir, envSnapshot, isolateProxyHome } from "../helpers/env.ts";
-import { writeRunState } from "../helpers/fixtures.ts";
-import {
-  FAKE_DAEMON_CREDENTIAL,
-  FAKE_DAEMON_HOST,
-  until,
-  withUnprovablePidProbe,
-} from "../helpers/daemon.ts";
-import { captureAllWrites } from "../helpers/output.ts";
-import { closeServer, freePort, listenEphemeral } from "../helpers/net.ts";
 
 // The daemon holds `<home>/daemon.lock` for life (acquired by daemon_lock_preload), and the
 // liveness consults judge it BEFORE the pid table. The lock is the marker file naming the
@@ -118,15 +117,15 @@ test("a live holder blocks acquisition; SIGKILL releases the lock promptly", asy
   writeFileSync(
     holder,
     `import { writeFileSync } from "node:fs";\n` +
-      `import { acquireDaemonLockForLife } from ${
-        importSpecifier(join(ROOT, "src", "copilot_api", "daemon_lock.ts"))
-      };\n` +
+      `import { acquireDaemonLockForLife } from ${importSpecifier(
+        join(ROOT, "src", "copilot_api", "daemon_lock.ts"),
+      )};\n` +
       `if (!acquireDaemonLockForLife(${CHILD_VALUES}.home)) process.exit(1);\n` +
       `writeFileSync(${CHILD_VALUES}.ready, "locked");\n` +
       "setInterval(() => {}, 60_000);\n",
   );
   const child = spawnChild(process.execPath, {
-      args: [...bunRunArgs(), holder],
+    args: [...bunRunArgs(), holder],
     env: childValuesEnv({ home, ready }),
     stdout: "ignore",
     stderr: "inherit",
@@ -165,47 +164,51 @@ test("a live holder blocks acquisition; SIGKILL releases the lock promptly", asy
 // The daemon side of the protocol for real: the sidecar deno (PATH or the override) runs the fake
 // proxy with the preload shims under the generated daemon config, and daemon_lock_preload creates
 // the same marker file this process judges.
-withSidecar("a launched daemon holds its home's lock for life, released by SIGKILL (needs the sidecar deno on PATH)", async () => {
-  dir = isolateProxyHome("copilot-daemon-lock-");
-  const port = await freePort();
-  const logFile = join(dir, "daemon.log");
-  writeFileSync(logFile, "");
-  writeDaemonConfig(resolveRootHome());
-  // A predecessor's leftover: the launch clears it, or the daemon's own acquire (which cannot
-  // judge the pid) would refuse for its whole budget and the proxy would never serve.
-  plantMarker(dir, DEAD_PID);
-  const pid = launchDaemon({
-    port,
-    logFile,
-    home: dir,
-    env: {},
-    credential: FAKE_DAEMON_CREDENTIAL,
-    idleWatchdog: false,
-    muteProxyLogs: false,
-    copilotHost: FAKE_DAEMON_HOST,
-    entry: {
-      kind: "file",
-      path: join(ROOT, "test", "copilot-api-fake.mjs"),
-      configFile: daemonConfigFile(resolveRootHome()),
-    },
-    denoBin: parseAbsolutePath(SIDECAR_DENO ?? ""),
-  });
-  try {
-    // The preload acquires before the proxy serves, so a held lock is observable no
-    // later than readiness.
-    await until(() => daemonLockVerdict(dir, pid) === "alive");
-    expect(daemonLockHolderPid(dir)).toBe(pid);
-  } finally {
+withSidecar(
+  "a launched daemon holds its home's lock for life, released by SIGKILL (needs the sidecar deno on PATH)",
+  async () => {
+    dir = isolateProxyHome("copilot-daemon-lock-");
+    const port = await freePort();
+    const logFile = join(dir, "daemon.log");
+    writeFileSync(logFile, "");
+    writeDaemonConfig(resolveRootHome());
+    // A predecessor's leftover: the launch clears it, or the daemon's own acquire (which cannot
+    // judge the pid) would refuse for its whole budget and the proxy would never serve.
+    plantMarker(dir, DEAD_PID);
+    const pid = launchDaemon({
+      port,
+      logFile,
+      home: dir,
+      env: {},
+      credential: FAKE_DAEMON_CREDENTIAL,
+      idleWatchdog: false,
+      muteProxyLogs: false,
+      copilotHost: FAKE_DAEMON_HOST,
+      entry: {
+        kind: "file",
+        path: join(ROOT, "test", "copilot-api-fake.mjs"),
+        configFile: daemonConfigFile(resolveRootHome()),
+      },
+      denoBin: parseAbsolutePath(SIDECAR_DENO ?? ""),
+    });
     try {
-      process.kill(pid, "SIGKILL");
-    } catch {
-      // already gone
+      // The preload acquires before the proxy serves, so a held lock is observable no
+      // later than readiness.
+      await until(() => daemonLockVerdict(dir, pid) === "alive");
+      expect(daemonLockHolderPid(dir)).toBe(pid);
+    } finally {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        // already gone
+      }
     }
-  }
-  await until(() => !pidAlive(pid));
-  // The postcondition of the whole design: the killed daemon's lock reads dead, by pid.
-  await until(() => daemonLockVerdict(dir, pid) === "dead");
-}, 30_000);
+    await until(() => !pidAlive(pid));
+    // The postcondition of the whole design: the killed daemon's lock reads dead, by pid.
+    await until(() => daemonLockVerdict(dir, pid) === "dead");
+  },
+  30_000,
+);
 
 // --- proxyStatus consults the lock first --------------------------------------------------
 
@@ -258,7 +261,7 @@ function spawnDaemonShapedDecoy(
       "setInterval(() => {}, 60_000);\n",
   );
   return spawnChild(SIDECAR_DENO ?? "", {
-      args: ["run", "--allow-write", "--allow-env", decoy, "start"],
+    args: ["run", "--allow-write", "--allow-env", decoy, "start"],
     env: childValuesEnv({ ready }),
     stdout: "ignore",
     stderr: "inherit",
@@ -304,45 +307,41 @@ withSidecar(
 // daemon's marker, and an innocent local process all carry the same number. The stop must
 // refuse AND keep the tracking: the user asked to stop something provably still up, and
 // unbinding it would lie.
-test(
-  "stopTrackedProxy: stale tracking + a held lock naming a local NON-daemon pid is refused, tracking kept",
-  async () => {
-    dir = isolateProxyHome("copilot-daemon-lock-");
-    const home = defaultHomeDir();
-    const bystander = join(dir, "bystander.ts");
-    writeFileSync(bystander, "setInterval(() => {}, 60_000);\n");
-    const child = spawnChild(process.execPath, {
-      args: [...bunRunArgs(), bystander],
-      stdout: "ignore",
-      stderr: "ignore",
-    });
-    // Stand-in for the remote host's daemon: THIS test process took the lock, then the marker
-    // (and the stale run state) name the local bystander, a live pid: the lock reads held by it.
-    expect(acquireDaemonLockForLife(home, { waitMs: 0 })).toBe(true);
+test("stopTrackedProxy: stale tracking + a held lock naming a local NON-daemon pid is refused, tracking kept", async () => {
+  dir = isolateProxyHome("copilot-daemon-lock-");
+  const home = defaultHomeDir();
+  const bystander = join(dir, "bystander.ts");
+  writeFileSync(bystander, "setInterval(() => {}, 60_000);\n");
+  const child = spawnChild(process.execPath, {
+    args: [...bunRunArgs(), bystander],
+    stdout: "ignore",
+    stderr: "ignore",
+  });
+  // Stand-in for the remote host's daemon: THIS test process took the lock, then the marker
+  // (and the stale run state) name the local bystander, a live pid: the lock reads held by it.
+  expect(acquireDaemonLockForLife(home, { waitMs: 0 })).toBe(true);
+  try {
+    writeFileSync(daemonLockPath(home), `${child.pid}\n${Date.now()}\n`);
+    writeRunState({ pid: child.pid, port: 4141 });
+    expect(daemonLockVerdict(home, child.pid)).toBe("alive"); // must not authorize alone
+
+    const result = await stopTrackedProxy();
+
+    expect(result).toEqual({ trackedPid: child.pid, signalled: false, stopped: false });
+    expect(pidAlive(child.pid)).toBe(true); // never signalled
+    // Tracking intact: the daemon (somewhere) is still up, so nothing was unbound.
+    expect(new CopilotEnvRunState().read().pid).toBe(child.pid);
+  } finally {
     try {
-      writeFileSync(daemonLockPath(home), `${child.pid}\n${Date.now()}\n`);
-      writeRunState({ pid: child.pid, port: 4141 });
-      expect(daemonLockVerdict(home, child.pid)).toBe("alive"); // must not authorize alone
-
-      const result = await stopTrackedProxy();
-
-      expect(result).toEqual({ trackedPid: child.pid, signalled: false, stopped: false });
-      expect(pidAlive(child.pid)).toBe(true); // never signalled
-      // Tracking intact: the daemon (somewhere) is still up, so nothing was unbound.
-      expect(new CopilotEnvRunState().read().pid).toBe(child.pid);
-    } finally {
-      try {
-        child.kill("SIGKILL");
-      } catch {
-        // already gone
-      }
-      // Our own lock first: the wait below can end with the deadline's error.
-      releaseFileLock(daemonLockPath(home));
-      await until(() => !pidAlive(child.pid));
+      child.kill("SIGKILL");
+    } catch {
+      // already gone
     }
-  },
-  30_000,
-);
+    // Our own lock first: the wait below can end with the deadline's error.
+    releaseFileLock(daemonLockPath(home));
+    await until(() => !pidAlive(child.pid));
+  }
+}, 30_000);
 
 // KILL-boundary pid reuse on the STOP path: the TERM'd daemon dies inside the grace and the
 // OS recycles its pid onto a foreign process, so terminatePid's boundary re-proof refuses
@@ -453,47 +452,43 @@ withSidecar(
 // graceMs > 0 is the caller that must be SURE (de-auth): with no signal deliverable and no
 // death provable, the stop must not claim stopped and must keep the tracking, so a follow-up
 // `agent stop` from a capable shell can still target the daemon.
-test(
-  "stopTrackedProxy: an unprovable stop keeps the tracking and never claims stopped",
-  async () => {
-    dir = isolateProxyHome("copilot-daemon-lock-");
-    const ready = join(dir, "ready");
-    const bystander = join(dir, "bystander.ts");
-    writeFileSync(
-      bystander,
-      `import { writeFileSync } from "node:fs";\n` +
-        `writeFileSync(${CHILD_VALUES}.ready, "up");\n` +
-        "setInterval(() => {}, 60_000);\n",
-    );
-    const child = spawnChild(process.execPath, {
-      args: [...bunRunArgs(), bystander],
-      env: childValuesEnv({ ready }),
-      stdout: "ignore",
-      stderr: "inherit",
+test("stopTrackedProxy: an unprovable stop keeps the tracking and never claims stopped", async () => {
+  dir = isolateProxyHome("copilot-daemon-lock-");
+  const ready = join(dir, "ready");
+  const bystander = join(dir, "bystander.ts");
+  writeFileSync(
+    bystander,
+    `import { writeFileSync } from "node:fs";\n` +
+      `writeFileSync(${CHILD_VALUES}.ready, "up");\n` +
+      "setInterval(() => {}, 60_000);\n",
+  );
+  const child = spawnChild(process.execPath, {
+    args: [...bunRunArgs(), bystander],
+    env: childValuesEnv({ ready }),
+    stdout: "ignore",
+    stderr: "inherit",
+  });
+  try {
+    await until(() => existsSync(ready));
+    writeRunState({ pid: child.pid, port: 4141 });
+    // No lock file: the verdict is "unproven" and the injected TERM-gate classify
+    // answers "yes" (a confirmed daemon this token still cannot signal or re-probe).
+    const classify = (): Promise<"yes" | "no" | "unknown"> => Promise.resolve("yes");
+    let result: Awaited<ReturnType<typeof stopTrackedProxy>> | undefined;
+    await withUnprovablePidProbe(async () => {
+      result = await stopTrackedProxy(300, null, classify);
     });
+    // Signalled (attempted, honestly reported) but NOT stopped: no death was proven.
+    expect(result).toEqual({ trackedPid: child.pid, signalled: true, stopped: false });
+    // Alive and still tracked: never cleared on a failed look.
+    expect(pidAlive(child.pid)).toBe(true);
+    expect(new CopilotEnvRunState().read().pid).toBe(child.pid);
+  } finally {
     try {
-      await until(() => existsSync(ready));
-      writeRunState({ pid: child.pid, port: 4141 });
-      // No lock file: the verdict is "unproven" and the injected TERM-gate classify
-      // answers "yes" (a confirmed daemon this token still cannot signal or re-probe).
-      const classify = (): Promise<"yes" | "no" | "unknown"> => Promise.resolve("yes");
-      let result: Awaited<ReturnType<typeof stopTrackedProxy>> | undefined;
-      await withUnprovablePidProbe(async () => {
-        result = await stopTrackedProxy(300, null, classify);
-      });
-      // Signalled (attempted, honestly reported) but NOT stopped: no death was proven.
-      expect(result).toEqual({ trackedPid: child.pid, signalled: true, stopped: false });
-      // Alive and still tracked: never cleared on a failed look.
-      expect(pidAlive(child.pid)).toBe(true);
-      expect(new CopilotEnvRunState().read().pid).toBe(child.pid);
-    } finally {
-      try {
-        child.kill("SIGKILL");
-      } catch {
-        // already gone
-      }
-      await child.exited;
+      child.kill("SIGKILL");
+    } catch {
+      // already gone
     }
-  },
-  30_000,
-);
+    await child.exited;
+  }
+}, 30_000);

@@ -36,26 +36,29 @@ function runPreloaded(
 // env var is scrubbed either way so a child the daemon spawns never inherits it.
 // Fake-token fixtures stay short and low-entropy: gitleaks' generic-api-key rule only matches
 // secrets of 10+ chars AND entropy >= 3.5, so neither gate can trip on them.
-sidecarTest("the env token becomes --github-token exactly once, and the env var never survives", () => {
-  const rows: { token: string | undefined; argv: string[]; out: string[] }[] = [
-    {
-      token: "ghp_test",
-      argv: ["start", "--port", "4141"],
-      out: ["start", "--port", "4141", "--github-token", "ghp_test"],
-    },
-    { token: undefined, argv: ["start", "--port", "4141"], out: ["start", "--port", "4141"] },
-    {
-      token: "ghp_env",
-      argv: ["--github-token", "existing", "start"],
-      out: ["--github-token", "existing", "start"],
-    },
-  ];
-  for (const { token, argv, out } of rows) {
-    expect({ token, given: argv, ...runPreloaded(token, argv) }).toEqual({
-      token,
-      given: argv,
-      argv: out,
-      envHadKey: false,
-    });
-  }
-});
+sidecarTest(
+  "the env token becomes --github-token exactly once, and the env var never survives",
+  () => {
+    const rows: { token: string | undefined; argv: string[]; out: string[] }[] = [
+      {
+        token: "ghp_test",
+        argv: ["start", "--port", "4141"],
+        out: ["start", "--port", "4141", "--github-token", "ghp_test"],
+      },
+      { token: undefined, argv: ["start", "--port", "4141"], out: ["start", "--port", "4141"] },
+      {
+        token: "ghp_env",
+        argv: ["--github-token", "existing", "start"],
+        out: ["--github-token", "existing", "start"],
+      },
+    ];
+    for (const { token, argv, out } of rows) {
+      expect({ token, given: argv, ...runPreloaded(token, argv) }).toEqual({
+        token,
+        given: argv,
+        argv: out,
+        envHadKey: false,
+      });
+    }
+  },
+);

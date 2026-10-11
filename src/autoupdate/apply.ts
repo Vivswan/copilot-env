@@ -14,10 +14,10 @@
 //                            absent and says so)
 //   fails after the flip  -> best-effort: `agent migrate`, then the GC keeping ONE previous
 //                            version
-import { spawnSync, type StdioOptions } from "node:child_process";
+import { type StdioOptions, spawnSync } from "node:child_process";
 import { join } from "node:path";
-import { configDelCommand } from "../copilot_api/env_config.ts";
 import { consola } from "consola";
+import { configDelCommand } from "../copilot_api/env_config.ts";
 
 import {
   ATTESTATION_NAME,
@@ -48,9 +48,9 @@ import {
 import type { Release } from "../install/resolve-release.ts";
 import { currentReleaseTarget, installedBinaryName, releaseAssetName } from "../install/targets.ts";
 import { errMessage } from "../utils/error.ts";
+import * as fs from "../utils/fs_facade.ts";
 import { installStateRoot, PROJECT_ROOT, readInstallManifest } from "../utils/root.ts";
 import { COPILOT_ENV_USER_AGENT } from "../utils/user_agent.ts";
-import * as fs from "../utils/fs_facade.ts";
 
 const REPO = "Vivswan/copilot-env";
 const CHECKSUMS_NAME = "checksums.txt";
@@ -135,9 +135,7 @@ interface Provisioned {
   readonly versionName: string;
 }
 
-type DownloadSource =
-  | { kind: "directory"; path: string }
-  | { kind: "url"; base: string };
+type DownloadSource = { kind: "directory"; path: string } | { kind: "url"; base: string };
 
 function downloadSource(tag: string): DownloadSource {
   const override = process.env[DOWNLOAD_BASE_ENV];
@@ -231,7 +229,7 @@ async function attest(
       decision.via === "--no-verify"
         ? "Skipping build-provenance verification (--no-verify)."
         : "Skipping build-provenance verification (update.verify-provenance is false; " +
-          `\`${configDelCommand("update.verify-provenance")}\` restores it).`,
+            `\`${configDelCommand("update.verify-provenance")}\` restores it).`,
     );
     return { path: verified.path, sha256: verified.sha256 };
   }

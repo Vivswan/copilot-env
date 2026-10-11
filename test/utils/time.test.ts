@@ -1,5 +1,6 @@
 import { dayKeyIn, formatDuration, localDayKey, startOfLocalDay } from "../../src/utils/time.ts";
-import { expect, test, TZ_PINNABLE } from "../helpers/testing.ts";
+import { expect, TZ_PINNABLE, test } from "../helpers/testing.ts";
+
 test("formatDuration renders compact durations and omits zero components", () => {
   expect(formatDuration(0)).toBe("0s");
   expect(formatDuration(-5000)).toBe("0s"); // negatives clamp
@@ -29,15 +30,13 @@ test("the named-zone path agrees with the default path for the system's own zone
   // If the named-zone path could disagree with the default path, the named-zone assertions
   // above and in test/usage/cost.test.ts would pin something the production default never does.
   const systemZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-  for (
-    const iso of [
-      "2026-06-02T01:00:00Z",
-      "2026-01-05T00:00:00Z",
-      "2026-12-31T23:59:59Z",
-      "2026-03-08T09:30:00Z", // inside the US DST spring-forward window
-      "2026-11-01T05:30:00Z", // inside the US DST fall-back repeated hour
-    ]
-  ) {
+  for (const iso of [
+    "2026-06-02T01:00:00Z",
+    "2026-01-05T00:00:00Z",
+    "2026-12-31T23:59:59Z",
+    "2026-03-08T09:30:00Z", // inside the US DST spring-forward window
+    "2026-11-01T05:30:00Z", // inside the US DST fall-back repeated hour
+  ]) {
     const ms = Date.parse(iso);
     expect(localDayKey(ms, systemZone)).toBe(localDayKey(ms));
     for (const daysBack of [0, 1, 6]) {
@@ -55,9 +54,7 @@ test("startOfLocalDay in a NAMED zone opens the day where Date does when a zone 
   // Goose Bay fell back at 00:01 -> 23:01 on 2006-10-29, so the day opened for one minute at ADT
   // (03:00Z), went back to the 28th, and reached midnight again an hour later at AST (04:00Z).
   // The first minute opens the day, though every offset in force near 04:00Z is already AST.
-  expect(startIso("2006-10-29T12:00:00Z", 0, "America/Goose_Bay")).toBe(
-    "2006-10-29T03:00:00.000Z",
-  );
+  expect(startIso("2006-10-29T12:00:00Z", 0, "America/Goose_Bay")).toBe("2006-10-29T03:00:00.000Z");
   // Sao Paulo sprang forward at 00:00 -> 01:00 on 2018-11-04, so midnight never happened; the day
   // opens at 01:00 BRST (03:00Z), not an hour before on the previous local day.
   expect(startIso("2019-02-18T12:00:00Z", 106, "America/Sao_Paulo")).toBe(

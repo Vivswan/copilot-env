@@ -63,9 +63,11 @@ interface ProvenanceStatement {
 
 /** The fail-closed wording, the ONE place it lives. */
 export function cannotVerifyMessage(tag: string, cause: string): string {
-  return `cannot verify the build provenance of ${tag}: ${cause}. ` +
+  return (
+    `cannot verify the build provenance of ${tag}: ${cause}. ` +
     "To update without provenance verification, re-run with --no-verify, or persist the " +
-    `opt-out with '${configSetCommand("update.verify-provenance", "false")}'.`;
+    `opt-out with '${configSetCommand("update.verify-provenance", "false")}'.`
+  );
 }
 
 /** The mismatch wording, deliberately silent about the opt-outs. */
@@ -93,9 +95,9 @@ export function parseStatement(payload: Uint8Array): ProvenanceStatement {
   }
   if (statement.predicateType !== SLSA_PROVENANCE_V1) {
     throw new Error(
-      `unexpected predicate type ${
-        String(statement.predicateType)
-      } (expected ${SLSA_PROVENANCE_V1})`,
+      `unexpected predicate type ${String(
+        statement.predicateType,
+      )} (expected ${SLSA_PROVENANCE_V1})`,
     );
   }
   if (!Array.isArray(statement.subject)) {

@@ -9,12 +9,12 @@
 // TerminateProcess there), so they are POSIX-only.
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { terminatePid, type TerminateVerdict } from "../../src/copilot_api/process.ts";
+import { type TerminateVerdict, terminatePid } from "../../src/copilot_api/process.ts";
 import { pidAlive } from "../../src/utils/pid.ts";
 import { killAndAwaitExit, until, withUnprovablePidProbe } from "../helpers/daemon.ts";
+import { captureAllWrites as withCapturedOutput } from "../helpers/output.ts";
 import { bunRunArgs, CHILD_VALUES, childValuesEnv, spawnChild } from "../helpers/run.ts";
 import { afterEach, expect, removeDir, tempDir, test } from "../helpers/testing.ts";
-import { captureAllWrites as withCapturedOutput } from "../helpers/output.ts";
 
 let dir = "";
 
@@ -110,115 +110,103 @@ test.skipIf(process.platform === "win32")(
 
 // Liveness is checked before identity, so the classify seam is a KILL-boundary check only
 // and never runs on the happy path.
-test(
-  "a pid that died within the grace consults no identity scan",
-  async () => {
-    dir = tempDir("copilot-terminate-");
-    const ready = join(dir, "ready");
-    const script = join(dir, "compliant.ts");
-    // No SIGTERM listener: the child dies on the SIGTERM itself (TerminateProcess on
-    // Windows), well inside the grace.
-    writeFileSync(
-      script,
-      'import { writeFileSync } from "node:fs";\n' +
-        `writeFileSync(${CHILD_VALUES}.ready, "up");\n` +
-        "setInterval(() => {}, 60_000);\n",
-    );
-    const child = spawnChild(process.execPath, {
-      args: [...bunRunArgs(), script],
-      env: childValuesEnv({ ready }),
-      stdout: "ignore",
-      stderr: "inherit",
-    });
-    try {
-      await until(() => existsSync(ready));
-      // Observe the exit eagerly so the child is reaped as soon as the SIGTERM lands --
-      // a lingering zombie would still read pidAlive at the boundary.
-      const exited = child.exited;
-      const { calls, classify } = classifyStub("no");
-      expect(await terminatePid(child.pid, 3_000, classify)).toBe("died-in-grace");
-      await exited;
-      expect(calls).toEqual([]);
-      expect(pidAlive(child.pid)).toBe(false);
-    } finally {
-      await killAndAwaitExit(child.pid);
-    }
-  },
-  30_000,
-);
+test("a pid that died within the grace consults no identity scan", async () => {
+  dir = tempDir("copilot-terminate-");
+  const ready = join(dir, "ready");
+  const script = join(dir, "compliant.ts");
+  // No SIGTERM listener: the child dies on the SIGTERM itself (TerminateProcess on
+  // Windows), well inside the grace.
+  writeFileSync(
+    script,
+    'import { writeFileSync } from "node:fs";\n' +
+      `writeFileSync(${CHILD_VALUES}.ready, "up");\n` +
+      "setInterval(() => {}, 60_000);\n",
+  );
+  const child = spawnChild(process.execPath, {
+    args: [...bunRunArgs(), script],
+    env: childValuesEnv({ ready }),
+    stdout: "ignore",
+    stderr: "inherit",
+  });
+  try {
+    await until(() => existsSync(ready));
+    // Observe the exit eagerly so the child is reaped as soon as the SIGTERM lands --
+    // a lingering zombie would still read pidAlive at the boundary.
+    const exited = child.exited;
+    const { calls, classify } = classifyStub("no");
+    expect(await terminatePid(child.pid, 3_000, classify)).toBe("died-in-grace");
+    await exited;
+    expect(calls).toEqual([]);
+    expect(pidAlive(child.pid)).toBe(false);
+  } finally {
+    await killAndAwaitExit(child.pid);
+  }
+}, 30_000);
 
 // graceMs 0 is the no-escalation mode; "term-only" means signalled, nothing verified, never a
 // death that was not observed. The child traps nothing, so Windows runs this too.
-test(
-  "graceMs 0 sends the TERM only, consults no identity, and answers 'term-only'",
-  async () => {
-    dir = tempDir("copilot-terminate-");
-    const ready = join(dir, "ready");
-    const script = join(dir, "compliant.ts");
-    writeFileSync(
-      script,
-      'import { writeFileSync } from "node:fs";\n' +
-        `writeFileSync(${CHILD_VALUES}.ready, "up");\n` +
-        "setInterval(() => {}, 60_000);\n",
-    );
-    const child = spawnChild(process.execPath, {
-      args: [...bunRunArgs(), script],
-      env: childValuesEnv({ ready }),
-      stdout: "ignore",
-      stderr: "inherit",
-    });
-    try {
-      await until(() => existsSync(ready));
-      const exited = child.exited;
-      const { calls, classify } = classifyStub("no");
-      expect(await terminatePid(child.pid, 0, classify)).toBe("term-only");
-      await exited; // the SIGTERM alone ends the compliant child: the signal was sent
-      expect(calls).toEqual([]);
-    } finally {
-      await killAndAwaitExit(child.pid);
-    }
-  },
-  30_000,
-);
+test("graceMs 0 sends the TERM only, consults no identity, and answers 'term-only'", async () => {
+  dir = tempDir("copilot-terminate-");
+  const ready = join(dir, "ready");
+  const script = join(dir, "compliant.ts");
+  writeFileSync(
+    script,
+    'import { writeFileSync } from "node:fs";\n' +
+      `writeFileSync(${CHILD_VALUES}.ready, "up");\n` +
+      "setInterval(() => {}, 60_000);\n",
+  );
+  const child = spawnChild(process.execPath, {
+    args: [...bunRunArgs(), script],
+    env: childValuesEnv({ ready }),
+    stdout: "ignore",
+    stderr: "inherit",
+  });
+  try {
+    await until(() => existsSync(ready));
+    const exited = child.exited;
+    const { calls, classify } = classifyStub("no");
+    expect(await terminatePid(child.pid, 0, classify)).toBe("term-only");
+    await exited; // the SIGTERM alone ends the compliant child: the signal was sent
+    expect(calls).toEqual([]);
+  } finally {
+    await killAndAwaitExit(child.pid);
+  }
+}, 30_000);
 
 // Under the daemon's own permission set the liveness probe cannot run (test/utils/pid.test.ts
 // pins the shape) and every pid reads "unproven". That must never mint "died-in-grace",
 // which stopTrackedProxy reads as a confirmed death and clears tracking on; the classify
 // boundary rules instead, as it does for a proven-alive pid.
-test(
-  "an unprovable liveness read at the KILL boundary never mints 'died-in-grace'",
-  async () => {
-    dir = tempDir("copilot-terminate-");
-    const ready = join(dir, "ready");
-    const script = join(dir, "compliant.ts");
-    // No SIGTERM listener needed: with the probe (and every signal send) unprovable,
-    // nothing can reach the child at all -- its survival proves exactly that.
-    writeFileSync(
-      script,
-      'import { writeFileSync } from "node:fs";\n' +
-        `writeFileSync(${CHILD_VALUES}.ready, "up");\n` +
-        "setInterval(() => {}, 60_000);\n",
-    );
-    const child = spawnChild(process.execPath, {
-      args: [...bunRunArgs(), script],
-      env: childValuesEnv({ ready }),
-      stdout: "ignore",
-      stderr: "inherit",
+test("an unprovable liveness read at the KILL boundary never mints 'died-in-grace'", async () => {
+  dir = tempDir("copilot-terminate-");
+  const ready = join(dir, "ready");
+  const script = join(dir, "compliant.ts");
+  // No SIGTERM listener needed: with the probe (and every signal send) unprovable,
+  // nothing can reach the child at all -- its survival proves exactly that.
+  writeFileSync(
+    script,
+    'import { writeFileSync } from "node:fs";\n' +
+      `writeFileSync(${CHILD_VALUES}.ready, "up");\n` +
+      "setInterval(() => {}, 60_000);\n",
+  );
+  const child = spawnChild(process.execPath, {
+    args: [...bunRunArgs(), script],
+    env: childValuesEnv({ ready }),
+    stdout: "ignore",
+    stderr: "inherit",
+  });
+  try {
+    await until(() => existsSync(ready));
+    const { calls, classify } = classifyStub("yes");
+    let verdict: TerminateVerdict | undefined;
+    await withUnprovablePidProbe(async () => {
+      verdict = await terminatePid(child.pid, 200, classify);
     });
-    try {
-      await until(() => existsSync(ready));
-      const { calls, classify } = classifyStub("yes");
-      let verdict: TerminateVerdict | undefined;
-      await withUnprovablePidProbe(async () => {
-        verdict = await terminatePid(child.pid, 200, classify);
-      });
-      // A died-in-grace return would have skipped the classify call entirely.
-      expect(verdict).toBe("killed");
-      expect(calls).toEqual([child.pid]);
-      expect(pidAlive(child.pid)).toBe(true);
-    } finally {
-      await killAndAwaitExit(child.pid);
-    }
-  },
-  30_000,
-);
+    // A died-in-grace return would have skipped the classify call entirely.
+    expect(verdict).toBe("killed");
+    expect(calls).toEqual([child.pid]);
+    expect(pidAlive(child.pid)).toBe(true);
+  } finally {
+    await killAndAwaitExit(child.pid);
+  }
+}, 30_000);

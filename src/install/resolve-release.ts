@@ -6,9 +6,9 @@
 // exported in the shell may belong to another account. The anonymous limit (60/hour/IP) covers a
 // lookup that runs once per `--check` or per autoupdate cooldown.
 import { retry } from "@std/async";
+import type { ProbeFetch } from "../copilot_api/integration_identity.ts";
 import { SECONDS_PER_DAY } from "../utils/time.ts";
 import { COPILOT_ENV_USER_AGENT } from "../utils/user_agent.ts";
-import type { ProbeFetch } from "../copilot_api/integration_identity.ts";
 
 // per_page=100 reads every release in one page (this repo will not exceed that for years), so
 // cooldown selection sees the whole eligible set, not just the first 30.
@@ -85,18 +85,21 @@ async function fetchReleasesText(
   // comes straight back after one attempt. The old loop had no ceiling on the backoff, so none
   // here either: the library's default of 60s would refuse any `retryBaseMs` above it.
   try {
-    return await retry(async () => {
-      const res = await fetchImpl(url, { headers: GH });
-      if (res.ok) return await res.text();
-      if (RETRYABLE_STATUSES.has(res.status)) throw new Error(`GitHub API ${res.status}`);
-      return null;
-    }, {
-      maxAttempts: MAX_FETCH_ATTEMPTS,
-      minTimeout: base,
-      maxTimeout: Number.POSITIVE_INFINITY,
-      multiplier: 2,
-      jitter: 1,
-    });
+    return await retry(
+      async () => {
+        const res = await fetchImpl(url, { headers: GH });
+        if (res.ok) return await res.text();
+        if (RETRYABLE_STATUSES.has(res.status)) throw new Error(`GitHub API ${res.status}`);
+        return null;
+      },
+      {
+        maxAttempts: MAX_FETCH_ATTEMPTS,
+        minTimeout: base,
+        maxTimeout: Number.POSITIVE_INFINITY,
+        multiplier: 2,
+        jitter: 1,
+      },
+    );
   } catch {
     return null; // a thrown fetch (network / DNS / connection reset) or the attempts ran out
   }
@@ -115,6 +118,6 @@ export async function resolveTarget(
   const releases = parseReleasesJson(text);
   if (releases.length === 0) return null;
   return cooldownDays === null
-    ? releases[0] ?? null
+    ? (releases[0] ?? null)
     : pickAged(releases, Date.now() / 1000, cooldownDays);
 }

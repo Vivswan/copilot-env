@@ -1,9 +1,9 @@
 import { readFileSync } from "node:fs";
 import { join, relative } from "node:path";
-import { READS_RULE, scanFsReach, WRITES_RULE } from "../lint/no_unreported_fs_writes.ts";
 import { ROOT } from "../helpers/run.ts";
 import { expect, test } from "../helpers/testing.ts";
 import { tsFilesUnder } from "../helpers/tree.ts";
+import { READS_RULE, scanFsReach, WRITES_RULE } from "../lint/no_unreported_fs_writes.ts";
 
 // The scanner is what catches a NEW raw write or read silently bypassing the seam, so the tree
 // is swept here, and the scanner's teeth and scoping are pinned against doctored sources rather

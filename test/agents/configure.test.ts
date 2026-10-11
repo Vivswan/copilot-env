@@ -14,8 +14,8 @@ import {
   writeDefaultAgent,
 } from "../../src/agents/configure.ts";
 import { runAgentConfig } from "../../src/agents/configure_defaults.ts";
-import { CopilotEnvState } from "../../src/copilot_api/env_state.ts";
 import type { RequestedMode } from "../../src/agents/provider_mode.ts";
+import { CopilotEnvState } from "../../src/copilot_api/env_state.ts";
 import { expect, test } from "../helpers/testing.ts";
 
 // Every literal carries the required credential, so the pair is the ONE thing each directive rejects.
@@ -140,9 +140,7 @@ const CASES: {
       identityCalls: 1,
       probeIds: [],
       probeTokens: [],
-      writes: [
-        { mode: "direct", direct: directWiring(PAT_ID, HOST), credential: COMMAND },
-      ],
+      writes: [{ mode: "direct", direct: directWiring(PAT_ID, HOST), credential: COMMAND }],
     },
   },
   {
@@ -154,9 +152,7 @@ const CASES: {
       identityCalls: 1,
       probeIds: [PAT_ID],
       probeTokens: ["ghp_x"],
-      writes: [
-        { mode: "direct", direct: directWiring(PAT_ID, HOST), credential: COMMAND },
-      ],
+      writes: [{ mode: "direct", direct: directWiring(PAT_ID, HOST), credential: COMMAND }],
     },
   },
   {
@@ -225,7 +221,10 @@ test("a single-agent write re-renders the recorded mode, never moves it, and ref
     identityCalls: 0,
     probeIds: [],
     probeTokens: [],
-    writes: [{ mode: "proxy", credential: COMMAND }, { mode: "proxy", credential: COMMAND }],
+    writes: [
+      { mode: "proxy", credential: COMMAND },
+      { mode: "proxy", credential: COMMAND },
+    ],
   });
   expect(state.readProfileSlot(null).mode).toBe("proxy");
 });
@@ -245,11 +244,13 @@ test("a Direct re-render bakes the slot's stored pair into the file: zero probes
     identityCalls: 0,
     probeIds: [],
     probeTokens: [],
-    writes: [{
-      mode: "direct",
-      direct: directWiring(stored.integrationId, stored.host),
-      credential: COMMAND,
-    }],
+    writes: [
+      {
+        mode: "direct",
+        direct: directWiring(stored.integrationId, stored.host),
+        credential: COMMAND,
+      },
+    ],
   });
   expect(state.readProfileDirectPair(null)).toEqual(stored);
 });

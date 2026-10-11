@@ -10,11 +10,11 @@ import { RUN_DIR_NAME, SQLITE_DB_FILENAME } from "../../src/copilot_api/paths.ts
 /** A Codex TokenUsage object: input INCLUDES cached; output includes reasoning. */
 export function codexUsage(input: number, cached: number, output: number): Record<string, number> {
   return {
-    "input_tokens": input,
-    "cached_input_tokens": cached,
-    "output_tokens": output,
-    "reasoning_output_tokens": 0,
-    "total_tokens": input + output,
+    input_tokens: input,
+    cached_input_tokens: cached,
+    output_tokens: output,
+    reasoning_output_tokens: 0,
+    total_tokens: input + output,
   };
 }
 
@@ -29,16 +29,16 @@ export function sessionMeta(
 ): string {
   return rolloutLine(timestamp, "session_meta", {
     id,
-    "session_id": id,
+    session_id: id,
     timestamp,
     cwd: "/tmp",
-    ...(opts.provider !== undefined ? { "model_provider": opts.provider } : {}),
-    ...(opts.forkedFrom !== undefined ? { "forked_from_id": opts.forkedFrom } : {}),
+    ...(opts.provider !== undefined ? { model_provider: opts.provider } : {}),
+    ...(opts.forkedFrom !== undefined ? { forked_from_id: opts.forkedFrom } : {}),
   });
 }
 
 export function turnContext(timestamp: string, model: string): string {
-  return rolloutLine(timestamp, "turn_context", { "turn_id": "t", model, cwd: "/tmp" });
+  return rolloutLine(timestamp, "turn_context", { turn_id: "t", model, cwd: "/tmp" });
 }
 
 export function tokenCount(
@@ -48,8 +48,8 @@ export function tokenCount(
 ): string {
   return rolloutLine(timestamp, "event_msg", {
     type: "token_count",
-    info: { "total_token_usage": total, "last_token_usage": last, "model_context_window": 1000 },
-    "rate_limits": null,
+    info: { total_token_usage: total, last_token_usage: last, model_context_window: 1000 },
+    rate_limits: null,
   });
 }
 
@@ -87,10 +87,10 @@ export function claudeUsage(
   cacheCreation = 0,
 ): Record<string, unknown> {
   return {
-    "input_tokens": input,
-    "output_tokens": output,
-    "cache_read_input_tokens": cacheRead,
-    "cache_creation_input_tokens": cacheCreation,
+    input_tokens: input,
+    output_tokens: output,
+    cache_read_input_tokens: cacheRead,
+    cache_creation_input_tokens: cacheCreation,
   };
 }
 

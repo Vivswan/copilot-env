@@ -4,7 +4,7 @@
 import { join } from "node:path";
 import type { ProfileMode } from "../copilot_api/env_state.ts";
 import { HELPERS_DIR_NAME, resolveRootHome } from "../copilot_api/paths.ts";
-import { parseProfileName, type Profile } from "../copilot_api/profile.ts";
+import { type Profile, parseProfileName } from "../copilot_api/profile.ts";
 import { errMessage } from "../utils/error.ts";
 import { isEnoentOrNotdir, WIN } from "../utils/fs.ts";
 import * as fs from "../utils/fs_facade.ts";

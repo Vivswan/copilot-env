@@ -30,18 +30,22 @@ function patchChannels(opts: CaptureOptions): () => CapturedOutput {
   const origErr = process.stderr.write.bind(process.stderr);
   const origLog = console.log;
   const origError = console.error;
-  const writer = (channel: string[]) => (chunk: string | Uint8Array): boolean => {
-    const text = typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
-    channel.push(text);
-    all.push(text);
-    if (channel === out) opts.onStdout?.(text);
-    return true;
-  };
-  const logger = (channel: string[]) => (...args: unknown[]): void => {
-    writer(channel)(
-      `${args.map((arg) => (typeof arg === "string" ? arg : String(arg))).join(" ")}\n`,
-    );
-  };
+  const writer =
+    (channel: string[]) =>
+    (chunk: string | Uint8Array): boolean => {
+      const text = typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
+      channel.push(text);
+      all.push(text);
+      if (channel === out) opts.onStdout?.(text);
+      return true;
+    };
+  const logger =
+    (channel: string[]) =>
+    (...args: unknown[]): void => {
+      writer(channel)(
+        `${args.map((arg) => (typeof arg === "string" ? arg : String(arg))).join(" ")}\n`,
+      );
+    };
   process.stdout.write = writer(out);
   process.stderr.write = writer(err);
   console.log = logger(out);
@@ -54,7 +58,12 @@ function patchChannels(opts: CaptureOptions): () => CapturedOutput {
     console.log = origLog;
     console.error = origError;
     consola.level = savedLevel;
-    if (opts.writeReports) writer(err)(flushWriteReports().map((line) => `${line}\n`).join(""));
+    if (opts.writeReports)
+      writer(err)(
+        flushWriteReports()
+          .map((line) => `${line}\n`)
+          .join(""),
+      );
     return { stdout: out.join(""), stderr: err.join(""), all: all.join("") };
   };
 }

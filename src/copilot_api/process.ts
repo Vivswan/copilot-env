@@ -6,10 +6,10 @@ import { consola } from "consola";
 import { daemonConfigFile, readResolvedVersionRecord, writeDaemonConfig } from "../proxy_float.ts";
 import { runPowershell } from "../utils/app_scan.ts";
 import { runCaptured } from "../utils/command.ts";
-import { pidAlive } from "../utils/pid.ts";
-import { clearDeadDaemonLock } from "./daemon_lock.ts";
 import * as fs from "../utils/fs_facade.ts";
+import { pidAlive } from "../utils/pid.ts";
 import { terminalWidth, wrapMessage } from "../utils/table.ts";
+import { clearDeadDaemonLock } from "./daemon_lock.ts";
 import {
   DAEMON_CLIENT_HEADERS_ENV,
   DAEMON_COPILOT_HOST_ENV,
@@ -31,12 +31,12 @@ export type CopilotApiEntry =
   | { readonly kind: "file"; readonly path: string; readonly configFile: string }
   /** An exact version in the cache the float pre-warmed, under the daemon config it wrote beside the record. */
   | {
-    readonly kind: "floated";
-    readonly specifier: string;
-    readonly version: string;
-    readonly denoDir: string;
-    readonly configFile: string;
-  }
+      readonly kind: "floated";
+      readonly specifier: string;
+      readonly version: string;
+      readonly denoDir: string;
+      readonly configFile: string;
+    }
   /** The import map's mapped specifier under the daemon config, with no float record to pin a
    *  version: the sidecar's cache must already hold it, or the launch fails at resolve. */
   | { readonly kind: "package"; readonly specifier: string; readonly configFile: string };
@@ -153,8 +153,7 @@ const RUNTIME_ALTERNATION = DAEMON_RUNTIMES.join("|");
 // combinatorially. A bare word breaks the match: every tolerance for bare words re-admits crafted impostor argv.
 //   `/Users/John Smith/.deno/bin/deno`  -> two slash fragments, still matches
 //   `/x/Deno Runtime Tools/deno`        -> the slash-less `Runtime` breaks it: accepted loss
-const MIDDLE_TOKEN =
-  `run|${RUNTIME_ALTERNATION}|-[^\\s"]*|(?:[^\\s"\\\\/-][^\\s"\\\\/]*)?[\\\\/][^\\s"]*`;
+const MIDDLE_TOKEN = `run|${RUNTIME_ALTERNATION}|-[^\\s"]*|(?:[^\\s"\\\\/-][^\\s"\\\\/]*)?[\\\\/][^\\s"]*`;
 // A path segment STARTING with `copilot-api` (an npm specifier, a node_modules path, a COPILOT_API_ENTRY
 // file), never the bare word. A POSIX entry whose own name contains a space is an accepted loss.
 const ENTRY_TOKEN = '[^\\s"]*[\\\\/]copilot-api[^\\s"]*';
@@ -251,12 +250,9 @@ export async function terminatePid(
 
 /** "unproven" rides to the consumer (listUntrackedOrphans SAYS the sweep is skipped) instead of a
  *  broken process table silently reading as "no orphans". */
-export function getOrphanPids(
-  myPid: number,
-  myPpid: number,
-): Promise<number[] | "unproven"> {
+export function getOrphanPids(myPid: number, myPpid: number): Promise<number[] | "unproven"> {
   return scanCopilotApiPids().then((scan) =>
-    scan === "unproven" ? scan : scan.filter((p) => p !== myPid && p !== myPpid)
+    scan === "unproven" ? scan : scan.filter((p) => p !== myPid && p !== myPpid),
   );
 }
 
@@ -318,7 +314,8 @@ async function classifyDaemonPidWindows(pid: number): Promise<"yes" | "no" | "un
   // from an unreadable one (CommandLine null: a restricted token); `pid` is our own integer, so inlining
   // it is safe. CIM errors are non-terminating (an empty $p and exit 0, which would flatten into "no"),
   // so the query is trapped to exit non-zero and read "unknown".
-  const script = "$ErrorActionPreference = 'Stop'; " +
+  const script =
+    "$ErrorActionPreference = 'Stop'; " +
     `try { $p = Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}' } catch { exit 1 }; ` +
     "if (-not $p) { 'no' } " +
     "elseif ([string]::IsNullOrEmpty($p.CommandLine)) { 'unknown' } " +
@@ -359,7 +356,8 @@ async function scanCopilotApiPidsWindows(): Promise<number[] | "unproven"> {
   // access-denied would exit 0 with no pids and read as an empty machine. The per-process GetOwner
   // SilentlyContinue stays (an explicit -ErrorAction overrides the Stop preference): skipping ONE
   // unattributable process is that filter's contract.
-  const script = "$ErrorActionPreference = 'Stop'; try { " +
+  const script =
+    "$ErrorActionPreference = 'Stop'; try { " +
     "Get-CimInstance Win32_Process | Where-Object { " +
     `(${nameTest}) ` +
     `-and $_.CommandLine -match '${DAEMON_CMDLINE_PATTERN}' ` +
@@ -430,10 +428,7 @@ function posixDaemonPids(rows: ProcessRow[]): number[] {
 
 /** Same control as classifyPidFromRows: rows without `selfPid` prove the scan FAILED, which is
  *  "unproven", never an empty list a broken `ps` could pass off as "no daemons anywhere". */
-export function daemonPidsFromRows(
-  rows: ProcessRow[],
-  selfPid: number,
-): number[] | "unproven" {
+export function daemonPidsFromRows(rows: ProcessRow[], selfPid: number): number[] | "unproven" {
   if (!rows.some((row) => row.pid === selfPid)) return "unproven";
   return posixDaemonPids(rows);
 }
@@ -518,7 +513,10 @@ function applyCredentialEnv(env: NodeJS.ProcessEnv, credential: DaemonCredential
 const LOOPBACK_NO_PROXY = ["127.0.0.1", "::1", "localhost"] as const;
 
 export function noProxyWithLoopback(current: string | undefined): string {
-  const entries = (current ?? "").split(",").map((e) => e.trim()).filter((e) => e !== "");
+  const entries = (current ?? "")
+    .split(",")
+    .map((e) => e.trim())
+    .filter((e) => e !== "");
   for (const host of LOOPBACK_NO_PROXY) {
     if (!entries.some((e) => e.toLowerCase() === host)) entries.push(host);
   }

@@ -58,9 +58,10 @@ function isVersionedInstallTop(top: string): boolean {
   const normalized = stripExtendedLengthPrefix(target).replace(/[\\/]+$/, "");
   const parent = dirname(resolve(top, normalized));
   const versionsDir = resolve(join(top, VERSIONS_DIR));
-  const sameDir = process.platform === "win32"
-    ? parent.toLowerCase() === versionsDir.toLowerCase()
-    : parent === versionsDir;
+  const sameDir =
+    process.platform === "win32"
+      ? parent.toLowerCase() === versionsDir.toLowerCase()
+      : parent === versionsDir;
   return sameDir && !fs.entryAbsent(versionsDir);
 }
 

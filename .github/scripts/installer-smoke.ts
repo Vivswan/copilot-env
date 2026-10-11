@@ -8,9 +8,9 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { launcherFunctionLines } from "../../src/commands/env.ts";
 import { resolveRootHome } from "../../src/copilot_api/paths.ts";
-import { resolveExecutablePath } from "../../src/utils/command.ts";
 import { SIDECAR_DENO_ENV, sidecarBinPath } from "../../src/copilot_api/sidecar.ts";
 import { daemonConfigFile } from "../../src/proxy_float.ts";
+import { resolveExecutablePath } from "../../src/utils/command.ts";
 import { isRecord } from "../../src/utils/json.ts";
 import { readProjectConfig } from "../../src/utils/project_config.ts";
 
@@ -229,9 +229,9 @@ function verifyLauncherWiring(launcher: string): void {
   const missing = expected.filter((line) => emitted === null || !emitted.includes(line));
   if (missing.length > 0) {
     console.error(
-      `::error::agent profile env does not emit the launcher functions with the key on (missing: ${
-        missing.join(" | ")
-      })`,
+      `::error::agent profile env does not emit the launcher functions with the key on (missing: ${missing.join(
+        " | ",
+      )})`,
     );
     process.exit(1);
   }
@@ -275,9 +275,8 @@ function verifyInstalledLauncher(): string {
  *   the rows below         -> only what a compiled binary must get right about ITSELF
  */
 export function compiledHealthFailures(reportJson: unknown): string[] {
-  const checks = isRecord(reportJson) && Array.isArray(reportJson.checks)
-    ? reportJson.checks
-    : null;
+  const checks =
+    isRecord(reportJson) && Array.isArray(reportJson.checks) ? reportJson.checks : null;
   if (checks === null) {
     return ["health --json did not produce a checks array"];
   }
@@ -311,9 +310,9 @@ export function compiledHealthFailures(reportJson: unknown): string[] {
     // never truthfully be.
     if (kind !== "path" && kind !== "provisioned" && kind !== "absent") {
       failures.push(
-        `proxy.sidecar kind must be path|provisioned|absent on a compiled binary (got ${
-          JSON.stringify(kind)
-        })`,
+        `proxy.sidecar kind must be path|provisioned|absent on a compiled binary (got ${JSON.stringify(
+          kind,
+        )})`,
       );
     }
   }
@@ -468,9 +467,7 @@ if (import.meta.main) {
       verifyOutcome();
       break;
     default:
-      console.error(
-        "usage: installer-smoke.ts run-install|assert-no-optional-clis|verify-outcome",
-      );
+      console.error("usage: installer-smoke.ts run-install|assert-no-optional-clis|verify-outcome");
       process.exit(2);
   }
 }

@@ -4,13 +4,13 @@
 // Its output is personal data: `--out` is required and a path inside the checkout is refused
 // before any log is read.
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { zstdCompressSync } from "node:zlib";
 import { join } from "node:path";
+import { zstdCompressSync } from "node:zlib";
 import { ROOT, runScript } from "../helpers/run.ts";
 import { codexUsage, sessionMeta, tokenCount, turnContext } from "../helpers/session_fixtures.ts";
 import { expect, tempDir, test } from "../helpers/testing.ts";
-import { parseProfile } from "../helpers/usage_profile_contract.ts";
 import { usageTreeEnv } from "../helpers/usage_goldens.ts";
+import { parseProfile } from "../helpers/usage_profile_contract.ts";
 
 function assistant(text: string, usage: Record<string, number>): string {
   return JSON.stringify({
@@ -46,8 +46,8 @@ test("usage_profile reads LF-terminated lines only: separators, a raw CR, and a 
   const claudeDir = join(root, ".claude", "projects", "-Users-x-proj");
   mkdirSync(claudeDir, { recursive: true });
   const transcript = join(claudeDir, "aaa.jsonl");
-  const plain = assistant("plain", { "input_tokens": 10, "output_tokens": 20 });
-  const odd = assistant("odd \u2028 \u2029 \u0085 text", { "input_tokens": 1, "output_tokens": 2 });
+  const plain = assistant("plain", { input_tokens: 10, output_tokens: 20 });
+  const odd = assistant("odd \u2028 \u2029 \u0085 text", { input_tokens: 1, output_tokens: 2 });
   const body = [
     `${plain}\n`,
     // Separators inside the JSON string, CRLF-terminated: one line.
@@ -55,7 +55,7 @@ test("usage_profile reads LF-terminated lines only: separators, a raw CR, and a 
     // A raw CR inside makes this invalid JSON: ONE torn line, not two.
     `{"type":"user","message":{"role":"user","content":"a\rb"}}\n`,
     // No LF yet: a writer mid-line, withheld until it lands.
-    assistant("fragment", { "input_tokens": 5, "output_tokens": 6 }),
+    assistant("fragment", { input_tokens: 5, output_tokens: 6 }),
   ].join("");
   writeFileSync(transcript, body);
   expect(readFileSync(transcript, "utf8").split("\n").length).toBe(4);
@@ -87,8 +87,8 @@ test("usage_profile reads LF-terminated lines only: separators, a raw CR, and a 
   expect(claude.usageLineShare).toBe(2 / 3);
   // Line bytes exclude the terminator, the CR of a CRLF included (JSON.parse would have
   // accepted a trailing CR, so only the byte count tells).
-  const [shorter, longer] = [Buffer.byteLength(odd), Buffer.byteLength(plain)].sort((a, b) =>
-    a - b
+  const [shorter, longer] = [Buffer.byteLength(odd), Buffer.byteLength(plain)].sort(
+    (a, b) => a - b,
   );
   expect(claude.bytesPerLine.assistant).toEqual({
     count: 2,

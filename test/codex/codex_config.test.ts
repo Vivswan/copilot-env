@@ -8,9 +8,9 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import type { CommandLook } from "../../src/utils/command.ts";
-import { directWiring } from "../../src/agents/configure.ts";
 import { parse, stringify } from "smol-toml";
+import { directWiring } from "../../src/agents/configure.ts";
+import { runCodex } from "../../src/agents/configure_defaults.ts";
 import { CATALOG_PATCH_VERSION } from "../../src/codex/catalog.ts";
 import {
   refreshCodexCatalogAndSync,
@@ -18,21 +18,21 @@ import {
 } from "../../src/codex/catalog_reference.ts";
 import { configureCodexConfig, detectCodexDirect } from "../../src/codex/config.ts";
 import { inspectCodexWiring } from "../../src/codex/inspect.ts";
-import { runCodex } from "../../src/agents/configure_defaults.ts";
 import { CI_NO_LIVE_LOOKUPS_ENV, FALLBACK_CODEX_UA_VERSION } from "../../src/codex/user_agent.ts";
+import { runDryRun } from "../../src/commands/dry_run.ts";
 import { CopilotEnvConfig } from "../../src/copilot_api/env_config.ts";
-import { DEFAULT_COPILOT_API_BASE } from "../../src/copilot_api/integration_identity.ts";
 import { CopilotEnvState } from "../../src/copilot_api/env_state.ts";
+import { DEFAULT_COPILOT_API_BASE } from "../../src/copilot_api/integration_identity.ts";
 import { OwnershipLedger } from "../../src/copilot_api/ownership.ts";
 import { CopilotApiPaths } from "../../src/copilot_api/paths.ts";
-import { runDryRun } from "../../src/commands/dry_run.ts";
-import { type FakeCodex, fakeCodexOnPath, type FakeCodexProbe } from "../helpers/fake_codex.ts";
-import { captureChannels, captureChannelsSync } from "../helpers/output.ts";
+import type { CommandLook } from "../../src/utils/command.ts";
 import { agentLauncherCommand, proxyTokenCommand } from "../../src/utils/root.ts";
-import { afterEach, expect, removeDir, test } from "../helpers/testing.ts";
-import { envSnapshot, isolateAgentHomes } from "../helpers/env.ts";
 import { linesNaming } from "../helpers/dry_run.ts";
+import { envSnapshot, isolateAgentHomes } from "../helpers/env.ts";
+import { type FakeCodex, type FakeCodexProbe, fakeCodexOnPath } from "../helpers/fake_codex.ts";
 import { codexConfigToml } from "../helpers/fixtures.ts";
+import { captureChannels, captureChannelsSync } from "../helpers/output.ts";
+import { afterEach, expect, removeDir, test } from "../helpers/testing.ts";
 
 /** A recorded Direct default whose slot holds its pair, so a single-agent write is a re-render
  *  (zero probes, no credential needed); with no pair it would land both agents and ask to log in. */
@@ -269,9 +269,7 @@ test("toggling direct <-> proxy swaps the mode-specific keys on the shared table
       "copilot-env"
     ],
   );
-  expect(asRecord(provider.auth).args).toEqual(
-    agentLauncherCommand(["auth", "--get"]).args,
-  );
+  expect(asRecord(provider.auth).args).toEqual(agentLauncherCommand(["auth", "--get"]).args);
   expect(provider.http_headers).toBeDefined();
 
   // Proxy on the SAME table: the proxy auth replaces the direct auth, env_key stays absent,
@@ -327,8 +325,8 @@ test("a static-key write previews its bearer leaf redacted and every other leaf 
           direct: null,
           credential: { kind: "static", token: "ghu_baked_token" },
         }),
-      )
-    )
+      ),
+    ),
   );
   // The print wraps to the terminal width (mid-key or at a space), so the rows are compared with
   // their whitespace removed, and only the rows under config.toml's own verdict line count.
@@ -365,7 +363,7 @@ test("static-key bakes the bearer as http_headers.Authorization with no auth tab
       mode: "direct",
       direct: null,
       credential: STATIC,
-    })
+    }),
   );
   expect(linesNaming(said, directHome)).toEqual([
     `created -> ${join(directHome, "config.toml")} (Codex config; static key)`,
@@ -378,7 +376,7 @@ test("static-key bakes the bearer as http_headers.Authorization with no auth tab
   expect(asRecord(table.http_headers)).toEqual({
     "Openai-Intent": "conversation-edits",
     "User-Agent": `codex_exec/${FALLBACK_CODEX_UA_VERSION}`,
-    "Authorization": `Bearer ${STATIC.token}`,
+    Authorization: `Bearer ${STATIC.token}`,
   });
   let seen = wiring(directHome);
   expect(seen.providerMode).toBe("direct");
@@ -397,9 +395,7 @@ test("static-key bakes the bearer as http_headers.Authorization with no auth tab
   expect(asRecord(table.http_headers)["User-Agent"]).toBe(
     `codex_exec/${FALLBACK_CODEX_UA_VERSION}`,
   );
-  expect(asRecord(table.auth).args).toEqual(
-    agentLauncherCommand(["auth", "--get"]).args,
-  );
+  expect(asRecord(table.auth).args).toEqual(agentLauncherCommand(["auth", "--get"]).args);
   expect(wiring(directHome).credential).toBe("command");
 
   // Proxy (a second home, since the seam names a path once per process): the bearer is the
@@ -410,18 +406,18 @@ test("static-key bakes the bearer as http_headers.Authorization with no auth tab
       mode: "proxy",
       credential: STATIC,
       baseUrl: "http://localhost:4141/v1",
-    })
+    }),
   );
   expect(linesNaming(proxySaid, join(proxyHome, "config.toml"))).toEqual([
     `created -> ${join(proxyHome, "config.toml")} (Codex config; static key, start the proxy ` +
-    "yourself (agent start, or the cx launcher))",
+      "yourself (agent start, or the cx launcher))",
   ]);
   expect(proxySaid).not.toContain(STATIC.token);
   table = provider(proxyHome);
   expect(table.auth).toBeUndefined();
   expect(table.env_key).toBeUndefined();
   expect(table.requires_openai_auth).toBe(false);
-  expect(table.http_headers).toEqual({ "Authorization": `Bearer ${STATIC.token}` });
+  expect(table.http_headers).toEqual({ Authorization: `Bearer ${STATIC.token}` });
   seen = wiring(proxyHome);
   expect(seen.providerMode).toBe("proxy");
   expect(seen.credential).toBe("static");
@@ -447,13 +443,13 @@ test("detectCodexDirect: the CLI runs the catalog's codex-servable model and its
   let seenArgs: string[] | null = null;
   // Two servable models: the reduced tier is pinned over the full one.
   const servable = (id: string) => ({
-    "id": id,
-    "capabilities": {
-      "type": "chat",
-      "limits": { "max_context_window_tokens": 272000, "max_prompt_tokens": 260000 },
+    id: id,
+    capabilities: {
+      type: "chat",
+      limits: { max_context_window_tokens: 272000, max_prompt_tokens: 260000 },
     },
-    "model_picker_enabled": true,
-    "supported_endpoints": ["/responses"],
+    model_picker_enabled: true,
+    supported_endpoints: ["/responses"],
   });
   let fetches = 0;
   const fetchImpl = () => {
@@ -490,8 +486,7 @@ test("detectCodexDirect: the CLI runs the catalog's codex-servable model and its
       ...ok,
       runProbe: () => ({ ok: false }),
     }),
-  )
-    .toBe(false);
+  ).toBe(false);
 
   // No credential returns false WITHOUT calling runProbe, with or without a CLI.
   probeCalls = 0;
@@ -528,31 +523,31 @@ test("detectCodexDirect: with no codex CLI the endpoint smoke pings the first co
     const catalog = {
       data: [
         {
-          "id": "claude-fable-5",
-          "capabilities": {
-            "type": "chat",
-            "limits": { "max_context_window_tokens": 200000, "max_prompt_tokens": 190000 },
+          id: "claude-fable-5",
+          capabilities: {
+            type: "chat",
+            limits: { max_context_window_tokens: 200000, max_prompt_tokens: 190000 },
           },
-          "model_picker_enabled": true,
-          "supported_endpoints": ["/v1/messages"],
+          model_picker_enabled: true,
+          supported_endpoints: ["/v1/messages"],
         },
         {
-          "id": "gpt-6-mini",
-          "capabilities": {
-            "type": "chat",
-            "limits": { "max_context_window_tokens": 128000, "max_prompt_tokens": 120000 },
+          id: "gpt-6-mini",
+          capabilities: {
+            type: "chat",
+            limits: { max_context_window_tokens: 128000, max_prompt_tokens: 120000 },
           },
-          "model_picker_enabled": false,
-          "supported_endpoints": ["/responses"],
+          model_picker_enabled: false,
+          supported_endpoints: ["/responses"],
         },
         {
-          "id": "gpt-6",
-          "capabilities": {
-            "type": "chat",
-            "limits": { "max_context_window_tokens": 272000, "max_prompt_tokens": 260000 },
+          id: "gpt-6",
+          capabilities: {
+            type: "chat",
+            limits: { max_context_window_tokens: 272000, max_prompt_tokens: 260000 },
           },
-          "model_picker_enabled": true,
-          "supported_endpoints": ["/responses"],
+          model_picker_enabled: true,
+          supported_endpoints: ["/responses"],
         },
       ],
     };
@@ -572,10 +567,10 @@ test("detectCodexDirect: with no codex CLI the endpoint smoke pings the first co
     "https://api.githubcopilot.com/responses",
   ]);
   expect(requests[1]?.body).toEqual({
-    "model": "gpt-6",
-    "input": "x",
-    "stream": false,
-    "max_output_tokens": 16,
+    model: "gpt-6",
+    input: "x",
+    stream: false,
+    max_output_tokens: 16,
   });
 });
 
@@ -588,13 +583,13 @@ test("detectCodexDirect: the probe home carries the Direct provider table alone,
   const catalogFile = new CopilotApiPaths().codexModelCatalogFile;
   writeFileSync(catalogFile, '{"models":[{"slug":"gpt-5.5"}]}\n');
   const catalog = {
-    "id": "gpt-6",
-    "capabilities": {
-      "type": "chat",
-      "limits": { "max_context_window_tokens": 272000, "max_prompt_tokens": 260000 },
+    id: "gpt-6",
+    capabilities: {
+      type: "chat",
+      limits: { max_context_window_tokens: 272000, max_prompt_tokens: 260000 },
     },
-    "model_picker_enabled": true,
-    "supported_endpoints": ["/responses"],
+    model_picker_enabled: true,
+    supported_endpoints: ["/responses"],
   };
   let probeDoc: Record<string, unknown> | null = null;
   let spawn: { cwd: string; home: string } | null = null;
@@ -632,9 +627,12 @@ test("detectCodexDirect: the probe home carries the Direct provider table alone,
   });
   const realDoc = asRecord(parse(readFileSync(join(realHome, "config.toml"), "utf8")));
   const probe = probeDoc as unknown as Record<string, unknown>;
-  expect(Object.keys(probe).sort()).toEqual(
-    ["analytics", "feedback", "model_provider", "model_providers"],
-  );
+  expect(Object.keys(probe).sort()).toEqual([
+    "analytics",
+    "feedback",
+    "model_provider",
+    "model_providers",
+  ]);
   // Selected under a non-managed id (what keeps the self-heal off), the table itself the real one.
   expect(probe.model_provider).toBe("copilot-env-probe");
   expect(probe.model_providers).toEqual({
@@ -745,8 +743,7 @@ test("model_catalog_json on the write: set and claimed only with the opt-in on, 
       claimed: true,
     },
     {
-      name:
-        "enabled: our seeded reference, the file now a directory, even when a probe would accept",
+      name: "enabled: our seeded reference, the file now a directory, even when a probe would accept",
       enabled: true,
       mode: "direct",
       file: "dir",
@@ -770,7 +767,7 @@ test("model_catalog_json on the write: set and claimed only with the opt-in on, 
       mkdirSync(codexHome, { recursive: true });
       writeFileSync(
         configPath,
-        stringify({ "model_catalog_json": c.seed === "ours" ? catalogFile : FOREIGN_MISSING }),
+        stringify({ model_catalog_json: c.seed === "ours" ? catalogFile : FOREIGN_MISSING }),
       );
       if (c.seed === "ours") new OwnershipLedger().record("codexCatalog", configPath);
     }
@@ -865,14 +862,14 @@ test("disabled: one sync strips our reference from every config carrying it (the
   const catalogFile = new CopilotApiPaths().codexModelCatalogFile;
   mkdirSync(codexHome, { recursive: true });
   writeFileSync(catalogFile, '{"models":[{"slug":"gpt-5.5"}]}');
-  const referencing = stringify({ "model_catalog_json": catalogFile });
+  const referencing = stringify({ model_catalog_json: catalogFile });
   const active = join(codexHome, "config.toml");
   writeFileSync(
     active,
     stringify({
-      "model_provider": "copilot-env",
-      "model_catalog_json": catalogFile,
-      "user_key": "kept",
+      model_provider: "copilot-env",
+      model_catalog_json: catalogFile,
+      user_key: "kept",
     }),
   );
   // A per-host farm config referencing the shared file.
@@ -897,8 +894,10 @@ test("disabled: one sync strips our reference from every config carrying it (the
   syncCodexCatalogReference();
 
   for (const configPath of [active, farm, outside]) {
-    expect(asRecord(parse(readFileSync(configPath, "utf8"))).model_catalog_json, configPath)
-      .toBeUndefined();
+    expect(
+      asRecord(parse(readFileSync(configPath, "utf8"))).model_catalog_json,
+      configPath,
+    ).toBeUndefined();
   }
   expect(asRecord(parse(readFileSync(active, "utf8"))).user_key).toBe("kept");
   expect(existsSync(catalogFile)).toBe(false);
@@ -938,7 +937,7 @@ test("disabled: our file goes only when every reference is provably not ours; a 
       config: () => {
         const foreign = join(dir, "someone-elses-catalog.json");
         writeFileSync(foreign, "{}");
-        return stringify({ "model_catalog_json": foreign });
+        return stringify({ model_catalog_json: foreign });
       },
       fileKept: false,
     },
@@ -953,7 +952,7 @@ test("disabled: our file goes only when every reference is provably not ours; a 
       config: (catalogFile) => {
         const alias = join(dir, "catalog-alias.json");
         symlinkSync(catalogFile, alias);
-        return stringify({ "model_catalog_json": alias });
+        return stringify({ model_catalog_json: alias });
       },
       fileKept: true,
     },
@@ -1013,7 +1012,7 @@ test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
     // so whether it denotes our file is UNKNOWN, not "no".
     const blocked = join(dir, "blocked");
     mkdirSync(blocked, { recursive: true });
-    const pinned = stringify({ "model_catalog_json": join(blocked, "catalog.json") });
+    const pinned = stringify({ model_catalog_json: join(blocked, "catalog.json") });
     writeFileSync(join(codexHome, "config.toml"), pinned);
     chmodSync(blocked, 0o000);
     try {
@@ -1031,13 +1030,13 @@ test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
 
 function proxyConfigWithAuth(auth: { command: string; args: string[] }): string {
   return stringify({
-    "model_provider": "copilot-env",
-    "model_providers": {
+    model_provider: "copilot-env",
+    model_providers: {
       "copilot-env": {
-        "name": "copilot-env",
-        "base_url": "http://127.0.0.1:4141/v1",
-        "wire_api": "responses",
-        "auth": { "command": auth.command, "args": auth.args },
+        name: "copilot-env",
+        base_url: "http://127.0.0.1:4141/v1",
+        wire_api: "responses",
+        auth: { command: auth.command, args: auth.args },
       },
     },
   });
@@ -1047,13 +1046,15 @@ test("a proxy auth block that is not the managed proxy-token command (the 3.5.6 
   // The 4.0.0 migration rewrites the script shape; a config it never reached is proxy but unwired,
   // so `agent health` says re-run `agent init --proxy` instead of vouching for a resolver script
   // no release ships. A genuinely foreign resolver is the same verdict.
-  const script = process.platform === "win32"
-    ? { command: "powershell", args: ["-File", "C:\\r\\src\\scripts\\proxy-token.ps1", "--yes"] }
-    : { command: "/bin/sh", args: ["/r/src/scripts/proxy-token.sh", "--yes"] };
+  const script =
+    process.platform === "win32"
+      ? { command: "powershell", args: ["-File", "C:\\r\\src\\scripts\\proxy-token.ps1", "--yes"] }
+      : { command: "/bin/sh", args: ["/r/src/scripts/proxy-token.sh", "--yes"] };
   for (const auth of [script, { command: "/usr/local/bin/my-token", args: ["--yes"] }]) {
     const wiring = inspectCodexWiring(proxyConfigWithAuth(auth), null, 4141, false);
-    expect([wiring.providerMode, wiring.envKeyMatches, wiring.providerWired], auth.command)
-      .toEqual(["proxy", false, false]);
+    expect([wiring.providerMode, wiring.envKeyMatches, wiring.providerWired], auth.command).toEqual(
+      ["proxy", false, false],
+    );
   }
 });
 
@@ -1152,14 +1153,15 @@ test(
       },
       {
         name: "direct provider needs no OPENAI_API_KEY",
-        input:
-          `model_provider = "copilot-env"\n[model_providers.copilot-env]\nbase_url = "https://api.githubcopilot.com"\n`,
+        input: `model_provider = "copilot-env"\n[model_providers.copilot-env]\nbase_url = "https://api.githubcopilot.com"\n`,
         expected: { providerMode: "direct", providerWired: true, tokenAvailable: false },
       },
     ];
     for (const c of cases) {
-      expect(inspectCodexWiring(c.input, c.env ?? null, 4141, c.environ ?? false), c.name)
-        .toMatchObject(c.expected);
+      expect(
+        inspectCodexWiring(c.input, c.env ?? null, 4141, c.environ ?? false),
+        c.name,
+      ).toMatchObject(c.expected);
     }
   },
 );
@@ -1178,9 +1180,9 @@ test("syncCodexCatalogReference strips our reference when the installed codex re
   writeFileSync(
     configPath,
     stringify({
-      "model_provider": "copilot-env",
-      "model_catalog_json": catalogFile,
-      "user_key": "kept",
+      model_provider: "copilot-env",
+      model_catalog_json: catalogFile,
+      user_key: "kept",
     }),
   );
   new OwnershipLedger().record("codexCatalog", configPath);
@@ -1217,10 +1219,10 @@ test("syncCodexCatalogReference strips our reference when the catalog file is go
   mkdirSync(codexHome, { recursive: true });
   enableCatalog();
   const referenced = stringify({
-    "model_provider": "copilot-env",
-    "model_catalog_json": catalogFile,
+    model_provider: "copilot-env",
+    model_catalog_json: catalogFile,
   });
-  const cases: [string, (() => void)][] = [
+  const cases: [string, () => void][] = [
     ["absent", () => rmSync(catalogFile, { force: true })],
     ["malformed", () => writeFileSync(catalogFile, "{ corrupt")],
     ["empty", () => writeFileSync(catalogFile, '{"models":[]}')],
@@ -1230,16 +1232,21 @@ test("syncCodexCatalogReference strips our reference when the catalog file is go
     writeFileSync(configPath, referenced);
     arrange();
     syncCodexCatalogReference();
-    expect([label, asRecord(parse(readFileSync(configPath, "utf8"))).model_catalog_json])
-      .toEqual([label, undefined]);
+    expect([label, asRecord(parse(readFileSync(configPath, "utf8"))).model_catalog_json]).toEqual([
+      label,
+      undefined,
+    ]);
   }
   // Control: a user-pinned custom path is not ours to strip, however our file looks and whatever
   // the installed codex says about ours (exact-value match alone proves ownership).
   const pinned = stringify({
-    "model_provider": "copilot-env",
-    "model_catalog_json": "/home/user/custom-catalog.json",
+    model_provider: "copilot-env",
+    model_catalog_json: "/home/user/custom-catalog.json",
   });
-  for (const [ours, accepts] of [["absent", true], ["usable", false]] as const) {
+  for (const [ours, accepts] of [
+    ["absent", true],
+    ["usable", false],
+  ] as const) {
     if (ours === "absent") rmSync(catalogFile, { force: true });
     else writeFileSync(catalogFile, '{"models":[{"slug":"gpt-5.5"}]}\n');
     writeFileSync(configPath, pinned);
@@ -1262,8 +1269,8 @@ test("a rejected catalog is stripped from every known config even when the activ
   const otherConfig = join(dir, "other-home", "config.toml");
   mkdirSync(join(dir, "other-home"), { recursive: true });
   const referenced = stringify({
-    "model_provider": "copilot-env",
-    "model_catalog_json": catalogFile,
+    model_provider: "copilot-env",
+    model_catalog_json: catalogFile,
   });
   writeFileSync(otherConfig, referenced);
   new OwnershipLedger().record("codexCatalog", otherConfig);
@@ -1280,7 +1287,7 @@ test("a rejected catalog is stripped from every known config even when the activ
   new OwnershipLedger().record("codexCatalog", otherConfig);
   writeFileSync(
     join(active, "config.toml"),
-    stringify({ "model_provider": "openai", "model_catalog_json": catalogFile }),
+    stringify({ model_provider: "openai", model_catalog_json: catalogFile }),
   );
   syncCodexCatalogReference();
   expect(asRecord(parse(readFileSync(otherConfig, "utf8"))).model_catalog_json).toBeUndefined();
@@ -1313,9 +1320,12 @@ test("the config write's one line carries the model_catalog_json change it makes
   const write = (home: string) =>
     configureCodexConfig(home, { mode: "direct", direct: null, credential: COMMAND });
   // Added: the write's line says so, once. Re-written unchanged: nothing said.
-  expect(linesNaming(stderrOfSync(() => write(codexHome)), configPath)).toEqual([
-    `created -> ${configPath} (Codex config; model_catalog_json = "${catalogFile}" set)`,
-  ]);
+  expect(
+    linesNaming(
+      stderrOfSync(() => write(codexHome)),
+      configPath,
+    ),
+  ).toEqual([`created -> ${configPath} (Codex config; model_catalog_json = "${catalogFile}" set)`]);
   expect(stderrOfSync(() => write(codexHome))).toBe("");
   // Disabled: a config carrying the reference (a second home, since the seam names a
   // path once per process) is rewritten, its line naming the old value.
@@ -1324,9 +1334,14 @@ test("the config write's one line carries the model_catalog_json change it makes
   mkdirSync(otherHome, { recursive: true });
   // Through the TOML writer, never a hand-quoted string: on Windows the path's backslashes
   // would read as escapes in a basic string, and the reference would never match.
-  writeFileSync(otherConfig, stringify({ "model_catalog_json": catalogFile }));
+  writeFileSync(otherConfig, stringify({ model_catalog_json: catalogFile }));
   new CopilotEnvConfig().set({ "codex.model-catalog": false });
-  expect(linesNaming(stderrOfSync(() => write(otherHome)), otherConfig)).toEqual([
+  expect(
+    linesNaming(
+      stderrOfSync(() => write(otherHome)),
+      otherConfig,
+    ),
+  ).toEqual([
     `rewritten -> ${otherConfig} (Codex config; model_catalog_json removed, was "${catalogFile}")`,
   ]);
 });
@@ -1351,7 +1366,7 @@ test("the disabled sync names the file it deletes and every reference it strips;
   // process already named, so the seam says nothing more about it).
   const outside = join(dir, "retired-home", "config.toml");
   mkdirSync(join(dir, "retired-home"), { recursive: true });
-  writeFileSync(outside, stringify({ "model_catalog_json": catalogFile }));
+  writeFileSync(outside, stringify({ model_catalog_json: catalogFile }));
   new OwnershipLedger().record("codexCatalog", outside);
   new CopilotEnvConfig().set({ "codex.model-catalog": false });
   const cleaned = stderrOfSync(() => syncCodexCatalogReference());

@@ -10,7 +10,7 @@
 import { basename, dirname, join } from "node:path";
 import { isEnoentOrNotdir } from "./fs.ts";
 import * as disk from "./fs_disk.ts";
-import { openOverlay, type Overlay } from "./fs_overlay.ts";
+import { type Overlay, openOverlay } from "./fs_overlay.ts";
 import { underScratch } from "./report_write.ts";
 
 export type { DirEntry, EntryStats, RemoveOptions, ScratchDir, WriteOptions } from "./fs_disk.ts";

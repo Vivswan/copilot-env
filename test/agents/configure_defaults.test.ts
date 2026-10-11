@@ -20,10 +20,10 @@ import { CopilotEnvState } from "../../src/copilot_api/env_state.ts";
 import { setIntegrationProbeFetch } from "../../src/copilot_api/integration_identity.ts";
 import { parseProfileName } from "../../src/copilot_api/profile.ts";
 import { proxyTokenCommand } from "../../src/utils/root.ts";
+import { agentHomeEnv, envSnapshot, isolateAgentHomes, isolateProxyHome } from "../helpers/env.ts";
 import { captureAllWrites } from "../helpers/output.ts";
 import { runCli } from "../helpers/run.ts";
 import { afterEach, beforeEach, expect, removeDir, test } from "../helpers/testing.ts";
-import { agentHomeEnv, envSnapshot, isolateAgentHomes, isolateProxyHome } from "../helpers/env.ts";
 
 const restoreEnv = envSnapshot(["PATH"]);
 let dir = "";
@@ -133,28 +133,35 @@ function probeAdapter(id: ManagedAgentId, verdict: boolean, trace: string[]): Ag
 
 test("`agent init` (auto) probes both agents BEFORE any write and lands one mode; disagreeing probes put both on the proxy", async () => {
   const state = new CopilotEnvState();
-  for (const c of [{ codex: false, expected: "proxy" }, { codex: true, expected: "direct" }]) {
+  for (const c of [
+    { codex: false, expected: "proxy" },
+    { codex: true, expected: "direct" },
+  ]) {
     const trace: string[] = [];
     state.recordDefaultMode("direct"); // whatever the record says, init never refuses itself
     const out = await configureDefaultAgents(
       { codex: "auto", claude: "auto", ghToken: "ghu_test" },
       [probeAdapter("claude", true, trace), probeAdapter("codex", c.codex, trace)],
     );
-    expect({ codexProbe: c.codex, ...out, trace, recorded: state.readProfileSlot(null).mode })
-      .toEqual({
-        codexProbe: c.codex,
-        codex: c.expected,
-        claude: c.expected,
-        failures: [],
-        failedAgents: [],
-        trace: [
-          "probe:claude:command",
-          "probe:codex:command",
-          `write:claude:${c.expected}`,
-          `write:codex:${c.expected}`,
-        ],
-        recorded: c.expected,
-      });
+    expect({
+      codexProbe: c.codex,
+      ...out,
+      trace,
+      recorded: state.readProfileSlot(null).mode,
+    }).toEqual({
+      codexProbe: c.codex,
+      codex: c.expected,
+      claude: c.expected,
+      failures: [],
+      failedAgents: [],
+      trace: [
+        "probe:claude:command",
+        "probe:codex:command",
+        `write:claude:${c.expected}`,
+        `write:codex:${c.expected}`,
+      ],
+      recorded: c.expected,
+    });
   }
 });
 
@@ -202,22 +209,17 @@ test("a Direct landing with no resolvable credential is refused before any write
   const emptyBin = join(dir, "empty-bin");
   mkdirSync(emptyBin, { recursive: true });
   process.env.PATH = emptyBin;
-  const direct = await configureDefaultAgents(
-    { codex: "direct", claude: "direct" },
-    bothAgents(),
-  );
-  expect(direct.failures.map((f) => f.includes("run `agent auth` first"))).toEqual([
-    true,
-    true,
-  ]);
+  const direct = await configureDefaultAgents({ codex: "direct", claude: "direct" }, bothAgents());
+  expect(direct.failures.map((f) => f.includes("run `agent auth` first"))).toEqual([true, true]);
   // `auto` is refused the same way: a proxy landing on that credential would serve nothing.
   await expect(
     configureDefaultAgents({ codex: "auto", claude: "auto" }, bothAgents()),
   ).rejects.toThrow("run `agent auth` first");
   // The re-render gap takes the same refusal: a Direct record whose slot holds no pair.
   state.recordDefaultMode("direct");
-  await expect(runAgentConfig(claudeAdapter(), { kind: "configure", mode: "auto" })).rejects
-    .toThrow("run `agent auth` first");
+  await expect(
+    runAgentConfig(claudeAdapter(), { kind: "configure", mode: "auto" }),
+  ).rejects.toThrow("run `agent auth` first");
   expect({
     codexFile: existsSync(join(homes.codexHome, "config.toml")),
     claudeFile: existsSync(join(homes.claudeHome, "settings.json")),
@@ -273,12 +275,14 @@ test("static-key scopes the baked value to the named agent; the other keeps its 
     }).toEqual({
       scope: c.scope,
       failures: [],
-      claude: c.claude === "static"
-        ? { token: apiKey, apiKeyHelper: undefined }
-        : { token: undefined, apiKeyHelper: proxyHelperCommand() },
-      codex: c.codex === "static"
-        ? { authorization: `Bearer ${apiKey}`, authCommand: undefined }
-        : { authorization: undefined, authCommand: proxyTokenCommand().command },
+      claude:
+        c.claude === "static"
+          ? { token: apiKey, apiKeyHelper: undefined }
+          : { token: undefined, apiKeyHelper: proxyHelperCommand() },
+      codex:
+        c.codex === "static"
+          ? { authorization: `Bearer ${apiKey}`, authCommand: undefined }
+          : { authorization: undefined, authCommand: proxyTokenCommand().command },
     });
   }
 });
@@ -304,9 +308,10 @@ async function initOn(
 
 /** The default's probe runs against the resolver command; a named profile's against its token. */
 const PROBED = ["probe:claude:command", "probe:codex:command"];
-const PROBED_AS = (
-  token: string,
-) => [`probe:claude:static:${token}`, `probe:codex:static:${token}`];
+const PROBED_AS = (token: string) => [
+  `probe:claude:static:${token}`,
+  `probe:codex:static:${token}`,
+];
 const WROTE = (mode: string) => [`write:claude:${mode}`, `write:codex:${mode}`];
 
 test("`agent init` probes every run: an agreeing verdict re-wires, a differing one keeps the record headless (with the hint) and moves with --yes; no flag is --auto", async () => {
@@ -353,7 +358,7 @@ test("`agent profile <name> add --auto` probes under the profile's own credentia
   dir = homes.dir;
   // The Direct selection under the profile's token, offline: every identity accepted.
   setIntegrationProbeFetch(() =>
-    Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 }))
+    Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 })),
   );
   const hadTty = process.stdin.isTTY;
   process.stdin.isTTY = false;
@@ -362,8 +367,11 @@ test("`agent profile <name> add --auto` probes under the profile's own credentia
     const state = new CopilotEnvState();
     const credential = { kind: "stored", provider: "gh-token", token: "ghu_work" } as const;
     // Fresh: --no-auth leaves no credential to probe with, and a script cannot log in.
-    await expect(addProfile(work, { mode: "auto", noAuth: true }, probePair(true, []))).rejects
-      .toThrow("no credential to probe with; pass --direct or --proxy, or run without --no-auth");
+    await expect(
+      addProfile(work, { mode: "auto", noAuth: true }, probePair(true, [])),
+    ).rejects.toThrow(
+      "no credential to probe with; pass --direct or --proxy, or run without --no-auth",
+    );
     await expect(addProfile(work, { mode: "auto" }, probePair(true, []))).rejects.toThrow(
       "not a terminal - pass --direct or --proxy with --no-auth to record the mode alone",
     );
@@ -374,7 +382,7 @@ test("`agent profile <name> add --auto` probes under the profile's own credentia
     state.commitProfile(work, { credential, mode: "proxy" });
     const trace: string[] = [];
     const kept = await captureAllWrites(() =>
-      addProfile(work, { mode: "auto" }, probePair(true, trace))
+      addProfile(work, { mode: "auto" }, probePair(true, trace)),
     );
     expect([trace, state.readProfileSlot(work).mode]).toEqual([
       [...PROBED_AS("ghu_work"), ...WROTE("proxy")],
@@ -384,7 +392,7 @@ test("`agent profile <name> add --auto` probes under the profile's own credentia
     expect(kept).toContain("Keeping proxy (not a terminal); pass --direct to switch");
     trace.length = 0;
     const moved = await captureAllWrites(() =>
-      addProfile(work, { mode: "auto", yes: true }, probePair(true, trace))
+      addProfile(work, { mode: "auto", yes: true }, probePair(true, trace)),
     );
     expect(trace).toEqual([...PROBED_AS("ghu_work"), ...WROTE("direct")]);
     expect(state.readProfileSlot(work)).toEqual({ kind: "complete", credential, mode: "direct" });
@@ -403,7 +411,7 @@ test("`add --auto` on a mode-only named profile records the sign-in before the p
   const homes = isolateAgentHomes("copilot-named-login-", { mkdirs: true });
   dir = homes.dir;
   setIntegrationProbeFetch(() =>
-    Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 }))
+    Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 })),
   );
   const work = parseProfileName("work");
   const state = new CopilotEnvState();
@@ -422,8 +430,9 @@ test("`add --auto` on a mode-only named profile records the sign-in before the p
   const hadTty = process.stdin.isTTY;
   process.stdin.isTTY = true;
   try {
-    await expect(addProfile(work, { mode: "auto" }, [tooOld("claude"), tooOld("codex")], signIn))
-      .rejects.toThrow("claude is too old for Copilot Direct");
+    await expect(
+      addProfile(work, { mode: "auto" }, [tooOld("claude"), tooOld("codex")], signIn),
+    ).rejects.toThrow("claude is too old for Copilot Direct");
     // The completed sign-in is stored; the mode did not move.
     expect([logins, state.readProfileSlot(work)]).toEqual([
       1,
@@ -432,7 +441,7 @@ test("`add --auto` on a mode-only named profile records the sign-in before the p
     // The retry after the update: no second login, the verdict lands.
     const trace: string[] = [];
     await captureAllWrites(() =>
-      addProfile(work, { mode: "auto", yes: true }, probePair(true, trace), signIn)
+      addProfile(work, { mode: "auto", yes: true }, probePair(true, trace), signIn),
     );
     expect([logins, trace, state.readProfileSlot(work).mode]).toEqual([
       1,
@@ -441,8 +450,9 @@ test("`add --auto` on a mode-only named profile records the sign-in before the p
     ]);
     // A fresh name has no slot to record into: the abort leaves no half profile behind.
     const fast = parseProfileName("fast");
-    await expect(addProfile(fast, { mode: "auto" }, [tooOld("claude"), tooOld("codex")], signIn))
-      .rejects.toThrow("claude is too old for Copilot Direct");
+    await expect(
+      addProfile(fast, { mode: "auto" }, [tooOld("claude"), tooOld("codex")], signIn),
+    ).rejects.toThrow("claude is too old for Copilot Direct");
     expect([logins, state.profileSlotStatus(fast).exists]).toEqual([2, false]);
   } finally {
     process.stdin.isTTY = hadTty;
@@ -459,10 +469,12 @@ test("a probe that throws (an outdated CLI) aborts the landing before any write:
     ...probeAdapter("claude", true, trace),
     detectDirect: () => Promise.reject(new CliTooOldError(CLAUDE_PROBE, "2.1.181", "2.1.251")),
   };
-  await expect(configureDefaultAgents(
-    { codex: "auto", claude: "auto", ghToken: "ghu_test" },
-    [tooOld, probeAdapter("codex", true, trace)],
-  )).rejects.toThrow("claude is too old for Copilot Direct");
+  await expect(
+    configureDefaultAgents({ codex: "auto", claude: "auto", ghToken: "ghu_test" }, [
+      tooOld,
+      probeAdapter("codex", true, trace),
+    ]),
+  ).rejects.toThrow("claude is too old for Copilot Direct");
   expect([trace, state.readProfileSlot(null).mode]).toEqual([[], "proxy"]);
 });
 
@@ -472,13 +484,11 @@ test("a wiring command with no credential refuses headless and writes nothing", 
   const env = childCliEnv(codexHome, claudeHome);
   // The re-renders reach the login gate; `init` refuses before its mode lands and names the flag
   // that records the mode alone.
-  for (
-    const [argv, refusal] of [
-      [["profile", "sync", "--claude"], "Not authenticated yet"],
-      [["profile", "sync", "--codex"], "Not authenticated yet"],
-      [["init", "--proxy"], "pass --no-auth to record the mode alone"],
-    ] as const
-  ) {
+  for (const [argv, refusal] of [
+    [["profile", "sync", "--claude"], "Not authenticated yet"],
+    [["profile", "sync", "--codex"], "Not authenticated yet"],
+    [["init", "--proxy"], "pass --no-auth to record the mode alone"],
+  ] as const) {
     const run = runCli([...argv], { env });
     expect(run.exitCode, argv.join(" ")).toBe(1);
     expect(run.stderr, argv.join(" ")).toContain(refusal);

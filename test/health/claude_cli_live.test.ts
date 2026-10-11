@@ -9,7 +9,6 @@ import { join } from "node:path";
 import { CLAUDE_PROBE, PROBE_PROMPT } from "../../src/agents/live_probe.ts";
 import { claudeLiveLaunch } from "../../src/health/live_launch.ts";
 import { resolveCommand } from "../../src/utils/command.ts";
-import type { FakeModelEndpoint } from "../helpers/fake_model_endpoint.ts";
 import {
   FAKE_CLAUDE_MODEL,
   FAKE_USER_AGENT,
@@ -19,6 +18,7 @@ import {
   startFakeEndpoint,
   writeClaudeFakeSettings,
 } from "../helpers/fake_endpoint.ts";
+import type { FakeModelEndpoint } from "../helpers/fake_model_endpoint.ts";
 import { afterEach, beforeEach, expect, tempDir, test } from "../helpers/testing.ts";
 
 const LIVE_ENV = "COPILOT_ENV_LIVE_CLIS";
@@ -65,11 +65,11 @@ live(
     // The health probe's own read of the same stream: the model answered.
     expect(claudeLiveLaunch(home, null).answered(run.stdout)).toBe(true);
     expect(resultLine(run.stdout)).toMatchObject({
-      "type": "result",
-      "subtype": "success",
-      "is_error": false,
-      "result": "OK",
-      "num_turns": 1,
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      result: "OK",
+      num_turns: 1,
     });
 
     // What claude sent: the settings' bearer (present; aimock redacts its value) and custom
@@ -79,7 +79,7 @@ live(
     expect(request?.headers["user-agent"]).toBe(FAKE_USER_AGENT);
     expect(request?.headers["openai-intent"]).toBe("conversation-edits");
     expect(request?.headers["anthropic-version"]).toBe("2023-06-01");
-    expect(request?.body).toMatchObject({ "model": FAKE_CLAUDE_MODEL, "stream": true });
+    expect(request?.body).toMatchObject({ model: FAKE_CLAUDE_MODEL, stream: true });
     expect(request?.interrupted).toBe(false);
   },
   TEST_TIMEOUT_MS,
@@ -91,9 +91,9 @@ live(
     const run = await runClaude("model-not-found");
     expect(run.exitCode).toBe(1);
     expect(resultLine(run.stdout)).toMatchObject({
-      "type": "result",
-      "is_error": true,
-      "api_error_status": 404,
+      type: "result",
+      is_error: true,
+      api_error_status: 404,
     });
     // A 4xx the SDK does not retry: the prompt, plus at most claude's session-title request,
     // every one rejected.

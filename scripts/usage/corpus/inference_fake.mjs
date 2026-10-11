@@ -2,8 +2,8 @@
 // deterministic from a hash of the request body, so the real CLIs complete turns offline and
 // write genuine session logs. Importable (`startInferenceFake`) or standalone (`{"port":N}`).
 import { createHash } from "node:crypto";
-import { createServer } from "node:http";
 import { realpathSync } from "node:fs";
+import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
 
 const DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-6";
@@ -11,11 +11,11 @@ const DEFAULT_OPENAI_MODEL = "gpt-5.4";
 
 /** Tools whose invocation is harmless, in preference order, with the arguments to send. */
 const PREFERRED_TOOLS = [
-  { name: "Read", args: { "file_path": "corpus-note.txt" } },
-  { name: "read_file", args: { "path": "corpus-note.txt" } },
-  { name: "shell", args: { "command": ["echo", "corpus"] } },
-  { name: "exec_command", args: { "cmd": "echo corpus" } },
-  { name: "shell_command", args: { "command": "echo corpus" } },
+  { name: "Read", args: { file_path: "corpus-note.txt" } },
+  { name: "read_file", args: { path: "corpus-note.txt" } },
+  { name: "shell", args: { command: ["echo", "corpus"] } },
+  { name: "exec_command", args: { cmd: "echo corpus" } },
+  { name: "shell_command", args: { command: "echo corpus" } },
 ];
 
 /** Whole-word "tool", case-insensitive: the prompt-side trigger for a tool call. */
@@ -36,9 +36,8 @@ function derive(body, toolCount) {
   const inputTotal = Math.max(1, Math.floor(body.length / 4));
   // Small prompts are never cached; larger ones split into read/creation/uncached shares.
   const cacheRead = inputTotal > 1024 ? Math.floor((inputTotal * (25 + (h32 % 50))) / 100) : 0;
-  const cacheCreation = inputTotal > 1024
-    ? Math.floor(((inputTotal - cacheRead) * ((h32 >>> 8) % 40)) / 100)
-    : 0;
+  const cacheCreation =
+    inputTotal > 1024 ? Math.floor(((inputTotal - cacheRead) * ((h32 >>> 8) % 40)) / 100) : 0;
   const output = 20 + (h32 % 181);
   return {
     hex,
@@ -49,7 +48,8 @@ function derive(body, toolCount) {
     // OpenAI's output_tokens INCLUDES the reasoning tokens, so this stays below it.
     reasoning: Math.min(output - 1, (h32 >>> 16) % 40),
     createdAt: 1_700_000_000 + (h32 % 100_000_000),
-    text: `Corpus reply ${hex.slice(0, 8)}: the fake backend answered deterministically` +
+    text:
+      `Corpus reply ${hex.slice(0, 8)}: the fake backend answered deterministically` +
       ` (${toolCount} tools offered).`,
   };
 }
@@ -85,7 +85,8 @@ function anthropicLastUser(body) {
     const message = messages[i];
     if (!isRecord(message) || message.role !== "user") continue;
     const content = message.content;
-    const isToolResult = Array.isArray(content) &&
+    const isToolResult =
+      Array.isArray(content) &&
       content.some((block) => isRecord(block) && block.type === "tool_result");
     return { text: promptTextOf(content, ["text"]), isToolResult };
   }
@@ -119,8 +120,8 @@ function callableTools(body) {
     const schema = isRecord(tool.input_schema)
       ? tool.input_schema
       : isRecord(tool.parameters)
-      ? tool.parameters
-      : null;
+        ? tool.parameters
+        : null;
     if (schema === null && tool.type !== undefined && tool.type !== "function") continue;
     out.push({ name: tool.name, schema: schema ?? {} });
   }
@@ -152,9 +153,10 @@ function selectToolCall(text, tools) {
   if (tools.length === 0 || !TOOL_WORD.test(text)) return null;
   const pinnedName = TOOL_NAME_MARKER.exec(text)?.[1];
   const pinned64 = TOOL_ARGS64_MARKER.exec(text)?.[1];
-  const pinnedArgsText = pinned64 !== undefined
-    ? Buffer.from(pinned64, "base64").toString("utf8")
-    : TOOL_ARGS_MARKER.exec(text)?.[1];
+  const pinnedArgsText =
+    pinned64 !== undefined
+      ? Buffer.from(pinned64, "base64").toString("utf8")
+      : TOOL_ARGS_MARKER.exec(text)?.[1];
   let pinnedArgs = null;
   if (pinnedArgsText !== undefined) {
     try {
@@ -186,7 +188,7 @@ function json(res, status, obj) {
 }
 
 function apiError(res, status, type, message) {
-  json(res, status, { "type": "error", "error": { "type": type, "message": message } });
+  json(res, status, { type: "error", error: { type: type, message: message } });
 }
 
 /** @param {import("node:http").ServerResponse} res */
@@ -194,7 +196,7 @@ function openSse(res) {
   res.writeHead(200, {
     "content-type": "text/event-stream",
     "cache-control": "no-cache",
-    "connection": "keep-alive",
+    connection: "keep-alive",
   });
   return {
     /** Named event (Anthropic and Responses both name theirs). */
@@ -216,38 +218,38 @@ function openSse(res) {
 /** The `usage` of a message (message_start and the non-stream reply). */
 function anthropicUsage(d, outputTokens) {
   return {
-    "input_tokens": d.input,
-    "cache_creation_input_tokens": d.cacheCreation,
-    "cache_read_input_tokens": d.cacheRead,
-    "cache_creation": {
-      "ephemeral_5m_input_tokens": d.cacheCreation,
-      "ephemeral_1h_input_tokens": 0,
+    input_tokens: d.input,
+    cache_creation_input_tokens: d.cacheCreation,
+    cache_read_input_tokens: d.cacheRead,
+    cache_creation: {
+      ephemeral_5m_input_tokens: d.cacheCreation,
+      ephemeral_1h_input_tokens: 0,
     },
-    "output_tokens": outputTokens,
-    "server_tool_use": null,
-    "service_tier": "standard",
+    output_tokens: outputTokens,
+    server_tool_use: null,
+    service_tier: "standard",
   };
 }
 
 /** The cumulative `usage` of message_delta: the four counters plus server tool use only. */
 function anthropicDeltaUsage(d) {
   return {
-    "input_tokens": d.input,
-    "cache_creation_input_tokens": d.cacheCreation,
-    "cache_read_input_tokens": d.cacheRead,
-    "output_tokens": d.output,
-    "server_tool_use": null,
+    input_tokens: d.input,
+    cache_creation_input_tokens: d.cacheCreation,
+    cache_read_input_tokens: d.cacheRead,
+    output_tokens: d.output,
+    server_tool_use: null,
   };
 }
 
 function anthropicBlocks(d, toolCall) {
-  const blocks = [{ "type": "text", "text": d.text, "citations": null }];
+  const blocks = [{ type: "text", text: d.text, citations: null }];
   if (toolCall !== null) {
     blocks.push({
-      "type": "tool_use",
-      "id": `toolu_${d.hex.slice(24, 48)}`,
-      "name": toolCall.name,
-      "input": toolCall.args,
+      type: "tool_use",
+      id: `toolu_${d.hex.slice(24, 48)}`,
+      name: toolCall.name,
+      input: toolCall.args,
     });
   }
   return blocks;
@@ -265,70 +267,70 @@ function handleMessages(body, rawBody, res) {
 
   if (body.stream !== true) {
     json(res, 200, {
-      "id": id,
-      "type": "message",
-      "role": "assistant",
-      "model": model,
-      "content": blocks,
-      "stop_reason": stopReason,
-      "stop_sequence": null,
-      "usage": anthropicUsage(d, d.output),
-      "container": null,
+      id: id,
+      type: "message",
+      role: "assistant",
+      model: model,
+      content: blocks,
+      stop_reason: stopReason,
+      stop_sequence: null,
+      usage: anthropicUsage(d, d.output),
+      container: null,
     });
     return { stream: false, d, model, toolCall };
   }
 
   const sse = openSse(res);
   sse.event("message_start", {
-    "type": "message_start",
-    "message": {
-      "id": id,
-      "type": "message",
-      "role": "assistant",
-      "model": model,
-      "content": [],
-      "stop_reason": null,
-      "stop_sequence": null,
+    type: "message_start",
+    message: {
+      id: id,
+      type: "message",
+      role: "assistant",
+      model: model,
+      content: [],
+      stop_reason: null,
+      stop_sequence: null,
       // The start snapshot books the input side; output_tokens is the 1-token placeholder
       // the real API sends here, and message_delta carries the final count.
-      "usage": anthropicUsage(d, 1),
-      "container": null,
+      usage: anthropicUsage(d, 1),
+      container: null,
     },
   });
   sse.event("content_block_start", {
-    "type": "content_block_start",
-    "index": 0,
-    "content_block": { "type": "text", "text": "", "citations": null },
+    type: "content_block_start",
+    index: 0,
+    content_block: { type: "text", text: "", citations: null },
   });
-  sse.event("ping", { "type": "ping" });
+  sse.event("ping", { type: "ping" });
   for (const piece of splitText(d.text)) {
     sse.event("content_block_delta", {
-      "type": "content_block_delta",
-      "index": 0,
-      "delta": { "type": "text_delta", "text": piece },
+      type: "content_block_delta",
+      index: 0,
+      delta: { type: "text_delta", text: piece },
     });
   }
-  sse.event("content_block_stop", { "type": "content_block_stop", "index": 0 });
+  sse.event("content_block_stop", { type: "content_block_stop", index: 0 });
   if (toolCall !== null) {
     const toolBlock = blocks[1];
     sse.event("content_block_start", {
-      "type": "content_block_start",
-      "index": 1,
-      "content_block": { ...toolBlock, "input": {} },
+      type: "content_block_start",
+      index: 1,
+      content_block: { ...toolBlock, input: {} },
     });
     sse.event("content_block_delta", {
-      "type": "content_block_delta",
-      "index": 1,
-      "delta": { "type": "input_json_delta", "partial_json": JSON.stringify(toolCall.args) },
+      type: "content_block_delta",
+      index: 1,
+      delta: { type: "input_json_delta", partial_json: JSON.stringify(toolCall.args) },
     });
-    sse.event("content_block_stop", { "type": "content_block_stop", "index": 1 });
+    sse.event("content_block_stop", { type: "content_block_stop", index: 1 });
   }
   sse.event("message_delta", {
-    "type": "message_delta",
-    "delta": { "stop_reason": stopReason, "stop_sequence": null },
-    "usage": anthropicDeltaUsage(d),
+    type: "message_delta",
+    delta: { stop_reason: stopReason, stop_sequence: null },
+    usage: anthropicDeltaUsage(d),
   });
-  sse.event("message_stop", { "type": "message_stop" });
+  sse.event("message_stop", { type: "message_stop" });
   sse.end();
   return { stream: true, d, model, toolCall };
 }
@@ -342,30 +344,32 @@ function openaiInputTokens(d) {
 
 function responsesUsage(d) {
   return {
-    "input_tokens": openaiInputTokens(d),
-    "input_tokens_details": { "cached_tokens": d.cacheRead },
-    "output_tokens": d.output,
-    "output_tokens_details": { "reasoning_tokens": d.reasoning },
-    "total_tokens": openaiInputTokens(d) + d.output,
+    input_tokens: openaiInputTokens(d),
+    input_tokens_details: { cached_tokens: d.cacheRead },
+    output_tokens: d.output,
+    output_tokens_details: { reasoning_tokens: d.reasoning },
+    total_tokens: openaiInputTokens(d) + d.output,
   };
 }
 
 function responsesItems(d, toolCall) {
-  const items = [{
-    "id": `msg_${d.hex.slice(24, 48)}`,
-    "type": "message",
-    "status": "completed",
-    "role": "assistant",
-    "content": [{ "type": "output_text", "text": d.text, "annotations": [], "logprobs": [] }],
-  }];
+  const items = [
+    {
+      id: `msg_${d.hex.slice(24, 48)}`,
+      type: "message",
+      status: "completed",
+      role: "assistant",
+      content: [{ type: "output_text", text: d.text, annotations: [], logprobs: [] }],
+    },
+  ];
   if (toolCall !== null) {
     items.push({
-      "id": `fc_${d.hex.slice(8, 32)}`,
-      "type": "function_call",
-      "status": "completed",
-      "arguments": JSON.stringify(toolCall.args),
-      "call_id": `call_${d.hex.slice(32, 56)}`,
-      "name": toolCall.name,
+      id: `fc_${d.hex.slice(8, 32)}`,
+      type: "function_call",
+      status: "completed",
+      arguments: JSON.stringify(toolCall.args),
+      call_id: `call_${d.hex.slice(32, 56)}`,
+      name: toolCall.name,
     });
   }
   return items;
@@ -373,13 +377,13 @@ function responsesItems(d, toolCall) {
 
 function responseObject(d, model, status, output, usage) {
   return {
-    "id": `resp_${d.hex.slice(0, 24)}`,
-    "object": "response",
-    "created_at": d.createdAt,
-    "status": status,
-    "model": model,
-    "output": output,
-    "usage": usage,
+    id: `resp_${d.hex.slice(0, 24)}`,
+    object: "response",
+    created_at: d.createdAt,
+    status: status,
+    model: model,
+    output: output,
+    usage: usage,
   };
 }
 
@@ -399,67 +403,66 @@ function handleResponses(body, rawBody, res) {
 
   const sse = openSse(res);
   let seq = 0;
-  const emit = (type, fields) =>
-    sse.event(type, { "type": type, "sequence_number": seq++, ...fields });
-  emit("response.created", { "response": responseObject(d, model, "in_progress", [], null) });
-  emit("response.in_progress", { "response": responseObject(d, model, "in_progress", [], null) });
+  const emit = (type, fields) => sse.event(type, { type: type, sequence_number: seq++, ...fields });
+  emit("response.created", { response: responseObject(d, model, "in_progress", [], null) });
+  emit("response.in_progress", { response: responseObject(d, model, "in_progress", [], null) });
 
   const message = items[0];
   emit("response.output_item.added", {
-    "output_index": 0,
-    "item": { ...message, "status": "in_progress", "content": [] },
+    output_index: 0,
+    item: { ...message, status: "in_progress", content: [] },
   });
   emit("response.content_part.added", {
-    "item_id": message.id,
-    "output_index": 0,
-    "content_index": 0,
-    "part": { "type": "output_text", "text": "", "annotations": [], "logprobs": [] },
+    item_id: message.id,
+    output_index: 0,
+    content_index: 0,
+    part: { type: "output_text", text: "", annotations: [], logprobs: [] },
   });
   for (const piece of splitText(d.text)) {
     emit("response.output_text.delta", {
-      "item_id": message.id,
-      "output_index": 0,
-      "content_index": 0,
-      "delta": piece,
-      "logprobs": [],
+      item_id: message.id,
+      output_index: 0,
+      content_index: 0,
+      delta: piece,
+      logprobs: [],
     });
   }
   emit("response.output_text.done", {
-    "item_id": message.id,
-    "output_index": 0,
-    "content_index": 0,
-    "text": d.text,
-    "logprobs": [],
+    item_id: message.id,
+    output_index: 0,
+    content_index: 0,
+    text: d.text,
+    logprobs: [],
   });
   emit("response.content_part.done", {
-    "item_id": message.id,
-    "output_index": 0,
-    "content_index": 0,
-    "part": message.content[0],
+    item_id: message.id,
+    output_index: 0,
+    content_index: 0,
+    part: message.content[0],
   });
-  emit("response.output_item.done", { "output_index": 0, "item": message });
+  emit("response.output_item.done", { output_index: 0, item: message });
 
   if (toolCall !== null) {
     const call = items[1];
     emit("response.output_item.added", {
-      "output_index": 1,
-      "item": { ...call, "status": "in_progress", "arguments": "" },
+      output_index: 1,
+      item: { ...call, status: "in_progress", arguments: "" },
     });
     emit("response.function_call_arguments.delta", {
-      "item_id": call.id,
-      "output_index": 1,
-      "delta": call.arguments,
+      item_id: call.id,
+      output_index: 1,
+      delta: call.arguments,
     });
     emit("response.function_call_arguments.done", {
-      "item_id": call.id,
-      "output_index": 1,
-      "name": call.name,
-      "arguments": call.arguments,
+      item_id: call.id,
+      output_index: 1,
+      name: call.name,
+      arguments: call.arguments,
     });
-    emit("response.output_item.done", { "output_index": 1, "item": call });
+    emit("response.output_item.done", { output_index: 1, item: call });
   }
 
-  emit("response.completed", { "response": responseObject(d, model, "completed", items, usage) });
+  emit("response.completed", { response: responseObject(d, model, "completed", items, usage) });
   sse.end();
   return { stream: true, d, model, toolCall };
 }
@@ -471,24 +474,26 @@ function handleChatCompletions(body, rawBody, res) {
   const model = typeof body.model === "string" ? body.model : DEFAULT_OPENAI_MODEL;
   const id = `chatcmpl-${d.hex.slice(0, 24)}`;
   const usage = {
-    "prompt_tokens": openaiInputTokens(d),
-    "completion_tokens": d.output,
-    "total_tokens": openaiInputTokens(d) + d.output,
-    "prompt_tokens_details": { "cached_tokens": d.cacheRead },
-    "completion_tokens_details": { "reasoning_tokens": d.reasoning },
+    prompt_tokens: openaiInputTokens(d),
+    completion_tokens: d.output,
+    total_tokens: openaiInputTokens(d) + d.output,
+    prompt_tokens_details: { cached_tokens: d.cacheRead },
+    completion_tokens_details: { reasoning_tokens: d.reasoning },
   };
   if (body.stream !== true) {
     json(res, 200, {
-      "id": id,
-      "object": "chat.completion",
-      "created": d.createdAt,
-      "model": model,
-      "choices": [{
-        "index": 0,
-        "message": { "role": "assistant", "content": d.text },
-        "finish_reason": "stop",
-      }],
-      "usage": usage,
+      id: id,
+      object: "chat.completion",
+      created: d.createdAt,
+      model: model,
+      choices: [
+        {
+          index: 0,
+          message: { role: "assistant", content: d.text },
+          finish_reason: "stop",
+        },
+      ],
+      usage: usage,
     });
     return { stream: false, d, model, toolCall: null };
   }
@@ -497,20 +502,19 @@ function handleChatCompletions(body, rawBody, res) {
   // it with no choices.
   const includeUsage = isRecord(body.stream_options) && body.stream_options.include_usage === true;
   const chunk = (choices, chunkUsage) =>
-    sse.data(JSON.stringify({
-      "id": id,
-      "object": "chat.completion.chunk",
-      "created": d.createdAt,
-      "model": model,
-      "choices": choices,
-      ...includeUsage ? { "usage": chunkUsage } : {},
-    }));
-  const choice = (
-    delta,
-    finishReason,
-  ) => [{ "index": 0, "delta": delta, "finish_reason": finishReason }];
-  chunk(choice({ "role": "assistant", "content": "" }, null), null);
-  for (const piece of splitText(d.text)) chunk(choice({ "content": piece }, null), null);
+    sse.data(
+      JSON.stringify({
+        id: id,
+        object: "chat.completion.chunk",
+        created: d.createdAt,
+        model: model,
+        choices: choices,
+        ...(includeUsage ? { usage: chunkUsage } : {}),
+      }),
+    );
+  const choice = (delta, finishReason) => [{ index: 0, delta: delta, finish_reason: finishReason }];
+  chunk(choice({ role: "assistant", content: "" }, null), null);
+  for (const piece of splitText(d.text)) chunk(choice({ content: piece }, null), null);
   chunk(choice({}, "stop"), null);
   if (includeUsage) chunk([], usage);
   sse.data("[DONE]");
@@ -536,24 +540,24 @@ function isAnthropicClient(req) {
 function catalog(req) {
   if (isAnthropicClient(req)) {
     return {
-      "data": ANTHROPIC_MODELS.map(([id, displayName]) => ({
-        "type": "model",
-        "id": id,
-        "display_name": displayName,
-        "created_at": "2023-11-14T22:13:20Z",
+      data: ANTHROPIC_MODELS.map(([id, displayName]) => ({
+        type: "model",
+        id: id,
+        display_name: displayName,
+        created_at: "2023-11-14T22:13:20Z",
       })),
-      "has_more": false,
-      "first_id": ANTHROPIC_MODELS[0][0],
-      "last_id": ANTHROPIC_MODELS[ANTHROPIC_MODELS.length - 1][0],
+      has_more: false,
+      first_id: ANTHROPIC_MODELS[0][0],
+      last_id: ANTHROPIC_MODELS[ANTHROPIC_MODELS.length - 1][0],
     };
   }
   return {
-    "object": "list",
-    "data": OPENAI_MODELS.map((id) => ({
-      "id": id,
-      "object": "model",
-      "created": 1_700_000_000,
-      "owned_by": "openai",
+    object: "list",
+    data: OPENAI_MODELS.map((id) => ({
+      id: id,
+      object: "model",
+      created: 1_700_000_000,
+      owned_by: "openai",
     })),
   };
 }
@@ -593,8 +597,8 @@ async function handle(req, res, log, hooks) {
   }
   if (method !== "POST") {
     json(res, 404, {
-      "type": "error",
-      "error": { "type": "not_found_error", "message": "Not found" },
+      type: "error",
+      error: { type: "not_found_error", message: "Not found" },
     });
     log(`${method} ${req.url} 404`);
     return;
@@ -613,30 +617,30 @@ async function handle(req, res, log, hooks) {
     log(`POST ${req.url} 400 not an object`);
     return;
   }
-  const isInference = path === "/messages" || path === "/responses" ||
-    path === "/chat/completions";
+  const isInference = path === "/messages" || path === "/responses" || path === "/chat/completions";
   if (isInference && hooks.beforeReply !== undefined) await hooks.beforeReply(path);
   let result;
   if (path === "/messages") result = handleMessages(body, rawBody, res);
   else if (path === "/messages/count_tokens") {
     const d = derive(rawBody, 0);
-    json(res, 200, { "input_tokens": d.input + d.cacheRead + d.cacheCreation });
+    json(res, 200, { input_tokens: d.input + d.cacheRead + d.cacheCreation });
     log(`POST ${req.url} 200 count_tokens`);
     return;
   } else if (path === "/responses") result = handleResponses(body, rawBody, res);
   else if (path === "/chat/completions") result = handleChatCompletions(body, rawBody, res);
   else {
     json(res, 404, {
-      "type": "error",
-      "error": { "type": "not_found_error", "message": "Not found" },
+      type: "error",
+      error: { type: "not_found_error", message: "Not found" },
     });
     log(`POST ${req.url} 404`);
     return;
   }
   const { d, model, stream, toolCall } = result;
-  const buckets = path === "/messages"
-    ? `in=${d.input} cache_read=${d.cacheRead} cache_creation=${d.cacheCreation}`
-    : `in=${openaiInputTokens(d) - d.cacheRead} cache_read=${d.cacheRead}`;
+  const buckets =
+    path === "/messages"
+      ? `in=${d.input} cache_read=${d.cacheRead} cache_creation=${d.cacheCreation}`
+      : `in=${openaiInputTokens(d) - d.cacheRead} cache_read=${d.cacheRead}`;
   log(
     `POST ${req.url} 200 ${stream ? "stream" : "json"} model=${model} ${buckets}` +
       ` out=${d.output} tool=${toolCall === null ? "none" : toolCall.name}`,
@@ -717,11 +721,12 @@ function isMain() {
 
 if (isMain()) {
   const portIdx = process.argv.indexOf("--port");
-  const requested = portIdx !== -1
-    ? Number(process.argv[portIdx + 1])
-    : Number(process.env.INFERENCE_FAKE_PORT ?? "0");
+  const requested =
+    portIdx !== -1
+      ? Number(process.argv[portIdx + 1])
+      : Number(process.env.INFERENCE_FAKE_PORT ?? "0");
   const { port } = await startInferenceFake(Number.isFinite(requested) ? requested : 0);
-  console.log(JSON.stringify({ "port": port }));
+  console.log(JSON.stringify({ port: port }));
   process.on("SIGTERM", () => process.exit(0));
   process.on("SIGINT", () => process.exit(0));
 }

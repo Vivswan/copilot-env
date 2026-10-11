@@ -53,9 +53,9 @@ test("readClaudeSessions books a message's GitHub bill once, however many files 
     "msg_billed",
     usage(4, 262, 912_223, 6_399),
     {
-      "copilot_usage": {
-        "token_details": [{ "token_type": "output", "token_count": 262 }],
-        "total_nano_aiu": 32_118_325_000,
+      copilot_usage: {
+        token_details: [{ token_type: "output", token_count: 262 }],
+        total_nano_aiu: 32_118_325_000,
       },
     },
   );
@@ -69,21 +69,26 @@ test("readClaudeSessions books a message's GitHub bill once, however many files 
   const report = await readClaudeSessions([root], undefined, "UTC", parseEveryCandidate);
   expect(report.byModel.get("claude-fable-5.1")?.events).toBe(2);
   expect([...report.billed]).toEqual([
-    ["claude-fable-5.1", {
-      input: 4,
-      output: 262,
-      cacheRead: 912_223,
-      cacheCreation: 6_399,
-      events: 1,
-      nanoAiu: 32_118_325_000,
-    }],
+    [
+      "claude-fable-5.1",
+      {
+        input: 4,
+        output: 262,
+        cacheRead: 912_223,
+        cacheCreation: 6_399,
+        events: 1,
+        nanoAiu: 32_118_325_000,
+      },
+    ],
   ]);
 });
 
 test("walkClaudeSessions under a NaN cutoff keeps every file a candidate", () => {
   // A NaN cutoff fails every comparison, so no file is skipped by its mtime.
-  const { roots } = scenarioNamed(CLAUDE_SCENARIOS, "under a NaN cutoff counts nothing, as before")
-    .build(tempDir("claude-sessions-"));
+  const { roots } = scenarioNamed(
+    CLAUDE_SCENARIOS,
+    "under a NaN cutoff counts nothing, as before",
+  ).build(tempDir("claude-sessions-"));
   expect(walkClaudeSessions(roots, Number.NaN).map((f) => f.candidate)).toEqual([true]);
 });
 

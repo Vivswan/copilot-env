@@ -1,9 +1,9 @@
 // One `token_usage_events` row per request, in a per-host DB, so a home shared across machines
 // holds several DBs. The layout is src/copilot_api/paths.ts's; this module only sweeps it.
 
-import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { consola } from "consola";
 import {
   DEFAULT_PROFILE_DIR,
@@ -14,9 +14,9 @@ import {
 import { isValidProfileName } from "../copilot_api/profile.ts";
 import { errMessage } from "../utils/error.ts";
 import { isEnoentOrNotdir } from "../utils/fs.ts";
+import * as fs from "../utils/fs_facade.ts";
 import { isRecord } from "../utils/json.ts";
 import { type DayKey, dayKeyIn } from "../utils/time.ts";
-import * as fs from "../utils/fs_facade.ts";
 import { canonicalModelName } from "./pricing.ts";
 
 /** The four priced token buckets every usage source reduces one event to. */
@@ -347,7 +347,11 @@ export function readUsageRequests(dbPaths: string[], sinceMs?: number): UsageReq
       rows = openSqliteReadOnlyWithWalFallback(
         path,
         // An unparseable row drops out here rather than reaching a report as a zero-filled phantom.
-        (db) => db.prepare(QUERY).all(since).flatMap((raw) => parseUsageRow(raw) ?? []),
+        (db) =>
+          db
+            .prepare(QUERY)
+            .all(since)
+            .flatMap((raw) => parseUsageRow(raw) ?? []),
       );
     } catch (e) {
       consola.warn(`could not read ${path} (${errMessage(e)}).`);
@@ -369,12 +373,10 @@ export function foldUsageRequests(
   for (const request of requests) {
     // The daemon writes created_at_ms on every row, so a null tsMs is not expected; record still
     // totals such a row, just outside the per-day split. The day is the user's local one.
-    record(
-      report,
-      request.tsMs !== null ? dayKey(request.tsMs) : null,
-      request.model,
-      { ...request.buckets, events: 1 },
-    );
+    record(report, request.tsMs !== null ? dayKey(request.tsMs) : null, request.model, {
+      ...request.buckets,
+      events: 1,
+    });
   }
   return report;
 }
@@ -436,7 +438,10 @@ export function undatedUsage(report: ReadonlyUsageTotals): Map<string, ModelUsag
   }
   for (const [model, r] of rest) {
     if (
-      r.input === 0 && r.output === 0 && r.cacheRead === 0 && r.cacheCreation === 0 &&
+      r.input === 0 &&
+      r.output === 0 &&
+      r.cacheRead === 0 &&
+      r.cacheCreation === 0 &&
       r.events === 0
     ) {
       rest.delete(model);

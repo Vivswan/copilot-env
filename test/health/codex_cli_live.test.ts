@@ -10,7 +10,6 @@ import { CODEX_PROBE, PROBE_PROMPT, summarizeProbeFailure } from "../../src/agen
 import { codexLiveLaunch } from "../../src/health/live_launch.ts";
 import { resolveCommand } from "../../src/utils/command.ts";
 import { isRecord } from "../../src/utils/json.ts";
-import type { FakeModelEndpoint } from "../helpers/fake_model_endpoint.ts";
 import {
   FAKE_CODEX_MODEL,
   FAKE_USER_AGENT,
@@ -20,6 +19,7 @@ import {
   startFakeEndpoint,
   writeCodexFakeConfig,
 } from "../helpers/fake_endpoint.ts";
+import type { FakeModelEndpoint } from "../helpers/fake_model_endpoint.ts";
 import { afterEach, beforeEach, expect, tempDir, test } from "../helpers/testing.ts";
 
 const LIVE_ENV = "COPILOT_ENV_LIVE_CLIS";
@@ -70,7 +70,7 @@ live(
     // id outside codex's built-in table) precedes the turn, so the answer is the agent_message
     // item, never the first item.
     const answer = jsonLines(run.stdout).find(isAgentMessage);
-    expect(answer).toMatchObject({ "item": { "text": "OK" } });
+    expect(answer).toMatchObject({ item: { text: "OK" } });
     expect(jsonLines(run.stdout).some((e) => e.type === "turn.completed")).toBe(true);
 
     // What codex sent: `http_headers` verbatim (the bearer present; aimock redacts its value),
@@ -83,7 +83,7 @@ live(
     expect(request?.headers["openai-intent"]).toBe("conversation-edits");
     expect(request?.headers["originator"]).toBe("codex_exec");
     expect(request?.headers["accept"]).toBe("text/event-stream");
-    expect(request?.body).toMatchObject({ "model": FAKE_CODEX_MODEL, "stream": true });
+    expect(request?.body).toMatchObject({ model: FAKE_CODEX_MODEL, stream: true });
     expect(request?.interrupted).toBe(false);
   },
   TEST_TIMEOUT_MS,
@@ -115,7 +115,7 @@ live(
     const events = jsonLines(run.stdout);
     const failed = events.find((e) => e.type === "turn.failed");
     expect(failed).toMatchObject({
-      "error": { "message": expect.stringContaining("stream disconnected before completion") },
+      error: { message: expect.stringContaining("stream disconnected before completion") },
     });
     expect(answered(run.stdout)).toBe(false);
     // The first attempt plus codex's five reconnects, each a stream the fake cut mid-way.

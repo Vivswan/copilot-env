@@ -88,8 +88,11 @@ test("a leftover marker (dead pid, malformed, or our own pid with no hold) is ta
     const path = join(dir, `${i}.lock`);
     writeFileSync(path, row.leftover);
     const acquired = tryAcquireFileLock(path, 10_000, { nowMs: 5_000 });
-    expect({ label: row.label, acquired, marker: readFileSync(path, "utf-8") })
-      .toEqual({ label: row.label, acquired: true, marker: marker(process.pid, 5_000) });
+    expect({ label: row.label, acquired, marker: readFileSync(path, "utf-8") }).toEqual({
+      label: row.label,
+      acquired: true,
+      marker: marker(process.pid, 5_000),
+    });
     releaseFileLock(path);
   });
 });
@@ -239,21 +242,21 @@ test("a throwing fn (sync) or rejecting fn (async) releases exactly once, and th
   expect(() =>
     withFileLockSync(path, { staleMs: 10_000, waitMs: 0 }, () => {
       throw new Error("boom");
-    })
+    }),
   ).toThrow("boom");
   expect(existsSync(path)).toBe(false); // released by the scope's finally ...
   // ... and genuinely free: a fresh scope acquires it.
-  expect(
-    withFileLockSync(path, { staleMs: 10_000, waitMs: 0 }, (outcome) => outcome.held),
-  ).toBe(true);
+  expect(withFileLockSync(path, { staleMs: 10_000, waitMs: 0 }, (outcome) => outcome.held)).toBe(
+    true,
+  );
 
   await expect(
     withFileLock(path, { staleMs: 10_000, waitMs: 0 }, () => Promise.reject(new Error("boom"))),
   ).rejects.toThrow("boom");
   expect(existsSync(path)).toBe(false);
-  expect(
-    withFileLockSync(path, { staleMs: 10_000, waitMs: 0 }, (outcome) => outcome.held),
-  ).toBe(true);
+  expect(withFileLockSync(path, { staleMs: 10_000, waitMs: 0 }, (outcome) => outcome.held)).toBe(
+    true,
+  );
 });
 
 test("withFileLockSync bounded wait retries, notices once (never before noticeAfterMs), then proceeds not-held", () => {
@@ -292,14 +295,15 @@ test("withFileLockSync refuses an async fn BEFORE its body runs, and a thenable-
     withFileLockSync(path, { staleMs: 10_000, waitMs: 0 }, async () => {
       ran = true;
       await Promise.resolve();
-    })
+    }),
   ).toThrow("use withFileLock");
   expect(ran).toBe(false); // rejected up front: not even the pre-await prefix ran
   expect(existsSync(path)).toBe(false); // and no lock was taken for it
 
   // @ts-expect-error the compile-time exclusion flags it too; this pins the RUNTIME guard
-  expect(() => withFileLockSync(path, { staleMs: 10_000, waitMs: 0 }, () => Promise.resolve(1)))
-    .toThrow("use withFileLock");
+  expect(() =>
+    withFileLockSync(path, { staleMs: 10_000, waitMs: 0 }, () => Promise.resolve(1)),
+  ).toThrow("use withFileLock");
   expect(existsSync(path)).toBe(false); // the misuse still released the scope's lock
 });
 
@@ -389,8 +393,9 @@ test("withRequiredFileLockSync never runs fn unlocked: a holder past the wait is
   expect((thrown as Error).message).toContain(`pid ${process.pid}`);
 
   // Lock free: fn runs with the lock evidence, and the scope releases on the way out.
-  expect(withRequiredFileLockSync(path, { staleMs: 10_000, waitMs: 0 }, (lock) => lock.held))
-    .toBe(true);
+  expect(withRequiredFileLockSync(path, { staleMs: 10_000, waitMs: 0 }, (lock) => lock.held)).toBe(
+    true,
+  );
   expect(existsSync(path)).toBe(false);
 });
 
@@ -420,8 +425,11 @@ test("the bounded wait restarts on every holder change: live writers never starv
     { ...policy, liveness: churning },
     (lock) => lock.held,
   );
-  expect({ held, attempts, outlastedWait: Date.now() - t0 >= policy.waitMs })
-    .toEqual({ held: true, attempts: HOLDS + 1, outlastedWait: true });
+  expect({ held, attempts, outlastedWait: Date.now() - t0 >= policy.waitMs }).toEqual({
+    held: true,
+    attempts: HOLDS + 1,
+    outlastedWait: true,
+  });
   expect(existsSync(path)).toBe(false); // released on the way out
 
   // The same refusals under a marker that never changes: a LockBusyError naming that pid at about
@@ -436,10 +444,13 @@ test("the bounded wait restarts on every holder change: live writers never starv
   expect(() =>
     withRequiredFileLockSync(path, { ...policy, liveness: silent }, () => {
       ran = true;
-    })
+    }),
   ).toThrow(`pid ${OTHER_PID}`);
-  expect({ ran, gaveUp: attempts <= HOLDS, leftover: readFileSync(path, "utf-8") })
-    .toEqual({ ran: false, gaveUp: true, leftover: marker(OTHER_PID, 1_000) });
+  expect({ ran, gaveUp: attempts <= HOLDS, leftover: readFileSync(path, "utf-8") }).toEqual({
+    ran: false,
+    gaveUp: true,
+    leftover: marker(OTHER_PID, 1_000),
+  });
 });
 
 // The lock's own I/O can fail (its directory cannot be made, the create is refused): the lock's
@@ -461,11 +472,14 @@ test("a lock whose own I/O fails is retried through the wait, then rethrown as i
   expect(() =>
     withRequiredFileLockSync(path, policy, () => {
       ran = true;
-    })
+    }),
   ).toThrow(/ENOTDIR|EEXIST|ENOENT/);
   expect(ran).toBe(false);
   expect(attempts).toBe(0); // no marker was there to judge: the failure is the lock's own
-  expect(withFileLockSync(path, policy, (o) => o))
-    .toEqual({ held: false, reason: "unavailable", cause: expect.any(Error) });
+  expect(withFileLockSync(path, policy, (o) => o)).toEqual({
+    held: false,
+    reason: "unavailable",
+    cause: expect.any(Error),
+  });
   expect(existsSync(path)).toBe(false);
 });

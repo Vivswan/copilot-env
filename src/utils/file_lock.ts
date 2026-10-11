@@ -59,7 +59,10 @@ const BUSY: Acquire = Object.freeze({ kind: "busy" });
 class HeldFileLock {
   #ts: number;
 
-  constructor(readonly path: string, ts: number) {
+  constructor(
+    readonly path: string,
+    ts: number,
+  ) {
     this.#ts = ts;
   }
 
@@ -355,9 +358,10 @@ function acquireStep(
     policy.onWait();
   }
   if (now - state.observedSinceMs >= policy.waitMs) {
-    const done: NotHeldOutcome = attempt.kind === "busy"
-      ? NOT_HELD_BUSY
-      : { held: false, reason: "unavailable", cause: attempt.cause };
+    const done: NotHeldOutcome =
+      attempt.kind === "busy"
+        ? NOT_HELD_BUSY
+        : { held: false, reason: "unavailable", cause: attempt.cause };
     return { done, owned: false };
   }
   return { sleepMs: policy.retryMs ?? LOCK_RETRY_MS };
@@ -405,10 +409,12 @@ type SyncResult<T> = T extends PromiseLike<unknown> ? never : T;
 /** A non-async fn can still return a thenable; the lock releases without awaiting it, so the throw
  *  is how the caller learns, loudly, that its body ran async. */
 function assertNotThenable(result: unknown): void {
-  const then = (typeof result === "object" || typeof result === "function") && result !== null &&
-      "then" in result
-    ? (result as { then: unknown }).then
-    : undefined;
+  const then =
+    (typeof result === "object" || typeof result === "function") &&
+    result !== null &&
+    "then" in result
+      ? (result as { then: unknown }).then
+      : undefined;
   if (typeof then === "function") {
     throw new Error("withFileLockSync fn returned a promise; use withFileLock instead");
   }
@@ -451,7 +457,11 @@ export function withFileLockSync<T>(
 
 /** A holder still there after the bounded wait. `fn` never ran, so nothing was written. */
 export class LockBusyError extends Error {
-  constructor(readonly lockPath: string, readonly holderPid: number | null, waitedMs: number) {
+  constructor(
+    readonly lockPath: string,
+    readonly holderPid: number | null,
+    waitedMs: number,
+  ) {
     const holder = holderPid === null ? "another process" : `pid ${holderPid}`;
     super(
       `${lockPath} is still held by ${holder} after ${waitedMs} ms; ` +

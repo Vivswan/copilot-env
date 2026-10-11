@@ -16,11 +16,11 @@ import {
   activeGhLogin,
   GH_COPILOT_HOST,
   type GhAccount,
+  type GhSpawnResult,
+  type GhSpawnSpec,
   ghAuthStatusSpawnSpec,
   ghAuthTokenSpawnSpec,
   ghAuthVerdict,
-  type GhSpawnResult,
-  type GhSpawnSpec,
   parseGhAuthStatusAccounts,
 } from "./gh_cli.ts";
 import { type GithubLoginLook, githubLoginLook } from "./github_login.ts";
@@ -191,9 +191,7 @@ export function ghAuthToken(ghUser: string | null = null): string | null {
 /** The account listing: a choice-menu and naming input. A listing is proven even when empty (gh
  *  absent, or no login saved); `unproven` is a look that never RAN to completion. chooseGhAccount
  *  refuses both misses: an unproven listing asks for a retry, an empty one for `gh auth login`. */
-export type GhAccountsLook =
-  | { kind: "listed"; accounts: GhAccount[] }
-  | { kind: "unproven" };
+export type GhAccountsLook = { kind: "listed"; accounts: GhAccount[] } | { kind: "unproven" };
 
 /** Exported for tests. Two gh quirks shape it:
  *    non-zero exit  -> still parsed; `gh auth status` fails when one account is broken but lists the healthy ones
@@ -273,10 +271,11 @@ export class Credential {
       case "stored":
         return { token: credential.token, reason: null };
       case "none": {
-        const login = this.profile === null
-          ? "run `agent auth` to log in"
-          : `run \`agent profile ${this.profile} auth\` to log in ` +
-            "(a named profile never falls back to the default credential)";
+        const login =
+          this.profile === null
+            ? "run `agent auth` to log in"
+            : `run \`agent profile ${this.profile} auth\` to log in ` +
+              "(a named profile never falls back to the default credential)";
         return { token: null, reason: `no GitHub credential configured${slot} - ${login}` };
       }
       case "gh-cli": {
@@ -289,8 +288,7 @@ export class Credential {
           : "";
         return {
           token: null,
-          reason:
-            `provider '${who}' is selected${slot} but no credential resolves: ${detail}${path}`,
+          reason: `provider '${who}' is selected${slot} but no credential resolves: ${detail}${path}`,
         };
       }
     }
@@ -345,9 +343,7 @@ export function liveCredentialSourceLabel(
     const active = activeGhLogin(accounts);
     const logins = [
       ...new Set(
-        accounts
-          .filter((a) => a.host === GH_COPILOT_HOST && a.login !== "")
-          .map((a) => a.login),
+        accounts.filter((a) => a.host === GH_COPILOT_HOST && a.login !== "").map((a) => a.login),
       ),
     ];
     const parts = [

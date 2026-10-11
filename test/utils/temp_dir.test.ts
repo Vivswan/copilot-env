@@ -19,37 +19,33 @@ function gone(path: string): boolean {
 
 const TESTING_MODULE = importSpecifier(join(ROOT, "test", "helpers", "testing.ts"));
 
-test(
-  "a failing test module's fixtures go with its root, nested inside the spawning isolate's",
-  () => {
-    // The child module FAILS on purpose: a failing module is the case the guarantee exists for.
-    const scratch = tempDir("copilot-temp-runner-");
-    const module = join(scratch, "leaky.test.ts");
-    const record = join(scratch, "made.txt");
-    writeFileSync(
-      module,
-      [
-        'import { writeFileSync } from "node:fs";',
-        `import { tempDir, test } from ${TESTING_MODULE};`,
-        'test("leaves a fixture behind and fails", () => {',
-        `  writeFileSync(${CHILD_VALUES}.record, tempDir("copilot-temp-leaked-"));`,
-        '  throw new Error("boom");',
-        "});",
-        "",
-      ].join("\n"),
-    );
-    const res = runSync(process.execPath, ["test", module], {
-      env: { ...process.env, ...childValuesEnv({ record }) },
-    });
-    expect(res.exitCode, res.stderr).toBe(1);
-    const made = readFileSync(record, "utf8");
-    expect(made).toContain("copilot-temp-leaked-");
-    // Gone with the child's own root at its unload; nothing waited on this process for it.
-    expect(gone(made)).toBe(true);
-    expect(gone(dirname(made))).toBe(true);
-    // And that root was a child of THIS isolate's root, so a child killed before its unload
-    // would have gone with ours instead.
-    expect(dirname(dirname(made))).toBe(dirname(scratch));
-  },
-  60_000,
-);
+test("a failing test module's fixtures go with its root, nested inside the spawning isolate's", () => {
+  // The child module FAILS on purpose: a failing module is the case the guarantee exists for.
+  const scratch = tempDir("copilot-temp-runner-");
+  const module = join(scratch, "leaky.test.ts");
+  const record = join(scratch, "made.txt");
+  writeFileSync(
+    module,
+    [
+      'import { writeFileSync } from "node:fs";',
+      `import { tempDir, test } from ${TESTING_MODULE};`,
+      'test("leaves a fixture behind and fails", () => {',
+      `  writeFileSync(${CHILD_VALUES}.record, tempDir("copilot-temp-leaked-"));`,
+      '  throw new Error("boom");',
+      "});",
+      "",
+    ].join("\n"),
+  );
+  const res = runSync(process.execPath, ["test", module], {
+    env: { ...process.env, ...childValuesEnv({ record }) },
+  });
+  expect(res.exitCode, res.stderr).toBe(1);
+  const made = readFileSync(record, "utf8");
+  expect(made).toContain("copilot-temp-leaked-");
+  // Gone with the child's own root at its unload; nothing waited on this process for it.
+  expect(gone(made)).toBe(true);
+  expect(gone(dirname(made))).toBe(true);
+  // And that root was a child of THIS isolate's root, so a child killed before its unload
+  // would have gone with ours instead.
+  expect(dirname(dirname(made))).toBe(dirname(scratch));
+}, 60_000);

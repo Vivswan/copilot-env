@@ -97,16 +97,18 @@ async function main(): Promise<void> {
     adversarial: args.adversarial,
   });
   const bytes = tree.files.reduce((sum, file) => sum + file.bytes, 0);
-  console.log(JSON.stringify({
-    root: tree.root,
-    files: tree.files.length,
-    bytes,
-    mb: args.mb,
-    seed: args.seed,
-    firstDay: localDayKey(tree.firstEventMs, "UTC"),
-    lastDay: localDayKey(tree.lastEventMs, "UTC"),
-    seconds: Math.round((performance.now() - startedAt) / 10) / 100,
-  }));
+  console.log(
+    JSON.stringify({
+      root: tree.root,
+      files: tree.files.length,
+      bytes,
+      mb: args.mb,
+      seed: args.seed,
+      firstDay: localDayKey(tree.firstEventMs, "UTC"),
+      lastDay: localDayKey(tree.lastEventMs, "UTC"),
+      seconds: Math.round((performance.now() - startedAt) / 10) / 100,
+    }),
+  );
 }
 
 await main();

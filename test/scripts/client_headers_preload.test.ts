@@ -3,15 +3,15 @@ import { join } from "node:path";
 import { daemonClientHeaders } from "../../src/copilot_api/integration_identity.ts";
 import { isCopilotApiHost } from "../../src/scripts/client_headers_preload.ts";
 import { runWithDenoPreload, sidecarTest } from "../helpers/deno_sidecar.ts";
+import { freePort } from "../helpers/net.ts";
 import {
   CHILD_VALUES,
   childValuesEnv,
   importSpecifier,
-  resolvePackageDir,
   ROOT,
+  resolvePackageDir,
 } from "../helpers/run.ts";
 import { expect, test } from "../helpers/testing.ts";
-import { freePort } from "../helpers/net.ts";
 
 // Importing the preload without its env var set installs nothing, so the exported helpers are
 // unit-tested directly; the wiring (fetch AND undici's WebSocket, Copilot hosts only) runs as a
@@ -44,9 +44,11 @@ async function runPreloaded(
   // bare specifier has no package.json to resolve against (and bun answers "undici" with its own
   // built-in, so the package dir is walked to, not resolved).
   const undiciDir = resolvePackageDir(undici, ROOT);
-  const undiciMain = (JSON.parse(readFileSync(join(undiciDir, "package.json"), "utf8")) as {
-    main: string;
-  }).main;
+  const undiciMain = (
+    JSON.parse(readFileSync(join(undiciDir, "package.json"), "utf8")) as {
+      main: string;
+    }
+  ).main;
   const undiciEntry = importSpecifier(join(undiciDir, undiciMain));
   const source = [
     `import { WebSocket as UndiciWebSocket } from ${undiciEntry};`,
@@ -93,17 +95,20 @@ async function runPreloaded(
 }
 
 for (const undici of UNDICI_LINES) {
-  sidecarTest(`the daemon sends the resolved identity on fetch AND ${undici}'s WebSocket to its Copilot host, and nothing else changes`, async () => {
-    const proxyOwn: Seen = { ua: "node", id: "vscode-chat", intent: "conversation-agent" };
-    // The codex identity: the codex User-Agent and NO integration id, whatever copilot-api set.
-    const codex = await runPreloaded(daemonClientHeaders(UA, null), undici);
-    const codexSeen: Seen = { ua: UA, id: null, intent: "conversation-edits" };
-    expect(codex).toEqual({ http: codexSeen, ws: codexSeen, other: proxyOwn });
-    // An id identity: the same set with the id replaced.
-    const cli = await runPreloaded(daemonClientHeaders(UA, "copilot-developer-cli"), undici);
-    const cliSeen: Seen = { ua: UA, id: "copilot-developer-cli", intent: "conversation-edits" };
-    expect(cli).toEqual({ http: cliSeen, ws: cliSeen, other: proxyOwn });
-  });
+  sidecarTest(
+    `the daemon sends the resolved identity on fetch AND ${undici}'s WebSocket to its Copilot host, and nothing else changes`,
+    async () => {
+      const proxyOwn: Seen = { ua: "node", id: "vscode-chat", intent: "conversation-agent" };
+      // The codex identity: the codex User-Agent and NO integration id, whatever copilot-api set.
+      const codex = await runPreloaded(daemonClientHeaders(UA, null), undici);
+      const codexSeen: Seen = { ua: UA, id: null, intent: "conversation-edits" };
+      expect(codex).toEqual({ http: codexSeen, ws: codexSeen, other: proxyOwn });
+      // An id identity: the same set with the id replaced.
+      const cli = await runPreloaded(daemonClientHeaders(UA, "copilot-developer-cli"), undici);
+      const cliSeen: Seen = { ua: UA, id: "copilot-developer-cli", intent: "conversation-edits" };
+      expect(cli).toEqual({ http: cliSeen, ws: cliSeen, other: proxyOwn });
+    },
+  );
 }
 
 test("isCopilotApiHost: the Copilot inference hosts match on any scheme, plus the pinned host", () => {

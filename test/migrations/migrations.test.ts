@@ -1,11 +1,27 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, sep } from "node:path";
+import { consola } from "consola";
 import { parse, stringify, TomlDate } from "smol-toml";
+import { AUTOUPDATE_FILENAME, autoupdateDir } from "../../src/autoupdate/state.ts";
 import { directHelperCommand, proxyHelperCommand } from "../../src/claude/config.ts";
+import {
+  desktopHelperPath,
+  writeDesktopHelperScript,
+} from "../../src/claude/desktop_helper_scripts.ts";
+import { CLAUDE_DESKTOP_DIR_ENV, META_FILENAME } from "../../src/claude/desktop_library.ts";
+import { mcpServeArgs } from "../../src/claude/desktop_payload.ts";
+import { claudeJsonPath, inspectMcpRegistration } from "../../src/claude/mcp_registration.ts";
+import { managedProxyProvider } from "../../src/codex/config.ts";
 import { CopilotEnvConfig } from "../../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../../src/copilot_api/env_state.ts";
+import {
+  DEFAULT_COPILOT_API_BASE,
+  resetIntegrationIdentityCache,
+  setIntegrationProbeFetch,
+} from "../../src/copilot_api/integration_identity.ts";
 import { OwnershipLedger } from "../../src/copilot_api/ownership.ts";
 import { parseProfileName } from "../../src/copilot_api/profile.ts";
+import { CopilotEnvRunState } from "../../src/copilot_api/run_state.ts";
 import {
   dropLegacyAutoupdateFlag,
   fenceUnfencedBlocks,
@@ -42,32 +58,16 @@ import {
 import { removeOsLockSidecars } from "../../src/migrations/5.0.1.ts";
 import { dueMigrations, type Migration, runMigrations } from "../../src/migrations/index.ts";
 import { MARKER, MARKER_END } from "../../src/shell/integration.ts";
-import { agentAuthGetArgs, agentLauncherCommand, proxyTokenCommand } from "../../src/utils/root.ts";
-import {
-  desktopHelperPath,
-  writeDesktopHelperScript,
-} from "../../src/claude/desktop_helper_scripts.ts";
-import { CLAUDE_DESKTOP_DIR_ENV, META_FILENAME } from "../../src/claude/desktop_library.ts";
-import { mcpServeArgs } from "../../src/claude/desktop_payload.ts";
-import { AUTOUPDATE_FILENAME, autoupdateDir } from "../../src/autoupdate/state.ts";
-import { claudeJsonPath, inspectMcpRegistration } from "../../src/claude/mcp_registration.ts";
-import {
-  DEFAULT_COPILOT_API_BASE,
-  resetIntegrationIdentityCache,
-  setIntegrationProbeFetch,
-} from "../../src/copilot_api/integration_identity.ts";
-import { managedProxyProvider } from "../../src/codex/config.ts";
-import { CopilotEnvRunState } from "../../src/copilot_api/run_state.ts";
-import { deferWriteReports, flushWriteReports } from "../../src/utils/report_write.ts";
 import { renderDryRun } from "../../src/utils/dry_run_report.ts";
-import { captureChannels } from "../helpers/output.ts";
-import { runCli } from "../helpers/run.ts";
-import { consola } from "consola";
+import { deferWriteReports, flushWriteReports } from "../../src/utils/report_write.ts";
+import { agentAuthGetArgs, agentLauncherCommand, proxyTokenCommand } from "../../src/utils/root.ts";
 import type { SemverString } from "../../src/utils/semver.ts";
-import { afterEach, expect, tempDir, test } from "../helpers/testing.ts";
+import { dryRunChanges, fingerprintTree } from "../helpers/dry_run.ts";
 import { envSnapshot, isolateAgentHomes, isolateProxyHome } from "../helpers/env.ts";
 import { writeRunState } from "../helpers/fixtures.ts";
-import { dryRunChanges, fingerprintTree } from "../helpers/dry_run.ts";
+import { captureChannels } from "../helpers/output.ts";
+import { runCli } from "../helpers/run.ts";
+import { afterEach, expect, tempDir, test } from "../helpers/testing.ts";
 
 // A synthetic registry: the real migrations' side effects never run here.
 const mig = (version: SemverString): Migration => ({
@@ -136,12 +136,14 @@ test("the registry holds every step a migration file exports, once each, under t
   const due = dueMigrations("0.0.1", "999.0.0");
   const exported: Migration[] = [];
   for (const file of readdirSync(dir).filter((f) => /^\d+\.\d+\.\d+\.ts$/.test(f))) {
-    const mod = await import(new URL(file, dir).href) as Record<string, unknown>;
+    const mod = (await import(new URL(file, dir).href)) as Record<string, unknown>;
     for (const [name, step] of Object.entries(mod)) {
       if (!isStep(step)) continue;
       // Per export, so a red run names the step that is missing, doubled, or misfiled.
-      expect({ version: step.version, registered: due.filter((m) => m === step).length }, name)
-        .toEqual({ version: file.slice(0, -3), registered: 1 });
+      expect(
+        { version: step.version, registered: due.filter((m) => m === step).length },
+        name,
+      ).toEqual({ version: file.slice(0, -3), registered: 1 });
       exported.push(step);
     }
   }
@@ -154,81 +156,77 @@ test("the registry holds every step a migration file exports, once each, under t
   ]);
 });
 
-test(
-  "the shipped sequence rewrites an owned Desktop entry's MCP argv (4.0.9, a layout step) before the 4.0.2 helper move reconciles the library, so the entry survives an update that leaves both releases behind",
-  async () => {
-    // In the other order the helper move's wiring pass meets the old argv through the current
-    // reader, which knows no profile for it: the entry is swept as an orphan and the default gets
-    // a twin under a fresh id.
-    const homes = isolateAgentHomes("copilot-mig-sequence-desktop-", { mkdirs: true });
-    dir = homes.dir;
-    const desktop = join(dir, "desktop");
-    const library = join(desktop, "configLibrary");
-    mkdirSync(library, { recursive: true });
-    process.env[CLAUDE_DESKTOP_DIR_ENV] = desktop;
-    const metaPath = join(library, META_FILENAME);
-    const entryPath = join(library, "e0.json");
-    const looseHelper = join(homes.proxyHome, "claude-desktop-proxy-token.sh");
-    const installRoot = join(dir, "install");
-    const autoupdateHome = autoupdateDir(installRoot);
-    mkdirSync(autoupdateHome, { recursive: true });
-    try {
-      writeStore(join(homes.proxyHome, "state.json"), {
-        global: { "daemon.port": 4199 },
-        profiles: {
-          default: { githubToken: "ghp_default", authProvider: "gh-token", mode: "proxy" },
-        },
-        ownership: { claudeDesktopPaths: [entryPath] },
-      });
-      // The loose helper is what makes the 4.0.2 step run its wiring pass at all.
-      writeFileSync(looseHelper, "#!/bin/sh\n");
-      writeFileSync(join(autoupdateHome, "state.json"), "{}\n");
-      writeFileSync(
-        metaPath,
-        JSON.stringify({
-          appliedId: "e0",
-          entries: [{ id: "e0", name: "copilot-env", pinned: false }],
-        }),
-      );
-      writeFileSync(
-        entryPath,
-        JSON.stringify({
-          inferenceGatewayBaseUrl: "http://127.0.0.1:4199",
-          inferenceCredentialHelper: looseHelper,
-          managedMcpServers: [
-            { name: "copilot-env", args: agentLauncherCommand(["mcp", "--serve"]).args },
-          ],
-        }),
-      );
-      const narrated = (await captureChannels(() =>
-        runMigrations("4.0.2", "5.0.1", undefined, installRoot)
-      )).all;
-      expect(narrated).not.toContain("did not complete");
-      expect(readStore(metaPath).entries).toEqual([{
+test("the shipped sequence rewrites an owned Desktop entry's MCP argv (4.0.9, a layout step) before the 4.0.2 helper move reconciles the library, so the entry survives an update that leaves both releases behind", async () => {
+  // In the other order the helper move's wiring pass meets the old argv through the current
+  // reader, which knows no profile for it: the entry is swept as an orphan and the default gets
+  // a twin under a fresh id.
+  const homes = isolateAgentHomes("copilot-mig-sequence-desktop-", { mkdirs: true });
+  dir = homes.dir;
+  const desktop = join(dir, "desktop");
+  const library = join(desktop, "configLibrary");
+  mkdirSync(library, { recursive: true });
+  process.env[CLAUDE_DESKTOP_DIR_ENV] = desktop;
+  const metaPath = join(library, META_FILENAME);
+  const entryPath = join(library, "e0.json");
+  const looseHelper = join(homes.proxyHome, "claude-desktop-proxy-token.sh");
+  const installRoot = join(dir, "install");
+  const autoupdateHome = autoupdateDir(installRoot);
+  mkdirSync(autoupdateHome, { recursive: true });
+  try {
+    writeStore(join(homes.proxyHome, "state.json"), {
+      global: { "daemon.port": 4199 },
+      profiles: {
+        default: { githubToken: "ghp_default", authProvider: "gh-token", mode: "proxy" },
+      },
+      ownership: { claudeDesktopPaths: [entryPath] },
+    });
+    // The loose helper is what makes the 4.0.2 step run its wiring pass at all.
+    writeFileSync(looseHelper, "#!/bin/sh\n");
+    writeFileSync(join(autoupdateHome, "state.json"), "{}\n");
+    writeFileSync(
+      metaPath,
+      JSON.stringify({
+        appliedId: "e0",
+        entries: [{ id: "e0", name: "copilot-env", pinned: false }],
+      }),
+    );
+    writeFileSync(
+      entryPath,
+      JSON.stringify({
+        inferenceGatewayBaseUrl: "http://127.0.0.1:4199",
+        inferenceCredentialHelper: looseHelper,
+        managedMcpServers: [
+          { name: "copilot-env", args: agentLauncherCommand(["mcp", "--serve"]).args },
+        ],
+      }),
+    );
+    const narrated = (
+      await captureChannels(() => runMigrations("4.0.2", "5.0.1", undefined, installRoot))
+    ).all;
+    expect(narrated).not.toContain("did not complete");
+    expect(readStore(metaPath).entries).toEqual([
+      {
         id: "e0",
         name: "copilot-env",
         pinned: false,
-      }]);
-      const entry = readStore(entryPath) as {
-        inferenceCredentialHelper: string;
-        managedMcpServers: { name: string; args: string[] }[];
-      };
-      expect(entry.managedMcpServers.find((r) => r.name === "copilot-env")?.args).toEqual(
-        agentLauncherCommand(mcpServeArgs(null)).args,
-      );
-      // The helper move finished too: the entry was rewired under helpers/ and the loose copy went.
-      expect(entry.inferenceCredentialHelper).toBe(
-        desktopHelperPath(homes.proxyHome, "proxy", null),
-      );
-      expect(existsSync(looseHelper)).toBe(false);
-      // The one step that writes machine state wrote it under the injected root.
-      expect(readdirSync(autoupdateHome)).toEqual([AUTOUPDATE_FILENAME]);
-    } finally {
-      delete process.env[CLAUDE_DESKTOP_DIR_ENV];
-    }
-  },
-  120_000,
-);
+      },
+    ]);
+    const entry = readStore(entryPath) as {
+      inferenceCredentialHelper: string;
+      managedMcpServers: { name: string; args: string[] }[];
+    };
+    expect(entry.managedMcpServers.find((r) => r.name === "copilot-env")?.args).toEqual(
+      agentLauncherCommand(mcpServeArgs(null)).args,
+    );
+    // The helper move finished too: the entry was rewired under helpers/ and the loose copy went.
+    expect(entry.inferenceCredentialHelper).toBe(desktopHelperPath(homes.proxyHome, "proxy", null));
+    expect(existsSync(looseHelper)).toBe(false);
+    // The one step that writes machine state wrote it under the injected root.
+    expect(readdirSync(autoupdateHome)).toEqual([AUTOUPDATE_FILENAME]);
+  } finally {
+    delete process.env[CLAUDE_DESKTOP_DIR_ENV];
+  }
+}, 120_000);
 
 test("4.0.2 gh pin: sole-account machines pin every pin-less gh-cli slot; anything else is left alone", () => {
   dir = isolateProxyHome("copilot-migrate-pin-");
@@ -241,10 +239,13 @@ test("4.0.2 gh pin: sole-account machines pin every pin-less gh-cli slot; anythi
   state.commitProfile(WORK, { credential: { kind: "gh-cli", ghUser: null }, mode: "direct" });
   state.commitProfile(OTHER, { credential: { kind: "gh-cli", ghUser: "kept" }, mode: "proxy" });
   const resolvable: string[] = [];
-  pinSoleGhAccount(() => solo, (login) => {
-    resolvable.push(login);
-    return true;
-  });
+  pinSoleGhAccount(
+    () => solo,
+    (login) => {
+      resolvable.push(login);
+      return true;
+    },
+  );
   expect(resolvable).toEqual(["octocat"]);
   expect(state.readCredential(null)).toEqual({ kind: "gh-cli", ghUser: "octocat" });
   expect(state.readCredential(WORK)).toEqual({ kind: "gh-cli", ghUser: "octocat" });
@@ -256,7 +257,10 @@ test("4.0.2 gh pin: sole-account machines pin every pin-less gh-cli slot; anythi
   // A sole login gh cannot serve pinned (an env-only GH_TOKEN: `gh auth token --user` finds no
   // saved credential) is never pinned: the pin would break a working auto slot.
   state.setCredential(null, { kind: "gh-cli", ghUser: null });
-  pinSoleGhAccount(() => solo, () => false);
+  pinSoleGhAccount(
+    () => solo,
+    () => false,
+  );
   expect(state.readCredential(null)).toEqual({ kind: "gh-cli", ghUser: null });
 
   // Multiple accounts, or an unproven look: only the user can choose whose Copilot credit to spend.
@@ -271,20 +275,26 @@ test("4.0.2 gh pin: sole-account machines pin every pin-less gh-cli slot; anythi
     ],
   }));
   expect(state.readCredential(null)).toEqual({ kind: "gh-cli", ghUser: null });
-  pinSoleGhAccount(() => ({
-    kind: "listed",
-    accounts: [
-      { host: "github.com", login: "healthy", active: false, source: "keyring" },
-      { host: "github.com", login: "hurt", active: true, source: "keyring", broken: true },
-    ],
-  }), () => true);
+  pinSoleGhAccount(
+    () => ({
+      kind: "listed",
+      accounts: [
+        { host: "github.com", login: "healthy", active: false, source: "keyring" },
+        { host: "github.com", login: "hurt", active: true, source: "keyring", broken: true },
+      ],
+    }),
+    () => true,
+  );
   expect(state.readCredential(null)).toEqual({ kind: "gh-cli", ghUser: null });
-  pinSoleGhAccount(() => ({
-    kind: "listed",
-    accounts: [
-      { host: "github.com", login: "hurt", active: true, source: "keyring", broken: true },
-    ],
-  }), () => true);
+  pinSoleGhAccount(
+    () => ({
+      kind: "listed",
+      accounts: [
+        { host: "github.com", login: "hurt", active: true, source: "keyring", broken: true },
+      ],
+    }),
+    () => true,
+  );
   expect(state.readCredential(null)).toEqual({ kind: "gh-cli", ghUser: null });
   pinSoleGhAccount(() => ({ kind: "unproven" }));
   expect(state.readCredential(null)).toEqual({ kind: "gh-cli", ghUser: null });
@@ -322,18 +332,17 @@ test("4.0.2 root layout: stores rename, lock debris clears, loose helpers regene
   expect(readFileSync(join(dir, "preferences.json"), "utf8")).toBe(
     `${JSON.stringify({ port: 4199 })}\n`,
   );
-  for (
-    const gone of [
-      ".copilot-env-state.json",
-      ".copilot-env-config.json",
-      ".copilot-env-state.json.lock.oslock",
-      ".copilot-env-ownership.json.ops.lock.oslock",
-      ".profile-ports.lock.oslock",
-      "github_token.login.lock.oslock",
-      "claude-desktop-token.sh",
-      "claude-desktop-proxy-token-work.cmd",
-    ]
-  ) expect(existsSync(join(dir, gone))).toBe(false);
+  for (const gone of [
+    ".copilot-env-state.json",
+    ".copilot-env-config.json",
+    ".copilot-env-state.json.lock.oslock",
+    ".copilot-env-ownership.json.ops.lock.oslock",
+    ".profile-ports.lock.oslock",
+    "github_token.login.lock.oslock",
+    "claude-desktop-token.sh",
+    "claude-desktop-proxy-token-work.cmd",
+  ])
+    expect(existsSync(join(dir, gone))).toBe(false);
   expect(existsSync(join(dir, "claude-desktop-token.sh.bak"))).toBe(true);
   expect(existsSync(join(dir, "claude-desktop-token-default.sh"))).toBe(true);
   expect(existsSync(join(dir, "claude-desktop-token-work.bak.sh"))).toBe(true);
@@ -351,7 +360,12 @@ test("4.0.2 root layout: stores rename, lock debris clears, loose helpers regene
   // failed entry save) is kept so the entry keeps working; a later run finishes the move.
   const helper = join(dir, "claude-desktop-token.sh");
   writeFileSync(helper, "#!/bin/sh\n");
-  await moveDesktopHelpers(dir, () => Promise.resolve(), () => true, () => new Set([helper]));
+  await moveDesktopHelpers(
+    dir,
+    () => Promise.resolve(),
+    () => true,
+    () => new Set([helper]),
+  );
   expect(existsSync(helper)).toBe(true);
   await moveDesktopHelpers(dir, pass, () => true, none);
   expect(existsSync(helper)).toBe(false);
@@ -379,18 +393,24 @@ test("4.0.2 root layout: stores rename, lock debris clears, loose helpers regene
   new OwnershipLedger().record("claudeDesktop", entryPath);
   writeFileSync(helper, "#!/bin/sh\n");
   writeFileSync(entryPath, `${JSON.stringify({ inferenceCredentialHelper: helper })}\n`);
-  await moveDesktopHelpers(dir, () => Promise.resolve(), () => false);
+  await moveDesktopHelpers(
+    dir,
+    () => Promise.resolve(),
+    () => false,
+  );
   expect(existsSync(helper)).toBe(true);
   // Once the entry points under helpers/, the loose helper is unreferenced.
   writeFileSync(
     entryPath,
-    `${
-      JSON.stringify({
-        inferenceCredentialHelper: join(dir, "helpers", "claude-desktop-token.sh"),
-      })
-    }\n`,
+    `${JSON.stringify({
+      inferenceCredentialHelper: join(dir, "helpers", "claude-desktop-token.sh"),
+    })}\n`,
   );
-  await moveDesktopHelpers(dir, () => Promise.resolve(), () => false);
+  await moveDesktopHelpers(
+    dir,
+    () => Promise.resolve(),
+    () => false,
+  );
   expect(existsSync(helper)).toBe(false);
 
   // A NEW-name store never gets clobbered by a lingering old one (mixed-version
@@ -406,9 +426,11 @@ test("4.0.2 root layout: stores rename, lock debris clears, loose helpers regene
 // --- the 4.0.0 wiring rewrites (pure cores; no real home touched) -----------------
 
 test("fenceUnfencedBlocks fences the 3.5.6 rc blocks and leaves everything else alone", () => {
-  const main = `${MARKER}\nAGENTS_BASHRC="/x/shell/agents.bashrc"\n` +
+  const main =
+    `${MARKER}\nAGENTS_BASHRC="/x/shell/agents.bashrc"\n` +
     `[ -f "$AGENTS_BASHRC" ] && source "$AGENTS_BASHRC"`;
-  const launchers = `${LAUNCHERS_MARKER}\nAGENTS_LAUNCHERS="/x/l.bashrc"\n` +
+  const launchers =
+    `${LAUNCHERS_MARKER}\nAGENTS_LAUNCHERS="/x/l.bashrc"\n` +
     `[ -f "$AGENTS_LAUNCHERS" ] && source "$AGENTS_LAUNCHERS"`;
   const rc = `export KEEP=1\n\n${main}\n\n${launchers}\nexport AFTER=1\n`;
   expect(fenceUnfencedBlocks(rc)).toBe(
@@ -420,7 +442,8 @@ test("fenceUnfencedBlocks fences the 3.5.6 rc blocks and leaves everything else 
   const lookalike = `${MARKER}\nAGENTS_BASHRC="/x/agents.bashrc"\nAGENTS_BASHRC=/user-owned\n`;
   expect(fenceUnfencedBlocks(lookalike)).toBe(lookalike);
   // The PowerShell pair, CRLF: the fence adopts the file's line ending.
-  const ps = `${MARKER}\r\n$AgentsPs1 = "C:\\x\\agents.ps1"\r\n` +
+  const ps =
+    `${MARKER}\r\n$AgentsPs1 = "C:\\x\\agents.ps1"\r\n` +
     `if (Test-Path $AgentsPs1) { . $AgentsPs1 }\r\nWrite-Host after\r\n`;
   expect(fenceUnfencedBlocks(ps)).toBe(
     `${MARKER}\r\n$AgentsPs1 = "C:\\x\\agents.ps1"\r\n` +
@@ -429,9 +452,11 @@ test("fenceUnfencedBlocks fences the 3.5.6 rc blocks and leaves everything else 
 });
 
 test("4.0.9 launchers block: stripped whole with its blanks, bounded like the shell writer's blocks", () => {
-  const main = `${MARKER}\nAGENTS_BASHRC="/x/shell/agents.bashrc"\n` +
+  const main =
+    `${MARKER}\nAGENTS_BASHRC="/x/shell/agents.bashrc"\n` +
     `[ -f "$AGENTS_BASHRC" ] && source "$AGENTS_BASHRC"\n${MARKER_END}`;
-  const block = `${LAUNCHERS_MARKER}\nAGENTS_LAUNCHERS="/x/l.bashrc"\n` +
+  const block =
+    `${LAUNCHERS_MARKER}\nAGENTS_LAUNCHERS="/x/l.bashrc"\n` +
     `[ -f "$AGENTS_LAUNCHERS" ] && source "$AGENTS_LAUNCHERS"\n${LAUNCHERS_MARKER_END}`;
   // The shipped adjacency (main block, launchers block, the user's line): the block goes with the
   // blank before it and the ONE blank after its end fence; the main block and the user line stay.
@@ -460,10 +485,10 @@ test("4.0.9 launchers block: stripped whole with its blanks, bounded like the sh
 
 test("rewriteLegacyCodexTables moves the 3.5.6 tables to the managed auth block", () => {
   // The 3.5.6 auth block on each platform (the src/scripts forwarder at some root).
-  const scriptAuth = { "command": "/bin/sh", "args": ["/r/src/scripts/proxy-token.sh", "--yes"] };
+  const scriptAuth = { command: "/bin/sh", args: ["/r/src/scripts/proxy-token.sh", "--yes"] };
   const scriptAuthWin = {
-    "command": "powershell",
-    "args": [
+    command: "powershell",
+    args: [
       "-NoProfile",
       "-ExecutionPolicy",
       "Bypass",
@@ -474,44 +499,46 @@ test("rewriteLegacyCodexTables moves the 3.5.6 tables to the managed auth block"
       "win",
     ],
   };
-  const doc = parse(stringify({
-    "model_provider": "copilot-env",
-    "model_providers": {
-      // The 3.5.6 default table: the script forwarder as auth.command.
-      "copilot-env": {
-        "name": "copilot-env",
-        "base_url": "http://localhost:4141/v1",
-        "user_extra": "kept",
-        "auth": scriptAuth,
+  const doc = parse(
+    stringify({
+      model_provider: "copilot-env",
+      model_providers: {
+        // The 3.5.6 default table: the script forwarder as auth.command.
+        "copilot-env": {
+          name: "copilot-env",
+          base_url: "http://localhost:4141/v1",
+          user_extra: "kept",
+          auth: scriptAuth,
+        },
+        "copilot-env-win": { base_url: "http://localhost:4250/v1", auth: scriptAuthWin },
+        // Not the 3.5.6 argv: a resolver addressed at ANOTHER profile, or carrying an
+        // extra argument. Left alone.
+        "copilot-env-other": {
+          base_url: "http://localhost:4260/v1",
+          auth: { command: "/bin/sh", args: [...scriptAuth.args, "--profile", "work"] },
+        },
+        "copilot-env-extra": {
+          base_url: "http://localhost:4270/v1",
+          auth: { command: "/bin/sh", args: [...scriptAuth.args, "--verbose"] },
+        },
+        // A managed table whose auth merely mentions a same-named script elsewhere is
+        // not the 3.5.6 shape: left alone (the only change is its stray env_key).
+        "copilot-env-mine": {
+          base_url: "http://localhost:4300/v1",
+          auth: { command: "/usr/local/bin/wrap", args: ["/opt/x/proxy-token.sh", "--yes"] },
+        },
+        // A named profile still on the env_key wiring older still.
+        "copilot-env-work": { base_url: "http://localhost:4200/v1", env_key: "OPENAI_API_KEY" },
+        // A direct-era table: the baked env_key goes, nothing else is invented.
+        "copilot-env-old": {
+          base_url: "https://api.githubcopilot.com",
+          env_key: "COPILOT_ENV_GH_TOKEN",
+        },
+        // Foreign tables are never touched.
+        other: { base_url: "http://other/v1", env_key: "OTHER_KEY" },
       },
-      "copilot-env-win": { "base_url": "http://localhost:4250/v1", "auth": scriptAuthWin },
-      // Not the 3.5.6 argv: a resolver addressed at ANOTHER profile, or carrying an
-      // extra argument. Left alone.
-      "copilot-env-other": {
-        "base_url": "http://localhost:4260/v1",
-        "auth": { "command": "/bin/sh", "args": [...scriptAuth.args, "--profile", "work"] },
-      },
-      "copilot-env-extra": {
-        "base_url": "http://localhost:4270/v1",
-        "auth": { "command": "/bin/sh", "args": [...scriptAuth.args, "--verbose"] },
-      },
-      // A managed table whose auth merely mentions a same-named script elsewhere is
-      // not the 3.5.6 shape: left alone (the only change is its stray env_key).
-      "copilot-env-mine": {
-        "base_url": "http://localhost:4300/v1",
-        "auth": { "command": "/usr/local/bin/wrap", "args": ["/opt/x/proxy-token.sh", "--yes"] },
-      },
-      // A named profile still on the env_key wiring older still.
-      "copilot-env-work": { "base_url": "http://localhost:4200/v1", "env_key": "OPENAI_API_KEY" },
-      // A direct-era table: the baked env_key goes, nothing else is invented.
-      "copilot-env-old": {
-        "base_url": "https://api.githubcopilot.com",
-        "env_key": "COPILOT_ENV_GH_TOKEN",
-      },
-      // Foreign tables are never touched.
-      "other": { "base_url": "http://other/v1", "env_key": "OTHER_KEY" },
-    },
-  }));
+    }),
+  );
   expect(rewriteLegacyCodexTables(doc)).toBe(true);
   const providers = doc.model_providers as Record<string, Record<string, unknown>>;
   const main = providers["copilot-env"]!;
@@ -525,14 +552,14 @@ test("rewriteLegacyCodexTables moves the 3.5.6 tables to the managed auth block"
   expect((providers["copilot-env-win"]!.auth as Record<string, unknown>).args).toEqual(
     proxyTokenCommand(parseProfileName("win")).args,
   );
-  expect(providers["copilot-env-old"]).toEqual({ "base_url": "https://api.githubcopilot.com" });
+  expect(providers["copilot-env-old"]).toEqual({ base_url: "https://api.githubcopilot.com" });
   expect((providers["copilot-env-mine"]!.auth as Record<string, unknown>).command).toBe(
     "/usr/local/bin/wrap",
   );
   for (const id of ["copilot-env-other", "copilot-env-extra"]) {
     expect((providers[id]!.auth as Record<string, unknown>).command, id).toBe("/bin/sh");
   }
-  expect(providers.other).toEqual({ "base_url": "http://other/v1", "env_key": "OTHER_KEY" });
+  expect(providers.other).toEqual({ base_url: "http://other/v1", env_key: "OTHER_KEY" });
   // Converged: a second pass changes nothing.
   expect(rewriteLegacyCodexTables(doc)).toBe(false);
 });
@@ -617,36 +644,35 @@ test("rewriteLegacyClaudeHelper inlines a released helper body and removes the f
   // mains wrote.
   const nearMisses = win
     ? [
-      '@echo off\r\npowershell -File "C:\\r\\bin\\agent.ps1" auth --get\r\n',
-      '@echo off\r\npowershell -NoProfile -ExecutionPolicy Bypass -File "C:\\r\\bin\\agent.ps1" auth --get --profile work\r\n',
-      "@echo off\r\ngh auth token\r\n",
-      "#!/bin/sh\nexec '/r/bin/agent' 'auth' '--get'\n",
-    ]
+        '@echo off\r\npowershell -File "C:\\r\\bin\\agent.ps1" auth --get\r\n',
+        '@echo off\r\npowershell -NoProfile -ExecutionPolicy Bypass -File "C:\\r\\bin\\agent.ps1" auth --get --profile work\r\n',
+        "@echo off\r\ngh auth token\r\n",
+        "#!/bin/sh\nexec '/r/bin/agent' 'auth' '--get'\n",
+      ]
     : [
-      "#!/bin/sh\n# runs agent auth --get\nexec my-resolver\n",
-      "#!/bin/sh\nexec '/r/bin/agent' 'auth' '--get' ; evil\n",
-      "#!/bin/sh\nexec '/r/bin/agent' 'auth' '--get' '--profile' 'work'\n",
-      "#!/bin/sh\nexec gh auth token\n",
-      '@echo off\r\npowershell -NoProfile -ExecutionPolicy Bypass -File "C:\\r\\bin\\agent.ps1" auth --get\r\n',
-    ];
+        "#!/bin/sh\n# runs agent auth --get\nexec my-resolver\n",
+        "#!/bin/sh\nexec '/r/bin/agent' 'auth' '--get' ; evil\n",
+        "#!/bin/sh\nexec '/r/bin/agent' 'auth' '--get' '--profile' 'work'\n",
+        "#!/bin/sh\nexec gh auth token\n",
+        '@echo off\r\npowershell -NoProfile -ExecutionPolicy Bypass -File "C:\\r\\bin\\agent.ps1" auth --get\r\n',
+      ];
   const proxyNearMisses = win
     ? [
-      '@echo off\r\npowershell -NoProfile -ExecutionPolicy Bypass -File "C:\\r\\bin\\agent.ps1" proxy-token --yes\r\n',
-    ]
+        '@echo off\r\npowershell -NoProfile -ExecutionPolicy Bypass -File "C:\\r\\bin\\agent.ps1" proxy-token --yes\r\n',
+      ]
     : ["#!/bin/sh\nexec '/r/bin/agent' 'proxy-token' '--yes'\n"];
   const proxy = join(dir, `copilot-proxy-token.${ext}`);
-  for (
-    const [file, body] of [
-      ...nearMisses.map((b) => [direct, b] as const),
-      ...proxyNearMisses.map((b) => [proxy, b] as const),
-    ]
-  ) {
+  for (const [file, body] of [
+    ...nearMisses.map((b) => [direct, b] as const),
+    ...proxyNearMisses.map((b) => [proxy, b] as const),
+  ]) {
     writeFileSync(file, body);
     writeFileSync(join(dir, "settings.json"), JSON.stringify({ apiKeyHelper: file }));
     expect(rewriteLegacyClaudeHelper(dir, null), body).toBe(false);
     expect(existsSync(file), body).toBe(true);
-    expect(JSON.parse(readFileSync(join(dir, "settings.json"), "utf8")).apiKeyHelper, body)
-      .toBe(file);
+    expect(JSON.parse(readFileSync(join(dir, "settings.json"), "utf8")).apiKeyHelper, body).toBe(
+      file,
+    );
   }
 });
 
@@ -870,39 +896,39 @@ test("4.0.9 codex profiles: an owned [profiles.<name>] table becomes <name>.conf
   writeFileSync(
     configPath,
     stringify({
-      "model_provider": "copilot-env",
-      "profile": "theirs",
-      "model_providers": {
-        "copilot-env-work": { "base_url": "http://localhost:4545/v1" },
-        "copilot-env-fast": { "base_url": "https://api.githubcopilot.com" },
+      model_provider: "copilot-env",
+      profile: "theirs",
+      model_providers: {
+        "copilot-env-work": { base_url: "http://localhost:4545/v1" },
+        "copilot-env-fast": { base_url: "https://api.githubcopilot.com" },
       },
-      "profiles": {
+      profiles: {
         // Ours, with a model pin the user added to the table: the pin rides along.
-        "work": { "model_provider": "copilot-env-work", "model": "gpt-5.4" },
+        work: { model_provider: "copilot-env-work", model: "gpt-5.4" },
         // Ours, and the user already made a work-alike file by hand: its leaves win, the table's
         // other nested keys survive (Codex layers the two the same way), the selector stays ours.
-        "fast": {
-          "model_provider": "copilot-env-fast",
-          "model": "from-table",
-          "features": { "multi_agent": true, "shell_tool": true },
+        fast: {
+          model_provider: "copilot-env-fast",
+          model: "from-table",
+          features: { multi_agent: true, shell_tool: true },
           // A date-time scalar on both sides: a leaf, never recursed into as a table.
-          "stamp": new TomlDate("2025-01-01T00:00:00Z"),
+          stamp: new TomlDate("2025-01-01T00:00:00Z"),
         },
         // Not ours (a foreign provider, a misaddressed one, a name copilot-env never mints):
         // left, reported.
-        "theirs": { "model_provider": "openai" },
-        "wrong": { "model_provider": "copilot-env-work" },
-        "personal_dev": { "model_provider": "copilot-env-personal_dev" },
+        theirs: { model_provider: "openai" },
+        wrong: { model_provider: "copilot-env-work" },
+        personal_dev: { model_provider: "copilot-env-personal_dev" },
       },
     }),
   );
   writeFileSync(
     join(dir, "fast.config.toml"),
     stringify({
-      "model": "from-file",
-      "model_provider": "x",
-      "features": { "shell_tool": false },
-      "stamp": new TomlDate("2026-01-01T00:00:00Z"),
+      model: "from-file",
+      model_provider: "x",
+      features: { shell_tool: false },
+      stamp: new TomlDate("2026-01-01T00:00:00Z"),
     }),
   );
 
@@ -910,24 +936,24 @@ test("4.0.9 codex profiles: an owned [profiles.<name>] table becomes <name>.conf
 
   const config = parse(readFileSync(configPath, "utf8")) as Record<string, unknown>;
   expect(config.profiles).toEqual({
-    "theirs": { "model_provider": "openai" },
-    "wrong": { "model_provider": "copilot-env-work" },
-    "personal_dev": { "model_provider": "copilot-env-personal_dev" },
+    theirs: { model_provider: "openai" },
+    wrong: { model_provider: "copilot-env-work" },
+    personal_dev: { model_provider: "copilot-env-personal_dev" },
   });
   expect(config.profile).toBe("theirs"); // never copilot-env's to delete
   expect(config.model_providers).toEqual({
-    "copilot-env-work": { "base_url": "http://localhost:4545/v1" },
-    "copilot-env-fast": { "base_url": "https://api.githubcopilot.com" },
+    "copilot-env-work": { base_url: "http://localhost:4545/v1" },
+    "copilot-env-fast": { base_url: "https://api.githubcopilot.com" },
   });
   expect(parse(readFileSync(join(dir, "work.config.toml"), "utf8"))).toEqual({
-    "model_provider": "copilot-env-work",
-    "model": "gpt-5.4",
+    model_provider: "copilot-env-work",
+    model: "gpt-5.4",
   });
   expect(parse(readFileSync(join(dir, "fast.config.toml"), "utf8"))).toEqual({
-    "model_provider": "copilot-env-fast",
-    "model": "from-file",
-    "features": { "multi_agent": true, "shell_tool": false },
-    "stamp": new TomlDate("2026-01-01T00:00:00Z"),
+    model_provider: "copilot-env-fast",
+    model: "from-file",
+    features: { multi_agent: true, shell_tool: false },
+    stamp: new TomlDate("2026-01-01T00:00:00Z"),
   });
   // Each thing left behind is named once, with the Codex error it causes.
   expect(warnings.filter((w) => w.includes("[profiles.theirs]"))).toHaveLength(1);
@@ -950,9 +976,9 @@ test("4.0.9 codex profiles: an unparseable <name>.config.toml keeps its table an
   writeFileSync(
     configPath,
     stringify({
-      "profiles": {
-        "work": { "model_provider": "copilot-env-work" },
-        "fast": { "model_provider": "copilot-env-fast" },
+      profiles: {
+        work: { model_provider: "copilot-env-work" },
+        fast: { model_provider: "copilot-env-fast" },
       },
     }),
   );
@@ -970,10 +996,10 @@ test("4.0.9 codex profiles: an unparseable <name>.config.toml keeps its table an
   expect(warnings.filter((w) => w.includes("left [profiles.work]"))).toHaveLength(1);
   expect(readFileSync(join(dir, "work.config.toml"), "utf8")).toBe('model_provider = "unclosed');
   expect(parse(readFileSync(configPath, "utf8"))).toEqual({
-    "profiles": { "work": { "model_provider": "copilot-env-work" } },
+    profiles: { work: { model_provider: "copilot-env-work" } },
   });
   expect(parse(readFileSync(join(dir, "fast.config.toml"), "utf8"))).toEqual({
-    "model_provider": "copilot-env-fast",
+    model_provider: "copilot-env-fast",
   });
 });
 
@@ -1057,8 +1083,10 @@ test("the shipped sequence drops the identity cache before the verb-tree re-rend
   state.setProfileDirectPair(WORK, pair);
   expect(state.readProfileDirectPair(WORK)).toEqual(pair);
   expect(warningsDuring(dropSlotIdentityCache, "info")).toHaveLength(1);
-  expect(state.readProfileDirectPair(WORK), "a pair stored before the cleanup is lost to it")
-    .toEqual({});
+  expect(
+    state.readProfileDirectPair(WORK),
+    "a pair stored before the cleanup is lost to it",
+  ).toEqual({});
   const due = dueMigrations("0.0.1", "999.0.0");
   expect(
     due.indexOf(v409IdentityCache),
@@ -1159,21 +1187,20 @@ test("4.0.9 state fold: the three stores become one state.json (global, profiles
     ownership: { claudeDesktopPaths: ["/lib/uuid.json"] },
   };
   expect(readStore(stateFile)).toEqual(merged);
-  for (
-    const gone of [
-      "credentials.json",
-      "preferences.json",
-      "ownership.json",
-      ...locks.map((lock) => join("locks", lock)),
-      join("opencode", "github_token"),
-      "opencode",
-      "codex-model-catalog.json.bak",
-      "github_token",
-      join("locks", "github_token.login.lock"),
-      join("locks", "github_token.login.lock.oslock"),
-      join(".autoupdate", "state.json"),
-    ]
-  ) expect(existsSync(join(home, gone))).toBe(false);
+  for (const gone of [
+    "credentials.json",
+    "preferences.json",
+    "ownership.json",
+    ...locks.map((lock) => join("locks", lock)),
+    join("opencode", "github_token"),
+    "opencode",
+    "codex-model-catalog.json.bak",
+    "github_token",
+    join("locks", "github_token.login.lock"),
+    join("locks", "github_token.login.lock.oslock"),
+    join(".autoupdate", "state.json"),
+  ])
+    expect(existsSync(join(home, gone))).toBe(false);
   for (const kept of ["notes.txt", join(".autoupdate", "autoupdate.json")]) {
     expect(existsSync(join(home, kept))).toBe(true);
   }
@@ -1243,22 +1270,26 @@ test("4.0.9 root daemon home: a default daemon at the root is stopped and its fi
   // A daemon that will not stop: nothing moves, the step fails for the runner to name the re-run.
   await expect(
     moveRootDaemonHome(root, () => Promise.reject(new Error("would not stop")), "host-a"),
-  )
-    .rejects.toThrow("would not stop");
+  ).rejects.toThrow("would not stop");
   untouched();
   // Another machine's daemon over a shared home: its pid cannot be stopped from here, so the move
   // refuses and names that host's state file; the local stop is never attempted.
-  await expect(moveRootDaemonHome(root, () => Promise.reject(new Error("must not stop")), "host-b"))
-    .rejects.toThrow(join(root, runState));
+  await expect(
+    moveRootDaemonHome(root, () => Promise.reject(new Error("must not stop")), "host-b"),
+  ).rejects.toThrow(join(root, runState));
   untouched();
 
   let stops = 0;
   const captured = captureConsola("info");
   try {
-    await moveRootDaemonHome(root, () => {
-      stops++;
-      return Promise.resolve();
-    }, "host-a");
+    await moveRootDaemonHome(
+      root,
+      () => {
+        stops++;
+        return Promise.resolve();
+      },
+      "host-a",
+    );
   } finally {
     captured.restore();
   }
@@ -1291,8 +1322,9 @@ test("4.0.9 root daemon home: a .run/<host>/.state.json that cannot be parsed is
   mkdirSync(join(dir, ".run", "host-a"), { recursive: true });
   writeFileSync(file, '{"pid":');
   writeFileSync(join(dir, "config.json"), "{}\n");
-  await expect(moveRootDaemonHome(dir, () => Promise.reject(new Error("must not stop")), "host-b"))
-    .rejects.toThrow(file);
+  await expect(
+    moveRootDaemonHome(dir, () => Promise.reject(new Error("must not stop")), "host-b"),
+  ).rejects.toThrow(file);
   expect(existsSync(join(dir, "config.json"))).toBe(true);
   expect(existsSync(join(dir, "profiles", "default"))).toBe(false);
 });
@@ -1346,7 +1378,7 @@ test("4.0.9 profile verb tree: a malformed Desktop index refuses a rename before
     writeFileSync(join(library, META_FILENAME), "{ not json");
     const before = fingerprintTree(dir);
     const run = await captureChannels(() =>
-      expect(moveProfilesToVerbTree()).rejects.toThrow("not moved: profile 'sync'")
+      expect(moveProfilesToVerbTree()).rejects.toThrow("not moved: profile 'sync'"),
     );
     expect(run.all).toContain("could not move profile 'sync'");
     expect(run.all).toContain("has an unexpected shape");
@@ -1373,7 +1405,7 @@ test("4.0.9 profile verb tree: the default's MCP registration moves to `agent pr
     JSON.stringify({
       mcpServers: {
         "copilot-env": { type: "stdio", command: legacyMcp.command, args: legacyMcp.args },
-        "theirs": { type: "stdio", command: "x", args: [] },
+        theirs: { type: "stdio", command: "x", args: [] },
       },
     }),
   );
@@ -1393,386 +1425,372 @@ test("4.0.9 profile verb tree: the default's MCP registration moves to `agent pr
   expect(fingerprintTree(dir)).toEqual(before);
 });
 
-test(
-  "4.0.9 profile verb tree, dry run: a moved profile home is a directory row the re-render builds under, and a retargeted settings file never prints its token",
-  async () => {
-    const homes = isolateAgentHomes("copilot-mig-verb-dry-", { mkdirs: true });
-    dir = homes.dir;
-    const desktop = join(dir, "desktop");
-    mkdirSync(join(desktop, "configLibrary"), { recursive: true });
-    process.env[CLAUDE_DESKTOP_DIR_ENV] = desktop;
-    const LIST = parseProfileName("list");
-    try {
-      writeStore(join(homes.proxyHome, "state.json"), {
-        global: { "daemon.port": 4199 },
-        profiles: {
-          default: { githubToken: "ghp_default", authProvider: "gh-token", mode: "proxy" },
-          list: { githubToken: "ghp_list", authProvider: "gh-token", mode: "proxy" },
-          // No credential: the Direct re-render refuses, so the retarget's write is the settings
-          // file's only landing (the case whose line diff would print the token).
-          work: { authProvider: "gh-token", mode: "direct" },
+test("4.0.9 profile verb tree, dry run: a moved profile home is a directory row the re-render builds under, and a retargeted settings file never prints its token", async () => {
+  const homes = isolateAgentHomes("copilot-mig-verb-dry-", { mkdirs: true });
+  dir = homes.dir;
+  const desktop = join(dir, "desktop");
+  mkdirSync(join(desktop, "configLibrary"), { recursive: true });
+  process.env[CLAUDE_DESKTOP_DIR_ENV] = desktop;
+  const LIST = parseProfileName("list");
+  try {
+    writeStore(join(homes.proxyHome, "state.json"), {
+      global: { "daemon.port": 4199 },
+      profiles: {
+        default: { githubToken: "ghp_default", authProvider: "gh-token", mode: "proxy" },
+        list: { githubToken: "ghp_list", authProvider: "gh-token", mode: "proxy" },
+        // No credential: the Direct re-render refuses, so the retarget's write is the settings
+        // file's only landing (the case whose line diff would print the token).
+        work: { authProvider: "gh-token", mode: "direct" },
+      },
+    });
+    writeRunState({ port: 4555 }, LIST);
+    writeFileSync(join(homes.proxyHome, "profiles", "list", "config.json"), "{}\n");
+    // The legacy provider table the retarget renames and re-resolves; a static-key bearer sits
+    // in it so the preview's redaction is exercised on the row that carries a credential.
+    const listAuth = proxyTokenCommand(LIST);
+    writeFileSync(
+      join(homes.codexHome, "config.toml"),
+      [
+        "[model_providers.copilot-env-list]",
+        'base_url = "http://127.0.0.1:4555/v1"',
+        "",
+        "[model_providers.copilot-env-list.http_headers]",
+        'Authorization = "Bearer example-secret-token"',
+        "",
+        "[model_providers.copilot-env-list.auth]",
+        `command = ${JSON.stringify(listAuth.command)}`,
+        `args = ${JSON.stringify(listAuth.args)}`,
+        "",
+      ].join("\n"),
+    );
+    writeFileSync(
+      join(homes.codexHome, "list.config.toml"),
+      'model_provider = "copilot-env-list"\n',
+    );
+    // Minified, so the retarget's pretty-print reflows every line: a line diff would print
+    // the token.
+    writeFileSync(
+      join(homes.claudeHome, "settings-work.json"),
+      JSON.stringify({
+        apiKeyHelper: legacyHelperLine("work"),
+        env: { ANTHROPIC_AUTH_TOKEN: "example-secret-token" },
+      }),
+    );
+    writeFileSync(
+      join(homes.claudeHome, "settings-list.json"),
+      JSON.stringify({
+        apiKeyHelper: proxyHelperCommand(LIST),
+        env: {
+          ANTHROPIC_BASE_URL: "http://127.0.0.1:4555",
+          ANTHROPIC_AUTH_TOKEN: "example-secret-token",
         },
-      });
-      writeRunState({ port: 4555 }, LIST);
-      writeFileSync(join(homes.proxyHome, "profiles", "list", "config.json"), "{}\n");
-      // The legacy provider table the retarget renames and re-resolves; a static-key bearer sits
-      // in it so the preview's redaction is exercised on the row that carries a credential.
-      const listAuth = proxyTokenCommand(LIST);
-      writeFileSync(
-        join(homes.codexHome, "config.toml"),
-        [
-          "[model_providers.copilot-env-list]",
-          'base_url = "http://127.0.0.1:4555/v1"',
-          "",
-          "[model_providers.copilot-env-list.http_headers]",
-          'Authorization = "Bearer example-secret-token"',
-          "",
-          "[model_providers.copilot-env-list.auth]",
-          `command = ${JSON.stringify(listAuth.command)}`,
-          `args = ${JSON.stringify(listAuth.args)}`,
-          "",
-        ].join("\n"),
-      );
-      writeFileSync(
-        join(homes.codexHome, "list.config.toml"),
-        'model_provider = "copilot-env-list"\n',
-      );
-      // Minified, so the retarget's pretty-print reflows every line: a line diff would print
-      // the token.
-      writeFileSync(
-        join(homes.claudeHome, "settings-work.json"),
-        JSON.stringify({
-          apiKeyHelper: legacyHelperLine("work"),
-          env: { ANTHROPIC_AUTH_TOKEN: "example-secret-token" },
-        }),
-      );
-      writeFileSync(
-        join(homes.claudeHome, "settings-list.json"),
-        JSON.stringify({
-          apiKeyHelper: proxyHelperCommand(LIST),
-          env: {
-            ANTHROPIC_BASE_URL: "http://127.0.0.1:4555",
-            ANTHROPIC_AUTH_TOKEN: "example-secret-token",
-          },
-        }),
-      );
-      setIntegrationProbeFetch(() =>
-        Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 }))
-      );
-      resetIntegrationIdentityCache();
-      const before = fingerprintTree(dir);
-      let narrated = "";
-      const { changes } = await dryRunChanges(async () => {
-        narrated = (await captureChannels(() => moveProfilesToVerbTree())).all;
-      });
-      expect(fingerprintTree(dir)).toEqual(before);
-      const rendered = renderDryRun(changes);
-      const newHome = join(homes.proxyHome, "profiles", "list-1");
-      expect(rendered).toContain(`create ${newHome}${sep}`);
-      expect(rendered.some((l) => l.startsWith(`create ${join(newHome, ".run")}${sep}`))).toBe(
-        true,
-      );
-      expect(
-        rendered.some((l) =>
-          l.endsWith(join(".run", ".state.json").slice(4)) && l.includes(newHome)
-        ),
-      )
-        .toBe(true);
-      expect(narrated).toContain("re-rendered profile 'list-1'");
-      const text = rendered.join("\n");
-      expect(text).not.toContain("example-secret-token");
-      // The retargeted file is new at its path: its rows read from absent, the bearer redacted.
-      expect(text).toContain("env.ANTHROPIC_AUTH_TOKEN  (absent) -> <redacted>");
-      // config.toml prints attribute by attribute (a whole-file secret flag would print the
-      // rewrite bare): the table moves under the new id, its bearer redacted, and the profile
-      // file's selector follows.
-      const configToml = join(homes.codexHome, "config.toml");
-      expect(rendered).toContain(`rewrite ${configToml}`);
-      expect(text).toContain(
-        '  model_providers.copilot-env-list.base_url  "http://127.0.0.1:4555/v1" -> (absent)',
-      );
-      expect(text).toContain(
-        "  model_providers.copilot-env-list.http_headers.Authorization  <redacted> -> (absent)",
-      );
-      expect(text).toContain(
-        `  model_providers.copilot-env-list-1.auth.args  (absent) -> ${
-          JSON.stringify(proxyTokenCommand(parseProfileName("list-1")).args)
-        }`,
-      );
-      expect(text).toContain("  sandbox_workspace_write.network_access  (absent) -> true");
-      expect(rendered).toContain(`create ${join(homes.codexHome, "list-1.config.toml")}`);
-      expect(text).toContain('  model_provider  (absent) -> "copilot-env-list-1"');
-    } finally {
-      delete process.env[CLAUDE_DESKTOP_DIR_ENV];
-      setIntegrationProbeFetch(null);
-    }
-  },
-  120_000,
-);
+      }),
+    );
+    setIntegrationProbeFetch(() =>
+      Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 })),
+    );
+    resetIntegrationIdentityCache();
+    const before = fingerprintTree(dir);
+    let narrated = "";
+    const { changes } = await dryRunChanges(async () => {
+      narrated = (await captureChannels(() => moveProfilesToVerbTree())).all;
+    });
+    expect(fingerprintTree(dir)).toEqual(before);
+    const rendered = renderDryRun(changes);
+    const newHome = join(homes.proxyHome, "profiles", "list-1");
+    expect(rendered).toContain(`create ${newHome}${sep}`);
+    expect(rendered.some((l) => l.startsWith(`create ${join(newHome, ".run")}${sep}`))).toBe(true);
+    expect(
+      rendered.some((l) => l.endsWith(join(".run", ".state.json").slice(4)) && l.includes(newHome)),
+    ).toBe(true);
+    expect(narrated).toContain("re-rendered profile 'list-1'");
+    const text = rendered.join("\n");
+    expect(text).not.toContain("example-secret-token");
+    // The retargeted file is new at its path: its rows read from absent, the bearer redacted.
+    expect(text).toContain("env.ANTHROPIC_AUTH_TOKEN  (absent) -> <redacted>");
+    // config.toml prints attribute by attribute (a whole-file secret flag would print the
+    // rewrite bare): the table moves under the new id, its bearer redacted, and the profile
+    // file's selector follows.
+    const configToml = join(homes.codexHome, "config.toml");
+    expect(rendered).toContain(`rewrite ${configToml}`);
+    expect(text).toContain(
+      '  model_providers.copilot-env-list.base_url  "http://127.0.0.1:4555/v1" -> (absent)',
+    );
+    expect(text).toContain(
+      "  model_providers.copilot-env-list.http_headers.Authorization  <redacted> -> (absent)",
+    );
+    expect(text).toContain(
+      `  model_providers.copilot-env-list-1.auth.args  (absent) -> ${JSON.stringify(
+        proxyTokenCommand(parseProfileName("list-1")).args,
+      )}`,
+    );
+    expect(text).toContain("  sandbox_workspace_write.network_access  (absent) -> true");
+    expect(rendered).toContain(`create ${join(homes.codexHome, "list-1.config.toml")}`);
+    expect(text).toContain('  model_provider  (absent) -> "copilot-env-list-1"');
+  } finally {
+    delete process.env[CLAUDE_DESKTOP_DIR_ENV];
+    setIntegrationProbeFetch(null);
+  }
+}, 120_000);
 
-test(
-  "4.0.9 profile verb tree: a verb-named profile becomes the first free <name>-<n> with every " +
-    "artifact retargeted and re-rendered, a named Direct profile's resolver line and the default's " +
-    "proxy line, MCP registration, and Desktop row move to the new spelling, the user's keys " +
-    "survive, and a re-run writes nothing",
-  async () => {
-    const homes = isolateAgentHomes("copilot-mig-verb-tree-", { mkdirs: true });
-    dir = homes.dir;
-    const desktop = join(dir, "desktop");
-    const library = join(desktop, "configLibrary");
-    mkdirSync(library, { recursive: true });
-    process.env[CLAUDE_DESKTOP_DIR_ENV] = desktop;
-    const SYNC = parseProfileName("sync");
-    const SYNC2 = parseProfileName("sync-2");
-    const entryPath = join(library, "e1.json");
-    const defaultEntryPath = join(library, "e0.json");
-    try {
-      // A proxy profile named like a verb, a Direct profile whose files carry the 4.0.9 resolver
-      // line, and a proxy default whose files, registration, and Desktop row carry the 4.0.9
-      // spellings too.
-      writeStore(join(homes.proxyHome, "state.json"), {
-        global: { "daemon.port": 4199 },
-        profiles: {
-          default: { githubToken: "ghp_default", authProvider: "gh-token", mode: "proxy" },
-          sync: {
-            githubToken: "ghp_sync",
-            authProvider: "gh-token",
-            mode: "proxy",
-            passthrough: "off",
-          },
-          // No stored pair, as on a real 4.0.9 store once the identity-cache step ran: the
-          // re-render probes for it (the stub accepts the first candidate) and stores it.
-          work: { githubToken: "ghp_work", authProvider: "gh-token", mode: "direct" },
-        },
-        ownership: { claudeDesktopPaths: [entryPath, defaultEntryPath] },
-      });
-      writeRunState({ port: 4555 }, SYNC);
-      writeFileSync(
-        join(homes.claudeHome, "settings-work.json"),
-        JSON.stringify({ apiKeyHelper: legacyHelperLine("work"), hand: "kept" }),
-      );
-      writeFileSync(
-        join(homes.claudeHome, "settings-sync.json"),
-        JSON.stringify({
-          apiKeyHelper: proxyHelperCommand(SYNC),
-          env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:4555" },
-          hand: "kept",
-        }),
-      );
-      const legacyDefaultProxy = agentLauncherCommand(["proxy-token", "--yes"]);
-      writeFileSync(
-        join(homes.claudeHome, "settings.json"),
-        JSON.stringify({
-          apiKeyHelper: proxyHelperCommand().replace(
-            "profile proxy-token --yes",
-            "proxy-token --yes",
-          ),
-          env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:4199" },
-          hand: "kept",
-        }),
-      );
-      const legacyMcp = agentLauncherCommand(["mcp", "--serve"]);
-      writeFileSync(
-        claudeJsonPath(),
-        JSON.stringify({
-          mcpServers: {
-            "copilot-env": { type: "stdio", command: legacyMcp.command, args: legacyMcp.args },
-          },
-        }),
-      );
-      const legacyWork = agentLauncherCommand(["auth", "--get", "--profile", "work"]);
-      const defaultTable = managedProxyProvider("http://127.0.0.1:4199/v1", null, {
-        kind: "command",
-      }) as Record<string, unknown>;
-      defaultTable.auth = {
-        ...(defaultTable.auth as Record<string, unknown>),
-        args: legacyDefaultProxy.args,
-      };
-      writeFileSync(
-        join(homes.codexHome, "config.toml"),
-        stringify({
-          "model_provider": "copilot-env",
-          "model_providers": {
-            "copilot-env": defaultTable,
-            "copilot-env-work": {
-              "name": "copilot-env-work",
-              "base_url": "https://api.githubcopilot.com",
-              "auth": { "command": legacyWork.command, "args": legacyWork.args },
-            },
-            "copilot-env-sync": managedProxyProvider("http://127.0.0.1:4555/v1", SYNC, {
-              kind: "command",
-            }),
-          },
-        }),
-      );
-      writeFileSync(
-        join(homes.codexHome, "sync.config.toml"),
-        stringify({ "model_provider": "copilot-env-sync", "model": "gpt-5.4" }),
-      );
-      // `sync-1` is taken by a file of the user's, so the free name is `sync-2`.
-      writeFileSync(join(homes.codexHome, "sync-1.config.toml"), stringify({ "model": "theirs" }));
-      writeFileSync(
-        join(library, META_FILENAME),
-        JSON.stringify({
-          appliedId: "e1",
-          entries: [
-            { id: "e0", name: "copilot-env", pinned: false },
-            { id: "e1", name: "copilot-env: sync", pinned: true },
-          ],
-        }),
-      );
-      writeFileSync(
-        defaultEntryPath,
-        JSON.stringify({
-          inferenceGatewayBaseUrl: "http://127.0.0.1:4199",
-          managedMcpServers: [{ name: "copilot-env", args: legacyMcp.args }],
-        }),
-      );
-      writeFileSync(
-        entryPath,
-        JSON.stringify({
-          inferenceGatewayBaseUrl: "http://127.0.0.1:4555",
-          managedMcpServers: [
-            { name: "copilot-env", args: ["mcp", "--serve", "--profile", "sync"] },
-            // Another program's row, with a `--profile` of its own: never ours to retarget.
-            { name: "other-tool", args: ["--profile", "list"] },
-          ],
-        }),
-      );
-
-      setIntegrationProbeFetch(() =>
-        Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 }))
-      );
-      resetIntegrationIdentityCache();
-      // The layout step runs first in a real update: the default's Desktop row is in the new shape
-      // before any reconcile reads it, and the foreign row is left as it was.
-      await captureChannels(() => Promise.resolve(rewriteDesktopMcpArgv()));
-      const defaultEntry = JSON.parse(readFileSync(defaultEntryPath, "utf8")) as {
-        managedMcpServers: { name: string; args: string[] }[];
-      };
-      expect(defaultEntry.managedMcpServers[0]?.args).toEqual(
-        agentLauncherCommand(mcpServeArgs(null)).args,
-      );
-      // Each move is reported once: the reporter's line (raw stderr, so it is deferred and read
-      // back), never a second narration line through consola.
-      deferWriteReports();
-      const run = await captureChannels(() => moveProfilesToVerbTree());
-      const reports = flushWriteReports();
-      expect(reports.filter((l) => l.startsWith("moved ->") && l.includes("settings-sync-2.json")))
-        .toHaveLength(1);
-      // The one narrated move is the daemon home, which the reporter hides (own-homes rule).
-      const narrated = run.all.split("\n").filter((l) => l.includes("moved"));
-      expect(narrated).toHaveLength(1);
-      expect(narrated[0]).toContain(join("profiles", "sync-2"));
-      expect(run.all).toContain("re-rendered profile 'work'");
-      expect(run.all).toContain("re-rendered default's agent files");
-
-      // The default's proxy line moved in both agent files, the user's key survived, and the
-      // proxy re-render took the registration out (proxy wiring registers no server).
-      const settingsDefault = JSON.parse(
-        readFileSync(join(homes.claudeHome, "settings.json"), "utf8"),
-      );
-      expect(settingsDefault.apiKeyHelper).toBe(proxyHelperCommand());
-      expect(settingsDefault.hand).toBe("kept");
-      expect(inspectMcpRegistration().status).toBe("absent");
-
-      const store = readStore(join(homes.proxyHome, "state.json"));
-      const profiles = store.profiles as Record<string, Record<string, unknown>>;
-      expect(profiles.sync).toBeUndefined();
-      expect(profiles["sync-2"]).toMatchObject({
-        githubToken: "ghp_sync",
-        mode: "proxy",
-        passthrough: "off",
-      });
-      expect(existsSync(join(homes.proxyHome, "profiles", "sync"))).toBe(false);
-      expect(CopilotEnvRunState.forProfile(SYNC2).read().port).toBe(4555);
-
-      const settingsWork = JSON.parse(
-        readFileSync(join(homes.claudeHome, "settings-work.json"), "utf8"),
-      );
-      expect(settingsWork.apiKeyHelper).toBe(directHelperCommand(parseProfileName("work")));
-      expect(settingsWork.hand).toBe("kept");
-      expect(existsSync(join(homes.claudeHome, "settings-sync.json"))).toBe(false);
-      const named = JSON.parse(
-        readFileSync(join(homes.claudeHome, "settings-sync-2.json"), "utf8"),
-      );
-      expect(named.apiKeyHelper).toBe(proxyHelperCommand(SYNC2));
-      expect(named.hand).toBe("kept");
-      expect(named.env.ANTHROPIC_BASE_URL).toContain("4555");
-
-      const config = parse(readFileSync(join(homes.codexHome, "config.toml"), "utf8")) as {
-        model_providers: Record<string, { name: string; auth: { args: string[] } }>;
-      };
-      expect(config.model_providers["copilot-env"]?.auth.args).toEqual(proxyTokenCommand().args);
-      expect(config.model_providers["copilot-env-work"]?.auth.args).toEqual(
-        agentLauncherCommand(agentAuthGetArgs(parseProfileName("work"))).args,
-      );
-      expect(config.model_providers["copilot-env-sync"]).toBeUndefined();
-      expect(config.model_providers["copilot-env-sync-2"]).toMatchObject({
-        name: "copilot-env-sync-2",
-        auth: { args: proxyTokenCommand(SYNC2).args },
-      });
-      expect(existsSync(join(homes.codexHome, "sync.config.toml"))).toBe(false);
-      expect(parse(readFileSync(join(homes.codexHome, "sync-2.config.toml"), "utf8"))).toEqual({
-        "model_provider": "copilot-env-sync-2",
-        "model": "gpt-5.4",
-      });
-      expect(parse(readFileSync(join(homes.codexHome, "sync-1.config.toml"), "utf8"))).toEqual({
-        "model": "theirs",
-      });
-
-      const meta = JSON.parse(readFileSync(join(library, META_FILENAME), "utf8"));
-      expect(meta.appliedId).toBe("e1");
-      expect(meta.entries).toContainEqual({ id: "e1", name: "copilot-env: sync-2", pinned: true });
-      // The default's entry keeps its id through the layout step, the re-render, and the
-      // reconcile; its row is the new shape.
-      expect(meta.entries).toContainEqual({ id: "e0", name: "copilot-env", pinned: false });
-      const defaultAfter = JSON.parse(readFileSync(defaultEntryPath, "utf8")) as {
-        managedMcpServers: { name: string; args: string[] }[];
-      };
-      expect(defaultAfter.managedMcpServers.find((r) => r.name === "copilot-env")?.args).toEqual(
-        agentLauncherCommand(mcpServeArgs(null)).args,
-      );
-      const entry = JSON.parse(readFileSync(entryPath, "utf8")) as {
-        managedMcpServers: { name: string; args: string[] }[];
-      };
-      // By name: the re-render rebuilds our row and keeps the foreign one as it was.
-      const row = (name: string) => entry.managedMcpServers.find((r) => r.name === name);
-      expect(row("copilot-env")?.args).toContain("sync-2");
-      expect(row("other-tool")).toEqual({ name: "other-tool", args: ["--profile", "list"] });
-      // The re-render stored the pair it probed for: the stub accepts the first candidate, the
-      // codex identity (read back as a null id), on the generic host.
-      expect(new CopilotEnvState().readProfileDirectPair(WORK)).toEqual({
-        integrationId: null,
-        host: DEFAULT_COPILOT_API_BASE,
-      });
-
-      expect(new CopilotEnvState().profileNames()).toEqual([SYNC2, WORK]);
-      const list = runCli(["profile"], {
-        env: { ...process.env, CONSOLA_LEVEL: "5", NO_COLOR: "1" },
-      });
-      expect(list.exitCode).toBe(0);
-      expect(list.stdout + list.stderr).toContain("sync-2");
-
-      // Idempotent: nothing left at an old spelling or name, so the re-run touches no file.
-      const before = fingerprintTree(dir);
-      await captureChannels(() => moveProfilesToVerbTree());
-      expect(fingerprintTree(dir)).toEqual(before);
-
-      // The verbs stay creatable-by-no-one: the one creator refuses the word.
-      expect(() =>
-        new CopilotEnvState().commitProfile(SYNC, {
-          credential: { kind: "stored", provider: "gh-token", token: "ghp_x" },
+test("4.0.9 profile verb tree: a verb-named profile becomes the first free <name>-<n> with every " +
+  "artifact retargeted and re-rendered, a named Direct profile's resolver line and the default's " +
+  "proxy line, MCP registration, and Desktop row move to the new spelling, the user's keys " +
+  "survive, and a re-run writes nothing", async () => {
+  const homes = isolateAgentHomes("copilot-mig-verb-tree-", { mkdirs: true });
+  dir = homes.dir;
+  const desktop = join(dir, "desktop");
+  const library = join(desktop, "configLibrary");
+  mkdirSync(library, { recursive: true });
+  process.env[CLAUDE_DESKTOP_DIR_ENV] = desktop;
+  const SYNC = parseProfileName("sync");
+  const SYNC2 = parseProfileName("sync-2");
+  const entryPath = join(library, "e1.json");
+  const defaultEntryPath = join(library, "e0.json");
+  try {
+    // A proxy profile named like a verb, a Direct profile whose files carry the 4.0.9 resolver
+    // line, and a proxy default whose files, registration, and Desktop row carry the 4.0.9
+    // spellings too.
+    writeStore(join(homes.proxyHome, "state.json"), {
+      global: { "daemon.port": 4199 },
+      profiles: {
+        default: { githubToken: "ghp_default", authProvider: "gh-token", mode: "proxy" },
+        sync: {
+          githubToken: "ghp_sync",
+          authProvider: "gh-token",
           mode: "proxy",
-        })
-      ).toThrow(/reserved/);
-    } finally {
-      delete process.env[CLAUDE_DESKTOP_DIR_ENV];
-      setIntegrationProbeFetch(null);
-    }
-  },
-  120_000,
-);
+          passthrough: "off",
+        },
+        // No stored pair, as on a real 4.0.9 store once the identity-cache step ran: the
+        // re-render probes for it (the stub accepts the first candidate) and stores it.
+        work: { githubToken: "ghp_work", authProvider: "gh-token", mode: "direct" },
+      },
+      ownership: { claudeDesktopPaths: [entryPath, defaultEntryPath] },
+    });
+    writeRunState({ port: 4555 }, SYNC);
+    writeFileSync(
+      join(homes.claudeHome, "settings-work.json"),
+      JSON.stringify({ apiKeyHelper: legacyHelperLine("work"), hand: "kept" }),
+    );
+    writeFileSync(
+      join(homes.claudeHome, "settings-sync.json"),
+      JSON.stringify({
+        apiKeyHelper: proxyHelperCommand(SYNC),
+        env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:4555" },
+        hand: "kept",
+      }),
+    );
+    const legacyDefaultProxy = agentLauncherCommand(["proxy-token", "--yes"]);
+    writeFileSync(
+      join(homes.claudeHome, "settings.json"),
+      JSON.stringify({
+        apiKeyHelper: proxyHelperCommand().replace(
+          "profile proxy-token --yes",
+          "proxy-token --yes",
+        ),
+        env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:4199" },
+        hand: "kept",
+      }),
+    );
+    const legacyMcp = agentLauncherCommand(["mcp", "--serve"]);
+    writeFileSync(
+      claudeJsonPath(),
+      JSON.stringify({
+        mcpServers: {
+          "copilot-env": { type: "stdio", command: legacyMcp.command, args: legacyMcp.args },
+        },
+      }),
+    );
+    const legacyWork = agentLauncherCommand(["auth", "--get", "--profile", "work"]);
+    const defaultTable = managedProxyProvider("http://127.0.0.1:4199/v1", null, {
+      kind: "command",
+    }) as Record<string, unknown>;
+    defaultTable.auth = {
+      ...(defaultTable.auth as Record<string, unknown>),
+      args: legacyDefaultProxy.args,
+    };
+    writeFileSync(
+      join(homes.codexHome, "config.toml"),
+      stringify({
+        model_provider: "copilot-env",
+        model_providers: {
+          "copilot-env": defaultTable,
+          "copilot-env-work": {
+            name: "copilot-env-work",
+            base_url: "https://api.githubcopilot.com",
+            auth: { command: legacyWork.command, args: legacyWork.args },
+          },
+          "copilot-env-sync": managedProxyProvider("http://127.0.0.1:4555/v1", SYNC, {
+            kind: "command",
+          }),
+        },
+      }),
+    );
+    writeFileSync(
+      join(homes.codexHome, "sync.config.toml"),
+      stringify({ model_provider: "copilot-env-sync", model: "gpt-5.4" }),
+    );
+    // `sync-1` is taken by a file of the user's, so the free name is `sync-2`.
+    writeFileSync(join(homes.codexHome, "sync-1.config.toml"), stringify({ model: "theirs" }));
+    writeFileSync(
+      join(library, META_FILENAME),
+      JSON.stringify({
+        appliedId: "e1",
+        entries: [
+          { id: "e0", name: "copilot-env", pinned: false },
+          { id: "e1", name: "copilot-env: sync", pinned: true },
+        ],
+      }),
+    );
+    writeFileSync(
+      defaultEntryPath,
+      JSON.stringify({
+        inferenceGatewayBaseUrl: "http://127.0.0.1:4199",
+        managedMcpServers: [{ name: "copilot-env", args: legacyMcp.args }],
+      }),
+    );
+    writeFileSync(
+      entryPath,
+      JSON.stringify({
+        inferenceGatewayBaseUrl: "http://127.0.0.1:4555",
+        managedMcpServers: [
+          { name: "copilot-env", args: ["mcp", "--serve", "--profile", "sync"] },
+          // Another program's row, with a `--profile` of its own: never ours to retarget.
+          { name: "other-tool", args: ["--profile", "list"] },
+        ],
+      }),
+    );
+
+    setIntegrationProbeFetch(() =>
+      Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 })),
+    );
+    resetIntegrationIdentityCache();
+    // The layout step runs first in a real update: the default's Desktop row is in the new shape
+    // before any reconcile reads it, and the foreign row is left as it was.
+    await captureChannels(() => Promise.resolve(rewriteDesktopMcpArgv()));
+    const defaultEntry = JSON.parse(readFileSync(defaultEntryPath, "utf8")) as {
+      managedMcpServers: { name: string; args: string[] }[];
+    };
+    expect(defaultEntry.managedMcpServers[0]?.args).toEqual(
+      agentLauncherCommand(mcpServeArgs(null)).args,
+    );
+    // Each move is reported once: the reporter's line (raw stderr, so it is deferred and read
+    // back), never a second narration line through consola.
+    deferWriteReports();
+    const run = await captureChannels(() => moveProfilesToVerbTree());
+    const reports = flushWriteReports();
+    expect(
+      reports.filter((l) => l.startsWith("moved ->") && l.includes("settings-sync-2.json")),
+    ).toHaveLength(1);
+    // The one narrated move is the daemon home, which the reporter hides (own-homes rule).
+    const narrated = run.all.split("\n").filter((l) => l.includes("moved"));
+    expect(narrated).toHaveLength(1);
+    expect(narrated[0]).toContain(join("profiles", "sync-2"));
+    expect(run.all).toContain("re-rendered profile 'work'");
+    expect(run.all).toContain("re-rendered default's agent files");
+
+    // The default's proxy line moved in both agent files, the user's key survived, and the
+    // proxy re-render took the registration out (proxy wiring registers no server).
+    const settingsDefault = JSON.parse(
+      readFileSync(join(homes.claudeHome, "settings.json"), "utf8"),
+    );
+    expect(settingsDefault.apiKeyHelper).toBe(proxyHelperCommand());
+    expect(settingsDefault.hand).toBe("kept");
+    expect(inspectMcpRegistration().status).toBe("absent");
+
+    const store = readStore(join(homes.proxyHome, "state.json"));
+    const profiles = store.profiles as Record<string, Record<string, unknown>>;
+    expect(profiles.sync).toBeUndefined();
+    expect(profiles["sync-2"]).toMatchObject({
+      githubToken: "ghp_sync",
+      mode: "proxy",
+      passthrough: "off",
+    });
+    expect(existsSync(join(homes.proxyHome, "profiles", "sync"))).toBe(false);
+    expect(CopilotEnvRunState.forProfile(SYNC2).read().port).toBe(4555);
+
+    const settingsWork = JSON.parse(
+      readFileSync(join(homes.claudeHome, "settings-work.json"), "utf8"),
+    );
+    expect(settingsWork.apiKeyHelper).toBe(directHelperCommand(parseProfileName("work")));
+    expect(settingsWork.hand).toBe("kept");
+    expect(existsSync(join(homes.claudeHome, "settings-sync.json"))).toBe(false);
+    const named = JSON.parse(readFileSync(join(homes.claudeHome, "settings-sync-2.json"), "utf8"));
+    expect(named.apiKeyHelper).toBe(proxyHelperCommand(SYNC2));
+    expect(named.hand).toBe("kept");
+    expect(named.env.ANTHROPIC_BASE_URL).toContain("4555");
+
+    const config = parse(readFileSync(join(homes.codexHome, "config.toml"), "utf8")) as {
+      model_providers: Record<string, { name: string; auth: { args: string[] } }>;
+    };
+    expect(config.model_providers["copilot-env"]?.auth.args).toEqual(proxyTokenCommand().args);
+    expect(config.model_providers["copilot-env-work"]?.auth.args).toEqual(
+      agentLauncherCommand(agentAuthGetArgs(parseProfileName("work"))).args,
+    );
+    expect(config.model_providers["copilot-env-sync"]).toBeUndefined();
+    expect(config.model_providers["copilot-env-sync-2"]).toMatchObject({
+      name: "copilot-env-sync-2",
+      auth: { args: proxyTokenCommand(SYNC2).args },
+    });
+    expect(existsSync(join(homes.codexHome, "sync.config.toml"))).toBe(false);
+    expect(parse(readFileSync(join(homes.codexHome, "sync-2.config.toml"), "utf8"))).toEqual({
+      model_provider: "copilot-env-sync-2",
+      model: "gpt-5.4",
+    });
+    expect(parse(readFileSync(join(homes.codexHome, "sync-1.config.toml"), "utf8"))).toEqual({
+      model: "theirs",
+    });
+
+    const meta = JSON.parse(readFileSync(join(library, META_FILENAME), "utf8"));
+    expect(meta.appliedId).toBe("e1");
+    expect(meta.entries).toContainEqual({ id: "e1", name: "copilot-env: sync-2", pinned: true });
+    // The default's entry keeps its id through the layout step, the re-render, and the
+    // reconcile; its row is the new shape.
+    expect(meta.entries).toContainEqual({ id: "e0", name: "copilot-env", pinned: false });
+    const defaultAfter = JSON.parse(readFileSync(defaultEntryPath, "utf8")) as {
+      managedMcpServers: { name: string; args: string[] }[];
+    };
+    expect(defaultAfter.managedMcpServers.find((r) => r.name === "copilot-env")?.args).toEqual(
+      agentLauncherCommand(mcpServeArgs(null)).args,
+    );
+    const entry = JSON.parse(readFileSync(entryPath, "utf8")) as {
+      managedMcpServers: { name: string; args: string[] }[];
+    };
+    // By name: the re-render rebuilds our row and keeps the foreign one as it was.
+    const row = (name: string) => entry.managedMcpServers.find((r) => r.name === name);
+    expect(row("copilot-env")?.args).toContain("sync-2");
+    expect(row("other-tool")).toEqual({ name: "other-tool", args: ["--profile", "list"] });
+    // The re-render stored the pair it probed for: the stub accepts the first candidate, the
+    // codex identity (read back as a null id), on the generic host.
+    expect(new CopilotEnvState().readProfileDirectPair(WORK)).toEqual({
+      integrationId: null,
+      host: DEFAULT_COPILOT_API_BASE,
+    });
+
+    expect(new CopilotEnvState().profileNames()).toEqual([SYNC2, WORK]);
+    const list = runCli(["profile"], {
+      env: { ...process.env, CONSOLA_LEVEL: "5", NO_COLOR: "1" },
+    });
+    expect(list.exitCode).toBe(0);
+    expect(list.stdout + list.stderr).toContain("sync-2");
+
+    // Idempotent: nothing left at an old spelling or name, so the re-run touches no file.
+    const before = fingerprintTree(dir);
+    await captureChannels(() => moveProfilesToVerbTree());
+    expect(fingerprintTree(dir)).toEqual(before);
+
+    // The verbs stay creatable-by-no-one: the one creator refuses the word.
+    expect(() =>
+      new CopilotEnvState().commitProfile(SYNC, {
+        credential: { kind: "stored", provider: "gh-token", token: "ghp_x" },
+        mode: "proxy",
+      }),
+    ).toThrow(/reserved/);
+  } finally {
+    delete process.env[CLAUDE_DESKTOP_DIR_ENV];
+    setIntegrationProbeFetch(null);
+  }
+}, 120_000);
 
 test("5.0.1 sweeps every .oslock sidecar under the root home and the install's .autoupdate, nested dirs included, and nothing else", () => {
   // The marker file is the lock now (src/utils/file_lock.ts), so a sidecar a 5.0.0 run left is

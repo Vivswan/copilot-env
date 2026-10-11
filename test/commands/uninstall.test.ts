@@ -34,25 +34,25 @@ import { OwnershipLedger } from "../../src/copilot_api/ownership.ts";
 import { CopilotApiPaths, profileHome, resolveRootHome } from "../../src/copilot_api/paths.ts";
 import { parseProfileName } from "../../src/copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../../src/copilot_api/run_state.ts";
-import { isRecord } from "../../src/utils/json.ts";
-import { INSTALL_MANIFEST_FILE, type RootMode } from "../../src/utils/root.ts";
 import { pointCurrentAt } from "../../src/install/installer.ts";
 import { writeResolvedVersionRecord } from "../../src/proxy_float.ts";
 import {
   CI_PS_DOCUMENTS_DIR_ENV,
   CI_RC_DIR_ENV,
-  MARKER as SHELL_MARKER,
   MARKER_END,
+  MARKER as SHELL_MARKER,
   shellTargetFiles,
 } from "../../src/shell/integration.ts";
 import type { FileChange } from "../../src/utils/dry_run.ts";
+import { isRecord } from "../../src/utils/json.ts";
 import { deferWriteReports, flushWriteReports } from "../../src/utils/report_write.ts";
+import { INSTALL_MANIFEST_FILE, type RootMode } from "../../src/utils/root.ts";
+import { stageRefusedStop } from "../helpers/daemon.ts";
+import { dryRunChanges } from "../helpers/dry_run.ts";
+import { envSnapshot, isolateAgentHomes, resetExitCode } from "../helpers/env.ts";
 import { captureChannels } from "../helpers/output.ts";
 import { ROOT } from "../helpers/run.ts";
 import { afterEach, expect, test } from "../helpers/testing.ts";
-import { envSnapshot, isolateAgentHomes, resetExitCode } from "../helpers/env.ts";
-import { stageRefusedStop } from "../helpers/daemon.ts";
-import { dryRunChanges } from "../helpers/dry_run.ts";
 
 // A branded fixture name: parseProfileName is the only mint for ProfileName.
 const WORK = parseProfileName("work");
@@ -133,8 +133,10 @@ skipWin(
       if (row.recorded) new CopilotEnvRunState().set({ codexHome: farm });
       // A fresh sandbox per row: the live apply deletes it.
       const ctx = resolveUninstallContext({ yes: true }, sandboxRoot());
-      expect({ ...row, farm: ctx.targets.codexHostFarm })
-        .toEqual({ ...row, farm: row.deleted ? farm : null });
+      expect({ ...row, farm: ctx.targets.codexHostFarm }).toEqual({
+        ...row,
+        farm: row.deleted ? farm : null,
+      });
       const { changes } = await dryRunChanges(() => applyUninstall(ctx));
       const planned = changes.some((c) => c.path === farm && c.verdict === "delete");
       expect({ ...row, planned }).toEqual({ ...row, planned: row.deleted });
@@ -150,28 +152,24 @@ function readToml(codexHome: string): Record<string, unknown> {
   return parse(readFileSync(join(codexHome, "config.toml"), "utf8")) as Record<string, unknown>;
 }
 
-test(
-  "uninstall: a REFUSED stop aborts before anything is deleted",
-  async () => {
-    const { proxyHome, codexHome } = tmpHomes();
-    mkdirSync(codexHome, { recursive: true });
-    writeFileSync(join(codexHome, "config.toml"), 'foo = "bar"\n');
-    const root = sandboxRoot();
-    const fx = stageRefusedStop(new CopilotApiPaths().home);
-    try {
-      // The refusal (an uncorroborated lock holder) surfaces from the FIRST step, so
-      // no wiring, farm, shell, or data removal ever runs under the live daemon.
-      await expect(runUninstall({ yes: true }, root)).rejects.toThrow("did not stop");
-      expect(existsSync(proxyHome)).toBe(true);
-      expect(readFileSync(join(codexHome, "config.toml"), "utf8")).toContain('foo = "bar"');
-      expect(existsSync(root.root)).toBe(true);
-      expect(new CopilotEnvRunState().read().pid).toBe(fx.bystanderPid);
-    } finally {
-      await fx.teardown();
-    }
-  },
-  30_000,
-);
+test("uninstall: a REFUSED stop aborts before anything is deleted", async () => {
+  const { proxyHome, codexHome } = tmpHomes();
+  mkdirSync(codexHome, { recursive: true });
+  writeFileSync(join(codexHome, "config.toml"), 'foo = "bar"\n');
+  const root = sandboxRoot();
+  const fx = stageRefusedStop(new CopilotApiPaths().home);
+  try {
+    // The refusal (an uncorroborated lock holder) surfaces from the FIRST step, so
+    // no wiring, farm, shell, or data removal ever runs under the live daemon.
+    await expect(runUninstall({ yes: true }, root)).rejects.toThrow("did not stop");
+    expect(existsSync(proxyHome)).toBe(true);
+    expect(readFileSync(join(codexHome, "config.toml"), "utf8")).toContain('foo = "bar"');
+    expect(existsSync(root.root)).toBe(true);
+    expect(new CopilotEnvRunState().read().pid).toBe(fx.bystanderPid);
+  } finally {
+    await fx.teardown();
+  }
+}, 30_000);
 
 test("uninstall removes everything managed and preserves user config", async () => {
   const { proxyHome, claudeHome, codexHome } = tmpHomes();
@@ -306,7 +304,7 @@ test("uninstall on a VERSIONED install deletes the whole top, not just the link"
   writeFileSync(join(versionRoot, "bin", "copilot-env"), "#!/bin/sh\n");
   writeFileSync(
     join(versionRoot, INSTALL_MANIFEST_FILE),
-    JSON.stringify({ "version": "9.9.9", "kind": "installed", "assets": ["shell"] }),
+    JSON.stringify({ version: "9.9.9", kind: "installed", assets: ["shell"] }),
   );
   pointCurrentAt(top, "v9.9.9");
 
@@ -425,11 +423,12 @@ test("uninstall --dry-run prints every file and store slot it would take as the 
   writeFileSync(join(library, "theirs.json"), '{"userKey":1}\n');
   writeFileSync(
     join(library, "_meta.json"),
-    `${
-      JSON.stringify({
-        entries: [{ id: "ours", name: "copilot-env" }, { id: "theirs", name: "Mine" }],
-      })
-    }\n`,
+    `${JSON.stringify({
+      entries: [
+        { id: "ours", name: "copilot-env" },
+        { id: "theirs", name: "Mine" },
+      ],
+    })}\n`,
   );
   new OwnershipLedger().record("claudeDesktop", join(library, "ours.json"));
   const helper = desktopHelperPath(resolveRootHome(), "direct", null);
@@ -453,18 +452,16 @@ test("uninstall --dry-run prints every file and store slot it would take as the 
   // rewrites by attribute, the home (the Desktop helper inside it included) and the install root
   // as whole trees.
   expect(stdout).toContain("DRY RUN: nothing was written. The command would:");
-  for (
-    const line of [
-      `delete ${join(library, "ours.json")}`,
-      `rewrite ${join(library, "_meta.json")}`,
-      `delete ${settingsPathFor(claudeHome)}`,
-      `rewrite ${codexConfigPath(codexHome)}`,
-      'model_provider  "copilot-env" -> (absent)',
-      `delete ${proxyHome}${sep}`,
-      `delete ${root.root}${sep}`,
-      ...(posix ? [`delete ${farm}${sep}`] : []),
-    ]
-  ) {
+  for (const line of [
+    `delete ${join(library, "ours.json")}`,
+    `rewrite ${join(library, "_meta.json")}`,
+    `delete ${settingsPathFor(claudeHome)}`,
+    `rewrite ${codexConfigPath(codexHome)}`,
+    'model_provider  "copilot-env" -> (absent)',
+    `delete ${proxyHome}${sep}`,
+    `delete ${root.root}${sep}`,
+    ...(posix ? [`delete ${farm}${sep}`] : []),
+  ]) {
     expect(stdout).toContain(line);
   }
   // The foreign sibling is never named: it would never be deleted. No daemon is tracked, so
@@ -491,12 +488,13 @@ test("uninstall removes owned Claude Desktop entries from the library the env se
   writeFileSync(join(library, "theirs.json"), '{"userKey":1}\n');
   writeFileSync(
     join(library, "_meta.json"),
-    `${
-      JSON.stringify({
-        appliedId: "ours",
-        entries: [{ id: "ours", name: "copilot-env" }, { id: "theirs", name: "Mine" }],
-      })
-    }\n`,
+    `${JSON.stringify({
+      appliedId: "ours",
+      entries: [
+        { id: "ours", name: "copilot-env" },
+        { id: "theirs", name: "Mine" },
+      ],
+    })}\n`,
   );
   new OwnershipLedger().record("claudeDesktop", join(library, "ours.json"));
 
@@ -546,10 +544,13 @@ test("uninstall's dry run and live run land ONE resolved plan", async () => {
   writeFileSync(workHelper, "#!/bin/sh\n");
   const entryFor = (helper: string): string =>
     `${JSON.stringify({ inferenceGatewayBaseUrl: "x", inferenceCredentialHelper: helper })}\n`;
-  const metaRows = [{ id: "ours", name: "copilot-env" }, {
-    id: "gone",
-    name: "copilot-env (work)",
-  }];
+  const metaRows = [
+    { id: "ours", name: "copilot-env" },
+    {
+      id: "gone",
+      name: "copilot-env (work)",
+    },
+  ];
   writeFileSync(join(library, "ours.json"), entryFor(defaultHelper));
   writeFileSync(join(library, "_meta.json"), `${JSON.stringify({ entries: metaRows })}\n`);
   const ledger = new OwnershipLedger();
@@ -565,9 +566,8 @@ test("uninstall's dry run and live run land ONE resolved plan", async () => {
   const rcDir = join(dir, "rc");
   process.env[CI_RC_DIR_ENV] = rcDir;
   process.env[CI_PS_DOCUMENTS_DIR_ENV] = rcDir;
-  const rc = process.platform === "win32"
-    ? shellTargetFiles()[0] as string
-    : join(rcDir, ".bashrc");
+  const rc =
+    process.platform === "win32" ? (shellTargetFiles()[0] as string) : join(rcDir, ".bashrc");
   mkdirSync(dirname(rc), { recursive: true });
   writeFileSync(rc, `echo mine\n${SHELL_MARKER}\nsource ours\n${MARKER_END}\n`);
 
@@ -581,10 +581,12 @@ test("uninstall's dry run and live run land ONE resolved plan", async () => {
   expect(ctx.targets.claudeMcpRegistration).toBe(claudeJsonPath());
   const metaPath = join(library, "_meta.json");
   expect(ctx.targets.desktop.metaRewrite).toBe(metaPath);
-  expect(ctx.targets.profiles).toEqual([{
-    name: WORK,
-    claudeArtifacts: [settingsPathFor(claudeHome, WORK)],
-  }]);
+  expect(ctx.targets.profiles).toEqual([
+    {
+      name: WORK,
+      claudeArtifacts: [settingsPathFor(claudeHome, WORK)],
+    },
+  ]);
   // The dry run: the same steps on the overlay, nothing landed, and the shell-restart hint that
   // follows a landed removal is not said.
   let changes: FileChange[] = [];

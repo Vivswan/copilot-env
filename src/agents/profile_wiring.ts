@@ -5,7 +5,7 @@ import { claudeAdapter } from "../claude/config.ts";
 import { codexAdapter, directWiringFor } from "../codex/config.ts";
 import { type DirectOverlay, directOverlay, renderDirectPair } from "../copilot_api/direct_pair.ts";
 import type { ProfileMode } from "../copilot_api/env_state.ts";
-import { type Profile, profileLabel, type ProfileName } from "../copilot_api/profile.ts";
+import { type Profile, type ProfileName, profileLabel } from "../copilot_api/profile.ts";
 import { errMessage } from "../utils/error.ts";
 import {
   type AgentAdapter,
@@ -68,14 +68,15 @@ export async function wireProfileAgents(
   // and the files keep the previous pair: a credential refused under every identity works under
   // none, the error names the repair, and the next credential landing probes again. Deleting the
   // files would take the user's own keys in settings-<name>.json and the Desktop entry with them.
-  const identity: ManagedMode = mode === "direct"
-    ? {
-      mode,
-      direct: await (direct === "probe"
-        ? directWiringFor(name, token, "land")
-        : resolveDirectWiring(name, token)),
-    }
-    : { mode };
+  const identity: ManagedMode =
+    mode === "direct"
+      ? {
+          mode,
+          direct: await (direct === "probe"
+            ? directWiringFor(name, token, "land")
+            : resolveDirectWiring(name, token)),
+        }
+      : { mode };
   const failures: string[] = [];
   for (const { agent, credential } of writes) {
     try {

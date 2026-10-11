@@ -4,16 +4,16 @@
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import * as v from "valibot";
-import * as fs from "../utils/fs_facade.ts";
 import { canonicalPricingUrl, OPENROUTER_MODELS_URL } from "../copilot_api/config_registry.ts";
+import type { ProbeFetch } from "../copilot_api/integration_identity.ts";
 import { ONE_M_SUFFIX } from "../copilot_api/models.ts";
 import { usageIndexDir } from "../copilot_api/paths.ts";
 import { errMessage } from "../utils/error.ts";
-import { MILLISECONDS_PER_DAY } from "../utils/time.ts";
+import * as fs from "../utils/fs_facade.ts";
 import { isRecord, parseJsonRecord } from "../utils/json.ts";
+import { MILLISECONDS_PER_DAY } from "../utils/time.ts";
 import { COPILOT_ENV_USER_AGENT } from "../utils/user_agent.ts";
 import type { GitHubRateCard, RateCardSource } from "./github_rate_card.ts";
-import type { ProbeFetch } from "../copilot_api/integration_identity.ts";
 
 const FETCH_TIMEOUT_MS = 10_000;
 const PER_MILLION = 1_000_000;
@@ -104,8 +104,12 @@ export function withGitHubRates(
 function sameTier(a: PricingTier, b: PricingTier): boolean {
   const same = (x: number | undefined, y: number | undefined): boolean =>
     x === undefined || y === undefined ? x === y : Math.abs(x - y) < 1e-9;
-  return same(a.input, b.input) && same(a.output, b.output) &&
-    same(a.cacheRead, b.cacheRead) && same(a.cacheCreation, b.cacheCreation);
+  return (
+    same(a.input, b.input) &&
+    same(a.output, b.output) &&
+    same(a.cacheRead, b.cacheRead) &&
+    same(a.cacheCreation, b.cacheCreation)
+  );
 }
 
 /** GitHub meters in AI credits, 1 credit = $0.01; a transcript's `total_nano_aiu` is the request's
@@ -175,18 +179,18 @@ function tierOf(pricing: Record<string, unknown>): PricingTier | null {
 type LoadedPricing =
   | { source: "cache"; pricing: Map<string, PricingTier>; fetchedAtMs: number }
   | {
-    source: "fetched";
-    pricing: Map<string, PricingTier>;
-    fetchedAtMs: number;
-    /** Set when the list could not be persisted: the next run fetches again. */
-    cacheWriteError?: string;
-  }
+      source: "fetched";
+      pricing: Map<string, PricingTier>;
+      fetchedAtMs: number;
+      /** Set when the list could not be persisted: the next run fetches again. */
+      cacheWriteError?: string;
+    }
   | {
-    source: "stale-cache";
-    pricing: Map<string, PricingTier>;
-    fetchedAtMs: number;
-    fetchError: string;
-  };
+      source: "stale-cache";
+      pricing: Map<string, PricingTier>;
+      fetchedAtMs: number;
+      fetchError: string;
+    };
 
 /** A refresh failure falls back to the expired copy rather than to a token-only report. A cache
  *  that fails validation or was written for another URL is absent; one stamped in the future (clock
@@ -249,17 +253,21 @@ function sha256Hex(text: string): string {
 const RATE_SCHEMA = v.optional(v.pipe(v.number(), v.finite(), v.minValue(0)));
 
 const TIER_SCHEMA = v.strictObject({
-  "input": RATE_SCHEMA,
-  "output": RATE_SCHEMA,
-  "cacheRead": RATE_SCHEMA,
-  "cacheCreation": RATE_SCHEMA,
+  input: RATE_SCHEMA,
+  output: RATE_SCHEMA,
+  cacheRead: RATE_SCHEMA,
+  cacheCreation: RATE_SCHEMA,
 });
 
 // Applied to a fetched response before it is persisted; the cache record it becomes is this
 // program's own and is read back as written.
 const TIERS_SCHEMA = v.pipe(
   v.record(
-    v.pipe(v.string(), v.regex(MODEL_ID_RE), v.check((id) => id === id.toLowerCase())),
+    v.pipe(
+      v.string(),
+      v.regex(MODEL_ID_RE),
+      v.check((id) => id === id.toLowerCase()),
+    ),
     TIER_SCHEMA,
   ),
   v.check(
@@ -279,9 +287,9 @@ function priceListProblem(pricing: ReadonlyMap<string, PricingTier>): string | n
 // The URL is stored as a digest only: a custom --pricing-url may carry credentials or signed query
 // parameters. The quoted snake_case keys are the on-disk contract.
 interface PricingCacheRecord {
-  "url_sha256": string;
-  "fetched_at_ms": number;
-  "tiers": Record<string, PricingTier>;
+  url_sha256: string;
+  fetched_at_ms: number;
+  tiers: Record<string, PricingTier>;
 }
 
 function readPricingCache(
@@ -302,9 +310,9 @@ function writePricingCache(
   pricing: ReadonlyMap<string, PricingTier>,
 ): void {
   const record: PricingCacheRecord = {
-    "url_sha256": urlDigest,
-    "fetched_at_ms": fetchedAtMs,
-    "tiers": Object.fromEntries(pricing),
+    url_sha256: urlDigest,
+    fetched_at_ms: fetchedAtMs,
+    tiers: Object.fromEntries(pricing),
   };
   fs.writeText(path, `${JSON.stringify(record)}\n`, { secretKeys: [] });
 }
@@ -429,9 +437,13 @@ export function estimateCost(usage: UsageToPrice, pricing: Map<string, PricingTi
     }
     const over = longContextTierFor(book, reference);
     const long = over === undefined ? undefined : usage.longContext?.byModel.get(model);
-    const parts: [UsageTokens, PricingTier][] = over === undefined || long === undefined
-      ? [[total, tier]]
-      : [[tokensMinus(total, long), tier], [long, overTier(tier, over)]];
+    const parts: [UsageTokens, PricingTier][] =
+      over === undefined || long === undefined
+        ? [[total, tier]]
+        : [
+            [tokensMinus(total, long), tier],
+            [long, overTier(tier, over)],
+          ];
     const cost = blendedCost(reference, parts);
     totalUsd += cost.estimatedCostUsd;
     perModel[model] = cost;
@@ -464,10 +476,22 @@ function blendedCost(reference: string, parts: readonly [UsageTokens, PricingTie
     tokens: (u: UsageTokens) => number,
     rate: (t: PricingTier) => number | undefined,
   ): number => parts.reduce((sum, [u, t]) => sum + tokenCost(tokens(u), rate(t)), 0);
-  const inputCostUsd = bucket((u) => u.input, (t) => t.input);
-  const outputCostUsd = bucket((u) => u.output, (t) => t.output);
-  const cacheReadCostUsd = bucket((u) => u.cacheRead, (t) => t.cacheRead);
-  const cacheCreationCostUsd = bucket((u) => u.cacheCreation, (t) => t.cacheCreation);
+  const inputCostUsd = bucket(
+    (u) => u.input,
+    (t) => t.input,
+  );
+  const outputCostUsd = bucket(
+    (u) => u.output,
+    (t) => t.output,
+  );
+  const cacheReadCostUsd = bucket(
+    (u) => u.cacheRead,
+    (t) => t.cacheRead,
+  );
+  const cacheCreationCostUsd = bucket(
+    (u) => u.cacheCreation,
+    (t) => t.cacheCreation,
+  );
   return {
     pricingReference: reference,
     estimatedCostUsd: inputCostUsd + outputCostUsd + cacheReadCostUsd + cacheCreationCostUsd,
@@ -565,18 +589,19 @@ function chooseBestMatch(matches: string[], requestedSlug: string): string | nul
   };
   // The id itself breaks any remaining tie, so the pick is a function of the catalog's key SET
   // alone, never its insertion order; the memoized lookup in estimateCost relies on that.
-  return [...matches].sort((a, b) =>
-    compareKeys(sortKey(a), sortKey(b)) || (a < b ? -1 : a > b ? 1 : 0)
-  )[0] ?? null;
+  return (
+    [...matches].sort(
+      (a, b) => compareKeys(sortKey(a), sortKey(b)) || (a < b ? -1 : a > b ? 1 : 0),
+    )[0] ?? null
+  );
 }
 
 function compareKeys(a: Array<number | number[]>, b: Array<number | number[]>): number {
   for (let i = 0; i < a.length; i++) {
     const x = a[i];
     const y = b[i];
-    const diff = Array.isArray(x) && Array.isArray(y)
-      ? compareNumberArrays(x, y)
-      : Number(x) - Number(y);
+    const diff =
+      Array.isArray(x) && Array.isArray(y) ? compareNumberArrays(x, y) : Number(x) - Number(y);
     if (diff !== 0) {
       return diff;
     }

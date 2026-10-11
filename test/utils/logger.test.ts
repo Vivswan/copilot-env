@@ -4,12 +4,12 @@ import {
   createStderrLogger,
   promptLayout,
   taggedLogger,
-  withNarrationMuted,
   WrappingReporter,
+  withNarrationMuted,
   wrapToTerminal,
 } from "../../src/utils/logger.ts";
-import { expect, test } from "../helpers/testing.ts";
 import { captureChannels } from "../helpers/output.ts";
+import { expect, test } from "../helpers/testing.ts";
 
 const LEGEND =
   "* = in use: the pin, else the slot's probed identity; what every Direct re-render bakes and a daemon launch sends";
@@ -41,10 +41,11 @@ test("the wrapping reporter leaves room for the icon on the first line and hangs
   const gray = (text: string): string => `\x1b[90m${text}\x1b[39m`;
   const ansi = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
   log.info(gray("   Launch one:  cl --profile <name>  /  cx --profile <name>  /  co"));
-  expect(String(seen[1]?.args[0]).split("\n").map((l) => l.replace(ansi, ""))).toEqual([
-    "   Launch one:  cl --profile <name>  /  cx --profile",
-    "     <name>  /  co",
-  ]);
+  expect(
+    String(seen[1]?.args[0])
+      .split("\n")
+      .map((l) => l.replace(ansi, "")),
+  ).toEqual(["   Launch one:  cl --profile <name>  /  cx --profile", "     <name>  /  co"]);
 });
 
 /** consola's own fancy reporter writing to a sink, so the decorated lines are measured. */
@@ -65,7 +66,14 @@ function fancyAt(
     color,
     () => width,
   );
-  return { log, lines: () => out.join("").split("\n").filter((l) => l !== "") };
+  return {
+    log,
+    lines: () =>
+      out
+        .join("")
+        .split("\n")
+        .filter((l) => l !== ""),
+  };
 }
 
 test("with consola's fancy reporter no decorated line exceeds the width: icon, WARN and ERROR badges, a tag, and a box frame", () => {
@@ -106,9 +114,9 @@ test("with color on, the whole wrapped warning body is yellow, an inline backtic
   // Through consola's own reporter with a tag: the tag's gray close lands on the first line, and
   // every continuation line still opens yellow.
   const fancy = fancyAt(40, true);
-  fancy.log.withTag("copilot_api.config").warn(
-    "one two three four five six seven eight nine ten eleven twelve",
-  );
+  fancy.log
+    .withTag("copilot_api.config")
+    .warn("one two three four five six seven eight nine ten eleven twelve");
   const all = fancy.lines();
   const body = all.slice(all.findIndex((l) => l.includes("one two")));
   expect(body.length).toBeGreaterThan(1);

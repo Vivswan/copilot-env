@@ -29,8 +29,9 @@ function negationReadmits(pattern: string, entry: string): boolean {
   const literal = cleaned.split(/[*?[\\]/)[0] ?? "";
   const hasGlob = /[*?[\\]/.test(cleaned);
   const root = entry.replace(/\/$/, "");
-  return literal === root || literal.startsWith(`${root}/`) ||
-    (hasGlob && root.startsWith(literal));
+  return (
+    literal === root || literal.startsWith(`${root}/`) || (hasGlob && root.startsWith(literal))
+  );
 }
 
 test(".dockerignore keeps host state out of the build context", () => {
@@ -62,7 +63,9 @@ test(".dockerignore keeps host state out of the build context", () => {
   ];
   for (const { pattern, readmits } of cases) {
     // The pattern rides along in the asserted value so a red run names the row.
-    expect({ pattern, readmits: KEEP_OUT.some((entry) => negationReadmits(pattern, entry)) })
-      .toEqual({ pattern, readmits });
+    expect({
+      pattern,
+      readmits: KEEP_OUT.some((entry) => negationReadmits(pattern, entry)),
+    }).toEqual({ pattern, readmits });
   }
 });

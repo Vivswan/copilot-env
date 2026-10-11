@@ -3,18 +3,23 @@ import { existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from "nod
 import { join } from "node:path";
 import { BASE_URL_ENV, proxyHelperCommand } from "../../src/claude/config.ts";
 import { configureCodexConfig } from "../../src/codex/config.ts";
+import { prepareLaunch } from "../../src/commands/launch.ts";
 import { CopilotEnvState } from "../../src/copilot_api/env_state.ts";
+import {
+  resetIntegrationIdentityCache,
+  setIntegrationProbeFetch,
+} from "../../src/copilot_api/integration_identity.ts";
 import { profileHome } from "../../src/copilot_api/paths.ts";
 import { openaiBaseUrl, proxyLoopbackOrigin } from "../../src/copilot_api/port.ts";
-import { parseProfileName, type Profile, type ProfileName } from "../../src/copilot_api/profile.ts";
+import { type Profile, type ProfileName, parseProfileName } from "../../src/copilot_api/profile.ts";
 import { worstStatus } from "../../src/health/aggregate.ts";
 import { checkAuth, checkProfileConsistency, evaluateAll } from "../../src/health/checks.ts";
 import { checkClaude, checkCodex } from "../../src/health/checks_agents.ts";
 import {
   type AuthFacts,
-  classifyPortState,
   type ClaudeFacts,
   type CodexFacts,
+  classifyPortState,
   type NamedRuntimeTarget,
   type ProfileSlotFacts,
   type RuntimeTarget,
@@ -29,16 +34,11 @@ import {
 import { gatherFacts } from "../../src/health/probe.ts";
 import { type ProbeDeps, runLiveCli } from "../../src/health/probe_deps.ts";
 import type { CheckId, CheckResult, CheckStatus } from "../../src/health/types.ts";
-import { prepareLaunch } from "../../src/commands/launch.ts";
-import {
-  resetIntegrationIdentityCache,
-  setIntegrationProbeFetch,
-} from "../../src/copilot_api/integration_identity.ts";
-import { probeOf, runIdentity, runOrphan, runPid, runPort } from "../helpers/health.ts";
-import { describe, expect, removeDir, tempDir, test } from "../helpers/testing.ts";
+import { dryRunChanges } from "../helpers/dry_run.ts";
 import { envSnapshot, isolateAgentHomes, isolateProxyHome } from "../helpers/env.ts";
 import { writeRunState } from "../helpers/fixtures.ts";
-import { dryRunChanges } from "../helpers/dry_run.ts";
+import { probeOf, runIdentity, runOrphan, runPid, runPort } from "../helpers/health.ts";
+import { describe, expect, removeDir, tempDir, test } from "../helpers/testing.ts";
 
 const restoreEnv = envSnapshot([BASE_URL_ENV]);
 
@@ -72,9 +72,8 @@ function namedTarget(name: string, overrides: NamedOverrides = {}): NamedRuntime
     trackedPid: overrides.trackedPid === undefined ? 4321 : overrides.trackedPid,
     pidTracked: overrides.pidTracked ?? true,
     pidAlive: overrides.pidAlive ?? true,
-    identityConfirmed: overrides.identityConfirmed === undefined
-      ? true
-      : overrides.identityConfirmed,
+    identityConfirmed:
+      overrides.identityConfirmed === undefined ? true : overrides.identityConfirmed,
   };
   return {
     profile: parseProfileName(name),
@@ -89,12 +88,15 @@ function namedTarget(name: string, overrides: NamedOverrides = {}): NamedRuntime
     proxyExpected,
     port: overrides.port ?? 4242,
     portPersisted: overrides.portPersisted ?? true,
-    probe: overrides.skipped !== undefined ? { kind: "skipped", why: overrides.skipped } : {
-      kind: "probed",
-      ...raw,
-      ...(overrides.pidScanUnproven ? { pidScanUnproven: true as const } : {}),
-      portState: classifyPortState({ proxyExpected, ...raw }),
-    },
+    probe:
+      overrides.skipped !== undefined
+        ? { kind: "skipped", why: overrides.skipped }
+        : {
+            kind: "probed",
+            ...raw,
+            ...(overrides.pidScanUnproven ? { pidScanUnproven: true as const } : {}),
+            portState: classifyPortState({ proxyExpected, ...raw }),
+          },
     paths: {
       home: "/h/profiles/p",
       configFile: "/h/profiles/p/config.json",
@@ -324,7 +326,10 @@ test("evaluateAll gates the daemon rows on a probed proxy target", () => {
   ];
   for (const row of rows) {
     const results = evaluateAll("full", { runtimes: [namedTarget("p", row.overrides)] });
-    expect(results.map((r) => r.id), row.name).toEqual(row.ids);
+    expect(
+      results.map((r) => r.id),
+      row.name,
+    ).toEqual(row.ids);
     for (const r of results) expect(r.profile, row.name).toBe(P);
     if (row.worst !== undefined) expect(worstStatus(results), row.name).toBe(row.worst);
     for (const needle of row.detail ?? []) expect(results[0]?.detail, row.name).toContain(needle);
@@ -452,7 +457,7 @@ test("checkAuth (named): the slot and its credential resolution decide status, d
       exactDetail: [
         "provider 'gh-cli' is recorded for profile 'p' but its credential could not be checked",
         "could not check gh authentication " +
-        "(`gh auth token` did not run to completion; AUTO - follows gh's active account)",
+          "(`gh auth token` did not run to completion; AUTO - follows gh's active account)",
       ].join("\n"),
       fix: "agent profile p auth",
       value: { ghAuthUnproven: true },
@@ -569,13 +574,16 @@ test("checkClaude(named): missing wiring warns; a stale proxy port points at the
   expect(other.fix).toContain(join("/h/.claude", "settings-p.json"));
   expect(other.fix).toContain("agent profile p add");
   expect(
-    checkClaude({
-      ...base,
-      settingsExists: true,
-      helperPath: "/opt/x/helper.sh",
-      providerMode: "other",
-      otherReason: "custom",
-    }, null).status,
+    checkClaude(
+      {
+        ...base,
+        settingsExists: true,
+        helperPath: "/opt/x/helper.sh",
+        providerMode: "other",
+        otherReason: "custom",
+      },
+      null,
+    ).status,
   ).toBe("ok");
 });
 
@@ -671,7 +679,7 @@ test("the --live launch is the launcher's start minus interactivity, never the D
       mode: "direct",
     });
     setIntegrationProbeFetch(() =>
-      Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 }))
+      Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 })),
     );
     for (const profile of [null, P] as Profile[]) {
       const claude = claudeLiveLaunch(homes.claudeHome, profile);
@@ -681,7 +689,9 @@ test("the --live launch is the launcher's start minus interactivity, never the D
         expect(launch.args).not.toContain("--model");
       }
       // The selector and the scrub are the launcher's own, read off its plan for the same profile.
-      const { result: [claudePlan, codexPlan] } = await dryRunChanges(async () => [
+      const {
+        result: [claudePlan, codexPlan],
+      } = await dryRunChanges(async () => [
         await prepareLaunch({ kind: "claude", profile, relaxed: false, args: [] }),
         await prepareLaunch({ kind: "codex", profile, relaxed: false, args: [] }),
       ]);
@@ -709,7 +719,8 @@ test("a --live exit 0 counts only when the stream carries the model's answer", a
   // External fact neither CLI enforces for us: with the user's real hooks running, a
   // UserPromptSubmit hook that stops the prompt makes claude exit 0 after zero model turns, and
   // health must not read that as "responded". The event shapes are the CLIs' own JSON-lines output.
-  const CLAUDE_ANSWER = '{"type":"system","subtype":"init"}\n' +
+  const CLAUDE_ANSWER =
+    '{"type":"system","subtype":"init"}\n' +
     '{"type":"assistant","message":{"content":[{"type":"text","text":"OK"}]}}\n' +
     '{"type":"result","num_turns":1,"is_error":false}';
   const CLAUDE_HOOK_STOP =
@@ -746,7 +757,8 @@ test("a --live exit 0 counts only when the stream carries the model's answer", a
     cli: process.execPath,
     args: ["-e", "console.log(process.env.API_ERROR_STREAM); process.exit(1)"],
     env: {
-      API_ERROR_STREAM: '{"type":"system","subtype":"init"}\n' +
+      API_ERROR_STREAM:
+        '{"type":"system","subtype":"init"}\n' +
         '{"duration_api_ms":0,"total_cost_usd":0,"usage":{"input_tokens":0},"is_error":true,' +
         '"api_error_status":400,"result":"API Error: 400 model x does not support reasoning effort","type":"result"}',
     },
@@ -860,8 +872,8 @@ test("a named profile narrows gathering to its target and excludes account-wide 
     writeFileSync(
       join(claudeHome, "settings-p.json"),
       JSON.stringify({
-        "apiKeyHelper": proxyHelperCommand(P),
-        "env": { "ANTHROPIC_BASE_URL": proxyLoopbackOrigin(4555) },
+        apiKeyHelper: proxyHelperCommand(P),
+        env: { ANTHROPIC_BASE_URL: proxyLoopbackOrigin(4555) },
       }),
     );
 
@@ -906,19 +918,17 @@ test("a named profile narrows gathering to its target and excludes account-wide 
     expect(ids).toContain("setup.auth");
     expect(ids).toContain("setup.codex");
     expect(ids).toContain("setup.claude");
-    for (
-      const absent of [
-        "bootstrap.version",
-        "bootstrap.deno",
-        "bootstrap.nodeModules",
-        "proxy.package",
-        "setup.shell",
-        "setup.launchers",
-        "setup.tool.node",
-        "setup.codex-host",
-        "setup.autoupdate",
-      ]
-    ) {
+    for (const absent of [
+      "bootstrap.version",
+      "bootstrap.deno",
+      "bootstrap.nodeModules",
+      "proxy.package",
+      "setup.shell",
+      "setup.launchers",
+      "setup.tool.node",
+      "setup.codex-host",
+      "setup.autoupdate",
+    ]) {
       expect(ids).not.toContain(absent);
     }
     for (const r of results) expect(r.profile).toBe(P);
@@ -1190,12 +1200,14 @@ test("an UNPROVEN gh probe travels from the codexDirectAuth seam into both auth 
     });
     const authCheck = evaluateAll("auth", facts).find((r) => r.id === "setup.auth");
     expect(authCheck?.status).toBe("warn");
-    expect(authCheck?.detail).toBe([
-      "provider 'gh-cli' is selected but its credential could not be checked",
-      "could not check gh authentication " +
-      "(`gh auth token` did not complete (ETIMEDOUT); AUTO - follows gh's active account)",
-      "named profiles: p (gh-cli, direct)",
-    ].join("\n"));
+    expect(authCheck?.detail).toBe(
+      [
+        "provider 'gh-cli' is selected but its credential could not be checked",
+        "could not check gh authentication " +
+          "(`gh auth token` did not complete (ETIMEDOUT); AUTO - follows gh's active account)",
+        "named profiles: p (gh-cli, direct)",
+      ].join("\n"),
+    );
 
     const narrowed = await gatherFacts("auth", { profile: P }, ghDeps);
     expect(narrowed.auth).toEqual({
@@ -1208,11 +1220,13 @@ test("an UNPROVEN gh probe travels from the codexDirectAuth seam into both auth 
     });
     const profileCheck = evaluateAll("auth", narrowed).find((r) => r.id === "setup.auth");
     expect(profileCheck?.status).toBe("warn");
-    expect(profileCheck?.detail).toBe([
-      "provider 'gh-cli' is recorded for profile 'p' but its credential could not be checked",
-      "could not check gh authentication " +
-      "(`gh auth token` did not complete (ETIMEDOUT); AUTO - follows gh's active account)",
-    ].join("\n"));
+    expect(profileCheck?.detail).toBe(
+      [
+        "provider 'gh-cli' is recorded for profile 'p' but its credential could not be checked",
+        "could not check gh authentication " +
+          "(`gh auth token` did not complete (ETIMEDOUT); AUTO - follows gh's active account)",
+      ].join("\n"),
+    );
   } finally {
     restoreEnv();
     removeDir(home);

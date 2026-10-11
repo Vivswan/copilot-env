@@ -1,7 +1,7 @@
 // The agent CLIs copilot-env installs (`agent shell --clis`) and probes (`agent health`), and
 // the npm/nvm/winget installer behind the install: Node.js and npm first, then each CLI to a
 // cooled-down or latest version, keeping a newer or non-npm install as it is.
-import { spawnSync, type SpawnSyncReturns } from "node:child_process";
+import { type SpawnSyncReturns, spawnSync } from "node:child_process";
 import { dirname } from "node:path";
 import { consola } from "consola";
 import { assertNever } from "../utils/assert.ts";
@@ -91,11 +91,12 @@ function refreshWindowsPath(): void {
         "-NoProfile",
         "-Command",
         "$machine=[Environment]::GetEnvironmentVariable('Path','Machine');" +
-        "$user=[Environment]::GetEnvironmentVariable('Path','User');" +
-        "($machine,$user,$env:Path) -join ';'",
+          "$user=[Environment]::GetEnvironmentVariable('Path','User');" +
+          "($machine,$user,$env:Path) -join ';'",
       ],
       { encoding: "utf8", env },
-    ));
+    ),
+  );
   if (result.status !== 0 || !result.stdout.trim()) {
     consola.warn("Could not refresh this process PATH after install.");
     return;
@@ -114,18 +115,19 @@ function addWindowsUserPath(directory: string): void {
         "-Command",
         // Stop, so a refused registry write exits non-zero before the report line can print.
         "$ErrorActionPreference='Stop';" +
-        `$dir=${quotePowerShell(directory)};` +
-        "$path=[Environment]::GetEnvironmentVariable('Path','User');" +
-        "$entries=@($path -split ';' | Where-Object { $_ });" +
-        "if ($entries -notcontains $dir) {" +
-        "[Environment]::SetEnvironmentVariable('Path', (($entries + $dir) -join ';'), 'User');" +
-        // A write outside copilot-env's homes: name it, as the execution-policy change does
-        // (src/shell/integration.ts), and only when it happened.
-        'Write-Host "Added $dir to the User PATH so new shells find npm\'s global bin."' +
-        "}",
+          `$dir=${quotePowerShell(directory)};` +
+          "$path=[Environment]::GetEnvironmentVariable('Path','User');" +
+          "$entries=@($path -split ';' | Where-Object { $_ });" +
+          "if ($entries -notcontains $dir) {" +
+          "[Environment]::SetEnvironmentVariable('Path', (($entries + $dir) -join ';'), 'User');" +
+          // A write outside copilot-env's homes: name it, as the execution-policy change does
+          // (src/shell/integration.ts), and only when it happened.
+          'Write-Host "Added $dir to the User PATH so new shells find npm\'s global bin."' +
+          "}",
       ],
       { stdio: ["ignore", "inherit", "inherit"], env },
-    ));
+    ),
+  );
   if (result.status !== 0) consola.warn(`Could not add npm global bin to user PATH: ${directory}`);
   refreshWindowsPath();
 }
@@ -409,9 +411,10 @@ function installCli(
     return;
   }
 
-  const target = options.cooldown !== null
-    ? resolveAgedVersion(cli.packageName, options.cooldown)
-    : resolveLatestVersion(cli.packageName);
+  const target =
+    options.cooldown !== null
+      ? resolveAgedVersion(cli.packageName, options.cooldown)
+      : resolveLatestVersion(cli.packageName);
   const spec = `${cli.packageName}@${target}`;
   const cooled = options.cooldown !== null ? `, cooled down >=${options.cooldown}d` : "";
   const plan = planCliVersion(installed ?? null, target);
@@ -446,9 +449,7 @@ function installCli(
       return;
     case "unproven":
       // The install itself succeeded; only the verifying look failed.
-      consola.warn(
-        `Could not verify ${cli.name} after install (the command probe failed to run).`,
-      );
+      consola.warn(`Could not verify ${cli.name} after install (the command probe failed to run).`);
       return;
     case "absent":
       throw new Error(

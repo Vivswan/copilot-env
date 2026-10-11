@@ -6,19 +6,20 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { stableStringify } from "../../src/utils/json.ts";
 import { FIXTURES_DIR } from "../../test/helpers/usage_fixtures.ts";
 import {
   describeMismatch,
   expectedCurrent,
-  generateGoldenTree,
   GOLDEN_COST_ARGS,
   GOLDEN_MATRIX,
   GOLDEN_TIME_ZONE,
   type GoldenCase,
+  generateGoldenTree,
   goldenFilesFor,
   NOTE_KEY,
-  parseCostPayload,
   PRE_INDEX_COMMIT,
+  parseCostPayload,
   type Recording,
   runCurrentCost,
   sourceEventCounts,
@@ -26,7 +27,6 @@ import {
   usageTreeEnv,
   utcPinnable,
 } from "../../test/helpers/usage_goldens.ts";
-import { stableStringify } from "../../src/utils/json.ts";
 
 function usage(): string {
   return `Usage: bun run usage:goldens [--out DIR]
@@ -105,21 +105,16 @@ function runOldCostJson(
   root: string,
   cache: string,
 ): { payload: Record<string, unknown>; note: unknown } {
-  const stdout = run(
-    "the old cli",
-    DENO,
-    ["run", "-P=cli", "src/cli.ts", ...GOLDEN_COST_ARGS],
-    {
-      cwd: old,
-      env: {
-        ...denoEnv,
-        ...usageTreeEnv(root),
-        COPILOT_ENV_ROOT_HOME: "",
-        TZ: GOLDEN_TIME_ZONE,
-        DENO_DIR: cache,
-      },
+  const stdout = run("the old cli", DENO, ["run", "-P=cli", "src/cli.ts", ...GOLDEN_COST_ARGS], {
+    cwd: old,
+    env: {
+      ...denoEnv,
+      ...usageTreeEnv(root),
+      COPILOT_ENV_ROOT_HOME: "",
+      TZ: GOLDEN_TIME_ZONE,
+      DENO_DIR: cache,
     },
-  );
+  });
   return {
     payload: parseCostPayload(stdout, "the old cli"),
     note: (JSON.parse(stdout) as Record<string, unknown>)[NOTE_KEY],
@@ -152,7 +147,9 @@ async function recordEntry(
   };
   const { payload, note } = runOldCostJson(old, root, cache);
   const events = sourceEventCounts(payload);
-  const silent = Object.entries(events).filter(([, n]) => n === 0).map(([s]) => s);
+  const silent = Object.entries(events)
+    .filter(([, n]) => n === 0)
+    .map(([s]) => s);
   if (!Object.keys(events).some((s) => s.startsWith("codex:")) || silent.length > 0) {
     throw new Error(`${entry.name}: the old cli read nothing from ${silent.join(", ") || "codex"}`);
   }
@@ -191,12 +188,14 @@ async function main(args: { out: string }): Promise<void> {
       const files = goldenFilesFor(entry.name, args.out);
       writeFileSync(files.goldenPath, `${stableStringify(payload)}\n`);
       writeFileSync(files.recordingPath, `${stableStringify(recording)}\n`);
-      console.log(JSON.stringify({
-        name: entry.name,
-        wrote: [files.goldenPath, files.recordingPath],
-        treeSha256: recording.treeSha256,
-        events,
-      }));
+      console.log(
+        JSON.stringify({
+          name: entry.name,
+          wrote: [files.goldenPath, files.recordingPath],
+          treeSha256: recording.treeSha256,
+          events,
+        }),
+      );
     }
   } finally {
     run("git worktree remove", "git", ["worktree", "remove", "--force", worktree]);

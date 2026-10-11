@@ -3,11 +3,11 @@
 // layer owns is never dropped silently.
 
 import { join, relative } from "node:path";
-import { type ImportGraph, lintArchitecture, readArchitecture } from "../lint/architecture.ts";
 import { ROOT } from "../helpers/run.ts";
 import { moduleSpecifiers, parseModule, resolveRelative } from "../helpers/syntax.ts";
 import { expect, test } from "../helpers/testing.ts";
 import { tsFilesUnder } from "../helpers/tree.ts";
+import { type ImportGraph, lintArchitecture, readArchitecture } from "../lint/architecture.ts";
 
 const arch = readArchitecture(ROOT);
 

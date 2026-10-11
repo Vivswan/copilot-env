@@ -31,11 +31,11 @@ import {
   claudeLineType,
   codexLineType,
   filenameShape,
-  modelLabel,
   type ModelProfile,
+  modelLabel,
   OTHER_LINE_TYPE,
-  parseProfile,
   type Profile,
+  parseProfile,
   quantiles,
   RESUME_GAP_MS,
   type SourceProfile,
@@ -327,7 +327,7 @@ function sessionRoots(unreadable: string[]): { codex: string[]; claude: string[]
 function listing(dir: string): Dirent[] | null {
   try {
     return readdirSync(dir, { withFileTypes: true }).sort((a, b) =>
-      a.name < b.name ? -1 : a.name > b.name ? 1 : 0
+      a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
     );
   } catch {
     return null;
@@ -507,9 +507,13 @@ async function profileCodexFile(
         continue;
       }
       const ms = timestampMs(parsed);
-      const copied = ownHashes.has(key) ||
+      const copied =
+        ownHashes.has(key) ||
         parentHashes?.has(key) === true ||
-        (forked && parentHashes === undefined && metaTsMs !== undefined && ms !== undefined &&
+        (forked &&
+          parentHashes === undefined &&
+          metaTsMs !== undefined &&
+          ms !== undefined &&
           ms - metaTsMs <= FORK_PREFIX_WINDOW_MS);
       ownHashes.add(key);
       if (copied) continue;

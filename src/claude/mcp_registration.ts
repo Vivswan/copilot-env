@@ -5,10 +5,10 @@
 //   machine-global file, `agent profile mcp --serve` -> the default profile's credential only; a
 //                                                      named profile registers by hand
 import { delimiter, dirname, join } from "node:path";
-import { userHomeDir } from "../utils/home.ts";
 import { MCP_SERVER_NAME } from "../mcp/server.ts";
 import { resolveExecutablePath } from "../utils/command.ts";
 import * as fs from "../utils/fs_facade.ts";
+import { userHomeDir } from "../utils/home.ts";
 import { isRecord, sameStrings } from "../utils/json.ts";
 import { taggedLogger } from "../utils/logger.ts";
 import { agentLauncherCommand } from "../utils/root.ts";
@@ -45,7 +45,7 @@ function managedEntry(ghPath: string | null, previous?: unknown): Record<string,
   const { command, args } = agentLauncherCommand(CURRENT_MCP_SUBARGS);
   const recorded = isRecord(previous) && isRecord(previous.env) ? previous.env : undefined;
   const env = serverPathEnv(ghPath) ?? recorded;
-  return { "type": "stdio", "command": command, "args": args, ...(env ? { env } : {}) };
+  return { type: "stdio", command: command, args: args, ...(env ? { env } : {}) };
 }
 
 /** `ghPath` null means gh is unknown HERE, so a recorded env is taken as current rather than stale.
@@ -64,8 +64,8 @@ export function classifyMcpEntry(
   if (typeof command !== "string" || !Array.isArray(args)) return "foreign";
   const managed = agentLauncherCommand(subArgs);
   const wanted = serverPathEnv(ghPath);
-  const sameEnv = wanted === undefined ||
-    JSON.stringify(entry.env ?? null) === JSON.stringify(wanted);
+  const sameEnv =
+    wanted === undefined || JSON.stringify(entry.env ?? null) === JSON.stringify(wanted);
   if (command === managed.command && sameStrings(args, managed.args) && sameEnv) {
     return "ours-current";
   }
@@ -73,10 +73,11 @@ export function classifyMcpEntry(
     // Split at -File: the flag prefix must match verbatim, the path must still end in bin/agent.ps1
     // (a moved checkout, not a foreign tool), and the trailing subargs must be the current shape.
     const fileIdx = managed.args.indexOf("-File");
-    const shape = command
-      .toLowerCase()
-      .replace(/\.exe$/, "")
-      .endsWith("powershell") &&
+    const shape =
+      command
+        .toLowerCase()
+        .replace(/\.exe$/, "")
+        .endsWith("powershell") &&
       fileIdx >= 0 &&
       managed.args.slice(0, fileIdx + 1).every((a, i) => args[i] === a) &&
       typeof args[fileIdx + 1] === "string" &&

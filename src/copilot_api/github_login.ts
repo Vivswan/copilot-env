@@ -4,9 +4,9 @@
 // the token lands in our store and never in a file of the proxy's, whose layout floats with its version.
 import { createOAuthDeviceAuth } from "@octokit/auth-oauth-device";
 import { request as octokitRequest } from "@octokit/request";
-import { isRecord } from "../utils/json.ts";
 import { errMessage } from "../utils/error.ts";
 import { defaultFetch } from "../utils/fetch.ts";
+import { isRecord } from "../utils/json.ts";
 import { COPILOT_ENV_USER_AGENT } from "../utils/user_agent.ts";
 import type { ProbeFetch } from "./integration_identity.ts";
 
@@ -28,9 +28,7 @@ export function setGithubLoginFetch(fetchImpl: ProbeFetch | null): void {
 }
 
 /** STRICTLY a label input, never a gate: a missed look names why, and the caller still proceeds. */
-export type GithubLoginLook =
-  | { login: string }
-  | { login: null; detail: string };
+export type GithubLoginLook = { login: string } | { login: null; detail: string };
 
 function parseViewerLogin(body: unknown): GithubLoginLook {
   const data = isRecord(body) && isRecord(body.data) ? body.data : undefined;
@@ -55,7 +53,7 @@ export async function githubLoginLook(
     res = await fetchImpl(GITHUB_GRAPHQL_URL, {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${token}`,
+        Authorization: `Bearer ${token}`,
         "Content-Type": "application/json",
         "User-Agent": COPILOT_ENV_USER_AGENT,
       },

@@ -72,7 +72,8 @@ function run(...args: string[]): { code: number | null; out: string } {
         CONSOLA_LEVEL: "5",
         COPILOT_API_HOME: home,
       },
-    }));
+    }),
+  );
   return { code: proc.exitCode, out: proc.stdout + proc.stderr };
 }
 
@@ -104,7 +105,8 @@ skipWin(
 skipWin(
   "re-wiring refreshes a stale block in place: the current shell/ path, ONE blank before the user's next line, later lines unmoved, re-runs converge",
   () => {
-    const stale = `${MARKER}\nAGENTS_BASHRC="/old/agents.bashrc"\n` +
+    const stale =
+      `${MARKER}\nAGENTS_BASHRC="/old/agents.bashrc"\n` +
       `[ -f "$AGENTS_BASHRC" ] && source "$AGENTS_BASHRC"\n${MARKER_END}`;
     const rows: Array<{ before: string; above: string; below: string | null }> = [
       // The motivating rc shape: a stale block sits directly against the user's next line.
@@ -162,11 +164,14 @@ skipWin(
   "--remove strips a CRLF-written legacy block and a fresh fenced wire alike; the launchers key stays the user's",
   () => {
     // A block written with CRLF (an old PowerShell Add-Content, a CRLF rc), without an end fence.
-    const crlfLegacy = `export KEEP=1\r\n\r\n${MARKER}\r\nAGENTS_BASHRC="/x/agents.bashrc"\r\n` +
+    const crlfLegacy =
+      `export KEEP=1\r\n\r\n${MARKER}\r\nAGENTS_BASHRC="/x/agents.bashrc"\r\n` +
       `[ -f "$AGENTS_BASHRC" ] && source "$AGENTS_BASHRC"\r\n`;
-    const rows: Array<
-      { stage: () => void; survives: string | null; launchers: boolean | undefined }
-    > = [
+    const rows: Array<{
+      stage: () => void;
+      survives: string | null;
+      launchers: boolean | undefined;
+    }> = [
       {
         stage: () => writeFileSync(join(home, ".bashrc"), crlfLegacy),
         survives: "export KEEP=1",
@@ -237,12 +242,11 @@ skipWin("posixBlock anchors a path under the home directory at $HOME", () => {
   const blockFile = join(home, "block.sh");
   writeFileSync(blockFile, posixBlock(join(homedir(), tail)));
   const movedHome = join(home, "moved");
-  const proc = runSync("bash", [
-    "-c",
-    `source "$1"; printf %s "$AGENTS_BASHRC"`,
+  const proc = runSync(
     "bash",
-    blockFile,
-  ], { env: { ...process.env, HOME: movedHome } });
+    ["-c", `source "$1"; printf %s "$AGENTS_BASHRC"`, "bash", blockFile],
+    { env: { ...process.env, HOME: movedHome } },
+  );
   expect(proc.stdout).toBe(join(movedHome, tail));
 });
 
@@ -252,9 +256,7 @@ test("the PowerShell blocks anchor an under-home path at $HOME, and only then", 
     `$AgentsPs1 = "$HOME${sep}shell${sep}agents.ps1"`,
   );
   const weird = join(homedir(), "we$ird", "agents.ps1");
-  expect(windowsBlock(weird)).toContain(
-    `$AgentsPs1 = $HOME + '${sep}we$ird${sep}agents.ps1'`,
-  );
+  expect(windowsBlock(weird)).toContain(`$AgentsPs1 = $HOME + '${sep}we$ird${sep}agents.ps1'`);
   const outside = join(sep, "opt", "agents.ps1");
   expect(windowsBlock(outside)).toContain(`$AgentsPs1 = '${outside}'`);
 });
@@ -297,14 +299,14 @@ test("upsert follows the file's DOMINANT line ending on a first wire, and keeps 
 test("upsert converges duplicate blocks on ONE wherever they sit: the first refreshed, the rest stripped, a user line under a stray marker kept and reported, an EOF duplicate normalized", () => {
   const block = windowsBlock(join(homedir(), "shell", "agents.ps1"));
   const wired = up("Write-Host before\n", block);
-  const stale = `${MARKER}\n$AgentsPs1 = 'C:\\old\\agents.ps1'\n` +
+  const stale =
+    `${MARKER}\n$AgentsPs1 = 'C:\\old\\agents.ps1'\n` +
     `if (Test-Path -LiteralPath $AgentsPs1) { . $AgentsPs1 }\n${MARKER_END}`;
   const rows: Array<{ content: string; converged: string; leftBehind: string[] }> = [
     // Two markers in one file (a bad hand-merge, a crashed editor) would source the
     // integration twice.
     {
-      content:
-        `Write-Host before\n\n${stale}\n\nWrite-Host middle\n\n${stale}\n\nWrite-Host after\n`,
+      content: `Write-Host before\n\n${stale}\n\nWrite-Host middle\n\n${stale}\n\nWrite-Host after\n`,
       converged: `${wired}Write-Host middle\nWrite-Host after\n`,
       leftBehind: [],
     },
@@ -544,40 +546,50 @@ for (const shell of ["bash", "zsh"]) {
       const staged = stageRc("agents.bashrc", "agent", FAKE_AGENT_SH);
       // `_env` is a name a user's own rc plausibly holds; the rc's temporaries live in its
       // reserved `_COPILOT_` namespace, so sourcing must not assign or unset it.
-      const proc = runSync(shell, [
-        "-c",
-        [
-          "_env=keep",
-          'source "$1"',
-          'echo "after source: $COPILOT_FAKE_REFRESHES $COPILOT_FAKE_ARGS stale=${COPILOT_FAKE_STALE-unset} _env=${_env-unset}"',
-          "fake_launcher",
-          "agent hello",
-          'echo "after agent: $COPILOT_FAKE_REFRESHES"',
-          "export COPILOT_FAKE_REFRESH_FAILS=1",
-          "agent again",
-          'echo "after failed refresh: $COPILOT_FAKE_REFRESHES status=$?"',
-          "agent fail",
-          'echo "after failed command: $COPILOT_FAKE_REFRESHES status=$?"',
-        ].join("\n"),
+      const proc = runSync(
         shell,
-        staged.rc,
-      ], { env: { ...process.env, HOME: home, COPILOT_FAKE_STALE: "1" } });
+        [
+          "-c",
+          [
+            "_env=keep",
+            'source "$1"',
+            'echo "after source: $COPILOT_FAKE_REFRESHES $COPILOT_FAKE_ARGS stale=${COPILOT_FAKE_STALE-unset} _env=${_env-unset}"',
+            "fake_launcher",
+            "agent hello",
+            'echo "after agent: $COPILOT_FAKE_REFRESHES"',
+            "export COPILOT_FAKE_REFRESH_FAILS=1",
+            "agent again",
+            'echo "after failed refresh: $COPILOT_FAKE_REFRESHES status=$?"',
+            "agent fail",
+            'echo "after failed command: $COPILOT_FAKE_REFRESHES status=$?"',
+          ].join("\n"),
+          shell,
+          staged.rc,
+        ],
+        { env: { ...process.env, HOME: home, COPILOT_FAKE_STALE: "1" } },
+      );
       expect({ exitCode: proc.exitCode, stdout: proc.stdout, stderr: proc.stderr }).toEqual({
         exitCode: 0,
-        stdout: "after source: 1 profile env stale=unset _env=keep\nfake launcher ran\n" +
+        stdout:
+          "after source: 1 profile env stale=unset _env=keep\nfake launcher ran\n" +
           "fake agent stdout: hello\nafter agent: 2\n" +
           "fake agent stdout: again\nafter failed refresh: 2 status=0\n" +
           "after failed command: 2 status=13\n",
-        stderr: "fake agent stderr: hello\nfake agent stderr: profile env\n" +
+        stderr:
+          "fake agent stderr: hello\nfake agent stderr: profile env\n" +
           "fake agent stderr: again\nfake agent stderr: profile env\n" +
           "fake agent stderr: fail\n",
       });
-      const failed = runSync(shell, [
-        "-c",
-        'source "$1"\necho "after failed source: ${COPILOT_FAKE_REFRESHES-unset}"',
+      const failed = runSync(
         shell,
-        staged.rc,
-      ], { env: { ...process.env, HOME: home, COPILOT_FAKE_REFRESH_FAILS: "1" } });
+        [
+          "-c",
+          'source "$1"\necho "after failed source: ${COPILOT_FAKE_REFRESHES-unset}"',
+          shell,
+          staged.rc,
+        ],
+        { env: { ...process.env, HOME: home, COPILOT_FAKE_REFRESH_FAILS: "1" } },
+      );
       expect({ exitCode: failed.exitCode, stdout: failed.stdout, stderr: failed.stderr }).toEqual({
         exitCode: 0,
         stdout: "after failed source: unset\n",
@@ -626,11 +638,13 @@ for (const { driver: ps, onThisHost } of PS_DRIVERS) {
       expect({ exitCode: proc.exitCode, stdout: lf(proc.stdout), stderr: lf(proc.stderr) }).toEqual(
         {
           exitCode: 0,
-          stdout: "after source: 1 profile env --format powershell stale=[]\nfake launcher ran\n" +
+          stdout:
+            "after source: 1 profile env --format powershell stale=[]\nfake launcher ran\n" +
             "fake agent stdout: hello\nafter agent: 2\n" +
             "fake agent stdout: again\nafter failed refresh: 2 status=0\n" +
             "after failed command: 2 status=13\n",
-          stderr: "fake agent stderr: hello\nfake agent stderr: profile env --format powershell\n" +
+          stderr:
+            "fake agent stderr: hello\nfake agent stderr: profile env --format powershell\n" +
             "fake agent stderr: again\nfake agent stderr: profile env --format powershell\n" +
             "fake agent stderr: fail\n",
         },
@@ -640,15 +654,16 @@ for (const { driver: ps, onThisHost } of PS_DRIVERS) {
         failedDriver,
         '. $args[0]\n"after failed source: [$env:COPILOT_FAKE_REFRESHES]"\n',
       );
-      const failed = runSync(ps, [
-        "-NoProfile",
-        "-NonInteractive",
-        "-File",
-        failedDriver,
-        staged.rc,
-      ], { env: { ...process.env, HOME: home, COPILOT_FAKE_REFRESH_FAILS: "1" } });
-      expect({ exitCode: failed.exitCode, stdout: lf(failed.stdout), stderr: lf(failed.stderr) })
-        .toEqual({ exitCode: 0, stdout: "after failed source: []\n", stderr: "" });
+      const failed = runSync(
+        ps,
+        ["-NoProfile", "-NonInteractive", "-File", failedDriver, staged.rc],
+        { env: { ...process.env, HOME: home, COPILOT_FAKE_REFRESH_FAILS: "1" } },
+      );
+      expect({
+        exitCode: failed.exitCode,
+        stdout: lf(failed.stdout),
+        stderr: lf(failed.stderr),
+      }).toEqual({ exitCode: 0, stdout: "after failed source: []\n", stderr: "" });
     },
   );
 }

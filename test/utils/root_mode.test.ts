@@ -6,7 +6,7 @@ import { isAbsolute, join, parse } from "node:path";
 import { parse as parseToml } from "smol-toml";
 import { configureCodexConfig } from "../../src/codex/config.ts";
 import { codexConfigPath, codexProviderId } from "../../src/codex/paths.ts";
-import { parseProfileName, type Profile } from "../../src/copilot_api/profile.ts";
+import { type Profile, parseProfileName } from "../../src/copilot_api/profile.ts";
 import {
   agentLauncherCommand,
   derivedCompiledRoot,
@@ -18,8 +18,8 @@ import {
   PROJECT_ROOT,
   proxyTokenCommand,
 } from "../../src/utils/root.ts";
-import { expect, removeDir, tempDir, test } from "../helpers/testing.ts";
 import { envSnapshot, isolateAgentHomes } from "../helpers/env.ts";
+import { expect, removeDir, tempDir, test } from "../helpers/testing.ts";
 
 test("PROJECT_ROOT is a real absolute directory on disk", () => {
   // The contract compiled mode exists to keep: external programs (codex, claude)
@@ -62,7 +62,7 @@ test("looksLikeInstallRoot gates the recursive delete on the marker layout or a 
   const root = tempDir("copilot-root-mode-");
   try {
     const manifestPath = join(root, INSTALL_MANIFEST_FILE);
-    const valid = JSON.stringify({ "version": "0.0.1", "kind": "installed", "assets": ["shell"] });
+    const valid = JSON.stringify({ version: "0.0.1", kind: "installed", assets: ["shell"] });
 
     expect(looksLikeInstallRoot(root)).toBe(false); // empty: no manifest, no markers
     writeFileSync(manifestPath, valid);
@@ -74,14 +74,12 @@ test("looksLikeInstallRoot gates the recursive delete on the marker layout or a 
     // Each fixture isolates ONE wrong field against the valid form above, so
     // dropping any one validation in readInstallManifest breaks exactly one of
     // them -- the recursive-delete gate must not trust a foreign file.
-    for (
-      const text of [
-        '{"version":"1.0.0","kind":"checkout","assets":[]}',
-        '{"version":1,"kind":"installed","assets":[]}',
-        '{"version":"1.0.0","kind":"installed","assets":"shell"}',
-        '{"version":"1.0.0","kind":"installed","assets":[1]}',
-      ]
-    ) {
+    for (const text of [
+      '{"version":"1.0.0","kind":"checkout","assets":[]}',
+      '{"version":1,"kind":"installed","assets":[]}',
+      '{"version":"1.0.0","kind":"installed","assets":"shell"}',
+      '{"version":"1.0.0","kind":"installed","assets":[1]}',
+    ]) {
       writeFileSync(manifestPath, text);
       expect(looksLikeInstallRoot(root)).toBe(false);
     }
@@ -197,7 +195,7 @@ test("installStateRoot: machine state lives at the versioned TOP, else at the ro
 
 test("looksLikeInstallRoot recognizes a versioned top only with the link and a manifest", () => {
   const top = tempDir("copilot-root-vtop-");
-  const valid = JSON.stringify({ "version": "9.9.9", "kind": "installed", "assets": ["shell"] });
+  const valid = JSON.stringify({ version: "9.9.9", kind: "installed", assets: ["shell"] });
   try {
     // Layout-shaped names alone never qualify a directory for recursive
     // deletion: a real dir named `current` is not the layout ...

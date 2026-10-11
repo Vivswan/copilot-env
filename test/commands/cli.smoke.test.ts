@@ -1,21 +1,21 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { directHelperCommand, proxyHelperCommand } from "../../src/claude/config.ts";
+import type { ProbeFetch } from "../../src/copilot_api/integration_identity.ts";
+import { USAGE_INDEX_DIR_NAME } from "../../src/copilot_api/paths.ts";
+import { PROFILE_VERBS } from "../../src/copilot_api/profile.ts";
 import {
   CI_PS_DOCUMENTS_DIR_ENV,
   CI_RC_DIR_ENV,
   MARKER as SHELL_MARKER,
 } from "../../src/shell/integration.ts";
-import { getSanitizedHostname } from "../../src/utils/hostname.ts";
-import { USAGE_INDEX_DIR_NAME } from "../../src/copilot_api/paths.ts";
-import { PROFILE_VERBS } from "../../src/copilot_api/profile.ts";
 import { loadPricing } from "../../src/usage/pricing.ts";
+import { getSanitizedHostname } from "../../src/utils/hostname.ts";
 import { MILLISECONDS_PER_DAY } from "../../src/utils/time.ts";
+import { agentHomeEnv } from "../helpers/env.ts";
+import { writeClaudeSettings, writeCodexConfigToml } from "../helpers/fixtures.ts";
 import { runCli } from "../helpers/run.ts";
 import { expect, tempDir, test } from "../helpers/testing.ts";
-import { writeClaudeSettings, writeCodexConfigToml } from "../helpers/fixtures.ts";
-import { agentHomeEnv } from "../helpers/env.ts";
-import type { ProbeFetch } from "../../src/copilot_api/integration_identity.ts";
 
 // HOME/USERPROFILE are isolated too: the codex host-farm and shell probes resolve through the home
 // directory, so a developer machine with a built farm or a wired rc file would leak into the
@@ -28,9 +28,10 @@ function isolatedEnv(extra: Record<string, string> = {}): Record<string, string>
   return { ...process.env, CONSOLA_LEVEL: "5", ...agentHomeEnv(home), ...extra };
 }
 
-function isolatedProxyEnv(
-  extra: Record<string, string> = {},
-): { env: Record<string, string>; codexHome: string } {
+function isolatedProxyEnv(extra: Record<string, string> = {}): {
+  env: Record<string, string>;
+  codexHome: string;
+} {
   const root = tempDir("copilot-health-proxy-");
   const codexHome = join(root, ".codex");
   // The writer emits 127.0.0.1 (not localhost) so the agent reaches the IPv4 proxy on Windows; the
@@ -85,11 +86,20 @@ test("`cli.ts --help` loads the CLI and exits 0", () => {
 test("the command listings fit 80 columns one row each, and the root help lists every profile verb", () => {
   const root = helpScreen("--help");
   const profile = helpScreen("profile", "--help");
-  for (const [label, screen] of [["agent", root], ["agent profile", profile]] as const) {
+  for (const [label, screen] of [
+    ["agent", root],
+    ["agent profile", profile],
+  ] as const) {
     expect(screen.exitCode, label).toBe(0);
     const lines = screen.stdout.split("\n");
-    expect(lines.filter((line) => line.length > 80), label).toEqual([]);
-    expect(lines.filter((line) => /^ {3,}\S/.test(line)), label).toEqual([]);
+    expect(
+      lines.filter((line) => line.length > 80),
+      label,
+    ).toEqual([]);
+    expect(
+      lines.filter((line) => /^ {3,}\S/.test(line)),
+      label,
+    ).toEqual([]);
   }
   expect(root.stdout).toMatch(/^Profile:$/m);
   for (const verb of PROFILE_VERBS) {
@@ -136,7 +146,10 @@ test("cli.ts profile mcp --help exposes the server flags; --remove rejects serve
 
   // Serve-only selectors without --serve must not silently print the machine-global status (or
   // start anything): the model flag, and a profile name, whose server is the only per-profile thing.
-  for (const args of [["profile", "mcp", "--model", "x"], ["profile", "work", "mcp"]]) {
+  for (const args of [
+    ["profile", "mcp", "--model", "x"],
+    ["profile", "work", "mcp"],
+  ]) {
     const status = runCli(args, { env: { ...process.env, CONSOLA_LEVEL: "5" } });
     expect(status.exitCode, args.join(" ")).not.toBe(0);
     expect(status.stderr, args.join(" ")).toContain("apply to --serve");
@@ -196,12 +209,10 @@ test("cli.ts profile mcp (bare) prints the wiring status and exits 0", () => {
 // without any network. Which value wins when both are given needs the apply path, so it is not
 // asserted.
 test("cli.ts update folds --verify/--no-verify into the verify flag", () => {
-  for (
-    const args of [
-      ["update", "--check", "--no-verify"],
-      ["update", "--verify", "--auto-status"],
-    ]
-  ) {
+  for (const args of [
+    ["update", "--check", "--no-verify"],
+    ["update", "--verify", "--auto-status"],
+  ]) {
     const run = runCli(args, { env: { ...process.env, CONSOLA_LEVEL: "5" } });
     expect(run.exitCode, args.join(" ")).not.toBe(0);
     expect(run.stderr, args.join(" ")).toContain(
@@ -406,12 +417,10 @@ test("profile add reconciles the Desktop library after its write; --check report
   );
   writeFileSync(
     join(env.COPILOT_API_HOME!, "state.json"),
-    `${
-      JSON.stringify({
-        global: { "daemon.port": 4199 },
-        ownership: { claudeDesktopPaths: [join(library, "old.json")] },
-      })
-    }\n`,
+    `${JSON.stringify({
+      global: { "daemon.port": 4199 },
+      ownership: { claudeDesktopPaths: [join(library, "old.json")] },
+    })}\n`,
   );
 
   // Before any wiring: --check names the leftover as drift, on the proxy/none exit code.
@@ -452,7 +461,7 @@ test("init configures both agents, probes with no flag exactly as with --auto, a
   // No flag and --auto are one path: with nothing to probe with (no credential, --no-auth), both
   // refuse with the same line, before any mode is recorded.
   const probing = ["--no-auth", "--auto --no-auth"].map((flags) =>
-    runCli(["init", ...flags.split(" ")], { env })
+    runCli(["init", ...flags.split(" ")], { env }),
   );
   for (const refused of probing) {
     expect(refused.exitCode).toBe(1);
@@ -571,11 +580,12 @@ test("bare install defaults to shell wiring; the negated and assets-only flags m
   });
   expect({ exitCode: wired.exitCode, stderr: wired.stderr }).toMatchObject({ exitCode: 0 });
   expect(wired.stdout).toContain("Next steps:");
-  const rcTargets = process.platform === "win32"
-    ? ["WindowsPowerShell", "PowerShell"].map((edition) =>
-      join(documents, edition, "Microsoft.PowerShell_profile.ps1")
-    )
-    : [join(root, ".bashrc")];
+  const rcTargets =
+    process.platform === "win32"
+      ? ["WindowsPowerShell", "PowerShell"].map((edition) =>
+          join(documents, edition, "Microsoft.PowerShell_profile.ps1"),
+        )
+      : [join(root, ".bashrc")];
   for (const file of rcTargets) {
     expect(readFileSync(file, "utf-8")).toContain(SHELL_MARKER);
   }
@@ -617,8 +627,8 @@ test("shell --clis --no-prereqs verifies only and wires this platform's startup 
   const windows = process.platform === "win32";
   const wired = windows
     ? ["WindowsPowerShell", "PowerShell"].map((edition) =>
-      join(documents, edition, "Microsoft.PowerShell_profile.ps1")
-    )
+        join(documents, edition, "Microsoft.PowerShell_profile.ps1"),
+      )
     : [join(root, ".bashrc")];
   const payload = windows ? "agents.ps1" : "agents.bashrc";
   for (const file of wired) {
@@ -643,49 +653,43 @@ test("shell --clis --no-prereqs rejects --cooldown, never drops it", () => {
   // Three cold CLI spawns; generous headroom for loaded Windows CI runners.
 }, 90_000);
 
-test(
-  "the merged commands are gone (the per-agent spellings are unknown commands, not aliases); --gh-token is off the wiring commands",
-  () => {
-    const rootOut = helpScreen("--help").output;
-    // The cached root help is the reintroduction guard for the folded-in commands (the CLI has a
-    // no-hidden-commands rule): the setup-* trio and the per-agent pair. A command row starts its
-    // line; the same words inside a description do not count.
-    for (const stale of ["setup-clis", "setup-shell", "setup-launchers", "claude", "codex"]) {
-      expect(rootOut, stale).not.toMatch(new RegExp(`^\\s{2}${stale}\\s`, "m"));
-    }
-    // Off the help screen is not enough: the spelling must be Commander's own unknown-command
-    // error (exit 1), never a hidden alias.
-    for (const cmd of ["claude", "codex"]) {
-      const gone = runCli([cmd], { env: isolatedEnv() });
-      expect(gone.exitCode, cmd).toBe(1);
-      expect(gone.stderr, cmd).toContain(`unknown command '${cmd}'`);
-    }
+test("the merged commands are gone (the per-agent spellings are unknown commands, not aliases); --gh-token is off the wiring commands", () => {
+  const rootOut = helpScreen("--help").output;
+  // The cached root help is the reintroduction guard for the folded-in commands (the CLI has a
+  // no-hidden-commands rule): the setup-* trio and the per-agent pair. A command row starts its
+  // line; the same words inside a description do not count.
+  for (const stale of ["setup-clis", "setup-shell", "setup-launchers", "claude", "codex"]) {
+    expect(rootOut, stale).not.toMatch(new RegExp(`^\\s{2}${stale}\\s`, "m"));
+  }
+  // Off the help screen is not enough: the spelling must be Commander's own unknown-command
+  // error (exit 1), never a hidden alias.
+  for (const cmd of ["claude", "codex"]) {
+    const gone = runCli([cmd], { env: isolatedEnv() });
+    expect(gone.exitCode, cmd).toBe(1);
+    expect(gone.stderr, cmd).toContain(`unknown command '${cmd}'`);
+  }
 
-    for (const args of [["init"], ["profile", "add"], ["profile", "sync"]]) {
-      const help = helpScreen(...args, "--help");
-      expect(help.exitCode, args.join(" ")).toBe(0);
-      expect(help.output, args.join(" ")).not.toContain("--gh-token");
-    }
-  },
-  60_000,
-);
+  for (const args of [["init"], ["profile", "add"], ["profile", "sync"]]) {
+    const help = helpScreen(...args, "--help");
+    expect(help.exitCode, args.join(" ")).toBe(0);
+    expect(help.output, args.join(" ")).not.toContain("--gh-token");
+  }
+}, 60_000);
 
 test("--full-help prints the overview plus every subcommand's help, the profile verbs included", () => {
   const proc = helpScreen("--full-help");
   expect(proc.exitCode).toBe(0);
-  for (
-    const needle of [
-      "agent init",
-      "agent identity\n",
-      "agent models\n",
-      "agent profile add",
-      "agent profile check",
-      "agent codex-mobile",
-      "agent shell",
-      "agent start",
-      "--clis",
-    ]
-  ) {
+  for (const needle of [
+    "agent init",
+    "agent identity\n",
+    "agent models\n",
+    "agent profile add",
+    "agent profile check",
+    "agent codex-mobile",
+    "agent shell",
+    "agent start",
+    "--clis",
+  ]) {
     expect(proc.stdout).toContain(needle);
   }
 });
@@ -719,12 +723,12 @@ function seededProfileEnv(names: readonly string[] = ["p"]): Record<string, stri
   const root = tempDir("copilot-health-profile-");
   const home = join(root, "api-home");
   mkdirSync(home, { recursive: true });
-  const slot = { "githubToken": "fake-profile-token", "authProvider": "gh-token", "mode": "proxy" };
+  const slot = { githubToken: "fake-profile-token", authProvider: "gh-token", mode: "proxy" };
   writeFileSync(
     join(home, "state.json"),
     JSON.stringify({
       global: { "daemon.port": 4199 },
-      "profiles": Object.fromEntries(names.map((name) => [name, slot])),
+      profiles: Object.fromEntries(names.map((name) => [name, slot])),
     }),
   );
   names.forEach((name, index) => {
@@ -749,80 +753,67 @@ interface ProfiledCheck {
   fix?: string;
 }
 
-test(
-  "health sweeps every profile: the seeded proxy profile is its own runtime target, and its narrowed checks fold in",
-  () => {
-    const env = seededProfileEnv();
-    const proc = runCli(["health", "--json"], { env });
-    const json = JSON.parse(proc.stdout) as {
-      profile: string | null;
-      exitCode: number;
-      checks: ProfiledCheck[];
-    };
-    expect(json.profile).toBeNull();
-    const consistency = json.checks.filter((c) => c.id === "profile.consistency");
-    expect(consistency.map((c) => c.profile)).toEqual(["p"]);
-    expect(consistency[0]?.status).toBe("ok");
-    const ports = json.checks.filter((c) => c.id === "runtime.port");
-    expect(ports.map((c) => c.profile)).toEqual([null, "p"]);
-    // Nothing listens on p's reserved 4555 and auto-start is off: the profile's
-    // rows fail with the profile-addressed fix, and the exit code reflects it.
-    const profilePort = ports.find((c) => c.profile === "p");
-    expect(profilePort?.status).toBe("fail");
-    expect(profilePort?.detail).toContain("4555");
-    expect(profilePort?.fix).toBe("agent profile p start");
-    // The default profile's own run is its daemon alone: p's stopped daemon is p's business.
-    const own = runCli(["profile", "health", "--json"], { env });
-    const ownJson = JSON.parse(own.stdout) as { checks: ProfiledCheck[] };
-    expect(ownJson.checks.map((c) => c.profile)).toEqual(ownJson.checks.map(() => null));
-    expect(ownJson.checks.some((c) => c.id === "runtime.port")).toBe(true);
-    // The profile's own credential line and per-agent wiring ride along, once each.
-    expect(json.checks.filter((c) => c.id === "setup.auth").map((c) => c.profile)).toEqual([
-      null,
-      "p",
-    ]);
-    expect(json.checks.filter((c) => c.id === "setup.codex").map((c) => c.profile)).toEqual([
-      null,
-      "p",
-    ]);
-    expect(json.exitCode).toBe(1);
-    expect(proc.exitCode).toBe(1);
-    // The default profile's fast probe stays the default daemon alone; the every-profile probe
-    // adds each profile daemon's rows.
-    const fast = runCli(["profile", "health", "--scope", "runtime", "--json"], { env });
-    const fastJson = JSON.parse(fast.stdout) as { checks: ProfiledCheck[] };
-    expect(fastJson.checks.map((c) => `${c.id}@${c.profile}`)).toEqual([
-      "runtime.port@null",
-      "runtime.pid@null",
-    ]);
-    const every = runCli(["health", "--scope", "runtime", "--json"], { env });
-    const everyJson = JSON.parse(every.stdout) as { checks: ProfiledCheck[] };
-    expect(everyJson.checks.map((c) => `${c.id}@${c.profile}`)).toEqual([
-      "runtime.port@null",
-      "runtime.pid@null",
-      "profile.consistency@p",
-      "runtime.port@p",
-      "runtime.pid@p",
-    ]);
-    // The named profiles are gathered at once and folded in name order, whatever order the store
-    // lists them in.
-    const two = runCli(["health", "--scope", "runtime", "--json"], {
-      env: seededProfileEnv(["p", "a"]),
-    });
-    const twoJson = JSON.parse(two.stdout) as { checks: ProfiledCheck[] };
-    expect(twoJson.checks.map((c) => c.profile)).toEqual([
-      null,
-      null,
-      "a",
-      "a",
-      "a",
-      "p",
-      "p",
-      "p",
-    ]);
-  },
-  90_000,
-);
+test("health sweeps every profile: the seeded proxy profile is its own runtime target, and its narrowed checks fold in", () => {
+  const env = seededProfileEnv();
+  const proc = runCli(["health", "--json"], { env });
+  const json = JSON.parse(proc.stdout) as {
+    profile: string | null;
+    exitCode: number;
+    checks: ProfiledCheck[];
+  };
+  expect(json.profile).toBeNull();
+  const consistency = json.checks.filter((c) => c.id === "profile.consistency");
+  expect(consistency.map((c) => c.profile)).toEqual(["p"]);
+  expect(consistency[0]?.status).toBe("ok");
+  const ports = json.checks.filter((c) => c.id === "runtime.port");
+  expect(ports.map((c) => c.profile)).toEqual([null, "p"]);
+  // Nothing listens on p's reserved 4555 and auto-start is off: the profile's
+  // rows fail with the profile-addressed fix, and the exit code reflects it.
+  const profilePort = ports.find((c) => c.profile === "p");
+  expect(profilePort?.status).toBe("fail");
+  expect(profilePort?.detail).toContain("4555");
+  expect(profilePort?.fix).toBe("agent profile p start");
+  // The default profile's own run is its daemon alone: p's stopped daemon is p's business.
+  const own = runCli(["profile", "health", "--json"], { env });
+  const ownJson = JSON.parse(own.stdout) as { checks: ProfiledCheck[] };
+  expect(ownJson.checks.map((c) => c.profile)).toEqual(ownJson.checks.map(() => null));
+  expect(ownJson.checks.some((c) => c.id === "runtime.port")).toBe(true);
+  // The profile's own credential line and per-agent wiring ride along, once each.
+  expect(json.checks.filter((c) => c.id === "setup.auth").map((c) => c.profile)).toEqual([
+    null,
+    "p",
+  ]);
+  expect(json.checks.filter((c) => c.id === "setup.codex").map((c) => c.profile)).toEqual([
+    null,
+    "p",
+  ]);
+  expect(json.exitCode).toBe(1);
+  expect(proc.exitCode).toBe(1);
+  // The default profile's fast probe stays the default daemon alone; the every-profile probe
+  // adds each profile daemon's rows.
+  const fast = runCli(["profile", "health", "--scope", "runtime", "--json"], { env });
+  const fastJson = JSON.parse(fast.stdout) as { checks: ProfiledCheck[] };
+  expect(fastJson.checks.map((c) => `${c.id}@${c.profile}`)).toEqual([
+    "runtime.port@null",
+    "runtime.pid@null",
+  ]);
+  const every = runCli(["health", "--scope", "runtime", "--json"], { env });
+  const everyJson = JSON.parse(every.stdout) as { checks: ProfiledCheck[] };
+  expect(everyJson.checks.map((c) => `${c.id}@${c.profile}`)).toEqual([
+    "runtime.port@null",
+    "runtime.pid@null",
+    "profile.consistency@p",
+    "runtime.port@p",
+    "runtime.pid@p",
+  ]);
+  // The named profiles are gathered at once and folded in name order, whatever order the store
+  // lists them in.
+  const two = runCli(["health", "--scope", "runtime", "--json"], {
+    env: seededProfileEnv(["p", "a"]),
+  });
+  const twoJson = JSON.parse(two.stdout) as { checks: ProfiledCheck[] };
+  expect(twoJson.checks.map((c) => c.profile)).toEqual([null, null, "a", "a", "a", "p", "p", "p"]);
+}, 90_000);
 
 test("profile health narrows the run to the named profile and excludes account-wide checks", () => {
   const env = seededProfileEnv();
@@ -834,31 +825,27 @@ test("profile health narrows the run to the named profile and excludes account-w
   };
   expect(json.profile).toBe("p");
   const ids = json.checks.map((c) => c.id);
-  for (
-    const id of [
-      "profile.consistency",
-      "runtime.port",
-      "setup.auth",
-      "setup.codex",
-      "setup.claude",
-    ]
-  ) {
+  for (const id of [
+    "profile.consistency",
+    "runtime.port",
+    "setup.auth",
+    "setup.codex",
+    "setup.claude",
+  ]) {
     expect(ids).toContain(id);
   }
-  for (
-    const id of [
-      "bootstrap.version",
-      "bootstrap.deno",
-      "bootstrap.nodeModules",
-      "proxy.package",
-      "setup.shell",
-      "setup.launchers",
-      "setup.tool.node",
-      "setup.tool.npm",
-      "setup.codex-host",
-      "setup.autoupdate",
-    ]
-  ) {
+  for (const id of [
+    "bootstrap.version",
+    "bootstrap.deno",
+    "bootstrap.nodeModules",
+    "proxy.package",
+    "setup.shell",
+    "setup.launchers",
+    "setup.tool.node",
+    "setup.tool.npm",
+    "setup.codex-host",
+    "setup.autoupdate",
+  ]) {
     expect(ids).not.toContain(id);
   }
   for (const c of json.checks) expect(c.profile).toBe("p");
@@ -910,16 +897,14 @@ test("health --scope full runs every group end-to-end and fails on a dead proxy"
   const { exitCode, json, codexHome } = runHealthJson("full");
   const ids = json.checks.map((c) => c.id);
   expect(json.scope).toBe("full");
-  for (
-    const id of [
-      "bootstrap.deno",
-      "proxy.package",
-      "runtime.port",
-      "setup.shell",
-      "setup.codex",
-      "setup.codex-host",
-    ]
-  ) {
+  for (const id of [
+    "bootstrap.deno",
+    "proxy.package",
+    "runtime.port",
+    "setup.shell",
+    "setup.codex",
+    "setup.codex-host",
+  ]) {
     expect(ids).toContain(id);
   }
   expect(json.exitCode).toBe(1);
@@ -968,9 +953,10 @@ const SCOPE_ROWS: {
     detail: (json) => {
       const codexHost = json.checks.find((c) => c.id === "setup.codex-host");
       // Unbuilt farm: optional on Linux/macOS (POSIX symlinks), unsupported on Windows.
-      const expectedHostDetail = process.platform === "win32"
-        ? "not built (unsupported on Windows)"
-        : "not built (optional)";
+      const expectedHostDetail =
+        process.platform === "win32"
+          ? "not built (unsupported on Windows)"
+          : "not built (optional)";
       expect(codexHost?.detail).toBe(expectedHostDetail);
       expect(codexHost?.detail).not.toContain(String(codexHost?.value?.hostHome));
       expect(codexHost?.detail).not.toContain("config.toml:");
@@ -1004,40 +990,39 @@ const SCOPE_ROWS: {
   },
 ];
 
-test(
-  "each narrowed health scope carries exactly its own groups and reaches its own exit code",
-  () => {
-    for (const row of SCOPE_ROWS) {
-      const { exitCode, json } = runHealthJson(row.scope, row.env?.());
-      const ids = json.checks.map((c) => c.id);
-      expect({
-        scope: row.scope,
-        reported: json.scope,
-        exitCode,
-        jsonExitCode: json.exitCode,
-        ids: row.exactly ? ids : row.present.filter((id) => ids.includes(id)),
-        leaked: (row.absent ?? []).filter((id) => ids.includes(id)),
-      }).toEqual({
-        scope: row.scope,
-        reported: row.scope,
-        exitCode: row.exitCode,
-        jsonExitCode: row.exitCode,
-        ids: row.present,
-        leaked: [],
-      });
-      row.detail?.(json);
-    }
-    // Four cold CLI spawns; generous headroom for loaded Windows CI runners.
-  },
-  90_000,
-);
+test("each narrowed health scope carries exactly its own groups and reaches its own exit code", () => {
+  for (const row of SCOPE_ROWS) {
+    const { exitCode, json } = runHealthJson(row.scope, row.env?.());
+    const ids = json.checks.map((c) => c.id);
+    expect({
+      scope: row.scope,
+      reported: json.scope,
+      exitCode,
+      jsonExitCode: json.exitCode,
+      ids: row.exactly ? ids : row.present.filter((id) => ids.includes(id)),
+      leaked: (row.absent ?? []).filter((id) => ids.includes(id)),
+    }).toEqual({
+      scope: row.scope,
+      reported: row.scope,
+      exitCode: row.exitCode,
+      jsonExitCode: row.exitCode,
+      ids: row.present,
+      leaked: [],
+    });
+    row.detail?.(json);
+  }
+  // Four cold CLI spawns; generous headroom for loaded Windows CI runners.
+}, 90_000);
 
 // --- autoupdate management flags --------------------------------------------
 
 test("update --auto-status reports the auto-update key honestly, on and off (offline, read-only)", () => {
   // The key half of the line is exact per stored value; the last-check half comes from
   // the install root's own throttle state, which a child cannot be pointed away from.
-  for (const [autoUpdate, word] of [[true, "enabled"], [false, "disabled"]] as const) {
+  for (const [autoUpdate, word] of [
+    [true, "enabled"],
+    [false, "disabled"],
+  ] as const) {
     const home = tempDir("copilot-autostatus-");
     writeFileSync(
       join(home, "state.json"),
@@ -1062,18 +1047,16 @@ test("cli.ts cost --no-index parses every log; without it the usage index is use
   mkdirSync(projects, { recursive: true });
   writeFileSync(
     join(projects, "aaa.jsonl"),
-    `${
-      JSON.stringify({
-        type: "assistant",
-        timestamp: "2026-06-01T10:00:00.000Z",
-        message: {
-          id: "msg_1",
-          model: "claude-opus-4-8",
-          role: "assistant",
-          usage: { "input_tokens": 10, "output_tokens": 20 },
-        },
-      })
-    }\n`,
+    `${JSON.stringify({
+      type: "assistant",
+      timestamp: "2026-06-01T10:00:00.000Z",
+      message: {
+        id: "msg_1",
+        model: "claude-opus-4-8",
+        role: "assistant",
+        usage: { input_tokens: 10, output_tokens: 20 },
+      },
+    })}\n`,
   );
   const runtimeOf = (...flags: string[]) => {
     const proc = runCli(
@@ -1100,18 +1083,16 @@ test("cli.ts cost prices at the stored pricing-url when the flag is omitted and 
   mkdirSync(projects, { recursive: true });
   writeFileSync(
     join(projects, "aaa.jsonl"),
-    `${
-      JSON.stringify({
-        type: "assistant",
-        timestamp: "2026-06-01T10:00:00.000Z",
-        message: {
-          id: "msg_1",
-          model: "claude-opus-4-8",
-          role: "assistant",
-          usage: { "input_tokens": 10, "output_tokens": 20 },
-        },
-      })
-    }\n`,
+    `${JSON.stringify({
+      type: "assistant",
+      timestamp: "2026-06-01T10:00:00.000Z",
+      message: {
+        id: "msg_1",
+        model: "claude-opus-4-8",
+        role: "assistant",
+        usage: { input_tokens: 10, output_tokens: 20 },
+      },
+    })}\n`,
   );
   const storedUrl = "https://127.0.0.1:9/stored/models";
   const flagUrl = "https://127.0.0.1:9/flag/models";
@@ -1129,10 +1110,12 @@ test("cli.ts cost prices at the stored pricing-url when the flag is omitted and 
       Promise.resolve(
         new Response(
           JSON.stringify({
-            data: [{
-              id: "anthropic/claude-opus-4.8",
-              pricing: { prompt, completion: "0.000075" },
-            }],
+            data: [
+              {
+                id: "anthropic/claude-opus-4.8",
+                pricing: { prompt, completion: "0.000075" },
+              },
+            ],
           }),
           { status: 200 },
         ),

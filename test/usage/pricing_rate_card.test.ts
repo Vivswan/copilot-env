@@ -5,8 +5,8 @@ import {
   type LoadedRateCard,
   loadGitHubRateCard,
   parseRateCard,
-  rateCardCachePath,
   type RateCardSource,
+  rateCardCachePath,
 } from "../../src/usage/github_rate_card.ts";
 import { estimateCost, type PricingTier, withGitHubRates } from "../../src/usage/pricing.ts";
 import { PROJECT_ROOT } from "../../src/utils/root.ts";
@@ -28,7 +28,10 @@ const ASTRA_LONG = { input: 20, output: 75, cacheRead: 2, cacheCreation: 25 };
 const FETCHED_NOW: RateCardSource = { source: "fetched", fetchedAtMs: NOW };
 
 /** Serves `text` as the card and counts the calls; `fail` rejects the way the transport does. */
-function textFetch(text: string, opts: { fail?: boolean } = {}): {
+function textFetch(
+  text: string,
+  opts: { fail?: boolean } = {},
+): {
   fetch: typeof fetch;
   calls: number;
 } {
@@ -60,7 +63,10 @@ async function loadCard(
 }
 
 function without(name: string, text: string = CARD_TEXT): string {
-  return text.split(/\n(?=- model:)/).filter((row) => !row.includes(name)).join("\n");
+  return text
+    .split(/\n(?=- model:)/)
+    .filter((row) => !row.includes(name))
+    .join("\n");
 }
 
 test("parseRateCard reads the published file: a base tier per model, the long-context tier where the card has one, and every name mapped", () => {
@@ -141,7 +147,10 @@ const RESHAPED: { name: string; reshape: (text: string) => string; problem: stri
     // otherwise price at the base rate off a card the cache then keeps for a day.
     name: "every long-context row removed",
     reshape: (text) =>
-      text.split(/\n(?=- model:)/).filter((row) => !row.includes("Long context")).join("\n"),
+      text
+        .split(/\n(?=- model:)/)
+        .filter((row) => !row.includes("Long context"))
+        .join("\n"),
     problem: "the default row of openai/gpt-5.4 has no long-context row",
   },
   {
@@ -200,12 +209,17 @@ test("loadGitHubRateCard takes a whole card that lacks a mapped model as GitHub'
       ["openai/gpt-5.6-sol", { input: 2, output: 10, cacheRead: 0.2, cacheCreation: 2.5 }],
     ]);
     const usage = {
-      byModel: new Map([["gpt-5.6-sol", {
-        input: 1_000_000,
-        output: 100_000,
-        cacheRead: 0,
-        cacheCreation: 0,
-      }]]),
+      byModel: new Map([
+        [
+          "gpt-5.6-sol",
+          {
+            input: 1_000_000,
+            output: 100_000,
+            cacheRead: 0,
+            cacheCreation: 0,
+          },
+        ],
+      ]),
     };
     const estimate = estimateCost(usage, withGitHubRates(list, loaded.card, loaded.from));
     expect(estimate.perModel["gpt-5.6-sol"]?.estimatedCostUsd).toBeCloseTo(2 + 0.1 * 10, 10);
@@ -259,8 +273,16 @@ test("the published card prices sol and astra at their base tier up to 272K and 
   const total = { input: 1_000_000, output: 100_000, cacheRead: 2_000_000, cacheCreation: 50_000 };
   const long = { input: 400_000, output: 40_000, cacheRead: 1_000_000, cacheCreation: 20_000 };
   const usage = {
-    byModel: new Map([["gpt-5.6-sol", total], ["gpt-6-astra", total]]),
-    longContext: { byModel: new Map([["gpt-5.6-sol", long], ["gpt-6-astra", long]]) },
+    byModel: new Map([
+      ["gpt-5.6-sol", total],
+      ["gpt-6-astra", total],
+    ]),
+    longContext: {
+      byModel: new Map([
+        ["gpt-5.6-sol", long],
+        ["gpt-6-astra", long],
+      ]),
+    },
   };
   const published = parseRateCard(CARD_TEXT);
   const fetched = estimateCost(usage, withGitHubRates(list, published, FETCHED_NOW));
@@ -268,12 +290,12 @@ test("the published card prices sol and astra at their base tier up to 272K and 
   // sol: 600K in at 4 + 400K at 8, 60K out at 20 + 40K at 30, 1M reads at 0.4 + 1M at 0.8, 30K
   // writes at 5 + 20K at 10.
   expect(fetched.perModel["gpt-5.6-sol"]?.estimatedCostUsd).toBeCloseTo(
-    (0.6 * 4 + 0.4 * 8) + (0.06 * 20 + 0.04 * 30) + (0.4 + 0.8) + (0.03 * 5 + 0.02 * 10),
+    0.6 * 4 + 0.4 * 8 + (0.06 * 20 + 0.04 * 30) + (0.4 + 0.8) + (0.03 * 5 + 0.02 * 10),
     10,
   );
   // astra: the list's base rate IS the card's, so only the long-context share moves the price.
   expect(fetched.perModel["gpt-6-astra"]?.estimatedCostUsd).toBeCloseTo(
-    (0.6 * 10 + 0.4 * 20) + (0.06 * 50 + 0.04 * 75) + (1 + 2) + (0.03 * 12.5 + 0.02 * 25),
+    0.6 * 10 + 0.4 * 20 + (0.06 * 50 + 0.04 * 75) + (1 + 2) + (0.03 * 12.5 + 0.02 * 25),
     10,
   );
 

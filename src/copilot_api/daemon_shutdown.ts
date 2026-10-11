@@ -26,7 +26,8 @@ let shuttingDown: Promise<void> | null = null;
  *  serve wrap passes through whatever the runtime returned. */
 export function recordDaemonServer(candidate: unknown): void {
   if (
-    typeof candidate === "object" && candidate !== null &&
+    typeof candidate === "object" &&
+    candidate !== null &&
     typeof (candidate as DrainableServer).shutdown === "function"
   ) {
     daemonServer = candidate as DrainableServer;
@@ -56,7 +57,7 @@ export function shutdownDaemon(code = 0): Promise<void> {
   const server = daemonServer;
   if (server === null) Deno.exit(code);
   shuttingDown = withDeadline(Promise.resolve(server.shutdown()), DRAIN_DEADLINE_MS).then(() =>
-    Deno.exit(code)
+    Deno.exit(code),
   );
   return shuttingDown;
 }

@@ -19,12 +19,12 @@ import {
   DEFAULT_PROFILE_NAME,
   isReservedProfileWord,
   isValidProfileName,
+  type Profile,
+  type ProfileName,
   parseProfileFlag,
   parseProfileName,
-  type Profile,
   profileKey,
   profileLabel,
-  type ProfileName,
 } from "./profile.ts";
 import { rootStateStore } from "./state_store.ts";
 
@@ -178,9 +178,9 @@ export function partialSlotGap(
 ): string {
   return slot.mode === null
     ? `${profileLabel(name)} does not exist - create it with ` +
-      `\`agent profile ${name} add --direct|--proxy\``
+        `\`agent profile ${name} add --direct|--proxy\``
     : `${profileLabel(name)} has no credential - repair it with ` +
-      `\`agent profile ${name} auth\` or \`agent profile ${name} add\``;
+        `\`agent profile ${name} auth\` or \`agent profile ${name} add\``;
 }
 
 /** The READ view, not the disk layout: the default slot's credential is projected to the top level
@@ -244,9 +244,12 @@ const DIRECT_PAIR_SCHEMA = v.object({
       v.pipe(
         v.string(),
         v.trim(),
-        v.check((s) =>
-          URL.canParse(s) && new URL(s).protocol === "https:" && new URL(s).origin === s &&
-          !isLoopbackHostname(new URL(s).hostname)
+        v.check(
+          (s) =>
+            URL.canParse(s) &&
+            new URL(s).protocol === "https:" &&
+            new URL(s).origin === s &&
+            !isLoopbackHostname(new URL(s).hostname),
         ),
       ),
     ),
@@ -272,10 +275,12 @@ const STATE_SCHEMA = v.object({
   ),
   codexCatalogPatchVersion: v.fallback(v.pipe(v.number(), v.finite(), v.minValue(0)), 0),
   codexCatalogAccepted: v.fallback(
-    v.nullable(v.object({
-      sha256: SHA256_HEX_SCHEMA,
-      codexVersion: v.pipe(v.string(), v.trim(), v.minLength(1)),
-    })),
+    v.nullable(
+      v.object({
+        sha256: SHA256_HEX_SCHEMA,
+        codexVersion: v.pipe(v.string(), v.trim(), v.minLength(1)),
+      }),
+    ),
     null,
   ),
   // Unnamed keys (a hand edit, a newer release's, the settings sharing the map) never surface here
@@ -342,9 +347,10 @@ export function knownProfile(raw: string | undefined): Profile {
 
 function unknownProfileError(name: ProfileName): Error {
   const names = allProfileNames();
-  const hint = names.length === 0
-    ? "no profiles exist - create one with `agent profile <name> add --direct|--proxy`"
-    : `known profiles: ${names.join(", ")}`;
+  const hint =
+    names.length === 0
+      ? "no profiles exist - create one with `agent profile <name> add --direct|--proxy`"
+      : `known profiles: ${names.join(", ")}`;
   return new Error(`no such profile '${name}' (${hint})`);
 }
 
@@ -524,7 +530,8 @@ export class CopilotEnvState {
       const profiles = isRecord(d.profiles) ? d.profiles : {};
       const raw = profiles[name];
       const committed: Record<string, unknown> = isRecord(raw) ? raw : {};
-      const credentialUnchanged = (committed.githubToken ?? null) === next.githubToken &&
+      const credentialUnchanged =
+        (committed.githubToken ?? null) === next.githubToken &&
         (committed.authProvider ?? null) === next.authProvider &&
         (committed.ghUser ?? null) === next.ghUser;
       writeCredentialFields(committed, next);
@@ -573,11 +580,12 @@ export class CopilotEnvState {
     if (!isRecord(raw)) return {};
     const pair = v.parse(DIRECT_PAIR_SCHEMA, raw);
     return {
-      ...(pair.integrationIdentity === null ? {} : {
-        integrationId: pair.integrationIdentity === CODEX_IDENTITY_NAME
-          ? null
-          : pair.integrationIdentity,
-      }),
+      ...(pair.integrationIdentity === null
+        ? {}
+        : {
+            integrationId:
+              pair.integrationIdentity === CODEX_IDENTITY_NAME ? null : pair.integrationIdentity,
+          }),
       ...(pair.copilotHost === null ? {} : { host: new URL(pair.copilotHost).origin }),
     };
   }

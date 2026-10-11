@@ -188,12 +188,15 @@ export async function webSearch(query: string, opts: WebSearchOptions = {}): Pro
   const configured = opts.model ?? config.messageApiWebSearchModel(profile);
   // Only a configured value can be an alias; the built-in default is a raw catalog id, so the default
   // path stays catalog-free.
-  const model = configured === null ? DEFAULT_WEB_SEARCH_MODEL : await raceWithAbort(
-    resolveWebSearchModel(configured, profile, token, pair, opts.fetchImpl),
-    opts.signal,
-  );
+  const model =
+    configured === null
+      ? DEFAULT_WEB_SEARCH_MODEL
+      : await raceWithAbort(
+          resolveWebSearchModel(configured, profile, token, pair, opts.fetchImpl),
+          opts.signal,
+        );
   const headers: Record<string, string> = {
-    "Authorization": `Bearer ${token}`,
+    Authorization: `Bearer ${token}`,
     "Content-Type": "application/json",
     ...clientHeaders,
   };
@@ -205,14 +208,14 @@ export async function webSearch(query: string, opts: WebSearchOptions = {}): Pro
     headers,
     body: JSON.stringify({
       model,
-      "stream": false,
-      "reasoning": { "effort": "low" },
-      "tools": [{ "type": "web_search" }],
+      stream: false,
+      reasoning: { effort: "low" },
+      tools: [{ type: "web_search" }],
       // Without this the model may answer from its own weights, and the tool's whole contract is
       // "the answer came from the live web".
-      "tool_choice": { "type": "web_search" },
-      "instructions": SEARCH_INSTRUCTIONS,
-      "input": query,
+      tool_choice: { type: "web_search" },
+      instructions: SEARCH_INSTRUCTIONS,
+      input: query,
     }),
     signal: opts.signal === undefined ? timeout : AbortSignal.any([timeout, opts.signal]),
   });
@@ -255,7 +258,7 @@ export function parseResponsesOutput(body: unknown): string {
   }
   if (sources.size === 0) return answer;
   const lines = [...sources.entries()].map(([sourceUrl, title]) =>
-    title !== "" ? `- ${title}: ${sourceUrl}` : `- ${sourceUrl}`
+    title !== "" ? `- ${title}: ${sourceUrl}` : `- ${sourceUrl}`,
   );
   return `${answer}\n\nSources:\n${lines.join("\n")}`;
 }

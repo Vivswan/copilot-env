@@ -12,6 +12,11 @@ import {
 } from "node:fs";
 import { basename, delimiter, dirname, join, sep } from "node:path";
 import {
+  claudeDesktopStatus,
+  reconcileClaudeDesktopWiring,
+} from "../../src/agents/claude_desktop.ts";
+import { runClaude, runCodex } from "../../src/agents/configure_defaults.ts";
+import {
   applyImportPlan,
   buildExportBundle,
   type ImportDeps,
@@ -22,12 +27,17 @@ import {
   previewImportChanges,
   REDACTED_TOKEN,
   rollbackCommand,
-  serializeSettingsBundle,
   SETTINGS_BACKUP_KEEP,
-  settingsBackupDir,
   type SettingsBundle,
+  serializeSettingsBundle,
+  settingsBackupDir,
 } from "../../src/agents/transfer.ts";
-import { runClaude, runCodex } from "../../src/agents/configure_defaults.ts";
+import { wireClaudeDesktopEntry } from "../../src/claude/desktop.ts";
+import {
+  CLAUDE_DESKTOP_DIR_ENV,
+  desktopLibraryDirUnder,
+  META_FILENAME,
+} from "../../src/claude/desktop_library.ts";
 import { claudeJsonPath } from "../../src/claude/mcp_registration.ts";
 import { settingsPathFor } from "../../src/claude/paths.ts";
 import { getHostLocalCodexHome } from "../../src/codex/host.ts";
@@ -40,31 +50,21 @@ import {
   type ProfileSlot,
   type StoredCredential,
 } from "../../src/copilot_api/env_state.ts";
+import type { ProbeFetch } from "../../src/copilot_api/integration_identity.ts";
 import {
   DEFAULT_COPILOT_API_BASE,
   setIntegrationProbeFetch,
 } from "../../src/copilot_api/integration_identity.ts";
-import type { ProbeFetch } from "../../src/copilot_api/integration_identity.ts";
 import { OwnershipLedger } from "../../src/copilot_api/ownership.ts";
-import {
-  claudeDesktopStatus,
-  reconcileClaudeDesktopWiring,
-} from "../../src/agents/claude_desktop.ts";
-import { wireClaudeDesktopEntry } from "../../src/claude/desktop.ts";
-import {
-  CLAUDE_DESKTOP_DIR_ENV,
-  desktopLibraryDirUnder,
-  META_FILENAME,
-} from "../../src/claude/desktop_library.ts";
 import { resolveRootHome } from "../../src/copilot_api/paths.ts";
-import { parseProfileName, type ProfileName } from "../../src/copilot_api/profile.ts";
+import { type ProfileName, parseProfileName } from "../../src/copilot_api/profile.ts";
 import type { FileChange } from "../../src/utils/dry_run.ts";
 import { renderDryRun } from "../../src/utils/dry_run_report.ts";
-import { afterEach, beforeEach, expect, test } from "../helpers/testing.ts";
-import { type AgentHomes, envSnapshot, isolateAgentHomes, resetExitCode } from "../helpers/env.ts";
 import { changedPaths, fingerprintTree } from "../helpers/dry_run.ts";
+import { type AgentHomes, envSnapshot, isolateAgentHomes, resetExitCode } from "../helpers/env.ts";
 import { writeRunState } from "../helpers/fixtures.ts";
 import { captureChannels } from "../helpers/output.ts";
+import { afterEach, beforeEach, expect, test } from "../helpers/testing.ts";
 
 const WIN = process.platform === "win32";
 const WORK = parseProfileName("work");
@@ -75,7 +75,7 @@ const restoreEnv = envSnapshot();
 // the default identity offline. Tests that must prove NO probe ran install a counting stub.
 beforeEach(() => {
   setIntegrationProbeFetch(() =>
-    Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 }))
+    Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 })),
   );
 });
 
@@ -207,13 +207,11 @@ test("export redacts every token by default; withCredentials includes them", asy
     REDACTED_TOKEN,
   );
   expect(() =>
-    parseSettingsBundle(rawBundle({ config: configOf({ "daemon.version": REDACTED_TOKEN }) }))
-  )
-    .not.toThrow();
+    parseSettingsBundle(rawBundle({ config: configOf({ "daemon.version": REDACTED_TOKEN }) })),
+  ).not.toThrow();
   expect(() =>
-    parseSettingsBundle(rawBundle({ config: configOf({ "daemon.port": REDACTED_TOKEN }) }))
-  )
-    .toThrow(/config\.global\.daemon\.port is invalid/);
+    parseSettingsBundle(rawBundle({ config: configOf({ "daemon.port": REDACTED_TOKEN }) })),
+  ).toThrow(/config\.global\.daemon\.port is invalid/);
 
   const full = buildExportBundle({ withCredentials: true });
   expect(full.credential.githubToken).toBe("ghp_default");
@@ -279,8 +277,7 @@ test("a bundle's codex-home from the other OS is left out with a warning; the re
   isolate();
   // The one preference whose value is a machine path: a Linux export read on Windows, or the reverse.
   const foreign = process.platform === "win32" ? "/srv/codex" : "C:\\Codex";
-  const line =
-    `codex.home "${foreign}" is not a path on this OS; skipped, set it here with agent config`;
+  const line = `codex.home "${foreign}" is not a path on this OS; skipped, set it here with agent config`;
   const bundle = parseSettingsBundle(
     rawBundle({ config: configOf({ "codex.home": foreign, "daemon.port": 4242 }) }),
   );
@@ -288,9 +285,8 @@ test("a bundle's codex-home from the other OS is left out with a warning; the re
   expect(bundle.skippedConfig).toEqual([line]);
   expect(planImport(bundle).skipped).toEqual([line]);
   expect(() =>
-    parseSettingsBundle(rawBundle({ config: configOf({ "codex.home": "relative/dir" }) }))
-  )
-    .toThrow(/config\.global\.codex\.home is invalid/);
+    parseSettingsBundle(rawBundle({ config: configOf({ "codex.home": "relative/dir" }) })),
+  ).toThrow(/config\.global\.codex\.home is invalid/);
 });
 
 test("parseSettingsBundle rejects non-objects, unknown formatVersion, and missing sections", () => {
@@ -312,7 +308,7 @@ test("junk config keys and malformed values are rejections, never dropped or coe
   // untrusted (a token can land as a key in a mangled bundle).
   let message = "";
   try {
-    parseSettingsBundle(rawBundle({ config: configOf({ "ghp_leaked_as_key": true }) }));
+    parseSettingsBundle(rawBundle({ config: configOf({ ghp_leaked_as_key: true }) }));
   } catch (e) {
     message = (e as Error).message;
   }
@@ -321,13 +317,11 @@ test("junk config keys and malformed values are rejections, never dropped or coe
   // The store's lenient read schema would coerce these to "unset"; the bundle
   // parser must reject them instead (full-replace would silently reset a local
   // pref), naming the key but never echoing the received value.
-  for (
-    const bad of [
-      { "proxy.claude-token-multiplier": "2" },
-      { "daemon.auto-start": "yes" },
-      { "daemon.port": 0 },
-    ]
-  ) {
+  for (const bad of [
+    { "proxy.claude-token-multiplier": "2" },
+    { "daemon.auto-start": "yes" },
+    { "daemon.port": 0 },
+  ]) {
     message = "";
     try {
       parseSettingsBundle(rawBundle({ config: configOf(bad) }));
@@ -355,14 +349,14 @@ test("junk config keys and malformed values are rejections, never dropped or coe
     /unknown key under config\.global/,
   );
   expect(() =>
-    parseSettingsBundle(rawBundle({ config: configOf({}, { work: { "daemon.port": 4242 } }) }))
+    parseSettingsBundle(rawBundle({ config: configOf({}, { work: { "daemon.port": 4242 } }) })),
   ).toThrow(/unknown key under config\.profiles\.work/);
   // The default's proxy knobs live in the global map (no command writes or removes them in its
   // section), so a default-section override is refused; a named section takes it.
   expect(() =>
     parseSettingsBundle(
       rawBundle({ config: configOf({}, { default: { "proxy.small-model": "gpt-5" } }) }),
-    )
+    ),
   ).toThrow(/unknown key under config\.profiles\.default/);
   expect(
     parseSettingsBundle(
@@ -423,18 +417,19 @@ test("invalid slots are rejections that never echo the token", () => {
       rawBundle({
         credential: { githubToken: "x", authProvider: "gh-token", ghUser: "work-bot" },
       }),
-    )
+    ),
   ).toThrow(/pairs a ghUser account pin with a non-gh-cli provider/);
   // Same login-shape gate as the store's write choke point (the pin becomes
   // `gh auth token --user` argv, crossing cmd.exe on Windows).
   expect(() =>
     parseSettingsBundle(
       rawBundle({ credential: { githubToken: null, authProvider: "gh-cli", ghUser: "%PATH%" } }),
-    )
+    ),
   ).toThrow(/ghUser must be a GitHub login/);
 
-  expect(() => parseSettingsBundle(rawBundle({ modes: { codex: "bogus", claude: "direct" } })))
-    .toThrow(/modes.codex/);
+  expect(() =>
+    parseSettingsBundle(rawBundle({ modes: { codex: "bogus", claude: "direct" } })),
+  ).toThrow(/modes.codex/);
   expect(() => parseSettingsBundle(rawBundle({ profiles: { "NOT A NAME": {} } }))).toThrow(
     /invalid profile name/,
   );
@@ -484,17 +479,15 @@ test("round trip: export -> wipe -> import restores stores and re-derives wiring
 // The stored pricing-url follows the tokens' import contract, not the prefs': a
 // redacted marker keeps the local value, while a credentials-included bundle that
 // lacks the key deletes it (full-replace) and one that carries it sets it.
-for (
-  const { name, bundleUrl, expected } of [
-    { name: "redacted", bundleUrl: REDACTED_TOKEN, expected: "https://local.example/models" },
-    { name: "absent", bundleUrl: undefined, expected: undefined },
-    {
-      name: "present",
-      bundleUrl: "https://bundle.example/models",
-      expected: "https://bundle.example/models",
-    },
-  ]
-) {
+for (const { name, bundleUrl, expected } of [
+  { name: "redacted", bundleUrl: REDACTED_TOKEN, expected: "https://local.example/models" },
+  { name: "absent", bundleUrl: undefined, expected: undefined },
+  {
+    name: "present",
+    bundleUrl: "https://bundle.example/models",
+    expected: "https://bundle.example/models",
+  },
+]) {
   test(`importing a bundle whose pricing-url is ${name} over a stored one`, async () => {
     isolate();
     new CopilotEnvConfig().set({
@@ -595,13 +588,15 @@ const REDACTED_LANDINGS: {
     // slot cannot resolve and lands nowhere.
     name: "an unresolvable slot leaves the existing state untouched",
     bundle: () =>
-      Promise.resolve(parseSettingsBundle(
-        rawBundle({
-          profiles: {
-            work: { githubToken: REDACTED_TOKEN, authProvider: "gh-token", mode: "proxy" },
-          },
-        }),
-      )),
+      Promise.resolve(
+        parseSettingsBundle(
+          rawBundle({
+            profiles: {
+              work: { githubToken: REDACTED_TOKEN, authProvider: "gh-token", mode: "proxy" },
+            },
+          }),
+        ),
+      ),
     local: () => new Credential().store("gh-token", "ghp_local_default"),
     skipped: ["agent profile work add"],
     modes: null,
@@ -643,8 +638,9 @@ for (const row of REDACTED_LANDINGS) {
 test("the import's credential gate is direct-only: proxy wires without one", async () => {
   const machine = isolate();
   // The default is one mode for both agents: a bundle naming two is refused before any write.
-  expect(() => parseSettingsBundle(rawBundle({ modes: { codex: "direct", claude: "proxy" } })))
-    .toThrow(/one mode for both agents/);
+  expect(() =>
+    parseSettingsBundle(rawBundle({ modes: { codex: "direct", claude: "proxy" } })),
+  ).toThrow(/one mode for both agents/);
 
   const proxy = parseSettingsBundle(
     rawBundle({
@@ -703,7 +699,7 @@ test("planImport decides the default's modes for both agents: record-less single
   expect(overridden.modes).toEqual({ codex: "proxy", claude: "proxy" });
   expect(overridden.skipped).toEqual([
     "Codex wiring: the default profile has no recorded mode, so the bundle's proxy wiring " +
-    "lands for both agents (one mode for both)",
+      "lands for both agents (one mode for both)",
   ]);
   // A recorded Direct default: a bundle recording no default wiring rebakes both for the new
   // credential; a bundle whose Codex wiring is unmanaged (`other`, left untouched) does not.
@@ -732,17 +728,21 @@ test("a Direct default whose pair will not be stored at apply time rebakes both 
   state.setCredential(null, { kind: "stored", provider: "gh-token", token: "ghp_old" });
   state.setProfileDirectPair(null, { integrationId: null, host: DEFAULT_COPILOT_API_BASE });
   setIntegrationProbeFetch(() =>
-    Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 }))
+    Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 })),
   );
-  const plan = planImport(parseSettingsBundle(rawBundle({
-    credential: { githubToken: "ghp_new", authProvider: "gh-token" },
-    modes: { codex: "direct", claude: "other" },
-  })));
+  const plan = planImport(
+    parseSettingsBundle(
+      rawBundle({
+        credential: { githubToken: "ghp_new", authProvider: "gh-token" },
+        modes: { codex: "direct", claude: "other" },
+      }),
+    ),
+  );
   expect(plan.modes).toEqual({ codex: "direct", claude: "direct" });
   expect(await previewLines(plan)).toContain(settingsPathFor(machine.claudeHome));
   expect(plan.skipped).toEqual([
     "Claude wiring: the default's Direct pair is not stored, so both agents are rebaked (one " +
-    "mode for both)",
+      "mode for both)",
   ]);
   const outcome = await applyImportPlan(plan);
   expect({ failures: outcome.failures, modes: outcome.modes }).toEqual({
@@ -757,10 +757,14 @@ test("a Direct default whose pair will not be stored at apply time rebakes both 
   state.setCredential(null, { kind: "stored", provider: "gh-token", token: "ghp_rotated" });
   expect(state.readProfileDirectPair(null)).toEqual({});
   rmSync(settingsPathFor(machine.claudeHome));
-  const kept = planImport(parseSettingsBundle(rawBundle({
-    credential: { githubToken: REDACTED_TOKEN, authProvider: "gh-token" },
-    modes: { codex: "direct", claude: "none" },
-  })));
+  const kept = planImport(
+    parseSettingsBundle(
+      rawBundle({
+        credential: { githubToken: REDACTED_TOKEN, authProvider: "gh-token" },
+        modes: { codex: "direct", claude: "none" },
+      }),
+    ),
+  );
   expect(kept.defaultSlot.action).toBe("keep");
   expect(kept.modes).toEqual({ codex: "direct", claude: "direct" });
   expect(await previewLines(kept)).toContain(settingsPathFor(machine.claudeHome));
@@ -782,11 +786,15 @@ test("a Direct default whose pair will not be stored at apply time rebakes both 
     host: DEFAULT_COPILOT_API_BASE,
   });
   rmSync(settingsPathFor(machine.claudeHome));
-  const overlaid = planImport(parseSettingsBundle(rawBundle({
-    credential: { githubToken: REDACTED_TOKEN, authProvider: "gh-token" },
-    config: configOf({}),
-    modes: { codex: "direct", claude: "none" },
-  })));
+  const overlaid = planImport(
+    parseSettingsBundle(
+      rawBundle({
+        credential: { githubToken: REDACTED_TOKEN, authProvider: "gh-token" },
+        config: configOf({}),
+        modes: { codex: "direct", claude: "none" },
+      }),
+    ),
+  );
   expect(overlaid.defaultSlot.action).toBe("keep");
   expect(overlaid.modes).toEqual({ codex: "direct", claude: "direct" });
   expect(await previewLines(overlaid)).toContain(settingsPathFor(machine.claudeHome));
@@ -914,7 +922,8 @@ test("a mode-less bundle slot landing a new credential on a Direct profile probe
     setIntegrationProbeFetch((_input, init) => {
       const headers = new Headers(init?.headers);
       probes.push(headers.get("Copilot-Integration-Id"));
-      const ok = headers.get("authorization") === `Bearer ${token}` &&
+      const ok =
+        headers.get("authorization") === `Bearer ${token}` &&
         headers.get("Copilot-Integration-Id") === id;
       return Promise.resolve(
         ok
@@ -924,23 +933,31 @@ test("a mode-less bundle slot landing a new credential on a Direct profile probe
     });
   accepting("copilot-developer-cli", "github_pat_first");
   await applyImportBundle(
-    parseSettingsBundle(rawBundle({
-      profiles: {
-        work: { githubToken: "github_pat_first", authProvider: "gh-token", mode: "direct" },
-      },
-    })),
+    parseSettingsBundle(
+      rawBundle({
+        profiles: {
+          work: { githubToken: "github_pat_first", authProvider: "gh-token", mode: "direct" },
+        },
+      }),
+    ),
   );
   const bakedId = (): string | undefined =>
-    (JSON.parse(readFileSync(settingsPathFor(machine.claudeHome, WORK), "utf8")) as {
-      env: Record<string, string>;
-    }).env.ANTHROPIC_CUSTOM_HEADERS?.match(/Copilot-Integration-Id: (\S+)/)?.[1];
+    (
+      JSON.parse(readFileSync(settingsPathFor(machine.claudeHome, WORK), "utf8")) as {
+        env: Record<string, string>;
+      }
+    ).env.ANTHROPIC_CUSTOM_HEADERS?.match(/Copilot-Integration-Id: (\S+)/)?.[1];
   expect(bakedId()).toBe("copilot-developer-cli");
 
   accepting("copilot-developer-sandbox", "github_pat_second");
   probes.length = 0;
-  const reauth = parseSettingsBundle(rawBundle({
-    profiles: { work: { githubToken: "github_pat_second", authProvider: "gh-token", mode: null } },
-  }));
+  const reauth = parseSettingsBundle(
+    rawBundle({
+      profiles: {
+        work: { githubToken: "github_pat_second", authProvider: "gh-token", mode: null },
+      },
+    }),
+  );
   // The overwrite preview names the profile's agent files: the apply rewrites them.
   const plan = planImport(reauth);
   expect(await previewLines(plan)).toContain(settingsPathFor(machine.claudeHome, WORK));
@@ -1005,17 +1022,20 @@ const FAILING_WRITERS: {
     // profile in the store), and never blocks the profiles after it.
     name: "a throwing profile COMMIT is contained per-slot",
     plan: () => {
-      const plan = planImport(parseSettingsBundle(
-        rawBundle({
-          profiles: {
-            bad: { githubToken: "ghp_bad", authProvider: "gh-token", mode: "proxy" },
-            work: { githubToken: "ghp_work", authProvider: "gh-token", mode: "proxy" },
-          },
-        }),
-      ));
+      const plan = planImport(
+        parseSettingsBundle(
+          rawBundle({
+            profiles: {
+              bad: { githubToken: "ghp_bad", authProvider: "gh-token", mode: "proxy" },
+              work: { githubToken: "ghp_work", authProvider: "gh-token", mode: "proxy" },
+            },
+          }),
+        ),
+      );
       const bad = plan.profiles.find((p) => p.name === parseProfileName("bad"));
       if (
-        bad === undefined || bad.landing.action !== "write" ||
+        bad === undefined ||
+        bad.landing.action !== "write" ||
         bad.landing.credential.kind !== "stored"
       ) {
         throw new Error("plan did not stage the bad profile as a token write");
@@ -1033,12 +1053,14 @@ const FAILING_WRITERS: {
     plan: (machine) => {
       writeFileSync(join(machine.dir, "not-a-dir"), "");
       process.env.CLAUDE_CONFIG_DIR = join(machine.dir, "not-a-dir");
-      return planImport(parseSettingsBundle(
-        rawBundle({
-          credential: { githubToken: "ghp_default", authProvider: "gh-token" },
-          modes: { codex: "none", claude: "proxy" },
-        }),
-      ));
+      return planImport(
+        parseSettingsBundle(
+          rawBundle({
+            credential: { githubToken: "ghp_default", authProvider: "gh-token" },
+            modes: { codex: "none", claude: "proxy" },
+          }),
+        ),
+      );
     },
     failure: "Claude:",
     wiredProfiles: [],
@@ -1177,7 +1199,7 @@ test("import confirms only for actual overwrites: stores with content, or wiring
   const listed = await captureStderr(() =>
     runSettings({ importFrom: file }).catch((e: unknown) => {
       refusal = (e as Error).message;
-    })
+    }),
   );
   expect(refusal).toContain("--force");
   // The header is the first line under either consola reporter (CI's prefixes `[log] `).
@@ -1286,13 +1308,19 @@ test.skipIf(process.platform === "win32")(
     // store: locally off (record retired), bundle on -> the record is live again.
     new CopilotEnvConfig().set({ "codex.host": false });
     const profileOnly = (config: Record<string, unknown>): Promise<string> =>
-      previewLines(planImport(
-        parseSettingsBundle(rawBundle({
-          config: configOf(config),
-          credential: { githubToken: "ghp_default", authProvider: "gh-token" },
-          profiles: { work: { githubToken: "ghp_work", authProvider: "gh-token", mode: "proxy" } },
-        })),
-      ));
+      previewLines(
+        planImport(
+          parseSettingsBundle(
+            rawBundle({
+              config: configOf(config),
+              credential: { githubToken: "ghp_default", authProvider: "gh-token" },
+              profiles: {
+                work: { githubToken: "ghp_work", authProvider: "gh-token", mode: "proxy" },
+              },
+            }),
+          ),
+        ),
+      );
     // Both Codex files the profile write touches are named, under the same home.
     const farmed = await profileOnly({ "codex.host": true });
     expect(farmed).toContain(farmConfig);
@@ -1364,9 +1392,7 @@ test("import backs up the previous settings with credentials intact unless --no-
 
   // --no-backup skips the backup entirely: the import lands, no backup dir appears.
   diverge();
-  await runSettings(
-    { importFrom: exported, force: true, noBackup: true },
-  );
+  await runSettings({ importFrom: exported, force: true, noBackup: true });
   expect(new CopilotEnvConfig().read().global["daemon.port"]).toBe(5050);
   expect(existsSync(settingsBackupDir())).toBe(false);
 
@@ -1398,9 +1424,7 @@ test("import backs up the previous settings with credentials intact unless --no-
   }
 
   // Rolling back IS an import of the backup file.
-  await runSettings(
-    { importFrom: backupFile, force: true, noBackup: true },
-  );
+  await runSettings({ importFrom: backupFile, force: true, noBackup: true });
   expect(new CopilotEnvConfig().read().global["daemon.port"]).toBe(6060);
   expect(new CopilotEnvConfig().read().global["daemon.auto-start"]).toBe(false);
   expect(new Credential().resolve()).toBe("ghp_before_import");
@@ -1494,9 +1518,11 @@ test("a config-only import of claude-desktop true restores the DEFAULT Desktop e
   const library = installDesktop(homes);
   const names = () =>
     existsSync(join(library, "_meta.json"))
-      ? (JSON.parse(readFileSync(join(library, "_meta.json"), "utf8")) as {
-        entries: { name: string }[];
-      }).entries.map((e) => e.name)
+      ? (
+          JSON.parse(readFileSync(join(library, "_meta.json"), "utf8")) as {
+            entries: { name: string }[];
+          }
+        ).entries.map((e) => e.name)
       : [];
   // A managed proxy default (settings.json) written while the key was off: no entry.
   new CopilotEnvConfig().set({ "claude.desktop": false });
@@ -1541,9 +1567,12 @@ test("the confirmation names the Desktop entry file the apply then creates", asy
     const named = desktopEntryRows(await previewImportChanges(plan), library);
     expect(named.map((c) => c.verdict)).toEqual(["create"]);
     const entryPath = named[0]?.path ?? "";
-    await captureChannels(async () => {
-      await applyImportPlan(plan);
-    }, { writeReports: true });
+    await captureChannels(
+      async () => {
+        await applyImportPlan(plan);
+      },
+      { writeReports: true },
+    );
     expect(existsSync(entryPath)).toBe(true);
     const meta = JSON.parse(readFileSync(join(library, META_FILENAME), "utf8")) as {
       entries: { id: string }[];
@@ -1565,12 +1594,14 @@ test("preview then apply: the apply issues no request or scan the preview paid, 
   // Every identity's catalog is the same: no gated candidate, so discovery is the catalog GETs
   // alone; the Direct wiring's identity and host probes go through the probe seam.
   const catalog = {
-    data: [{
-      id: "claude-haiku-4.5",
-      capabilities: {
-        limits: { max_context_window_tokens: 200_000, max_prompt_tokens: 100_000 },
+    data: [
+      {
+        id: "claude-haiku-4.5",
+        capabilities: {
+          limits: { max_context_window_tokens: 200_000, max_prompt_tokens: 100_000 },
+        },
       },
-    }],
+    ],
   };
   let fetches = 0;
   let probes = 0;
@@ -1584,10 +1615,14 @@ test("preview then apply: the apply issues no request or scan the preview paid, 
     return Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 }));
   });
   try {
-    const plan = planImport(parseSettingsBundle(rawBundle({
-      credential: { githubToken: "ghp_x", authProvider: "gh-token" },
-      modes: { codex: "direct", claude: "direct" },
-    })));
+    const plan = planImport(
+      parseSettingsBundle(
+        rawBundle({
+          credential: { githubToken: "ghp_x", authProvider: "gh-token" },
+          modes: { codex: "direct", claude: "direct" },
+        }),
+      ),
+    );
     const before = fingerprintTree(homes.dir);
     const changes = await previewImportChanges(plan);
     expect([...changedPaths(before, fingerprintTree(homes.dir))]).toEqual([]);
@@ -1598,9 +1633,12 @@ test("preview then apply: the apply issues no request or scan the preview paid, 
 
     fetches = 0;
     probes = 0;
-    const { stderr: outcome } = await captureChannels(async () => {
-      expect((await applyImportPlan(plan)).failures).toEqual([]);
-    }, { writeReports: true });
+    const { stderr: outcome } = await captureChannels(
+      async () => {
+        expect((await applyImportPlan(plan)).failures).toEqual([]);
+      },
+      { writeReports: true },
+    );
     expect({ fetches, probes }).toEqual({ fetches: 0, probes: 0 });
     if (pgrepRuns !== null) expect(pgrepRuns()).toBe(1);
     expect(outcome).toContain("Claude Desktop is ready to use.");

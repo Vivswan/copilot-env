@@ -7,6 +7,9 @@
 
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
+import { ROOT } from "../helpers/run.ts";
+import { exportedNames } from "../helpers/syntax.ts";
+import { expect, test } from "../helpers/testing.ts";
 import {
   GENERATED_BEGIN,
   GENERATED_END,
@@ -14,9 +17,6 @@ import {
   renderArchitectureMap,
   spliceGeneratedRegion,
 } from "../lint/architecture.ts";
-import { ROOT } from "../helpers/run.ts";
-import { exportedNames } from "../helpers/syntax.ts";
-import { expect, test } from "../helpers/testing.ts";
 
 const PAGE = join("docs", "architecture.md");
 /** Changes only when a concept diagram is added or removed on purpose: a fence a stray edit
@@ -94,7 +94,10 @@ function readLabel(label: string): { claims: Claim[]; problems: string[] } {
   const problems: string[] = [];
   let bound: string | undefined;
   for (const segment of label.split("<br>")) {
-    const tokens = segment.trim().split(/[\s,]+/).filter((token) => token !== "");
+    const tokens = segment
+      .trim()
+      .split(/[\s,]+/)
+      .filter((token) => token !== "");
     const [head] = tokens;
     let path: string;
     let names: string[];
@@ -135,8 +138,7 @@ function exportsByFile(files: readonly string[]): Map<string, Set<string>> {
 test("a caption reads as code only when a token is shaped like a repository path", () => {
   expect(
     readLabel("~/.codex/config.toml<br>GET https://api.github.com/copilot_internal/user").problems,
-  )
-    .toEqual([]);
+  ).toEqual([]);
   expect(readLabel("srcc/engine/x.ts").problems).toEqual([
     '"srcc/engine/x.ts": "srcc/engine/x.ts" looks like code but reads as a caption',
   ]);
@@ -190,10 +192,10 @@ test("every mermaid box names a file that exists and symbols it exports", () => 
 test("every concept diagram has a Demonstrated by line whose links resolve to tests", () => {
   const problems: string[] = [];
   const headings = text.flatMap((line, index) =>
-    line !== undefined && /^#/.test(line) ? [index] : []
+    line !== undefined && /^#/.test(line) ? [index] : [],
   );
   const demonstrations = text.flatMap((line, index) =>
-    line !== undefined && line.startsWith("Demonstrated by:") ? [index] : []
+    line !== undefined && line.startsWith("Demonstrated by:") ? [index] : [],
   );
   const claimed = new Set<number>();
   for (const fence of concepts) {

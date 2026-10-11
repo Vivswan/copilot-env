@@ -17,6 +17,8 @@ import {
 import { settingsPathFor } from "../../src/claude/paths.ts";
 import { codexAdapter, configureCodexConfig } from "../../src/codex/config.ts";
 import { codexProfileConfigPath, codexProviderId } from "../../src/codex/paths.ts";
+import { runAuth } from "../../src/commands/auth.ts";
+import { writeProfileSettings } from "../../src/commands/launch.ts";
 import {
   addProfile,
   checkProfile,
@@ -25,8 +27,6 @@ import {
   renderProfileTable,
   syncNamedProfiles,
 } from "../../src/commands/profile.ts";
-import { runAuth } from "../../src/commands/auth.ts";
-import { writeProfileSettings } from "../../src/commands/launch.ts";
 import { runStart } from "../../src/commands/start.ts";
 import { runStop } from "../../src/commands/stop.ts";
 import { Credential } from "../../src/copilot_api/credential.ts";
@@ -52,11 +52,11 @@ import {
 import { parseProfileName } from "../../src/copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../../src/copilot_api/run_state.ts";
 import { isRecord } from "../../src/utils/json.ts";
-import { afterEach, beforeEach, expect, removeDir, test } from "../helpers/testing.ts";
+import { stageRefusedStop } from "../helpers/daemon.ts";
 import { envSnapshot, isolateAgentHomes, resetExitCode } from "../helpers/env.ts";
 import { stubGithubLogins } from "../helpers/fixtures.ts";
-import { stageRefusedStop } from "../helpers/daemon.ts";
 import { captureAllWrites } from "../helpers/output.ts";
+import { afterEach, beforeEach, expect, removeDir, test } from "../helpers/testing.ts";
 
 // Branded fixture names: parseProfileName is the only mint for ProfileName.
 const WORK = parseProfileName("work");
@@ -90,7 +90,7 @@ let dir = "";
 // so every test resolves to the default identity (200 = first candidate accepted) offline.
 beforeEach(() => {
   setIntegrationProbeFetch(() =>
-    Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 }))
+    Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 })),
   );
   stubGithubLogins({ ghp_worktoken: "work-bot" });
 });
@@ -221,7 +221,7 @@ test("the default credential lives in the reserved default slot on disk", () => 
   // No legacy top-level pair: the write landed in profiles.default whole.
   expect(Object.keys(raw)).toEqual(["profiles"]);
   expect(raw.profiles).toEqual({
-    default: { "authProvider": "gh-token", "githubToken": "ghp_default" },
+    default: { authProvider: "gh-token", githubToken: "ghp_default" },
   });
 
   // Creating then deleting a named profile drops ITS key again; the reserved
@@ -363,11 +363,8 @@ test("a direct Claude profile without its own credential is refused", () => {
       mode: "direct",
       direct: null,
       profile: WORK,
-    })
-  )
-    .toThrow(
-      /no credential of its own/,
-    );
+    }),
+  ).toThrow(/no credential of its own/);
   expect(existsSync(settingsPathFor(home, WORK))).toBe(false);
 });
 
@@ -396,19 +393,17 @@ test("a foreign settings-<name>.json is never taken over", () => {
     settingsPathFor(home, WORK),
     JSON.stringify({ apiKeyHelper: "/somewhere/else.sh" }),
   );
-  expect(() => configureClaudeConfig(home, { credential: COMMAND, mode: "proxy", profile: WORK }))
-    .toThrow(
-      /refusing to overwrite/,
-    );
+  expect(() =>
+    configureClaudeConfig(home, { credential: COMMAND, mode: "proxy", profile: WORK }),
+  ).toThrow(/refusing to overwrite/);
   // A custom base URL ALONE (no apiKeyHelper) is also foreign wiring.
   writeFileSync(
     settingsPathFor(home, ALT),
     JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://my-gateway.example" } }),
   );
-  expect(() => configureClaudeConfig(home, { credential: COMMAND, mode: "proxy", profile: ALT }))
-    .toThrow(
-      /refusing to overwrite/,
-    );
+  expect(() =>
+    configureClaudeConfig(home, { credential: COMMAND, mode: "proxy", profile: ALT }),
+  ).toThrow(/refusing to overwrite/);
 });
 
 // --- Codex profile artifacts ------------------------------------------------------
@@ -476,9 +471,10 @@ test("a Codex profile write on a FRESH or whitespace-only config lands whole and
       mkdirSync(codexHome, { recursive: true });
       writeFileSync(join(codexHome, "config.toml"), c.seed);
     }
-    const write = c.write.mode === "proxy"
-      ? { ...c.write, baseUrl: `http://127.0.0.1:${copilotApiResolvePort(FAST)}/v1` }
-      : c.write;
+    const write =
+      c.write.mode === "proxy"
+        ? { ...c.write, baseUrl: `http://127.0.0.1:${copilotApiResolvePort(FAST)}/v1` }
+        : c.write;
     configureCodexConfig(codexHome, write);
     const doc = readToml(join(codexHome, "config.toml"));
     expect(doc.model_provider, c.name).toBeUndefined();
@@ -557,12 +553,15 @@ test("profile <name> check is store-driven: exit 1 unknown/incomplete, 2 proxy, 
 
 test("renderProfileTable aligns columns under a header and flags incomplete slots", () => {
   // Rows carry branded names (every real row is built from branded sources).
-  const table = renderProfileTable([
-    { name: FAST, provider: "gh-cli", mode: "proxy", daemon: { up: true, port: 4142 } },
-    { name: parseProfileName("idle"), provider: "gh-cli", mode: "proxy", daemon: { up: false } },
-    { name: WORK, provider: "gh-token", mode: "direct", daemon: null },
-    { name: parseProfileName("broken"), provider: null, mode: null, daemon: null },
-  ], null);
+  const table = renderProfileTable(
+    [
+      { name: FAST, provider: "gh-cli", mode: "proxy", daemon: { up: true, port: 4142 } },
+      { name: parseProfileName("idle"), provider: "gh-cli", mode: "proxy", daemon: { up: false } },
+      { name: WORK, provider: "gh-token", mode: "direct", daemon: null },
+      { name: parseProfileName("broken"), provider: null, mode: null, daemon: null },
+    ],
+    null,
+  );
   // Strip ANSI styling (the local run may have color enabled) so the
   // plain-text assertions hold everywhere. The escape byte is built with
   // fromCharCode: a literal control character in a regex is a lint error.
@@ -680,49 +679,41 @@ test("profile <name> add requires a mode for a new profile", async () => {
 
 // --- the refused stop's consumers (guard + summary line) ---------------------------------
 
-test(
-  "profile delete: a REFUSED stop aborts the deletion; home, slot, and tracking survive",
-  async () => {
-    tmpProxyHome();
-    new CopilotEnvState().commitProfile(WORK, {
-      credential: { kind: "stored", provider: "gh-token", token: "ghp_work" },
-      mode: "proxy",
-    });
-    const fx = stageRefusedStop(profileHome(WORK), WORK);
-    try {
-      // The uncorroborated lock holder cannot be stopped, so nothing may be deleted
-      // under it: the daemon -- wherever it runs -- is still writing into this home.
-      await expect(deleteProfileEverywhere(WORK)).rejects.toThrow("did not stop");
-      expect(existsSync(profileHome(WORK))).toBe(true);
-      expect(new Credential(undefined, WORK).resolve()).toBe("ghp_work");
-      expect(CopilotEnvRunState.forProfile(WORK).read().pid).toBe(fx.bystanderPid);
-    } finally {
-      await fx.teardown();
-    }
-  },
-  30_000,
-);
+test("profile delete: a REFUSED stop aborts the deletion; home, slot, and tracking survive", async () => {
+  tmpProxyHome();
+  new CopilotEnvState().commitProfile(WORK, {
+    credential: { kind: "stored", provider: "gh-token", token: "ghp_work" },
+    mode: "proxy",
+  });
+  const fx = stageRefusedStop(profileHome(WORK), WORK);
+  try {
+    // The uncorroborated lock holder cannot be stopped, so nothing may be deleted
+    // under it: the daemon -- wherever it runs -- is still writing into this home.
+    await expect(deleteProfileEverywhere(WORK)).rejects.toThrow("did not stop");
+    expect(existsSync(profileHome(WORK))).toBe(true);
+    expect(new Credential(undefined, WORK).resolve()).toBe("ghp_work");
+    expect(CopilotEnvRunState.forProfile(WORK).read().pid).toBe(fx.bystanderPid);
+  } finally {
+    await fx.teardown();
+  }
+}, 30_000);
 
-test(
-  "stop: a REFUSED stop reports the daemon left running -- never 'cleared stale tracking'",
-  async () => {
-    tmpProxyHome();
-    const fx = stageRefusedStop(new CopilotApiPaths().home);
-    try {
-      const out = await captureAllWrites(() => runStop({}));
-      // stopTrackedProxy's warning explains the refusal; the summary line must agree
-      // that nothing changed instead of claiming cleared tracking over a kept one.
-      expect(out).toContain("was left running; tracking kept");
-      expect(out).not.toContain("cleared stale tracking");
-      expect(process.exitCode).toBe(1); // nothing was stopped
-      resetExitCode();
-      expect(new CopilotEnvRunState().read().pid).toBe(fx.bystanderPid);
-    } finally {
-      await fx.teardown();
-    }
-  },
-  30_000,
-);
+test("stop: a REFUSED stop reports the daemon left running -- never 'cleared stale tracking'", async () => {
+  tmpProxyHome();
+  const fx = stageRefusedStop(new CopilotApiPaths().home);
+  try {
+    const out = await captureAllWrites(() => runStop({}));
+    // stopTrackedProxy's warning explains the refusal; the summary line must agree
+    // that nothing changed instead of claiming cleared tracking over a kept one.
+    expect(out).toContain("was left running; tracking kept");
+    expect(out).not.toContain("cleared stale tracking");
+    expect(process.exitCode).toBe(1); // nothing was stopped
+    resetExitCode();
+    expect(new CopilotEnvRunState().read().pid).toBe(fx.bystanderPid);
+  } finally {
+    await fx.teardown();
+  }
+}, 30_000);
 
 test("stop/record-event against a never-existing profile fabricate NOTHING", async () => {
   tmpProxyHome();
@@ -877,7 +868,7 @@ test("a named `add --auto` lands the pair its probe accepted: the slot and both 
   });
   resetIntegrationIdentityCache();
   await captureAllWrites(() =>
-    addProfile(WORK, { mode: "auto" }, [direct(claudeAdapter()), direct(codexAdapter())])
+    addProfile(WORK, { mode: "auto" }, [direct(claudeAdapter()), direct(codexAdapter())]),
   );
   expect(new CopilotEnvState().readProfileDirectPair(WORK)).toEqual({
     integrationId: "copilot-developer-sandbox",

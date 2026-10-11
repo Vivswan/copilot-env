@@ -2,9 +2,9 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   installedProxyVersion,
+  type ProxyVersionStatus,
   proxyVersionBoundsStatus,
   proxyVersionFloorStatus,
-  type ProxyVersionStatus,
 } from "../../src/copilot_api/version.ts";
 import type { ProjectConfig } from "../../src/utils/project_config.ts";
 import { afterEach, beforeEach, describe, expect, tempDir, test } from "../helpers/testing.ts";
@@ -12,8 +12,10 @@ import { afterEach, beforeEach, describe, expect, tempDir, test } from "../helpe
 let dir = "";
 
 const CONFIG: ProjectConfig = {
-  "proxyMinVersion": "1.10.0",
-  "proxyMaxVersion": "1.10.30", "sidecarDenoVersion": "2.9.7" };
+  proxyMinVersion: "1.10.0",
+  proxyMaxVersion: "1.10.30",
+  sidecarDenoVersion: "2.9.7",
+};
 
 function writeProxyPackage(root: string, versionJson: string): void {
   const pkgDir = join(root, "node_modules", "@jeffreycao", "copilot-api");
@@ -37,10 +39,10 @@ describe("installedProxyVersion", () => {
   // metadata, or metadata without a version all read as "not installed", never a throw.
   test("reads the installed version, or null for missing, malformed, or versionless metadata", () => {
     const rows: { pkg: string | null; version: string | null }[] = [
-      { pkg: JSON.stringify({ "version": "1.10.30" }), version: "1.10.30" },
+      { pkg: JSON.stringify({ version: "1.10.30" }), version: "1.10.30" },
       { pkg: null, version: null },
       { pkg: "{ nope", version: null },
-      { pkg: JSON.stringify({ "name": "@jeffreycao/copilot-api" }), version: null },
+      { pkg: JSON.stringify({ name: "@jeffreycao/copilot-api" }), version: null },
     ];
     for (const [i, { pkg, version }] of rows.entries()) {
       const root = join(dir, String(i));

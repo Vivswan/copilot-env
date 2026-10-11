@@ -23,9 +23,10 @@
 // A disk entry the run carries (a chmod, a rename, a copy) is loaded into the volume by value; its
 // bytes are never decoded here, and the report prints its verdict alone. A directory the volume
 // holds only as a planned entry's ancestor is the disk's own: no row, and the disk speaks below it.
-import type { Volume } from "memfs";
+
 import type { Stats } from "node:fs";
 import { basename, dirname, join, parse, resolve, sep } from "node:path";
+import type { Volume } from "memfs";
 import * as disk from "./fs_disk.ts";
 import {
   type DirEntry,
@@ -121,7 +122,10 @@ function split(abs: string): { root: string; parts: string[] } {
   const { root } = parse(abs);
   return {
     root: foldKey(root),
-    parts: abs.slice(root.length).split(sep).filter((part) => part !== ""),
+    parts: abs
+      .slice(root.length)
+      .split(sep)
+      .filter((part) => part !== ""),
   };
 }
 
@@ -223,7 +227,7 @@ export class Overlay {
 
   /** The entry's own name as a listing prints it. */
   private basenameOf(key: string): string {
-    return WINDOWS ? this.spellings.get(key) ?? basename(key) : basename(key);
+    return WINDOWS ? (this.spellings.get(key) ?? basename(key)) : basename(key);
   }
 
   /** The disk's own spelling of a non-link entry it holds at `key` (realpath restores the case a
@@ -435,7 +439,7 @@ export class Overlay {
    *  tombstoned. A planned file above `key` is what node reports for a lookup under a regular
    *  file. */
   private diskBelow(key: string, syscall: string, path: string): boolean {
-    for (let cur = dirname(key);; cur = dirname(cur)) {
+    for (let cur = dirname(key); ; cur = dirname(cur)) {
       if (this.gone.has(cur)) return false;
       if (this.rows.has(cur)) {
         const above = this.vol.lstatSync(volPath(cur));
@@ -556,7 +560,7 @@ export class Overlay {
     if (this.view(key, "lstat", path) === null) throw errno("ENOENT", "lstat", path);
     if (!WINDOWS) return key;
     const tail: string[] = [];
-    for (let cur = key;; cur = dirname(cur)) {
+    for (let cur = key; ; cur = dirname(cur)) {
       try {
         return join(disk.realpath(cur), ...tail);
       } catch {
@@ -644,7 +648,8 @@ export class Overlay {
       cur = join(cur, spelled.parts[i] as string);
       const link = this.view(this.key(cur, "mkdir", false), "mkdir", path, false);
       if (
-        link !== null && link.stats.isSymbolicLink() &&
+        link !== null &&
+        link.stats.isSymbolicLink() &&
         this.view(this.key(cur, "mkdir"), "mkdir", path) === null
       ) {
         throw errno("ENOENT", "mkdir", path);
@@ -653,7 +658,7 @@ export class Overlay {
     const missing: [string, string][] = [];
     // The canonical and the spelled path climb together, so an ancestor made here is named as the
     // caller spelled it.
-    for (let cur = asked, said = resolve(path);; cur = dirname(cur), said = dirname(said)) {
+    for (let cur = asked, said = resolve(path); ; cur = dirname(cur), said = dirname(said)) {
       const seen = this.view(cur, "mkdir", path);
       if (seen !== null) {
         if (!seen.stats.isDirectory()) {
@@ -848,7 +853,7 @@ export class Overlay {
 
 /** `path` and `dir` are canonical keys. */
 function isBelow(path: string, dir: string): boolean {
-  for (let cur = dirname(path);; cur = dirname(cur)) {
+  for (let cur = dirname(path); ; cur = dirname(cur)) {
     if (cur === dir) return true;
     if (dirname(cur) === cur) return false;
   }

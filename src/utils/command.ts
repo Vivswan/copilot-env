@@ -85,7 +85,8 @@ export function findCommand(command: string): CommandLook {
             `if (Get-Command ${command} -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }`,
           ],
           { stdio: "ignore", env: { ...env, ...profile.env } },
-        ));
+        ),
+      );
       return commandLookFromSpawn(result, () => command);
     } finally {
       profile.dispose();
@@ -229,15 +230,20 @@ function windowsWhereCandidates(pattern: string): string[] {
     windowsHide: true,
   });
   if (result.error || result.status !== 0) return [];
-  return (result.stdout ?? "").split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  return (result.stdout ?? "")
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
 }
 
 /** A shim script cannot stand in for a binary another process spawns as its runtime. */
 function pickWindowsExecutable(candidates: string[]): string | null {
-  return candidates.find((candidate) => {
-    const lower = candidate.toLowerCase();
-    return lower.endsWith(".exe") || lower.endsWith(".com");
-  }) ?? null;
+  return (
+    candidates.find((candidate) => {
+      const lower = candidate.toLowerCase();
+      return lower.endsWith(".exe") || lower.endsWith(".com");
+    }) ?? null
+  );
 }
 
 /** A relative PATH entry makes `command -v` print a relative path, which reads null here: a

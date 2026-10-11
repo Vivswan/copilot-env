@@ -15,9 +15,9 @@ export function readInstallMinimumReleaseAge(root: string = ASSET_ROOT): number 
   const age = isTomlTable(install) ? install.minimumReleaseAge : undefined;
   if (typeof age !== "number" || !Number.isInteger(age) || age < 0) {
     throw new Error(
-      `${path}: [install] minimumReleaseAge must be a whole number of seconds, got ${
-        JSON.stringify(age)
-      }`,
+      `${path}: [install] minimumReleaseAge must be a whole number of seconds, got ${JSON.stringify(
+        age,
+      )}`,
     );
   }
   return age;

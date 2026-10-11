@@ -1,7 +1,6 @@
 import { configDefaultNumber } from "../../src/copilot_api/config_registry.ts";
+import { resetDaemonShutdownForTests } from "../../src/copilot_api/daemon_shutdown.ts";
 import { CopilotEnvConfig } from "../../src/copilot_api/env_config.ts";
-import { DAEMON_KEEP_PORT_ENV } from "../../src/copilot_api/paths.ts";
-import { CopilotEnvRunState } from "../../src/copilot_api/run_state.ts";
 import {
   armIdleWatchdog,
   defaultCheckIntervalMs,
@@ -11,14 +10,15 @@ import {
   isIdle,
   lastActivityMs,
 } from "../../src/copilot_api/idle_watchdog.ts";
-import { resetDaemonShutdownForTests } from "../../src/copilot_api/daemon_shutdown.ts";
 import {
   markInference,
   resetInferenceActivityForTests,
 } from "../../src/copilot_api/inference_activity.ts";
-import { afterEach, expect, test } from "../helpers/testing.ts";
+import { DAEMON_KEEP_PORT_ENV } from "../../src/copilot_api/paths.ts";
+import { CopilotEnvRunState } from "../../src/copilot_api/run_state.ts";
 import { envSnapshot, isolateProxyHome } from "../helpers/env.ts";
 import { writeRunState } from "../helpers/fixtures.ts";
+import { afterEach, expect, test } from "../helpers/testing.ts";
 
 const restoreEnv = envSnapshot([IDLE_TIMEOUT_ENV, DAEMON_KEEP_PORT_ENV]);
 
@@ -85,8 +85,11 @@ test("idleCheck: with no activity past the window, clears run state and exits; k
     }
     expect(exitCode, String(row.keepPort)).toBe(0);
     const after = state.read();
-    expect({ ...row, pid: after.pid, lastEnsureAt: after.lastEnsureAt, port: after.port })
-      .toEqual({ ...row, pid: undefined, lastEnsureAt: undefined });
+    expect({ ...row, pid: after.pid, lastEnsureAt: after.lastEnsureAt, port: after.port }).toEqual({
+      ...row,
+      pid: undefined,
+      lastEnsureAt: undefined,
+    });
   }
 });
 

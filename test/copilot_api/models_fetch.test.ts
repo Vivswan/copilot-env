@@ -5,6 +5,8 @@
 import { fetchRawModels } from "../../src/copilot_api/catalog.ts";
 import { discoverServableClaudeModels } from "../../src/copilot_api/discovery.ts";
 import { directSmoke } from "../../src/copilot_api/endpoint_smoke.ts";
+import { CopilotEnvConfig } from "../../src/copilot_api/env_config.ts";
+import { CopilotEnvState } from "../../src/copilot_api/env_state.ts";
 import {
   CODEX_EXEC_USER_AGENT,
   COPILOT_CLI_INTEGRATION_ID,
@@ -18,11 +20,9 @@ import {
   surveyIntegrationIdentities,
   VSCODE_CHAT_INTEGRATION_ID,
 } from "../../src/copilot_api/integration_identity.ts";
-import { CopilotEnvConfig } from "../../src/copilot_api/env_config.ts";
-import { CopilotEnvState } from "../../src/copilot_api/env_state.ts";
 import { parseModelList } from "../../src/copilot_api/models.ts";
-import { afterEach, expect, test } from "../helpers/testing.ts";
 import { envSnapshot, isolateProxyHome } from "../helpers/env.ts";
+import { afterEach, expect, test } from "../helpers/testing.ts";
 
 const restoreEnv = envSnapshot();
 
@@ -93,14 +93,16 @@ test("every consumer's GET /models carries its own identity pair and the bearer,
   // Discovery: the agents' exact Direct bytes for the wiring's own identity (the default sends no
   // id header), then the same bytes under each sibling identity it consults.
   expect(
-    await pairsDuring(
-      "gho_x",
-      () =>
-        discoverServableClaudeModels("gho_x", ua, null, DEFAULT_COPILOT_API_BASE, { fetchImpl }),
+    await pairsDuring("gho_x", () =>
+      discoverServableClaudeModels("gho_x", ua, null, DEFAULT_COPILOT_API_BASE, { fetchImpl }),
     ),
   ).toEqual(
-    [null, VSCODE_CHAT_INTEGRATION_ID, COPILOT_CLI_INTEGRATION_ID, COPILOT_SANDBOX_INTEGRATION_ID]
-      .map((id) => pair(directClientHeaders(ua, id))),
+    [
+      null,
+      VSCODE_CHAT_INTEGRATION_ID,
+      COPILOT_CLI_INTEGRATION_ID,
+      COPILOT_SANDBOX_INTEGRATION_ID,
+    ].map((id) => pair(directClientHeaders(ua, id))),
   );
   // The endpoint smoke: the Direct bytes under the baked id.
   expect(
@@ -112,17 +114,16 @@ test("every consumer's GET /models carries its own identity pair and the bearer,
         COPILOT_CLI_INTEGRATION_ID,
         DEFAULT_COPILOT_API_BASE,
         { fetchImpl },
-      ).pickModel()),
+      ).pickModel(),
+    ),
   ).toEqual([pair(directClientHeaders(ua, COPILOT_CLI_INTEGRATION_ID))]);
   // The identity probe sends the candidate as built; the host probe the headers it is handed.
   expect(
-    await pairsDuring(
-      "ghp_x",
-      () =>
-        probeIntegrationIdentity("ghp_x", [directIdentity(ua, COPILOT_CLI_INTEGRATION_ID)], {
-          fetchImpl,
-          apiBase: DEFAULT_COPILOT_API_BASE,
-        }),
+    await pairsDuring("ghp_x", () =>
+      probeIntegrationIdentity("ghp_x", [directIdentity(ua, COPILOT_CLI_INTEGRATION_ID)], {
+        fetchImpl,
+        apiBase: DEFAULT_COPILOT_API_BASE,
+      }),
     ),
   ).toEqual([pair(directClientHeaders(ua, COPILOT_CLI_INTEGRATION_ID))]);
   expect(

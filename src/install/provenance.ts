@@ -2,17 +2,18 @@
 // what the attestation says and who may sign it. Loaded lazily by the update pipeline's default
 // verifier: the sigstore stack is well over a megabyte of CommonJS and `agent profile env` runs at every
 // shell start.
+
+import { join } from "node:path";
 import { bundleFromJSON } from "@sigstore/bundle";
 import type { TrustedRoot } from "@sigstore/protobuf-specs";
 import { getTrustedRoot } from "@sigstore/tuf";
 import { toSignedEntity, toTrustMaterial, Verifier } from "@sigstore/verify";
-import { join } from "node:path";
 import { resolveRootHome } from "../copilot_api/paths.ts";
 import { errMessage } from "../utils/error.ts";
 import {
-  assertSubjectsAttested,
   ATTESTATION_NAME,
   type AttestedSubject,
+  assertSubjectsAttested,
   cannotVerifyMessage,
   IN_TOTO_PAYLOAD_TYPE,
   parseStatement,
@@ -79,11 +80,12 @@ export async function verifyReleaseProvenance(
 
   let trustedRoot: TrustedRoot;
   try {
-    trustedRoot = opts.trustedRoot ??
-      await getTrustedRoot({
+    trustedRoot =
+      opts.trustedRoot ??
+      (await getTrustedRoot({
         mirrorURL: TUF_MIRROR_URL,
         cachePath: opts.cachePath ?? tufCachePath(),
-      });
+      }));
   } catch (e) {
     throw new Error(
       cannotVerifyMessage(

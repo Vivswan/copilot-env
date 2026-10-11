@@ -19,8 +19,8 @@ import { readCodexToml } from "../../src/codex/toml_io.ts";
 import { CopilotEnvConfig } from "../../src/copilot_api/env_config.ts";
 import { CopilotApiPaths } from "../../src/copilot_api/paths.ts";
 import { parseProfileName } from "../../src/copilot_api/profile.ts";
-import { afterEach, expect, outcomeOf, removeDir, tempDir, test } from "../helpers/testing.ts";
 import { envSnapshot, isolateAgentHomes } from "../helpers/env.ts";
+import { afterEach, expect, outcomeOf, removeDir, tempDir, test } from "../helpers/testing.ts";
 
 const restoreEnv = envSnapshot();
 let dir = "";
@@ -76,7 +76,7 @@ test("readCodexToml: missing and blank read as absent, key-less text as an empty
   const read = readCodexToml(path);
   if (read.kind !== "ok") throw new Error("expected ok");
   expect(read.doc.model_provider).toBe("copilot-env");
-  expect(read.doc.t).toEqual({ "k": "v" });
+  expect(read.doc.t).toEqual({ k: "v" });
 });
 
 test("readCodexToml: the parser's diagnostic quotes the offending line, so a static-key bearer is redacted from it", () => {
@@ -91,8 +91,7 @@ test("readCodexToml: the parser's diagnostic quotes the offending line, so a sta
       `Authorization = "Bearer ${token}"`,
       "broken = ]",
       "",
-    ]
-      .join("\n"),
+    ].join("\n"),
   );
   const read = readCodexToml(path);
   if (read.kind !== "unparseable") throw new Error("expected unparseable");
@@ -139,7 +138,7 @@ test("policy: configureCodexConfig (loadOrCreateConfig) throws on unparseable, f
       mode: "proxy",
       credential: COMMAND,
       baseUrl: "http://localhost:4141/v1",
-    })
+    }),
   );
   expect(
     (thrown as Error).message.startsWith(
@@ -157,7 +156,7 @@ test("policy: configureCodexConfig (loadOrCreateConfig) throws on unparseable, f
       mode: "proxy",
       credential: COMMAND,
       baseUrl: "http://localhost:4141/v1",
-    })
+    }),
   );
   expect((rawError as NodeJS.ErrnoException).code).toBe("EISDIR");
 });
@@ -208,8 +207,7 @@ test("policy: the removals skip an absent config and never blind-write: unparsea
     expect(
       (wrapped as Error).message.startsWith(`${configPath} is not readable/valid TOML: `),
       name,
-    )
-      .toBe(true);
+    ).toBe(true);
     expect(readFileSync(configPath, "utf8"), name).toBe(UNPARSEABLE);
 
     // A non-ENOENT read error (config.toml is a directory) gets the same wrap.
@@ -241,14 +239,14 @@ test.skipIf(process.platform === "win32")(
     // 1. Ours via a non-identical spelling that RESOLVES to our file: stripped.
     const alias = join(dir, "catalog-alias.json");
     symlinkSync(catalogFile, alias);
-    writeFileSync(configPath, stringify({ "model_catalog_json": alias }));
+    writeFileSync(configPath, stringify({ model_catalog_json: alias }));
     removeCodexDefaultWiring(codexHome);
     expect(readFileSync(configPath, "utf8")).not.toContain("model_catalog_json");
 
     // 2. Provably NOT ours: another file that resolves fine, elsewhere. Left alone.
     const foreign = join(dir, "someone-elses-catalog.json");
     writeFileSync(foreign, "{}");
-    writeFileSync(configPath, stringify({ "model_catalog_json": foreign }));
+    writeFileSync(configPath, stringify({ model_catalog_json: foreign }));
     removeCodexDefaultWiring(codexHome);
     expect(readFileSync(configPath, "utf8")).toContain("model_catalog_json");
   },
@@ -265,7 +263,7 @@ test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
     const configPath = join(codexHome, "config.toml");
     const blocked = join(dir, "blocked");
     mkdirSync(blocked, { recursive: true });
-    const pinned = stringify({ "model_catalog_json": join(blocked, "catalog.json") });
+    const pinned = stringify({ model_catalog_json: join(blocked, "catalog.json") });
     writeFileSync(configPath, pinned);
     chmodSync(blocked, 0o000); // realpathSync raises EACCES -> "unknown"
     try {

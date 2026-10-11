@@ -49,8 +49,8 @@ const AIMOCK_CUT_OFFSET = 1;
 /** Every scenario a test can name. The error bodies are the vendors' envelopes with Copilot's
  *  words where Copilot has its own (the service_tier rejection). */
 const SCENARIOS = {
-  "ok": { kind: "text", text: "OK" },
-  "unauthorized": {
+  ok: { kind: "text", text: "OK" },
+  unauthorized: {
     kind: "error",
     status: 401,
     type: "authentication_error",
@@ -79,8 +79,7 @@ const SCENARIOS = {
   "truncate-after-first-delta": {
     kind: "truncate",
     text: "OK, and this reply is long enough to be cut after its first delta",
-    afterFrames: RESPONSES_REASONING_ITEM_FRAMES + RESPONSES_PRELUDE_FRAMES + 1 +
-      AIMOCK_CUT_OFFSET,
+    afterFrames: RESPONSES_REASONING_ITEM_FRAMES + RESPONSES_PRELUDE_FRAMES + 1 + AIMOCK_CUT_OFFSET,
   },
 } satisfies Scenarios;
 
@@ -112,7 +111,7 @@ export function writeClaudeFakeSettings(
     .map(([name, value]) => `${name}: ${value}`)
     .join("\n");
   const settings = {
-    "env": {
+    env: {
       [BASE_URL_ENV]: baseUrl,
       [AUTH_TOKEN_ENV]: FAKE_CLAUDE_TOKEN,
       [CUSTOM_HEADERS_ENV]: customHeaders,
@@ -133,16 +132,16 @@ export function writeCodexFakeConfig(
   mkdirSync(codexHome, { recursive: true });
   const path = join(codexHome, "config.toml");
   const doc = {
-    "model": FAKE_CODEX_MODEL,
-    "model_provider": "fake",
-    "model_providers": {
-      "fake": {
-        "name": "fake",
-        "base_url": baseUrl,
-        "wire_api": "responses",
-        "requires_openai_auth": false,
-        "http_headers": {
-          "Authorization": `Bearer ${FAKE_CODEX_TOKEN}`,
+    model: FAKE_CODEX_MODEL,
+    model_provider: "fake",
+    model_providers: {
+      fake: {
+        name: "fake",
+        base_url: baseUrl,
+        wire_api: "responses",
+        requires_openai_auth: false,
+        http_headers: {
+          Authorization: `Bearer ${FAKE_CODEX_TOKEN}`,
           ...fakeClientHeaders(scenario),
         },
       },

@@ -44,7 +44,10 @@ test("two payloads match once runtime is dropped; a changed cost differs with it
   expect(
     await classifyPayloads(
       base,
-      [{ label: "cold", text: comparable(BASE) }, { label: "warm", text: comparable(HEAD_WARM) }],
+      [
+        { label: "cold", text: comparable(BASE) },
+        { label: "warm", text: comparable(HEAD_WARM) },
+      ],
       noRecheck,
       noDiff,
     ),
@@ -55,7 +58,10 @@ test("two payloads match once runtime is dropped; a changed cost differs with it
   expect(
     await classifyPayloads(
       base,
-      [{ label: "cold", text: base }, { label: "warm", text: changed }],
+      [
+        { label: "cold", text: base },
+        { label: "warm", text: changed },
+      ],
       () => Promise.resolve(base),
       (text) => Promise.resolve(`diff:${text === changed ? "warm" : "other"}`),
     ),
@@ -81,13 +87,15 @@ test("two payloads match once runtime is dropped; a changed cost differs with it
 });
 
 test("the window table has a row per measure with base, head, and a signed delta", () => {
-  expect(renderWindowTable({
-    window: "whole tree (30 days, 32-day window)",
-    base: { coldMs: 3874, warmMs: 401, noIndexMs: undefined, bytesRead: undefined },
-    head: { coldMs: 3997, warmMs: 353, noIndexMs: 3601, bytesRead: 0 },
-    outcome: { kind: "match" },
-    runtimeKeyPresent: true,
-  })).toEqual([
+  expect(
+    renderWindowTable({
+      window: "whole tree (30 days, 32-day window)",
+      base: { coldMs: 3874, warmMs: 401, noIndexMs: undefined, bytesRead: undefined },
+      head: { coldMs: 3997, warmMs: 353, noIndexMs: 3601, bytesRead: 0 },
+      outcome: { kind: "match" },
+      runtimeKeyPresent: true,
+    }),
+  ).toEqual([
     "**whole tree (30 days, 32-day window)**",
     "",
     "| measure | base | head | diff |",

@@ -1,15 +1,15 @@
 import { join } from "node:path";
-import { userHomeDir } from "../utils/home.ts";
 import { isEnoentOrNotdir } from "../utils/fs.ts";
 import * as fs from "../utils/fs_facade.ts";
-import { hideWritesUnder } from "../utils/report_write.ts";
+import { userHomeDir } from "../utils/home.ts";
 import { getSanitizedHostname } from "../utils/hostname.ts";
+import { hideWritesUnder } from "../utils/report_write.ts";
 import {
   DEFAULT_PROFILE_NAME,
   isValidProfileName,
-  parseProfileName,
   type Profile,
   type ProfileName,
+  parseProfileName,
 } from "./profile.ts";
 
 // One spelling on every platform: do NOT swap in a native %LOCALAPPDATA% location on Windows, the wrapper
@@ -127,7 +127,8 @@ export function allDaemonHomes(): string[] {
  *  daemons from the orphan sweep, where an incomplete answer is worse than an error. */
 export function profileHomeNames(): ProfileName[] {
   try {
-    return fs.readdirEntries(join(resolveRootHome(), PROFILES_DIR_NAME))
+    return fs
+      .readdirEntries(join(resolveRootHome(), PROFILES_DIR_NAME))
       .filter((entry) => entry.isDirectory() && isValidProfileName(entry.name))
       .map((entry) => parseProfileName(entry.name))
       .sort();

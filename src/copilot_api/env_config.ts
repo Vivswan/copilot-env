@@ -3,18 +3,19 @@
 // the global value > the built-in default. The store holds a global map and one section per
 // profile; the type keeps a profile-scoped key out of the global map.
 import * as v from "valibot";
+import { isRecord } from "../utils/json.ts";
 import { type CopilotApiConfig, ensureDict } from "./config.ts";
 import {
-  type CodexHomePrefs,
-  codexHomePrefsFor,
   CONFIG_REGISTRY,
-  configDefaultValue,
+  COPILOT_HOST_AUTO,
+  type CodexHomePrefs,
   type ConfigKey,
   type ConfigKeyDef,
-  configScope,
   type ConfigValue,
   type ConfigValueTypes,
-  COPILOT_HOST_AUTO,
+  codexHomePrefsFor,
+  configDefaultValue,
+  configScope,
   type GlobalConfigData,
   type GlobalKey,
   type GlobalMapKey,
@@ -25,9 +26,8 @@ import {
   type StaticKeyAgent,
   type StaticKeyScope,
 } from "./config_registry.ts";
+import { type Profile, type ProfileName, profileKey } from "./profile.ts";
 import { rootStateStore } from "./state_store.ts";
-import { type Profile, profileKey, type ProfileName } from "./profile.ts";
-import { isRecord } from "../utils/json.ts";
 
 /** The store as read: both maps always present. `profiles` is keyed by profile name, the default
  *  profile under DEFAULT_PROFILE_NAME (profileKey). */
@@ -87,12 +87,12 @@ const PROFILE_CONFIG_SCHEMA = mapSchema<ProfileConfigData>(
 
 /** The settings keys each map of the store may hold (the state keys sharing the maps are
  *  env_state.ts's): what a whole-store replace or a profile deletion touches. */
-export const GLOBAL_SETTING_KEYS: readonly string[] = CONFIG_REGISTRY
-  .filter((def) => def.scope !== "profile")
-  .map((def) => def.key);
-export const PROFILE_SETTING_KEYS: readonly string[] = CONFIG_REGISTRY
-  .filter((def) => def.scope !== "global")
-  .map((def) => def.key);
+export const GLOBAL_SETTING_KEYS: readonly string[] = CONFIG_REGISTRY.filter(
+  (def) => def.scope !== "profile",
+).map((def) => def.key);
+export const PROFILE_SETTING_KEYS: readonly string[] = CONFIG_REGISTRY.filter(
+  (def) => def.scope !== "global",
+).map((def) => def.key);
 
 /** A profile map holding no setting has nothing for the bundle or the table: skipped. */
 function settingsOf(data: CopilotEnvConfigData): CopilotEnvConfigData {
@@ -100,7 +100,7 @@ function settingsOf(data: CopilotEnvConfigData): CopilotEnvConfigData {
     global: data.global,
     profiles: Object.fromEntries(
       Object.entries(data.profiles).filter(([, section]) =>
-        Object.values(section).some((value) => value !== undefined)
+        Object.values(section).some((value) => value !== undefined),
       ),
     ),
   };
@@ -144,8 +144,7 @@ export function resolveSettingIn<K extends ConfigKey>(
   const def = registryEntry(key);
   if (def.scope !== "global") {
     // The section's type is a subset of every key's, so the widening is a plain assignment.
-    const section: Partial<ConfigValueTypes> = data.profiles[profileKey(opts.profile)] ??
-      {};
+    const section: Partial<ConfigValueTypes> = data.profiles[profileKey(opts.profile)] ?? {};
     const own = section[key];
     if (own !== undefined) return { value: own, source: "profile" };
   }
@@ -436,7 +435,7 @@ export class CopilotEnvConfig {
    *  web_search.ts on the MCP path (that module imports this one, so the registry cannot reference it). */
   messageApiWebSearchModel(profile: Profile): string | null {
     const resolved = this.resolve("proxy.message-websearch-model", { profile });
-    return isStoredSource(resolved.source) ? resolved.value ?? null : null;
+    return isStoredSource(resolved.source) ? (resolved.value ?? null) : null;
   }
 
   /** The global map: null, undefined, and a blank string all delete the key; strings are trimmed. */
@@ -472,11 +471,7 @@ export class CopilotEnvConfig {
 
   /** The `set`/`unset` write: the key's scope decides the map, so the rule sits at this one
    *  mutation point. `value` null deletes; the caller reports where it landed. */
-  assign(
-    def: ConfigKeyDef,
-    value: ConfigValue | null,
-    profile: Profile,
-  ): SettingTarget {
+  assign(def: ConfigKeyDef, value: ConfigValue | null, profile: Profile): SettingTarget {
     const target = settingTarget(def, profile);
     if (target.kind === "global") this.writeGlobal({ [def.key]: value });
     else this.writeProfile(target.profile, { [def.key]: value });
@@ -534,9 +529,10 @@ export function settingTarget(def: ConfigKeyDef, profile: Profile): SettingTarge
     case "global":
       if (profile !== null) {
         throw new Error(
-          `'${def.key}' is a global setting (scope ${def.scope}): it has no per-profile value; \`${
-            configSetCommand(def.key, "<value>")
-          }\` sets this machine's`,
+          `'${def.key}' is a global setting (scope ${def.scope}): it has no per-profile value; \`${configSetCommand(
+            def.key,
+            "<value>",
+          )}\` sets this machine's`,
         );
       }
       return { kind: "global" };

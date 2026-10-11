@@ -14,13 +14,13 @@ import {
   inspectClaudeWiring,
 } from "../claude/config.ts";
 import { settingsPathFor } from "../claude/paths.ts";
+import { codexHostFarm } from "../codex/host.ts";
 import {
   bakedCodexToken,
   CODEX_ENV_KEY,
   type CodexWiringStatus,
   inspectCodexWiring,
 } from "../codex/inspect.ts";
-import { codexHostFarm } from "../codex/host.ts";
 import { codexConfigPath, codexProfileConfigPath } from "../codex/paths.ts";
 import { CopilotApiConfig } from "../copilot_api/config.ts";
 import { Credential } from "../copilot_api/credential.ts";
@@ -32,6 +32,8 @@ import {
   type ProfileMode,
   storedCredentialKind,
 } from "../copilot_api/env_state.ts";
+import { idleTimeoutMs } from "../copilot_api/idle_watchdog.ts";
+import { persistedInferenceMs } from "../copilot_api/inference_activity.ts";
 import { CopilotApiPaths, profileHomeExists, resolveRootHome } from "../copilot_api/paths.ts";
 import {
   copilotApiFallbackPort,
@@ -39,39 +41,37 @@ import {
   proxyLoopbackOrigin,
 } from "../copilot_api/port.ts";
 import type { Profile, ProfileName } from "../copilot_api/profile.ts";
-import { sidecarStatus } from "../copilot_api/sidecar.ts";
 import { CopilotEnvRunState } from "../copilot_api/run_state.ts";
+import { sidecarStatus } from "../copilot_api/sidecar.ts";
 import { installedProxyVersion, proxyVersionBoundsStatus } from "../copilot_api/version.ts";
-import { pidAlive } from "../utils/pid.ts";
 import {
   proxyFloatSkips,
   readResolvedVersionRecord,
   resolveMinimumReleaseAgeSeconds,
 } from "../proxy_float.ts";
-import { idleTimeoutMs } from "../copilot_api/idle_watchdog.ts";
-import { persistedInferenceMs } from "../copilot_api/inference_activity.ts";
 import { hasMarker, MARKER } from "../shell/integration.ts";
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import { readTextOrNull } from "../utils/fs.ts";
 import * as fs from "../utils/fs_facade.ts";
+import { pidAlive } from "../utils/pid.ts";
 import { readProjectConfig } from "../utils/project_config.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
 import { packageVersion } from "../utils/version.ts";
 import {
   type AuthFacts,
   type BakedCredentialFreshness,
-  classifyPortState,
   type CodexDirectAuthFacts,
+  classifyPortState,
   type DaemonProbed,
   type DefaultRuntimeTarget,
   type HealthFacts,
   type NamedRuntimeTarget,
   type ProfileAuthFacts,
   type ProfileSlotFacts,
-  runtimePathsView,
   type RuntimeTarget,
   type RuntimeTargetCommon,
+  runtimePathsView,
   type ShellFileFact,
 } from "./facts.ts";
 import { defaultProbeDeps, type ProbeDeps } from "./probe_deps.ts";
@@ -221,9 +221,10 @@ async function interrogateDaemon(
   // fast `runtime` probe scope, and only when something is reachable AND this target's setup
   // routes through the port: with both agents direct, nothing we manage talks to whatever
   // answers, so its identity is never grounds for a misroute warning.
-  const identityConfirmed = BOOTSTRAP_SCOPES.includes(scope) && reachable && proxyExpected
-    ? await deps.proxyIdentity(probeUrl, 2000)
-    : null;
+  const identityConfirmed =
+    BOOTSTRAP_SCOPES.includes(scope) && reachable && proxyExpected
+      ? await deps.proxyIdentity(probeUrl, 2000)
+      : null;
   return {
     kind: "probed",
     reachable,
@@ -248,7 +249,8 @@ async function gatherDefaultTarget(
       codexHome: deps.codexHome(),
       claudeHome: deps.claudeHome(),
       expectedPort: targetPort,
-    }));
+    }),
+  );
   return {
     profile: null,
     ...common,
@@ -281,18 +283,19 @@ async function gatherNamedTarget(
   const skipWhy = !proxyExpected
     ? "no daemon expected (not a proxy-mode target)"
     : !homeExists
-    ? "no daemon home on disk"
-    : !common.portPersisted
-    ? "no persisted port on this host"
-    : null;
+      ? "no daemon home on disk"
+      : !common.portPersisted
+        ? "no persisted port on this host"
+        : null;
   return {
     profile: name,
     slot,
     homeExists,
     ...common,
-    probe: skipWhy !== null
-      ? { kind: "skipped", why: skipWhy }
-      : await interrogateDaemon(scope, deps, common.port, state.pid ?? null, proxyExpected),
+    probe:
+      skipWhy !== null
+        ? { kind: "skipped", why: skipWhy }
+        : await interrogateDaemon(scope, deps, common.port, state.pid ?? null, proxyExpected),
   };
 }
 
@@ -331,9 +334,8 @@ export async function gatherFacts(
   // The account an AUTO gh-cli slot follows right now, for the report's naming: probed once per
   // run, only when some auto gh-cli slot is actually being judged.
   let activeLoginCache: Promise<string | null> | undefined;
-  const sharedActiveLogin = (): Promise<string | null> => (
-    activeLoginCache ??= deps.ghActiveLogin()
-  );
+  const sharedActiveLogin = (): Promise<string | null> =>
+    (activeLoginCache ??= deps.ghActiveLogin());
   // The auth verdict, plus the followed account's name on an AUTO slot (a pinned slot already
   // names itself via ghUser).
   const slotGhFacts = async (ghUser: string | null): Promise<CodexDirectAuthFacts> => {
@@ -355,12 +357,12 @@ export async function gatherFacts(
   // profileHomeNames' strict stance). One store read, cached; several jobs consult it.
   let credentialCache:
     | {
-      provider: AuthProvider | null;
-      storedToken: boolean;
-      ghUser: string | null;
-      mode: ProfileMode | null;
-      slotExists: boolean;
-    }
+        provider: AuthProvider | null;
+        storedToken: boolean;
+        ghUser: string | null;
+        mode: ProfileMode | null;
+        slotExists: boolean;
+      }
     | undefined;
   const runCredential = (): NonNullable<typeof credentialCache> => {
     if (credentialCache === undefined) {
@@ -451,7 +453,7 @@ export async function gatherFacts(
   // daemon resolves the same credential).
   const authShapeOf = (wiring: ClaudeWiringStatus | CodexWiringStatus) =>
     wiring.credential === "static" || wiring.providerMode === "direct"
-      ? wiring.credential ?? "none"
+      ? (wiring.credential ?? "none")
       : "none";
 
   const jobs: Promise<void>[] = [];
@@ -459,9 +461,10 @@ export async function gatherFacts(
   if (RUNTIME_SCOPES.includes(scope)) {
     jobs.push(
       (async () => {
-        const target: RuntimeTarget = profile === null
-          ? await gatherDefaultTarget(scope, deps)
-          : await gatherNamedTarget(profile, scope, deps);
+        const target: RuntimeTarget =
+          profile === null
+            ? await gatherDefaultTarget(scope, deps)
+            : await gatherNamedTarget(profile, scope, deps);
         facts.runtimes = [target];
       })(),
     );
@@ -475,10 +478,12 @@ export async function gatherFacts(
           cliVersion: packageVersion(),
           runtimeVersion: process.versions.bun,
           // A compiled binary embeds its dependencies: no node_modules to judge.
-          nodeModules: sidecar.standalone ? null : {
-            present: fs.exists(join(PROJECT_ROOT, "node_modules")),
-            fresh: nodeModulesFresh(),
-          },
+          nodeModules: sidecar.standalone
+            ? null
+            : {
+                present: fs.exists(join(PROJECT_ROOT, "node_modules")),
+                fresh: nodeModulesFresh(),
+              },
         };
         const record = readResolvedVersionRecord(resolveRootHome());
         const resolved = record === null ? null : { ...record, cached: fs.exists(record.denoDir) };
@@ -540,10 +545,12 @@ export async function gatherFacts(
           envText,
           wiringPort(),
           Boolean(process.env[CODEX_ENV_KEY]),
-          profile === null ? { profile } : {
-            profile,
-            profileToml: fs.readTextResult(codexProfileConfigPath(home, profile)),
-          },
+          profile === null
+            ? { profile }
+            : {
+                profile,
+                profileToml: fs.readTextResult(codexProfileConfigPath(home, profile)),
+              },
         );
         const { directAuth, noGhNeeded } = await directAuthFor(authShapeOf(wiring));
         facts.codex = {
@@ -557,11 +564,11 @@ export async function gatherFacts(
           ...storeFacts(wiring.credential),
           ...(wiring.credential === "static"
             ? {
-              bakedCredential: bakedFreshness(
-                wiring.providerMode === "direct" ? "direct" : "proxy",
-                bakedCodexToken(configRead, profile),
-              ),
-            }
+                bakedCredential: bakedFreshness(
+                  wiring.providerMode === "direct" ? "direct" : "proxy",
+                  bakedCodexToken(configRead, profile),
+                ),
+              }
             : {}),
         };
       })(),
@@ -589,11 +596,11 @@ export async function gatherFacts(
           ...storeFacts(wiring.credential),
           ...(wiring.credential === "static"
             ? {
-              bakedCredential: bakedFreshness(
-                wiring.providerMode === "direct" ? "direct" : "proxy",
-                bakedClaudeToken(settingsRead),
-              ),
-            }
+                bakedCredential: bakedFreshness(
+                  wiring.providerMode === "direct" ? "direct" : "proxy",
+                  bakedClaudeToken(settingsRead),
+                ),
+              }
             : {}),
         };
         // The Desktop library spans the default AND every profile, so it is judged once, on the
@@ -611,29 +618,31 @@ export async function gatherFacts(
         // own slot alone (runCredential's one snapshot); it never falls back to the default
         // credential.
         const credential = runCredential();
-        const gh = storedCredentialKind(credential.provider, credential.storedToken) === "gh-cli"
-          ? await slotGhFacts(credential.ghUser)
-          : null;
+        const gh =
+          storedCredentialKind(credential.provider, credential.storedToken) === "gh-cli"
+            ? await slotGhFacts(credential.ghUser)
+            : null;
         const resolution = {
           storedToken: credential.storedToken,
           ...ghResolutionFacts(gh),
         };
-        facts.auth = profile === null
-          ? {
-            profile,
-            ...resolution,
-            provider: credential.provider,
-            profiles: authProfiles(),
-            // The `identity` config key; null when unset or `auto` (src/copilot_api/env_config.ts).
-            pinnedIntegrationId: new CopilotEnvConfig().pinnedIntegrationId(null),
-          }
-          : {
-            profile,
-            ...resolution,
-            slot: credential.slotExists
-              ? { provider: credential.provider, mode: credential.mode }
-              : null,
-          };
+        facts.auth =
+          profile === null
+            ? {
+                profile,
+                ...resolution,
+                provider: credential.provider,
+                profiles: authProfiles(),
+                // The `identity` config key; null when unset or `auto` (src/copilot_api/env_config.ts).
+                pinnedIntegrationId: new CopilotEnvConfig().pinnedIntegrationId(null),
+              }
+            : {
+                profile,
+                ...resolution,
+                slot: credential.slotExists
+                  ? { provider: credential.provider, mode: credential.mode }
+                  : null,
+              };
       })(),
     );
   }

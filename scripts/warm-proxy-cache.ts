@@ -23,7 +23,7 @@ if (import.meta.main) {
   // Pin to the locked version and disable the cooldown: this fixture must be
   // reproducible, so it must never depend on what the registry happens to offer today.
   process.env.COPILOT_API_VERSION = version;
-  await floatProxy({ "rootHome": PROXY_CACHE_FIXTURE, "cooldownSeconds": 0 });
+  await floatProxy({ rootHome: PROXY_CACHE_FIXTURE, cooldownSeconds: 0 });
 
   const record = readResolvedVersionRecord(PROXY_CACHE_FIXTURE);
   if (record?.version !== version) {

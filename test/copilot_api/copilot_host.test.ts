@@ -15,24 +15,24 @@ import {
 import { codexAdapter, directWiringFor } from "../../src/codex/config.ts";
 import { inspectCodexWiring } from "../../src/codex/inspect.ts";
 import { runConfig } from "../../src/commands/config.ts";
-import { Credential } from "../../src/copilot_api/credential.ts";
 import { configKeyDef } from "../../src/copilot_api/config_registry.ts";
+import { Credential } from "../../src/copilot_api/credential.ts";
 import { CopilotEnvConfig } from "../../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../../src/copilot_api/env_state.ts";
 import {
   COPILOT_CLI_INTEGRATION_ID,
   COPILOT_SANDBOX_INTEGRATION_ID,
-  daemonClientHeaders,
   DEFAULT_COPILOT_API_BASE,
+  daemonClientHeaders,
   INTEGRATION_ID_HEADER,
   setIntegrationProbeFetch,
   VSCODE_CHAT_INTEGRATION_ID,
 } from "../../src/copilot_api/integration_identity.ts";
 import { parseProfileName } from "../../src/copilot_api/profile.ts";
-import { afterEach, expect, test } from "../helpers/testing.ts";
+import { launchAuth } from "../helpers/daemon.ts";
 import { envSnapshot, isolateAgentHomes } from "../helpers/env.ts";
 import { codexConfigToml } from "../helpers/fixtures.ts";
-import { launchAuth } from "../helpers/daemon.ts";
+import { afterEach, expect, test } from "../helpers/testing.ts";
 
 const restoreEnv = envSnapshot();
 
@@ -46,10 +46,7 @@ const GHE = "https://copilot-api.ghe.example";
 
 /** Every /models answers `generic` on the generic host and 200 elsewhere; the account lookup names
  *  the enterprise host. `seen` records each probe's host and identity header. */
-function stubHosts(
-  generic: number,
-  seen: { host: string; id: string | null }[] = [],
-): void {
+function stubHosts(generic: number, seen: { host: string; id: string | null }[] = []): void {
   setIntegrationProbeFetch((input, init) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     if (url.includes("/copilot_internal/user")) {
@@ -95,10 +92,8 @@ test("agent config: copilot-host takes `auto` or an https origin and refuses any
         value: bad,
         view: { kind: "profile", profile: null },
         dryRun: false,
-      })
-    ).toThrow(
-      /expected `auto` or an https:\/\/ origin/,
-    );
+      }),
+    ).toThrow(/expected `auto` or an https:\/\/ origin/);
   }
   expect(() =>
     runConfig({
@@ -107,20 +102,16 @@ test("agent config: copilot-host takes `auto` or an https origin and refuses any
       value: `${ENTERPRISE}/models`,
       view: { kind: "profile", profile: null },
       dryRun: false,
-    })
-  ).toThrow(
-    /without a path or query/,
-  );
+    }),
+  ).toThrow(/without a path or query/);
   // Every loopback spelling, not three: the whole 127/8 block, IPv4-mapped ::1, a trailing dot.
-  for (
-    const loopback of [
-      "https://localhost:8443",
-      "https://127.0.0.2",
-      "https://localhost.",
-      "https://[::ffff:127.0.0.1]",
-      "https://[::1]:8443",
-    ]
-  ) {
+  for (const loopback of [
+    "https://localhost:8443",
+    "https://127.0.0.2",
+    "https://localhost.",
+    "https://[::ffff:127.0.0.1]",
+    "https://[::1]:8443",
+  ]) {
     expect(() =>
       runConfig({
         kind: "set",
@@ -128,7 +119,7 @@ test("agent config: copilot-host takes `auto` or an https origin and refuses any
         value: loopback,
         view: { kind: "profile", profile: null },
         dryRun: false,
-      })
+      }),
     ).toThrow(/not loopback/);
   }
   expect(new CopilotEnvConfig().copilotHost(null)).toBeNull();
@@ -199,14 +190,15 @@ test("a Direct wiring bakes the copilot-host into both agents' base URLs; detect
       null,
       4141,
       false,
-    )
-      .providerMode,
+    ).providerMode,
   ).toBe("direct");
   // Only the shape gates: an http base that is not the proxy, an https base with a path (some other
   // API), or an https loopback the validator also refuses, is the inspector's UNWIRED proxy.
-  for (
-    const baseUrl of ["http://elsewhere.example", "https://api.openai.com/v1", "https://127.0.0.2"]
-  ) {
+  for (const baseUrl of [
+    "http://elsewhere.example",
+    "https://api.openai.com/v1",
+    "https://127.0.0.2",
+  ]) {
     const foreign = inspectCodexWiring(codexConfigToml({ baseUrl }), null, 4141, false);
     expect([foreign.providerMode, foreign.providerWired]).toEqual(["proxy", false]);
   }

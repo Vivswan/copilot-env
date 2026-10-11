@@ -13,11 +13,9 @@ import "./utils/dotenv.ts";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { createConsola } from "consola";
-import { type ConsolaCreateOptions, wrapToTerminal } from "./utils/logger.ts";
 import * as v from "valibot";
 import { proxyUnusedEverywhere } from "./agents/wiring.ts";
-import * as fs from "./utils/fs_facade.ts";
-import { configSetCommand, CopilotEnvConfig } from "./copilot_api/env_config.ts";
+import { CopilotEnvConfig, configSetCommand } from "./copilot_api/env_config.ts";
 import { resolveRootHome } from "./copilot_api/paths.ts";
 import { allShimPaths } from "./copilot_api/shims.ts";
 import { resolveDenoBin } from "./copilot_api/sidecar.ts";
@@ -30,10 +28,12 @@ import { assertNever } from "./utils/assert.ts";
 import { readInstallMinimumReleaseAge } from "./utils/bunfig.ts";
 import { errMessage } from "./utils/error.ts";
 import { isEnoentOrNotdir, readTextOrNull } from "./utils/fs.ts";
+import * as fs from "./utils/fs_facade.ts";
+import { type ConsolaCreateOptions, wrapToTerminal } from "./utils/logger.ts";
 import { type ProjectConfig, readProjectConfig } from "./utils/project_config.ts";
-import { packageDependencies } from "./utils/version.ts";
 import { pickAgedVersion, versionLessThan } from "./utils/semver.ts";
 import { SECONDS_PER_DAY } from "./utils/time.ts";
+import { packageDependencies } from "./utils/version.ts";
 
 const PROXY_PKG = PROXY_PACKAGE_NAME;
 const PROXY_VERSION_ENV = "COPILOT_API_VERSION";
@@ -59,10 +59,10 @@ export function resolveProxyVersionOverride(): string | undefined {
 }
 
 const loggerOptions: ConsolaCreateOptions = {
-  "stdout": process.stderr,
-  "stderr": process.stderr,
-  "fancy": false,
-  "formatOptions": { "date": false },
+  stdout: process.stderr,
+  stderr: process.stderr,
+  fancy: false,
+  formatOptions: { date: false },
 };
 const logger = wrapToTerminal(createConsola(loggerOptions));
 
@@ -104,14 +104,14 @@ interface ProxyRegistryDoc {
 
 const REGISTRY_SCHEMA = v.object({
   "dist-tags": v.optional(v.record(v.string(), v.string()), {}),
-  "versions": v.record(
+  versions: v.record(
     v.string(),
     v.looseObject({
-      "scripts": v.optional(v.record(v.string(), v.unknown())),
-      "hasInstallScript": v.optional(v.boolean()),
+      scripts: v.optional(v.record(v.string(), v.unknown())),
+      hasInstallScript: v.optional(v.boolean()),
     }),
   ),
-  "time": v.record(v.string(), v.string()),
+  time: v.record(v.string(), v.string()),
 });
 
 /** A malformed document is rejected whole, never partially trusted. A version without a parseable
@@ -138,7 +138,7 @@ export function parseRegistryDoc(raw: unknown): ProxyRegistryDoc {
     }
     releases.set(version, { version, publishedAtMs, lifecycleScripts });
   }
-  return { "releases": releases, "distTags": parsed.output["dist-tags"] };
+  return { releases: releases, distTags: parsed.output["dist-tags"] };
 }
 
 export type FetchLike = (url: string) => Promise<Response>;
@@ -206,35 +206,36 @@ export function selectProxyVersion(
   const release = doc.releases.get(candidate);
   if (release === undefined) {
     return {
-      "kind": "unavailable",
-      "reason": `target ${candidate} (${reason}) is not published in the npm registry`,
+      kind: "unavailable",
+      reason: `target ${candidate} (${reason}) is not published in the npm registry`,
     };
   }
   if (release.lifecycleScripts.length > 0) {
     return {
-      "kind": "refused",
-      "version": candidate,
-      "lifecycleScripts": release.lifecycleScripts,
-      "reason": reason,
+      kind: "refused",
+      version: candidate,
+      lifecycleScripts: release.lifecycleScripts,
+      reason: reason,
     };
   }
   return {
-    "kind": "resolved",
-    "version": candidate,
-    "publishedAtMs": release.publishedAtMs,
-    "reason": reason,
+    kind: "resolved",
+    version: candidate,
+    publishedAtMs: release.publishedAtMs,
+    reason: reason,
   };
 }
 
 function refusalMessage(sel: Extract<ProxySelection, { kind: "refused" }>): string {
   return (
-    `${PROXY_PKG}@${sel.version} declares npm lifecycle scripts (${
-      sel.lifecycleScripts.join(", ")
-    }), ` +
+    `${PROXY_PKG}@${sel.version} declares npm lifecycle scripts (${sel.lifecycleScripts.join(
+      ", ",
+    )}), ` +
     `which never run for global-cache execution and would misbehave silently; refusing it. ` +
-    `Review the release, then pin it (${PROXY_VERSION_ENV} or \`${
-      configSetCommand("daemon.version", "<version>")
-    }\`) ` +
+    `Review the release, then pin it (${PROXY_VERSION_ENV} or \`${configSetCommand(
+      "daemon.version",
+      "<version>",
+    )}\`) ` +
     `or cap PROXY_MAX_VERSION in copilot-env.config below it.`
   );
 }
@@ -248,9 +249,9 @@ interface ResolvedVersionRecord {
 }
 
 const RECORD_SCHEMA = v.object({
-  "version": v.pipe(v.string(), v.regex(SEMVER_RE)),
-  "resolved_at_ms": v.pipe(v.number(), v.finite(), v.minValue(0)),
-  "deno_dir": v.pipe(v.string(), v.minLength(1)),
+  version: v.pipe(v.string(), v.regex(SEMVER_RE)),
+  resolved_at_ms: v.pipe(v.number(), v.finite(), v.minValue(0)),
+  deno_dir: v.pipe(v.string(), v.minLength(1)),
 });
 
 export function proxyDenoDir(rootHome: string): string {
@@ -296,11 +297,12 @@ export function renderDaemonConfig(
     );
   }
   const imports = Object.fromEntries(
-    Object.entries(dependencies).map((
-      [name, range],
-    ) => [name, range.startsWith("npm:") ? range : `npm:${name}@${range}`]),
+    Object.entries(dependencies).map(([name, range]) => [
+      name,
+      range.startsWith("npm:") ? range : `npm:${name}@${range}`,
+    ]),
   );
-  return `${JSON.stringify({ "imports": imports }, null, 2)}\n`;
+  return `${JSON.stringify({ imports: imports }, null, 2)}\n`;
 }
 
 /** Malformed reads as null, the caller's "install needed" path: a corrupt record must never brick.
@@ -317,9 +319,9 @@ export function readResolvedVersionRecord(rootHome: string): ResolvedVersionReco
   const parsed = v.safeParse(RECORD_SCHEMA, raw);
   if (!parsed.success) return null;
   return {
-    "version": parsed.output.version,
-    "resolvedAtMs": parsed.output.resolved_at_ms,
-    "denoDir": parsed.output.deno_dir,
+    version: parsed.output.version,
+    resolvedAtMs: parsed.output.resolved_at_ms,
+    denoDir: parsed.output.deno_dir,
   };
 }
 
@@ -332,9 +334,9 @@ export function writeResolvedVersionRecord(
   denoDir: string = proxyDenoDir(rootHome),
 ): void {
   const record = {
-    "version": version,
-    "resolved_at_ms": nowMs,
-    "deno_dir": denoDir,
+    version: version,
+    resolved_at_ms: nowMs,
+    deno_dir: denoDir,
   };
   fs.writeText(resolvedVersionFile(rootHome), `${JSON.stringify(record, null, 2)}\n`, {
     secretKeys: [],
@@ -359,17 +361,17 @@ export function ensureProxyNpmrc(rootHome: string): NpmrcStatus {
   const path = join(rootHome, ".npmrc");
   const read = fs.readTextResult(path);
   if (read.kind === "unreadable") {
-    return { "kind": "kept-foreign", "path": path };
+    return { kind: "kept-foreign", path: path };
   }
   const existing = read.kind === "text" ? read.text : null;
   if (existing !== null && !existing.includes(NPMRC_MARKER)) {
-    return { "kind": "kept-foreign", "path": path };
+    return { kind: "kept-foreign", path: path };
   }
   if (existing === NPMRC_CONTENT) {
-    return { "kind": "current", "path": path };
+    return { kind: "current", path: path };
   }
   fs.writeText(path, NPMRC_CONTENT);
-  return { "kind": "written", "path": path };
+  return { kind: "written", path: path };
 }
 
 // --- Deno cache commands ----------------------------------------------------------
@@ -397,16 +399,16 @@ function defaultDenoRunner(
   options: { cwd: string; env: Record<string, string> },
 ): DenoRunResult {
   const result = spawnSync(command, args, {
-    "cwd": options.cwd,
-    "env": { ...process.env, ...options.env },
-    "stdio": ["ignore", "pipe", "pipe"],
+    cwd: options.cwd,
+    env: { ...process.env, ...options.env },
+    stdio: ["ignore", "pipe", "pipe"],
   });
   return {
-    "status": result.status ?? 1,
-    "stdout": result.stdout?.toString() ?? "",
-    "stderr": result.stderr?.toString() ?? "",
+    status: result.status ?? 1,
+    stdout: result.stdout?.toString() ?? "",
+    stderr: result.stderr?.toString() ?? "",
     // A spawn error or a null status (killed): deno itself never answered.
-    ...(result.error || result.status === null ? { "launchFailed": true as const } : {}),
+    ...(result.error || result.status === null ? { launchFailed: true as const } : {}),
   };
 }
 
@@ -435,19 +437,19 @@ function floatContext(deps: ProxyFloatDeps): FloatContext {
   // never warms one home while spawning another home's sidecar.
   const rootHome = deps.rootHome ?? resolveRootHome();
   return {
-    "rootHome": rootHome,
-    "config": deps.config ?? readProjectConfig(),
-    "denoBin": deps.denoBin ?? resolveDenoBin(process.env, rootHome),
-    "fetchLike": deps.fetchLike ?? fetch,
-    "runner": deps.runner ?? defaultDenoRunner,
-    "nowMs": deps.nowMs ?? Date.now(),
+    rootHome: rootHome,
+    config: deps.config ?? readProjectConfig(),
+    denoBin: deps.denoBin ?? resolveDenoBin(process.env, rootHome),
+    fetchLike: deps.fetchLike ?? fetch,
+    runner: deps.runner ?? defaultDenoRunner,
+    nowMs: deps.nowMs ?? Date.now(),
   };
 }
 
 /** No package.json discovery: npm-specifier entrypoints fail under a discovered node-modules
  *  config, so with cwd=rootHome the spawns are location-independent. */
 function denoEnv(denoDir: string): Record<string, string> {
-  return { "DENO_DIR": denoDir, "DENO_NO_UPDATE_CHECK": "1", "DENO_NO_PACKAGE_JSON": "1" };
+  return { DENO_DIR: denoDir, DENO_NO_UPDATE_CHECK: "1", DENO_NO_PACKAGE_JSON: "1" };
 }
 
 /** deno's flag takes minutes, ISO-8601 durations, or timestamps; `0` disables. */
@@ -471,8 +473,8 @@ function denoCacheVersion(ctx: FloatContext, version: string, cooldownSeconds: n
   const env = denoEnv(proxyDenoDir(ctx.rootHome));
 
   const proxy = ctx.runner(ctx.denoBin, ["cache", ...pinned, `npm:${PROXY_PKG}@${version}`], {
-    "cwd": ctx.rootHome,
-    "env": env,
+    cwd: ctx.rootHome,
+    env: env,
   });
   if (proxy.status !== 0) {
     if (proxy.stderr.trim()) logger.warn(proxy.stderr.trimEnd());
@@ -480,8 +482,8 @@ function denoCacheVersion(ctx: FloatContext, version: string, cooldownSeconds: n
   }
 
   const shims = ctx.runner(ctx.denoBin, ["cache", ...pinned, ...allShimPaths()], {
-    "cwd": ctx.rootHome,
-    "env": env,
+    cwd: ctx.rootHome,
+    env: env,
   });
   if (shims.status !== 0 && shims.stderr.trim()) logger.warn(shims.stderr.trimEnd());
   return shims.status;
@@ -508,7 +510,7 @@ function cacheResolves(ctx: FloatContext, version: string, denoDir: string): Cac
   const config = daemonConfigFile(ctx.rootHome);
   if (!fs.exists(config)) return "missing";
   const pinned = ["--json", "--config", config, "--lock", proxyLockFile(ctx.rootHome)];
-  const options = { "cwd": ctx.rootHome, "env": denoEnv(denoDir) };
+  const options = { cwd: ctx.rootHome, env: denoEnv(denoDir) };
 
   for (const target of [[`npm:${PROXY_PKG}@${version}`], allShimPaths()]) {
     const result = ctx.runner(
@@ -617,9 +619,9 @@ function warnPinnedLifecycleScripts(doc: ProxyRegistryDoc | null, version: strin
   const scripts = doc?.releases.get(version)?.lifecycleScripts ?? [];
   if (scripts.length > 0) {
     logger.warn(
-      `pinned ${PROXY_PKG}@${version} declares npm lifecycle scripts (${
-        scripts.join(", ")
-      }); they will NOT run under global-cache execution`,
+      `pinned ${PROXY_PKG}@${version} declares npm lifecycle scripts (${scripts.join(
+        ", ",
+      )}); they will NOT run under global-cache execution`,
     );
   }
 }
@@ -650,16 +652,16 @@ async function handlePinnedOverride(ctx: FloatContext, override: string): Promis
     } catch (e) {
       if (usableRecord(ctx) !== null) {
         logger.warn(
-          `could not resolve the '${override}' tag pin (${
-            errMessage(e)
-          }); keeping ${PROXY_PKG}@${record?.version}`,
+          `could not resolve the '${override}' tag pin (${errMessage(
+            e,
+          )}); keeping ${PROXY_PKG}@${record?.version}`,
         );
         return;
       }
       throw new Error(
-        `failed to resolve ${PROXY_PKG}@${override} (pinned via ${PROXY_VERSION_ENV}): ${
-          errMessage(e)
-        }`,
+        `failed to resolve ${PROXY_PKG}@${override} (pinned via ${PROXY_VERSION_ENV}): ${errMessage(
+          e,
+        )}`,
       );
     }
     const tagged = doc.distTags[override];
@@ -736,9 +738,8 @@ function handleResolved(
   const record = readResolvedVersionRecord(ctx.rootHome);
   // Only a PROVEN "resolves" earns the fast path; an unproven look falls through to the
   // non-destructive re-warm, whose failure arm keeps the record via usableRecord.
-  const recordedLook: CacheLook = record?.version === sel.version
-    ? cacheResolves(ctx, sel.version, record.denoDir)
-    : "missing";
+  const recordedLook: CacheLook =
+    record?.version === sel.version ? cacheResolves(ctx, sel.version, record.denoDir) : "missing";
   if (record?.version === sel.version && recordedLook === "resolves") {
     // Refresh the record's timestamp so proxyFloatVerifyStatus stays on its offline fast path.
     recordFloatResolution(ctx, sel.version, record.denoDir);
@@ -786,9 +787,10 @@ export async function floatProxy(deps: ProxyFloatDeps = {}): Promise<void> {
   }
 
   const cooldownSeconds = deps.cooldownSeconds ?? resolveMinimumReleaseAgeSeconds();
-  const range = ctx.config.proxyMaxVersion === null
-    ? `>=${ctx.config.proxyMinVersion}`
-    : `>=${ctx.config.proxyMinVersion} <=${ctx.config.proxyMaxVersion}`;
+  const range =
+    ctx.config.proxyMaxVersion === null
+      ? `>=${ctx.config.proxyMinVersion}`
+      : `>=${ctx.config.proxyMinVersion} <=${ctx.config.proxyMaxVersion}`;
   logger.info(`checking for proxy update (${range}, >=${formatReleaseAge(cooldownSeconds)})`);
 
   let doc: ProxyRegistryDoc;
@@ -830,15 +832,14 @@ function cacheLookStatus(
 ): ProxyFloatVerifyStatus | null {
   if (look === "unproven") {
     return {
-      "upToDate": false,
-      "message":
-        `install unverified: could not verify ${PROXY_PKG}@${version} in the deno cache (${denoDir}); deno info failed to run`,
+      upToDate: false,
+      message: `install unverified: could not verify ${PROXY_PKG}@${version} in the deno cache (${denoDir}); deno info failed to run`,
     };
   }
   if (look === "missing") {
     return {
-      "upToDate": false,
-      "message": `install needed: ${PROXY_PKG}@${version} is not in the deno cache (${denoDir})`,
+      upToDate: false,
+      message: `install needed: ${PROXY_PKG}@${version} is not in the deno cache (${denoDir})`,
     };
   }
   return null;
@@ -858,42 +859,42 @@ export async function proxyFloatVerifyStatus(
   if (override) {
     if (!SEMVER_RE.test(override)) {
       return {
-        "upToDate": false,
-        "message":
-          `update needed: ${PROXY_VERSION_ENV}=${override} is a tag pin; it re-resolves on every float`,
+        upToDate: false,
+        message: `update needed: ${PROXY_VERSION_ENV}=${override} is a tag pin; it re-resolves on every float`,
       };
     }
     if (record?.version !== override) {
       return {
-        "upToDate": false,
-        "message": `update needed: ${PROXY_VERSION_ENV}=${override}; recorded ${
+        upToDate: false,
+        message: `update needed: ${PROXY_VERSION_ENV}=${override}; recorded ${
           record?.version ?? "none"
         }`,
       };
     }
-    return cacheLookStatus(
-      cacheResolves(ctx, override, record.denoDir),
-      override,
-      record.denoDir,
-    ) ??
-      { "upToDate": true, "message": `up to date: ${PROXY_PKG}@${override} pinned` };
+    return (
+      cacheLookStatus(cacheResolves(ctx, override, record.denoDir), override, record.denoDir) ?? {
+        upToDate: true,
+        message: `up to date: ${PROXY_PKG}@${override} pinned`,
+      }
+    );
   }
 
   if (record === null) {
     return {
-      "upToDate": false,
-      "message": "install needed: no resolved proxy version is recorded",
+      upToDate: false,
+      message: "install needed: no resolved proxy version is recorded",
     };
   }
 
   const bounds = proxyVersionBoundsStatus(record.version, ctx.config);
   if (!bounds.ok) {
-    const detail = bounds.reason === "belowFloor"
-      ? `recorded ${record.version} < floor ${ctx.config.proxyMinVersion}`
-      : bounds.reason === "aboveCeiling"
-      ? `recorded ${record.version} > ceiling ${bounds.ceiling}`
-      : `recorded version unreadable`;
-    return { "upToDate": false, "message": `update needed: ${detail}` };
+    const detail =
+      bounds.reason === "belowFloor"
+        ? `recorded ${record.version} < floor ${ctx.config.proxyMinVersion}`
+        : bounds.reason === "aboveCeiling"
+          ? `recorded ${record.version} > ceiling ${bounds.ceiling}`
+          : `recorded version unreadable`;
+    return { upToDate: false, message: `update needed: ${detail}` };
   }
 
   const recordedLook = cacheLookStatus(
@@ -907,8 +908,8 @@ export async function proxyFloatVerifyStatus(
   const ageMs = ctx.nowMs - record.resolvedAtMs;
   if (ageMs >= 0 && ageMs <= cooldownSeconds * 1000) {
     return {
-      "upToDate": true,
-      "message": `up to date: ${PROXY_PKG}@${record.version} (recorded within the cooldown window)`,
+      upToDate: true,
+      message: `up to date: ${PROXY_PKG}@${record.version} (recorded within the cooldown window)`,
     };
   }
 
@@ -917,8 +918,8 @@ export async function proxyFloatVerifyStatus(
     doc = await fetchRegistryDoc(ctx.fetchLike);
   } catch (e) {
     return {
-      "upToDate": true,
-      "message": `no update check: ${errMessage(e)}; keeping ${PROXY_PKG}@${record.version}`,
+      upToDate: true,
+      message: `no update check: ${errMessage(e)}; keeping ${PROXY_PKG}@${record.version}`,
     };
   }
 
@@ -927,25 +928,22 @@ export async function proxyFloatVerifyStatus(
     case "resolved":
       return selection.version === record.version
         ? {
-          "upToDate": true,
-          "message": `up to date: ${PROXY_PKG}@${record.version} (${selection.reason})`,
-        }
+            upToDate: true,
+            message: `up to date: ${PROXY_PKG}@${record.version} (${selection.reason})`,
+          }
         : {
-          "upToDate": false,
-          "message":
-            `update needed: ${PROXY_PKG} ${record.version} -> ${selection.version} (${selection.reason})`,
-        };
+            upToDate: false,
+            message: `update needed: ${PROXY_PKG} ${record.version} -> ${selection.version} (${selection.reason})`,
+          };
     case "refused":
       return {
-        "upToDate": true,
-        "message": `no update: ${
-          refusalMessage(selection)
-        } Keeping ${PROXY_PKG}@${record.version}.`,
+        upToDate: true,
+        message: `no update: ${refusalMessage(selection)} Keeping ${PROXY_PKG}@${record.version}.`,
       };
     case "unavailable":
       return {
-        "upToDate": true,
-        "message": `no update check: ${selection.reason}; keeping ${PROXY_PKG}@${record.version}`,
+        upToDate: true,
+        message: `no update check: ${selection.reason}; keeping ${PROXY_PKG}@${record.version}`,
       };
     default:
       return assertNever(selection);

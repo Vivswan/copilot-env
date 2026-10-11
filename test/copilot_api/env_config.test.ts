@@ -2,43 +2,43 @@ import { chmodSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import * as v from "valibot";
 import {
+  type ConfigView,
   configTable,
   configTableOutput,
-  type ConfigView,
   runConfig,
 } from "../../src/commands/config.ts";
 import {
-  codexHomePrefsFor,
   CONFIG_GROUPS,
   CONFIG_REGISTRY,
+  type ConfigKey,
+  type ConfigKeyDef,
+  type ConfigScope,
+  type ConfigValueTypes,
+  codexHomePrefsFor,
   configDefaultNumber,
   configDefaultValue,
   configGroup,
-  type ConfigKey,
-  type ConfigKeyDef,
   configKeyDef,
-  type ConfigScope,
-  type ConfigValueTypes,
   isProxyProjected,
   OPENROUTER_MODELS_URL,
 } from "../../src/copilot_api/config_registry.ts";
+import { anyTrackedDaemonAlive, trackedDaemonAlive } from "../../src/copilot_api/daemon.ts";
 import {
   CONFIG_SCHEMA,
   CopilotEnvConfig,
   type CopilotEnvConfigData,
   formatConfigValue,
-  projectedProxyConfig,
   type ProjectedProxyEntry,
+  projectedProxyConfig,
 } from "../../src/copilot_api/env_config.ts";
-import { anyTrackedDaemonAlive, trackedDaemonAlive } from "../../src/copilot_api/daemon.ts";
 import { CopilotEnvState } from "../../src/copilot_api/env_state.ts";
-import { DEFAULT_WEB_SEARCH_MODEL } from "../../src/copilot_api/web_search.ts";
 import { CopilotApiPaths } from "../../src/copilot_api/paths.ts";
-import { parseProfileName, type Profile } from "../../src/copilot_api/profile.ts";
+import { type Profile, parseProfileName } from "../../src/copilot_api/profile.ts";
+import { DEFAULT_WEB_SEARCH_MODEL } from "../../src/copilot_api/web_search.ts";
 import { colorEnabled } from "../../src/utils/ansi.ts";
-import { afterEach, expect, removeDir, test } from "../helpers/testing.ts";
 import { envSnapshot, isolateProxyHome } from "../helpers/env.ts";
 import { captureChannelsSync } from "../helpers/output.ts";
+import { afterEach, expect, removeDir, test } from "../helpers/testing.ts";
 
 // CopilotEnvConfig reads/writes the SHARED prefs store under COPILOT_API_HOME, so isolate
 // each test in a temp home.
@@ -90,8 +90,8 @@ function projectedEntry(
   entries: readonly ProjectedProxyEntry[],
   path: readonly string[],
 ): ProjectedProxyEntry | undefined {
-  return entries.find((e) =>
-    e.path.length === path.length && e.path.every((k, i) => k === path[i])
+  return entries.find(
+    (e) => e.path.length === path.length && e.path.every((k, i) => k === path[i]),
   );
 }
 
@@ -190,10 +190,16 @@ test("the typed store: read() starts empty, each accessor answers stored else bu
   }
   // A key the registry does not carry is refused on set and unset alike.
   expect(() =>
-    runConfig({ kind: "set", key: "bogus-key", value: "1", view: face("bogus-key"), dryRun: false })
+    runConfig({
+      kind: "set",
+      key: "bogus-key",
+      value: "1",
+      view: face("bogus-key"),
+      dryRun: false,
+    }),
   ).toThrow(/unknown config key/);
   expect(() =>
-    runConfig({ kind: "unset", key: "bogus-key", view: face("bogus-key"), dryRun: false })
+    runConfig({ kind: "unset", key: "bogus-key", view: face("bogus-key"), dryRun: false }),
   ).toThrow(/unknown config key/);
 
   // A whole patch lands as given beside a profile section; deleting one key leaves the others
@@ -257,9 +263,7 @@ test("the registry parsers accept valid input and reject bad input with a clear 
     "https://pricing.example/models?x=1",
   );
   // Canonical spelling: the fetch's https check and the cache digest see one form.
-  expect(pricingUrl.parse("HTTPS://Pricing.Example/Models")).toBe(
-    "https://pricing.example/Models",
-  );
+  expect(pricingUrl.parse("HTTPS://Pricing.Example/Models")).toBe("https://pricing.example/Models");
 
   expect(() => configKeyDef("daemon.auto-start")?.parse("maybe")).toThrow();
   expect(() => configKeyDef("passthrough")?.parse("sometimes")).toThrow();
@@ -287,20 +291,21 @@ test("the registry parsers accept valid input and reject bad input with a clear 
   );
   expect(() => multiplier.parse("9".repeat(400))).toThrow(/at most 1000, got Infinity/);
   // Only https parses; the rejection is fixed text (a price-list URL may carry credentials).
-  for (
-    const bad of ["http://user:secret@pricing.example/models", "pricing.example", "", "ftp://x"]
-  ) {
+  for (const bad of [
+    "http://user:secret@pricing.example/models",
+    "pricing.example",
+    "",
+    "ftp://x",
+  ]) {
     expect(() => pricingUrl.parse(bad)).toThrow(/^expected an https:\/\/ URL$/);
   }
   // Userinfo is rejected up front: fetch refuses such a URL, so storing it could only fail at
   // run time. The rejection names the alternative without echoing the value.
-  for (
-    const bad of [
-      "https://user:secret@pricing.example/models",
-      "https://token@pricing.example/",
-      "https://:secret@pricing.example/",
-    ]
-  ) {
+  for (const bad of [
+    "https://user:secret@pricing.example/models",
+    "https://token@pricing.example/",
+    "https://:secret@pricing.example/",
+  ]) {
     expect(() => pricingUrl.parse(bad)).toThrow(
       /^expected an https:\/\/ URL without user:password@ credentials \(put a token in the query instead\)$/,
     );
@@ -358,10 +363,9 @@ test("a named profile's set: a profile key lands in that profile's section, neve
   expect(data.global).not.toHaveProperty("identity");
   expect(new CopilotEnvConfig().pinnedIntegrationId(WORK)).toBe("copilot-developer-cli");
   expect(new CopilotEnvConfig().pinnedIntegrationId(null)).toBeNull();
-  expect(stdoutOf(() => runConfig({ kind: "get", key: "identity", view: face("identity", WORK) })))
-    .toBe(
-      "copilot-developer-cli\n",
-    );
+  expect(
+    stdoutOf(() => runConfig({ kind: "get", key: "identity", view: face("identity", WORK) })),
+  ).toBe("copilot-developer-cli\n");
   expect(stdoutOf(() => runConfig({ kind: "get", key: "identity", view: face("identity") }))).toBe(
     "auto\n",
   );
@@ -386,12 +390,15 @@ test("a named profile's set: a profile key lands in that profile's section, neve
       value: "4242",
       view: face("daemon.port", WORK),
       dryRun: false,
-    })
-  ).toThrow(
-    "'daemon.port' is a global setting (scope global)",
-  );
+    }),
+  ).toThrow("'daemon.port' is a global setting (scope global)");
   expect(() =>
-    runConfig({ kind: "unset", key: "daemon.port", view: face("daemon.port", WORK), dryRun: false })
+    runConfig({
+      kind: "unset",
+      key: "daemon.port",
+      view: face("daemon.port", WORK),
+      dryRun: false,
+    }),
   ).toThrow(/scope global/);
   expect(new CopilotEnvConfig().read().global).not.toHaveProperty("daemon.port");
 
@@ -432,7 +439,7 @@ test("a named profile's set: a profile key lands in that profile's section, neve
       value: "auto",
       view: face("identity", parseProfileName("other")),
       dryRun: false,
-    })
+    }),
   ).toThrow();
   expect(new CopilotEnvConfig().read().profiles).not.toHaveProperty("other");
 });
@@ -528,9 +535,7 @@ test("set refuses a bad value naming the key and the reason (never echoing a cre
     for (const value of c.junk) {
       c.store(new CopilotEnvConfig(), value);
       expect(c.stored(new CopilotEnvConfig()), `${c.key} <- ${String(value)}`).toBeUndefined();
-      expect(c.reads(new CopilotEnvConfig()), `${c.key} <- ${String(value)}`).toBe(
-        c.defaultReads,
-      );
+      expect(c.reads(new CopilotEnvConfig()), `${c.key} <- ${String(value)}`).toBe(c.defaultReads);
     }
   }
   // identity alone: the probe sentinel parses, and `codex` is refused keeping the previous pin
@@ -551,10 +556,8 @@ test("set refuses a bad value naming the key and the reason (never echoing a cre
       value: "codex",
       view: face("identity"),
       dryRun: false,
-    })
-  ).toThrow(
-    /cannot be pinned/,
-  );
+    }),
+  ).toThrow(/cannot be pinned/);
   expect(new CopilotEnvConfig().pinnedIntegrationId(null)).toBe("copilot-developer-cli");
 });
 
@@ -615,9 +618,9 @@ const ROUND_TRIP_RAW: Record<ConfigKey, string> = {
   "daemon.release-cooldown": "86400",
   "daemon.strict-port": "true",
   "daemon.version": "1.2.3",
-  "host": "https://copilot.example",
-  "identity": "copilot-developer-cli",
-  "passthrough": "on",
+  host: "https://copilot.example",
+  identity: "copilot-developer-cli",
+  passthrough: "on",
   "probe.claude-model": "claude-sonnet-5",
   "probe.codex-model": "gpt-6",
   "proxy.alpha-search.codex-priority": "false",
@@ -696,10 +699,8 @@ test("codex.home: an absolute path as typed or `auto`; `~` and relative paths ar
       value: "~/.codex",
       view: face("codex.home"),
       dryRun: false,
-    })
-  ).toThrow(
-    /invalid value for 'codex.home'/,
-  );
+    }),
+  ).toThrow(/invalid value for 'codex.home'/);
   expect(new CopilotEnvConfig().read().global["codex.home"]).toBeUndefined();
   // The fold the derivation reads: `auto` and unset are no path; a path leaves the farm key alone
   // (the farm then roots under the path), and Windows still has no farm.
@@ -708,25 +709,31 @@ test("codex.home: an absolute path as typed or `auto`; `~` and relative paths ar
     explicit: null,
     hostFarm: true,
   });
-  expect(codexHomePrefsFor({ "codex.home": ABS_CODEX_HOME, "codex.host": true }, "linux"))
-    .toEqual({ explicit: ABS_CODEX_HOME, hostFarm: true });
-  expect(codexHomePrefsFor({ "codex.home": ABS_CODEX_HOME, "codex.host": true }, "win32"))
-    .toEqual({ explicit: ABS_CODEX_HOME, hostFarm: false });
+  expect(codexHomePrefsFor({ "codex.home": ABS_CODEX_HOME, "codex.host": true }, "linux")).toEqual({
+    explicit: ABS_CODEX_HOME,
+    hostFarm: true,
+  });
+  expect(codexHomePrefsFor({ "codex.home": ABS_CODEX_HOME, "codex.host": true }, "win32")).toEqual({
+    explicit: ABS_CODEX_HOME,
+    hostFarm: false,
+  });
   // A hand-edited relative value reads as unset: the derivation falls back rather than writing
   // under the cwd.
-  runConfig({
-    kind: "set",
-    key: "codex.home",
-    value: ABS_CODEX_HOME,
-    view: face("codex.home"),
-    dryRun: false,
-  }, "win32");
+  runConfig(
+    {
+      kind: "set",
+      key: "codex.home",
+      value: ABS_CODEX_HOME,
+      view: face("codex.home"),
+      dryRun: false,
+    },
+    "win32",
+  );
   expect(new CopilotEnvConfig().codexHomePrefs("win32").explicit).toBe(ABS_CODEX_HOME);
   // The surviving sibling proves the fallback is per field, not the whole global map.
   expect(
     v.parse(CONFIG_SCHEMA, { global: { "codex.home": "relative/dir", "codex.host": true } }).global,
-  )
-    .toEqual({ "codex.host": true });
+  ).toEqual({ "codex.host": true });
 });
 
 test("codex.host: stored else default, POSIX-only set, and Windows always reads off", () => {
@@ -737,50 +744,59 @@ test("codex.host: stored else default, POSIX-only set, and Windows always reads 
   expect(codexHomePrefsFor({ "codex.host": true }, "darwin").hostFarm).toBe(true);
   expect(codexHomePrefsFor({ "codex.host": true }, "win32").hostFarm).toBe(false);
   expect(cfg.codexHostEnabled("linux")).toBe(false);
-  runConfig({
-    kind: "set",
-    key: "codex.host",
-    value: "true",
-    view: face("codex.host"),
-    dryRun: false,
-  }, "darwin");
+  runConfig(
+    {
+      kind: "set",
+      key: "codex.host",
+      value: "true",
+      view: face("codex.host"),
+      dryRun: false,
+    },
+    "darwin",
+  );
   expect(cfg.codexHostEnabled("linux")).toBe(true);
   // Windows has no farm: the stored true (e.g. from an imported bundle) reads as off there.
   expect(cfg.codexHostEnabled("win32")).toBe(false);
   // `set` on Windows is refused with a platform message, and writes nothing.
   runConfig({ kind: "unset", key: "codex.host", view: face("codex.host"), dryRun: false });
   expect(() =>
-    runConfig({
-      kind: "set",
-      key: "codex.host",
-      value: "true",
-      view: face("codex.host"),
-      dryRun: false,
-    }, "win32")
+    runConfig(
+      {
+        kind: "set",
+        key: "codex.host",
+        value: "true",
+        view: face("codex.host"),
+        dryRun: false,
+      },
+      "win32",
+    ),
   ).toThrow(
     "'codex.host' is only supported on Linux and macOS (this is win32); it cannot be set here.",
   );
   expect(cfg.read().global["codex.host"]).toBeUndefined();
   // A plain (not POSIX-only) key is unaffected by the platform.
-  runConfig({
-    kind: "set",
-    key: "daemon.auto-start",
-    value: "true",
-    view: face("daemon.auto-start"),
-    dryRun: false,
-  }, "win32");
+  runConfig(
+    {
+      kind: "set",
+      key: "daemon.auto-start",
+      value: "true",
+      view: face("daemon.auto-start"),
+      dryRun: false,
+    },
+    "win32",
+  );
   expect(cfg.autoStartEnabled()).toBe(true);
   // A stored true (an imported bundle) is INERT on Windows: the keyed read answers with
   // the built-in default and the table names the inert value instead of hiding it.
   cfg.set({ "codex.host": true });
   expect(
     stdoutOf(() =>
-      runConfig({ kind: "get", key: "codex.host", view: face("codex.host") }, "linux")
+      runConfig({ kind: "get", key: "codex.host", view: face("codex.host") }, "linux"),
     ),
   ).toBe("true\n");
   expect(
     stdoutOf(() =>
-      runConfig({ kind: "get", key: "codex.host", view: face("codex.host") }, "win32")
+      runConfig({ kind: "get", key: "codex.host", view: face("codex.host") }, "win32"),
     ),
   ).toBe("false\n");
   // The table is stdout too, and the command hands the renderer the same platform.
@@ -859,7 +875,7 @@ test("configTable() renders the header, the groups, and key=value rows with type
   const headings = lines.slice(globalAt).flatMap((l) => groupRe.exec(l)?.[1] ?? []);
   expect(headings).toEqual(
     CONFIG_GROUPS.filter((g) =>
-      CONFIG_REGISTRY.some((d) => configGroup(d.key) === g && d.scope === "global")
+      CONFIG_REGISTRY.some((d) => configGroup(d.key) === g && d.scope === "global"),
     ),
   );
   const keysUnder = (group: string): string[] => {
@@ -869,8 +885,9 @@ test("configTable() renders the header, the groups, and key=value rows with type
   };
   for (const group of headings) {
     expect(keysUnder(group)).toEqual(
-      CONFIG_REGISTRY.filter((d) => configGroup(d.key) === group && d.scope === "global")
-        .map((d) => d.key),
+      CONFIG_REGISTRY.filter((d) => configGroup(d.key) === group && d.scope === "global").map(
+        (d) => d.key,
+      ),
     );
   }
   const rowAt = (key: string): number => {
@@ -911,9 +928,7 @@ test("configTable() renders the header, the groups, and key=value rows with type
   expect(urlLines.map((l) => l.trim()).join("")).toBe(OPENROUTER_MODELS_URL);
   // A stored POSIX-only value on Windows is still starred (it IS stored) and named inert, the
   // note packed onto the next line where it does not fit beside the type and default.
-  expect(row("codex.host")).toBe(
-    `  * codex.host=true`.padEnd(column) + "[bool] default false",
-  );
+  expect(row("codex.host")).toBe(`  * codex.host=true`.padEnd(column) + "[bool] default false");
   expect(lines[rowAt("codex.host") + 1]).toBe(" ".repeat(column) + "(inert on this platform)");
   // The description follows the type line at the column. The stored model id above has pushed the
   // right column down to its 30-column floor, and every registry describe still takes ONE line
@@ -925,7 +940,6 @@ test("configTable() renders the header, the groups, and key=value rows with type
       if (l.startsWith(" ".repeat(column)) && !l.startsWith(" ".repeat(column + 1))) {
         out.push(l.slice(column));
       } else if (out.length === 0 && /^ {6}\S/.test(l)) {
-        continue; // the remainder of a key=value lead wider than the column
       } else break;
     }
     // The right column's `[type]` line sits on the row line, or below it for an overflowing
@@ -939,9 +953,7 @@ test("configTable() renders the header, the groups, and key=value rows with type
   // With no daemon the restart line never prints; with one, only a stored key the daemon read
   // at launch (projected or restartToApply) gets it -- not a stored key applied another way.
   expect(rendered).not.toContain("restart the proxy to apply");
-  const live = configTable(data, { ...PLAIN_TABLE, platform: "win32", daemonUp: true }).split(
-    "\n",
-  );
+  const live = configTable(data, { ...PLAIN_TABLE, platform: "win32", daemonUp: true }).split("\n");
   // The right column's cells may wrap before the restart line, so it is looked for anywhere
   // under the row; a table without the wide stored value has a narrower column, so the indent is
   // not pinned here.
@@ -976,8 +988,9 @@ test("the keyless get lists one view: PROFILE holds the profile keys and the pro
   tmpHome();
   createWorkProfile();
   const firstOf = (scope: ConfigScope): ConfigKeyDef => {
-    const def = CONFIG_REGISTRY.find((d) =>
-      d.scope === scope && (scope !== "profile-default" || configDefaultValue(d) !== undefined)
+    const def = CONFIG_REGISTRY.find(
+      (d) =>
+        d.scope === scope && (scope !== "profile-default" || configDefaultValue(d) !== undefined),
     );
     if (def === undefined) throw new Error(`no ${scope} key with a default in the registry`);
     return def;
@@ -992,15 +1005,19 @@ test("the keyless get lists one view: PROFILE holds the profile keys and the pro
   const rowRe = /^ *[* ] (\S+)=/;
   const keysIn = (lines: string[]): string[] => lines.flatMap((l) => l.match(rowRe)?.[1] ?? []);
   const rowOf = (lines: string[], key: string): string =>
-    lines.slice(lines.findIndex((l) => rowRe.exec(l)?.[1] === key)).slice(0, 3).join("\n");
+    lines
+      .slice(lines.findIndex((l) => rowRe.exec(l)?.[1] === key))
+      .slice(0, 3)
+      .join("\n");
   const listing = (view: ConfigView): string[] =>
     stdoutOf(() => runConfig({ kind: "get", view })).split("\n");
   const profileView = (profile: Profile): string[] => {
     const lines = listing({ kind: "profile", profile });
     const profileAt = lines.findIndex((l) => l.startsWith("PROFILE "));
     expect(profileAt).toBeGreaterThan(0);
-    expect(lines.filter((l) => l.startsWith("GLOBAL") || l.startsWith("SHARED DEFAULTS")))
-      .toEqual([]);
+    expect(lines.filter((l) => l.startsWith("GLOBAL") || l.startsWith("SHARED DEFAULTS"))).toEqual(
+      [],
+    );
     return lines.slice(profileAt);
   };
   const configView = (): { shared: string[]; global: string[] } => {
@@ -1015,16 +1032,18 @@ test("the keyless get lists one view: PROFILE holds the profile keys and the pro
   // A profile's view lists its own keys, then each profile-default group under a heading; the
   // config view lists the profile-default groups, then the global keys group by group.
   const sharedKeys = CONFIG_GROUPS.flatMap((g) =>
-    CONFIG_REGISTRY.filter((d) => configGroup(d.key) === g && d.scope === "profile-default")
-      .map((d) => d.key)
+    CONFIG_REGISTRY.filter((d) => configGroup(d.key) === g && d.scope === "profile-default").map(
+      (d) => d.key,
+    ),
   );
   const profileKeys = [
     ...CONFIG_REGISTRY.filter((d) => d.scope === "profile").map((d) => d.key),
     ...sharedKeys,
   ];
   const globalKeys = CONFIG_GROUPS.flatMap((g) =>
-    CONFIG_REGISTRY.filter((d) => configGroup(d.key) === g && d.scope === "global")
-      .map((d) => d.key)
+    CONFIG_REGISTRY.filter((d) => configGroup(d.key) === g && d.scope === "global").map(
+      (d) => d.key,
+    ),
   );
   // Each profile-default group's PROFILE heading names what reads the value for the profile.
   const headingNote: Record<string, string> = {
@@ -1104,22 +1123,28 @@ test("configTable() narrows with the width: the header packs to it, the right co
   const at = (width: number): string[] =>
     configTable(stored({ "daemon.strict-port": true }), { ...PLAIN_TABLE, width }).split("\n");
   const headers: [number, string[]][] = [
-    [60, [
-      `1 of ${MACHINE_AND_SHARED_KEYS} keys set (*).`,
-      "agent config set <key> <value> (or <key>=<value>)",
-      "agent config unset <key> reverts",
-      "a profile's own keys: agent profile [<name>] set|unset|get",
-      "",
-    ]],
-    [40, [
-      `1 of ${MACHINE_AND_SHARED_KEYS} keys set (*).`,
-      "agent config set <key> <value> (or",
-      "<key>=<value>)",
-      "agent config unset <key> reverts",
-      "a profile's own keys: agent profile",
-      "[<name>] set|unset|get",
-      "",
-    ]],
+    [
+      60,
+      [
+        `1 of ${MACHINE_AND_SHARED_KEYS} keys set (*).`,
+        "agent config set <key> <value> (or <key>=<value>)",
+        "agent config unset <key> reverts",
+        "a profile's own keys: agent profile [<name>] set|unset|get",
+        "",
+      ],
+    ],
+    [
+      40,
+      [
+        `1 of ${MACHINE_AND_SHARED_KEYS} keys set (*).`,
+        "agent config set <key> <value> (or",
+        "<key>=<value>)",
+        "agent config unset <key> reverts",
+        "a profile's own keys: agent profile",
+        "[<name>] set|unset|get",
+        "",
+      ],
+    ],
   ];
   for (const [width, header] of headers) {
     expect(at(width).slice(0, header.length), String(width)).toEqual(header);
@@ -1162,16 +1187,14 @@ test("projectedProxyConfig(): force keys always project (built-in default or sto
   expect(projectedValue(empty, ["useResponsesApiWebSearch"])).toBe(true);
   expect(projectedValue(empty, ["useMessagesApi"])).toBe(true);
   expect(empty.filter((e) => e.value !== undefined)).toHaveLength(4);
-  for (
-    const path of [
-      ["alphaSearchCodexPriority"],
-      ["alphaSearchModel"],
-      ["claudeAutoModel"],
-      ["claudeTokenMultiplier"],
-      ["messageApiWebSearchModel"],
-      ["contextManagement", "responses"],
-    ]
-  ) {
+  for (const path of [
+    ["alphaSearchCodexPriority"],
+    ["alphaSearchModel"],
+    ["claudeAutoModel"],
+    ["claudeTokenMultiplier"],
+    ["messageApiWebSearchModel"],
+    ["contextManagement", "responses"],
+  ]) {
     expect(projectedEntry(empty, path)).toEqual({ path, value: undefined });
   }
   expect(empty).toHaveLength(10);
@@ -1210,7 +1233,7 @@ test("projectedProxyConfig(): force keys always project (built-in default or sto
   // No two projected entries (force or opt-in) may share a path: the later entry's set or clear
   // would silently undo the earlier one's on every start.
   const allProjectedPaths = CONFIG_REGISTRY.filter(isProxyProjected).map((d) =>
-    JSON.stringify(d.proxyPath)
+    JSON.stringify(d.proxyPath),
   );
   expect(new Set(allProjectedPaths).size).toBe(allProjectedPaths.length);
 });

@@ -57,18 +57,21 @@ function runPreloaded(host: string | null): string[] {
 // in the body moves (a sibling key stays; a body without endpoints, with a non-string api, or that
 // is no object at all passes through) while status and headers stay and other paths pass through;
 // with no pin, no wrap is installed at all.
-sidecarTest("the pin in the environment decides whether the /copilot_internal/ bodies are rewritten", () => {
-  const rows: { pin: string | null; api: string }[] = [
-    { pin: PINNED, api: PINNED },
-    { pin: null, api: ACCOUNT },
-  ];
-  for (const { pin, api } of rows) {
-    const expected = { ...bodies(api), "/other": bodies(ACCOUNT)["/other"] };
-    expect({ pin, lines: runPreloaded(pin) }).toEqual({
-      pin,
-      lines: Object.entries(expected).map(([path, body]) =>
-        `200 application/json ${path} ${JSON.stringify(body)}`
-      ),
-    });
-  }
-});
+sidecarTest(
+  "the pin in the environment decides whether the /copilot_internal/ bodies are rewritten",
+  () => {
+    const rows: { pin: string | null; api: string }[] = [
+      { pin: PINNED, api: PINNED },
+      { pin: null, api: ACCOUNT },
+    ];
+    for (const { pin, api } of rows) {
+      const expected = { ...bodies(api), "/other": bodies(ACCOUNT)["/other"] };
+      expect({ pin, lines: runPreloaded(pin) }).toEqual({
+        pin,
+        lines: Object.entries(expected).map(
+          ([path, body]) => `200 application/json ${path} ${JSON.stringify(body)}`,
+        ),
+      });
+    }
+  },
+);

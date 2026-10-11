@@ -6,10 +6,10 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import * as v from "valibot";
 import { SHA256_HEX_SCHEMA } from "../../src/copilot_api/config_registry.ts";
-import { stableStringify } from "../../src/utils/json.ts";
 import { type CostRuntime, runCost } from "../../src/usage/cost.ts";
 import { canonicalModelName } from "../../src/usage/pricing.ts";
 import { type ModelUsage, type ReadonlyUsageReport, usageReport } from "../../src/usage/usage.ts";
+import { stableStringify } from "../../src/utils/json.ts";
 import {
   DEFAULT_DAYS,
   DEFAULT_END,
@@ -187,17 +187,22 @@ const PLANTED_SESSION_ID = "00000000-0000-4000-a000-000000002028";
  *  (JSON.stringify does not escape them), on a day and model the tree already has so the
  *  delta touches only existing rows. */
 function plantSplitLines(tree: GeneratedTree): PlantedDelta {
-  const first = tree.files.filter((f) => f.source === "claude")
-    .map((f) => f.path).sort()[0];
+  const first = tree.files
+    .filter((f) => f.source === "claude")
+    .map((f) => f.path)
+    .sort()[0];
   if (first === undefined) throw new Error("the tree has no Claude transcript to plant beside");
   const claude = tree.expected.claude;
   // The raw model with the most events (ties by name) and the latest day it was used on.
-  const rawModel = [...claude.byModel].sort(([a, ua], [b, ub]) =>
-    ub.events - ua.events || a.localeCompare(b)
+  const rawModel = [...claude.byModel].sort(
+    ([a, ua], [b, ub]) => ub.events - ua.events || a.localeCompare(b),
   )[0]?.[0];
   if (rawModel === undefined) throw new Error("the tree's ledger has no Claude model");
-  const day = [...claude.perDay].filter(([, row]) => row.has(rawModel)).map(([d]) => d)
-    .sort().at(-1);
+  const day = [...claude.perDay]
+    .filter(([, row]) => row.has(rawModel))
+    .map(([d]) => d)
+    .sort()
+    .at(-1);
   if (day === undefined) throw new Error("the tree's ledger has no Claude day");
 
   const lines: string[] = [];
@@ -207,30 +212,36 @@ function plantSplitLines(tree: GeneratedTree): PlantedDelta {
     if (u === undefined) throw new Error("PLANTED_USAGE is shorter than the code point list");
     const hex = cp.codePointAt(0)!.toString(16).padStart(4, "0");
     const usageJson: Json = {
-      "input_tokens": u.input,
-      "cache_creation_input_tokens": u.cacheCreation,
-      "cache_read_input_tokens": u.cacheRead,
-      "output_tokens": u.output,
+      input_tokens: u.input,
+      cache_creation_input_tokens: u.cacheCreation,
+      cache_read_input_tokens: u.cacheRead,
+      output_tokens: u.output,
     };
-    lines.push(JSON.stringify(render(templates.claude.lines.assistant ?? null, {
-      parentUuid: null,
-      isSidechain: false,
-      content: [render(templates.claude.blocks.text ?? null, {
-        fill: `planted U+${hex} here:${cp}and the line goes on`,
-      })],
-      messageId: `msg_planted_${hex}`,
-      model: rawModel,
-      stopReason: "end_turn",
-      usage: usageJson,
-      apiBlockIndex: 0,
-      uuid: `00000000-0000-4000-a000-00000000${hex}`,
-      ts: `${day}T12:00:0${i}.000Z`,
-      sessionId: PLANTED_SESSION_ID,
-      cwd: "/home/user/projects/planted",
-      version: "2.2.0",
-      branch: "main",
-      slug: "planted-lines",
-    })));
+    lines.push(
+      JSON.stringify(
+        render(templates.claude.lines.assistant ?? null, {
+          parentUuid: null,
+          isSidechain: false,
+          content: [
+            render(templates.claude.blocks.text ?? null, {
+              fill: `planted U+${hex} here:${cp}and the line goes on`,
+            }),
+          ],
+          messageId: `msg_planted_${hex}`,
+          model: rawModel,
+          stopReason: "end_turn",
+          usage: usageJson,
+          apiBlockIndex: 0,
+          uuid: `00000000-0000-4000-a000-00000000${hex}`,
+          ts: `${day}T12:00:0${i}.000Z`,
+          sessionId: PLANTED_SESSION_ID,
+          cwd: "/home/user/projects/planted",
+          version: "2.2.0",
+          branch: "main",
+          slug: "planted-lines",
+        }),
+      ),
+    );
     const booked: ModelUsage = { ...u, events: 1 };
     bookLedger(claude, day, rawModel, booked);
     if (OLD_READER_SPLITS.has(cp)) {
@@ -256,8 +267,13 @@ function bookLedger(report: ExpectedReport, day: string, model: string, u: Model
 }
 
 function addUsage(into: Map<string, ModelUsage>, model: string, u: ModelUsage): void {
-  const prev = into.get(model) ??
-    { input: 0, output: 0, cacheRead: 0, cacheCreation: 0, events: 0 };
+  const prev = into.get(model) ?? {
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheCreation: 0,
+    events: 0,
+  };
   into.set(model, {
     input: prev.input + u.input,
     output: prev.output + u.output,
@@ -339,9 +355,9 @@ export function describeMismatch(actual: unknown, expected: unknown): string | n
   const n = Math.max(a.length, e.length);
   for (let i = 0; i < n; i++) {
     if (a[i] !== e[i]) {
-      return `line ${i + 1}: expected ${JSON.stringify(e[i] ?? "<end>")}, got ${
-        JSON.stringify(a[i] ?? "<end>")
-      }`;
+      return `line ${i + 1}: expected ${JSON.stringify(e[i] ?? "<end>")}, got ${JSON.stringify(
+        a[i] ?? "<end>",
+      )}`;
     }
   }
   return null;
@@ -428,8 +444,10 @@ export function utcPinnable(): boolean {
   try {
     process.env.TZ = GOLDEN_TIME_ZONE;
     // Two dates half a year apart: a zone on UTC in winter alone (London) must not pass.
-    return new Date(Date.UTC(2026, 0, 1)).getTimezoneOffset() === 0 &&
-      new Date(Date.UTC(2026, 6, 1)).getTimezoneOffset() === 0;
+    return (
+      new Date(Date.UTC(2026, 0, 1)).getTimezoneOffset() === 0 &&
+      new Date(Date.UTC(2026, 6, 1)).getTimezoneOffset() === 0
+    );
   } finally {
     process.env.TZ = saved;
   }

@@ -7,6 +7,9 @@ import { CopilotEnvConfig } from "../../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../../src/copilot_api/env_state.ts";
 import { parseProfileName } from "../../src/copilot_api/profile.ts";
 import { CI_PS_DOCUMENTS_DIR_ENV, CI_RC_DIR_ENV } from "../../src/shell/integration.ts";
+import { envSnapshot } from "../helpers/env.ts";
+import { claudeSettingsJson, writeClaudeSettings, writeRunState } from "../helpers/fixtures.ts";
+import { captureChannelsSync } from "../helpers/output.ts";
 import {
   CHILD_VALUES,
   childValuesEnv,
@@ -16,9 +19,6 @@ import {
   runSync,
 } from "../helpers/run.ts";
 import { afterEach, expect, removeDir, tempDir, test } from "../helpers/testing.ts";
-import { envSnapshot } from "../helpers/env.ts";
-import { claudeSettingsJson, writeClaudeSettings, writeRunState } from "../helpers/fixtures.ts";
-import { captureChannelsSync } from "../helpers/output.ts";
 
 const restoreEnv = envSnapshot();
 let dir = "";
@@ -67,11 +67,11 @@ function isolate(): string {
 // In production `agent profile env` is always a fresh process spawned by the shell wrapper, so these cases
 // run runEnv the same way: a child whose spawn environment carries the isolated homes.
 function childEnvLines(env: Record<string, string | undefined>, profile?: string): string[] {
-  const script = `import{runEnv}from${
-    importSpecifier(join(ROOT, "src/commands/env.ts"))
-  };runEnv(${CHILD_VALUES});`;
+  const script = `import{runEnv}from${importSpecifier(
+    join(ROOT, "src/commands/env.ts"),
+  )};runEnv(${CHILD_VALUES});`;
   const result = runSync(process.execPath, ["-e", script], {
-    env: { ...process.env, ...env, ...childValuesEnv({ "format": "posix", "profile": profile }) },
+    env: { ...process.env, ...env, ...childValuesEnv({ format: "posix", profile: profile }) },
   });
   if (result.exitCode !== 0) throw new Error(`child env failed: ${result.stderr}`);
   return result.stdout.split("\n").filter((l) => l.length > 0);
@@ -404,9 +404,10 @@ test("a named profile's env renders the profile's OWN settings file and port; wi
     const home = isolate();
     writeClaude(home, proxyHelperCommand(), "http://127.0.0.1:4141");
     if (c.seed !== null) seedProfile(home, "work", c.seed, 4242);
-    const env = c.current === undefined
-      ? childBaseEnv()
-      : { ...childBaseEnv(), ANTHROPIC_BASE_URL: c.current };
+    const env =
+      c.current === undefined
+        ? childBaseEnv()
+        : { ...childBaseEnv(), ANTHROPIC_BASE_URL: c.current };
     expect(childEnvLines(env, c.profile), c.name).toEqual(c.lines);
   }
 });

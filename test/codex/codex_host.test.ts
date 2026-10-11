@@ -3,8 +3,8 @@
 
 import * as fs from "node:fs";
 import { join, relative } from "node:path";
-import { proxyHelperCommand } from "../../src/claude/config.ts";
 import { runCodex } from "../../src/agents/configure_defaults.ts";
+import { proxyHelperCommand } from "../../src/claude/config.ts";
 import {
   codexHostDrift,
   codexHostFarm,
@@ -25,11 +25,11 @@ import { CopilotEnvRunState } from "../../src/copilot_api/run_state.ts";
 import { codexFarmHostsDir, getSanitizedHostname } from "../../src/utils/hostname.ts";
 import { withNarrationMuted } from "../../src/utils/logger.ts";
 import { deferWriteReports, flushWriteReports } from "../../src/utils/report_write.ts";
-import { afterEach, expect, removeDir, test } from "../helpers/testing.ts";
+import { linesNaming } from "../helpers/dry_run.ts";
 import { envSnapshot, isolateAgentHomes, resetExitCode } from "../helpers/env.ts";
 import { writeClaudeSettings, writeCodexConfigToml, writeRunState } from "../helpers/fixtures.ts";
-import { linesNaming } from "../helpers/dry_run.ts";
 import { captureChannels } from "../helpers/output.ts";
+import { afterEach, expect, removeDir, test } from "../helpers/testing.ts";
 
 // The farm needs POSIX symlinks; Windows CI still runs the path-derivation test and the Windows-only guard.
 const skipWin = test.skipIf(process.platform === "win32");
@@ -252,10 +252,8 @@ onlyWin("Windows: the key cannot be set, reads off, and the derivation is inert"
       value: "true",
       view: { kind: "config" },
       dryRun: false,
-    })
-  ).toThrow(
-    "'codex.host' is only supported on Linux and macOS (this is win32)",
-  );
+    }),
+  ).toThrow("'codex.host' is only supported on Linux and macOS (this is win32)");
   // Even a stored true (an imported bundle) reads as off here.
   new CopilotEnvConfig().set({ "codex.host": true });
   expect(new CopilotEnvConfig().codexHostEnabled()).toBe(false);
@@ -292,11 +290,9 @@ onlyWin("Windows: the key cannot be set, reads off, and the derivation is inert"
 
 function narratedPaths(narrated: string): Set<string> {
   const out = new Set<string>();
-  for (
-    const m of narrated.matchAll(
-      /^(?:created|rewritten|deleted|moved|linked) -> (.+?)(?: \(.*\))?$/gm,
-    )
-  ) {
+  for (const m of narrated.matchAll(
+    /^(?:created|rewritten|deleted|moved|linked) -> (.+?)(?: \(.*\))?$/gm,
+  )) {
     out.add(m[1] ?? "");
   }
   return out;
@@ -492,9 +488,10 @@ skipWin(
         expected: ({ hostHome }, warned) => {
           expect(linkTarget(join(hostHome, "history.jsonl"))).toBe(join(dir, "elsewhere-history"));
           expect(warned).toContain(
-            `Skipping local Codex seed because the path already exists as a symlink: ${
-              join(hostHome, "history.jsonl")
-            }`,
+            `Skipping local Codex seed because the path already exists as a symlink: ${join(
+              hostHome,
+              "history.jsonl",
+            )}`,
           );
         },
       },
@@ -648,16 +645,14 @@ skipWin(
       expect(linkTarget(join(hostHome, "sessions")), c.name).toBe(shared);
       // The merge copies descendant by descendant, and names each one (nothing hidden).
       const named = narratedPaths(narrated);
-      for (
-        const p of [
-          join(shared, "top.txt"),
-          join(shared, "ln"),
-          join(shared, "nested", "deep"),
-          join(shared, "nested", "deep", "a.txt"),
-          join(shared, "nested", "ln"),
-          join(hostHome, "sessions"),
-        ]
-      ) {
+      for (const p of [
+        join(shared, "top.txt"),
+        join(shared, "ln"),
+        join(shared, "nested", "deep"),
+        join(shared, "nested", "deep", "a.txt"),
+        join(shared, "nested", "ln"),
+        join(hostHome, "sessions"),
+      ]) {
         expect(named.has(p), `${c.name}: ${p}`).toBe(true);
       }
     }
@@ -973,8 +968,7 @@ skipWin(
   "codexHostDrift and `agent profile check --codex` report every key-vs-disk disagreement",
   async () => {
     const { hostHome } = isolate();
-    const missingLine =
-      `codex.host is on but the per-host CODEX_HOME farm is missing at ${hostHome}; run \`agent profile sync --codex\` to rebuild it`;
+    const missingLine = `codex.host is on but the per-host CODEX_HOME farm is missing at ${hostHome}; run \`agent profile sync --codex\` to rebuild it`;
     const check = () => stdoutLinesDuring(() => runCodex({ kind: "check" }));
 
     new CopilotEnvConfig().set({ "codex.host": true });
@@ -1045,8 +1039,7 @@ skipWin(
     const { hostHome } = isolate();
     const own = join(dir, "my-own-codex");
     // The user-facing line, pinned as a literal: it must name both the export and the farm in use.
-    const line =
-      `Ignoring the shell's CODEX_HOME=${own}: codex.host is on, so Codex is wired at the per-host farm ${hostHome}`;
+    const line = `Ignoring the shell's CODEX_HOME=${own}: codex.host is on, so Codex is wired at the per-host farm ${hostHome}`;
     // Key off: the export IS the home, so the write lands there and nothing is stale.
     process.env.CODEX_HOME = own;
     const unmanaged = await stderrDuring(configureCodex);

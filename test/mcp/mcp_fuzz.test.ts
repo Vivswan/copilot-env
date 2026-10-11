@@ -54,12 +54,12 @@ function generatedCorpus(rnd: () => number, count: number): string[] {
     if (pick === 0) {
       lines.push(garbageLine(rnd));
     } else if (pick === 1) {
-      const whole = JSON.stringify({ "key": garbageLine(rnd), "n": Math.floor(rnd() * 1e6) });
+      const whole = JSON.stringify({ key: garbageLine(rnd), n: Math.floor(rnd() * 1e6) });
       lines.push(whole.slice(0, 1 + Math.floor(rnd() * (whole.length - 2))));
     } else if (pick === 2) {
       lines.push(JSON.stringify([Math.floor(rnd() * 100), garbageLine(rnd)]));
     } else {
-      lines.push(JSON.stringify({ "method": garbageLine(rnd), "id": Math.floor(rnd() * 100) }));
+      lines.push(JSON.stringify({ method: garbageLine(rnd), id: Math.floor(rnd() * 100) }));
     }
   }
   return lines;
@@ -73,19 +73,19 @@ function binaryGarbage(): Uint8Array {
 }
 
 function envelopeProbe(id: number, meta: Record<string, unknown>): string {
-  const params = { "_meta": meta };
-  return JSON.stringify({ "jsonrpc": "2.0", "id": id, "method": "tools/list", "params": params });
+  const params = { _meta: meta };
+  return JSON.stringify({ jsonrpc: "2.0", id: id, method: "tools/list", params: params });
 }
 
 function classifierCorpus(): string[] {
   return [
-    JSON.stringify({ "jsonrpc": "2.0", "id": 99, "result": {} }),
+    JSON.stringify({ jsonrpc: "2.0", id: 99, result: {} }),
     envelopeProbe(101, { [PROTOCOL_VERSION_KEY]: "2026-07-28" }),
     envelopeProbe(102, { [PROTOCOL_VERSION_KEY]: 12345, [CLIENT_CAPABILITIES_KEY]: {} }),
     envelopeProbe(103, { [PROTOCOL_VERSION_KEY]: "2099-01-01", [CLIENT_CAPABILITIES_KEY]: {} }),
-    JSON.stringify({ "jsonrpc": "2.0", "id": null, "method": "whatever" }),
-    JSON.stringify({ "jsonrpc": "2.0", "method": "totally/unknown" }),
-    JSON.stringify({ "jsonrpc": "2.0", "id": "str-1", "method": "no/such/method" }),
+    JSON.stringify({ jsonrpc: "2.0", id: null, method: "whatever" }),
+    JSON.stringify({ jsonrpc: "2.0", method: "totally/unknown" }),
+    JSON.stringify({ jsonrpc: "2.0", id: "str-1", method: "no/such/method" }),
   ];
 }
 
@@ -93,9 +93,9 @@ function classifierCorpus(): string[] {
  *  and a call reaches the tool's own error arm. The handshake's contents are mcp_server's to pin. */
 async function expectFullRecovery(client: McpClient): Promise<void> {
   const init = await client.request(1001, "initialize", {
-    "protocolVersion": "2024-11-05",
-    "capabilities": {},
-    "clientInfo": { "name": "copilot-env-fuzz", "version": "0.0.0" },
+    protocolVersion: "2024-11-05",
+    capabilities: {},
+    clientInfo: { name: "copilot-env-fuzz", version: "0.0.0" },
   });
   // request() resolves an error response too, so a refused handshake must fail here by name.
   expect(init.error, "initialize after the corpus").toBeUndefined();
@@ -106,8 +106,8 @@ async function expectFullRecovery(client: McpClient): Promise<void> {
   expect(tools.map((t) => t.name)).toEqual(["web_search"]);
 
   const call = await client.request(1003, "tools/call", {
-    "name": "web_search",
-    "arguments": { "query": "anything" },
+    name: "web_search",
+    arguments: { query: "anything" },
   });
   const result = call.result as { isError?: boolean; content: { text: string }[] };
   expect(result.isError).toBe(true);
@@ -134,78 +134,63 @@ function expectNoUnsolicitedResults(client: McpClient, knownIds: (number | strin
   }
 }
 
-test(
-  "opening classifier: bad envelopes and early responses get the documented answers, era stays unpinned",
-  async () => {
-    const client = new McpClient();
-    try {
-      for (const line of classifierCorpus()) client.sendRaw(line);
+test("opening classifier: bad envelopes and early responses get the documented answers, era stays unpinned", async () => {
+  const client = new McpClient();
+  try {
+    for (const line of classifierCorpus()) client.sendRaw(line);
 
-      // Processing is serial, so these arriving proves every earlier line was consumed. The
-      // unsupported-revision code is the SDK's choice, so only the error shape is pinned there.
-      const badEnvelope = await client.waitFor(101);
-      expect(badEnvelope.error?.code).toBe(-32602);
+    // Processing is serial, so these arriving proves every earlier line was consumed. The
+    // unsupported-revision code is the SDK's choice, so only the error shape is pinned there.
+    const badEnvelope = await client.waitFor(101);
+    expect(badEnvelope.error?.code).toBe(-32602);
 
-      const nonStringClaim = await client.waitFor(102);
-      expect(nonStringClaim.error?.code).toBe(-32602);
+    const nonStringClaim = await client.waitFor(102);
+    expect(nonStringClaim.error?.code).toBe(-32602);
 
-      const unsupported = await client.waitFor(103);
-      expect(isErrorResponse(unsupported)).toBe(true);
+    const unsupported = await client.waitFor(103);
+    expect(isErrorResponse(unsupported)).toBe(true);
 
-      const unknownMethod = await client.waitFor("str-1");
-      expect(unknownMethod.error?.code).toBe(-32601);
+    const unknownMethod = await client.waitFor("str-1");
+    expect(unknownMethod.error?.code).toBe(-32601);
 
-      expect(client.exitCode).toBeNull();
-      await expectFullRecovery(client);
+    expect(client.exitCode).toBeNull();
+    await expectFullRecovery(client);
 
-      // The early response (id 99) and the null-id request may be dropped or refused, never answered.
-      expectNoUnsolicitedResults(client, [101, 102, 103, "str-1", 1001, 1002, 1003]);
-      expectStdoutPurity(client);
-    } catch (e) {
-      client.kill();
-      throw e;
-    }
-    expect(await client.closeAndWait()).toBe(0);
-  },
-  20_000,
-);
+    // The early response (id 99) and the null-id request may be dropped or refused, never answered.
+    expectNoUnsolicitedResults(client, [101, 102, 103, "str-1", 1001, 1002, 1003]);
+    expectStdoutPurity(client);
+  } catch (e) {
+    client.kill();
+    throw e;
+  }
+  expect(await client.closeAndWait()).toBe(0);
+}, 20_000);
 
-test(
-  "line noise: raw bytes, invalid JSON, and non-JSON-RPC values are dropped without a reply",
-  async () => {
-    const rnd = makePrng(FUZZ_SEED);
-    const client = new McpClient();
-    try {
-      client.sendRaw(binaryGarbage());
-      const noise = [
-        "not json at all",
-        '{"truncated": ',
-        "[1,2,3]",
-        "42",
-        '"bare"',
-        '{"foo":"bar"}',
-      ];
-      for (const line of noise) client.sendRaw(line);
-      for (const line of generatedCorpus(rnd, 50)) client.sendRaw(line);
+test("line noise: raw bytes, invalid JSON, and non-JSON-RPC values are dropped without a reply", async () => {
+  const rnd = makePrng(FUZZ_SEED);
+  const client = new McpClient();
+  try {
+    client.sendRaw(binaryGarbage());
+    const noise = ["not json at all", '{"truncated": ', "[1,2,3]", "42", '"bare"', '{"foo":"bar"}'];
+    for (const line of noise) client.sendRaw(line);
+    for (const line of generatedCorpus(rnd, 50)) client.sendRaw(line);
 
-      expect(client.exitCode).toBeNull();
-      await expectFullRecovery(client);
+    expect(client.exitCode).toBeNull();
+    await expectFullRecovery(client);
 
-      expectNoUnsolicitedResults(client, [1001, 1002, 1003]);
-      expectStdoutPurity(client);
-    } catch (e) {
-      client.kill();
-      throw e;
-    }
-    expect(await client.closeAndWait()).toBe(0);
-  },
-  20_000,
-);
+    expectNoUnsolicitedResults(client, [1001, 1002, 1003]);
+    expectStdoutPurity(client);
+  } catch (e) {
+    client.kill();
+    throw e;
+  }
+  expect(await client.closeAndWait()).toBe(0);
+}, 20_000);
 
 test("a ~1MB request (under the 10MB transport buffer) is answered normally", async () => {
   const client = new McpClient();
   try {
-    const big = await client.request("big-1", "no/such/method", { "blob": "x".repeat(1_000_000) });
+    const big = await client.request("big-1", "no/such/method", { blob: "x".repeat(1_000_000) });
     expect(big.error?.code).toBe(-32601);
 
     expect(client.exitCode).toBeNull();

@@ -229,22 +229,20 @@ type GhProbeMiss = { command: null } | { command: string; ghDetail: string };
  *    unproven  -> the probe never RAN to completion (the command probe failed, or `gh auth token`
  *                 spawned but errored / was timeout-killed): renderers say "could not check",
  *                 never a confident "not found"/"not authenticated" or `gh auth login` advice */
-export type CodexDirectAuthFacts =
-  & {
-    /** The pinned gh account the probe asked about (`gh auth token --user`). Absent/null = gh's
-     *  active account, so renderers can name the account a pinned verdict is about. Optional so
-     *  hand-built fixtures stay valid. */
-    ghUser?: string | null;
-    /** AUTO slots only: the github.com login gh's active credential belongs to, when the account
-     *  list was readable, so the report names the account an auto slot follows. Naming only,
-     *  never a verdict. */
-    ghActiveLogin?: string | null;
-  }
-  & (
-    | { kind: "found"; command: string; ghCommand: string }
-    | ({ kind: "absent" } & GhProbeMiss)
-    | ({ kind: "unproven" } & GhProbeMiss)
-  );
+export type CodexDirectAuthFacts = {
+  /** The pinned gh account the probe asked about (`gh auth token --user`). Absent/null = gh's
+   *  active account, so renderers can name the account a pinned verdict is about. Optional so
+   *  hand-built fixtures stay valid. */
+  ghUser?: string | null;
+  /** AUTO slots only: the github.com login gh's active credential belongs to, when the account
+   *  list was readable, so the report names the account an auto slot follows. Naming only,
+   *  never a verdict. */
+  ghActiveLogin?: string | null;
+} & (
+  | { kind: "found"; command: string; ghCommand: string }
+  | ({ kind: "absent" } & GhProbeMiss)
+  | ({ kind: "unproven" } & GhProbeMiss)
+);
 
 /** Why a live probe did not run: the CLI is proven not installed (not a failure), or the look
  *  for it never completed (a could-not-check, never a proven absence). */
@@ -356,38 +354,36 @@ export type ProfileAuthFacts = {
  *  a named profile's own slot, which never falls back to the default. Direct resolves the
  *  credential at fetch time via `agent auth --get`, provider-driven (`gh-cli` -> `gh`,
  *  `copilot`/`gh-token`/`gh-env` -> the stored token; no provider -> nothing). */
-export type AuthFacts =
-  & {
-    storedToken: boolean;
-    ghAuthenticated: boolean;
-    /** The pinned gh account the probe asked about (`gh auth token --user`). Absent/null = gh's
-     *  active account, so the check can name the account a pinned verdict is about. Optional so
-     *  fixtures stay valid. */
-    ghUser?: string | null;
-    /** An auto slot's followed account (see CodexDirectAuthFacts.ghActiveLogin). */
-    ghActiveLogin?: string | null;
-    /** The gh call that served the token (see CodexDirectAuthFacts.ghCommand). */
-    ghCommand?: string;
-    /** Why the look ended without a token: the gh call that failed or timed out, quoted, with what
-     *  the completed calls before it said (CodexDirectAuthFacts.ghDetail). */
-    ghDetail?: string;
-    /** The gh probe never ran to completion (CodexDirectAuthFacts kind "unproven"): ghAuthenticated
-     *  false is then UNPROVEN, so the check says "could not check", never "gh is unauthenticated"
-     *  plus `gh auth login` advice. Optional so hand-built fixtures stay valid. */
-    ghAuthUnproven?: true;
-  }
-  & (
-    | {
+export type AuthFacts = {
+  storedToken: boolean;
+  ghAuthenticated: boolean;
+  /** The pinned gh account the probe asked about (`gh auth token --user`). Absent/null = gh's
+   *  active account, so the check can name the account a pinned verdict is about. Optional so
+   *  fixtures stay valid. */
+  ghUser?: string | null;
+  /** An auto slot's followed account (see CodexDirectAuthFacts.ghActiveLogin). */
+  ghActiveLogin?: string | null;
+  /** The gh call that served the token (see CodexDirectAuthFacts.ghCommand). */
+  ghCommand?: string;
+  /** Why the look ended without a token: the gh call that failed or timed out, quoted, with what
+   *  the completed calls before it said (CodexDirectAuthFacts.ghDetail). */
+  ghDetail?: string;
+  /** The gh probe never ran to completion (CodexDirectAuthFacts kind "unproven"): ghAuthenticated
+   *  false is then UNPROVEN, so the check says "could not check", never "gh is unauthenticated"
+   *  plus `gh auth login` advice. Optional so hand-built fixtures stay valid. */
+  ghAuthUnproven?: true;
+} & (
+  | {
       profile: null;
       provider: AuthProvider | null;
       profiles: Record<ProfileName, ProfileAuthFacts>;
       /** The `identity` config pin (integration_identity.ts), or null when probing. */
       pinnedIntegrationId: string | null;
     }
-    | {
+  | {
       profile: ProfileName;
       /** The store slot (never tokens); null when the store carries no slot for the profile (a
        *  half-created, home-only profile). */
       slot: ProfileAuthFacts | null;
     }
-  );
+);

@@ -1,8 +1,8 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
-  parseProjectConfig,
   PROJECT_CONFIG_FILE,
+  parseProjectConfig,
   readSidecarDenoVersion,
 } from "../../src/utils/project_config.ts";
 import { describe, expect, tempDir, test } from "../helpers/testing.ts";

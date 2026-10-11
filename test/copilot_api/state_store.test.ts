@@ -10,8 +10,8 @@ import { CopilotEnvConfig } from "../../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../../src/copilot_api/env_state.ts";
 import { OwnershipLedger } from "../../src/copilot_api/ownership.ts";
 import { CopilotApiPaths } from "../../src/copilot_api/paths.ts";
-import { afterEach, beforeEach, expect, test } from "../helpers/testing.ts";
 import { envSnapshot, isolateProxyHome } from "../helpers/env.ts";
+import { afterEach, beforeEach, expect, test } from "../helpers/testing.ts";
 
 const restoreEnv = envSnapshot();
 
@@ -99,10 +99,11 @@ test("`agent config` writes settings only: a state key, bare or as a path into t
   ];
   for (const [key, owner] of cases) {
     expect(() =>
-      runConfig({ kind: "set", key: key, value: "x", view: { kind: "config" }, dryRun: false })
+      runConfig({ kind: "set", key: key, value: "x", view: { kind: "config" }, dryRun: false }),
     ).toThrow(owner);
-    expect(() => runConfig({ kind: "unset", key: key, view: { kind: "config" }, dryRun: false }))
-      .toThrow(/sets preferences only/);
+    expect(() =>
+      runConfig({ kind: "unset", key: key, view: { kind: "config" }, dryRun: false }),
+    ).toThrow(/sets preferences only/);
   }
   // Control: a settings key still lands, and an unknown key still gets the unknown-key error.
   runConfig({
@@ -120,8 +121,6 @@ test("`agent config` writes settings only: a state key, bare or as a path into t
       value: "1",
       view: { kind: "config" },
       dryRun: false,
-    })
-  ).toThrow(
-    /unknown config key/,
-  );
+    }),
+  ).toThrow(/unknown config key/);
 });

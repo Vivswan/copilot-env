@@ -1,10 +1,10 @@
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import {
   type FloatedSmokeEvidence,
   floatedSmokeFailure,
 } from "../../.github/scripts/floated-smoke.ts";
 import { CONTAINER_MARKERS, homeIsDisposable } from "../../.github/scripts/smoke-support.ts";
-import { existsSync } from "node:fs";
 import { agentHomeEnv } from "../helpers/env.ts";
 import { ROOT, runScript } from "../helpers/run.ts";
 import { describe, expect, tempDir, test } from "../helpers/testing.ts";
@@ -33,8 +33,8 @@ describe("the smokes' disposable-HOME guard", () => {
 
   // In container or CI-marked runs the markers legitimately admit the scripts, so the executed
   // control runs only where the guard can fire.
-  const guardReachable = process.platform !== "win32" &&
-    !CONTAINER_MARKERS.some((marker) => existsSync(marker));
+  const guardReachable =
+    process.platform !== "win32" && !CONTAINER_MARKERS.some((marker) => existsSync(marker));
   test.skipIf(!guardReachable)(
     "both smoke scripts die on the guard with the test:docker hint",
     () => {
@@ -42,12 +42,14 @@ describe("the smokes' disposable-HOME guard", () => {
       const smokes = [
         {
           script: "lifecycle-smoke.ts",
-          line: "::error::lifecycle-smoke.ts mutates the HOME it runs in; " +
+          line:
+            "::error::lifecycle-smoke.ts mutates the HOME it runs in; " +
             "use 'bun run test:docker --lifecycle' on a developer machine",
         },
         {
           script: "floated-smoke.ts",
-          line: "::error::floated-smoke.ts floats a real proxy into the HOME it runs in; " +
+          line:
+            "::error::floated-smoke.ts floats a real proxy into the HOME it runs in; " +
             "use 'bun run test:docker --floated-lifecycle' on a developer machine",
         },
       ];
@@ -59,16 +61,20 @@ describe("the smokes' disposable-HOME guard", () => {
           env: {
             ...process.env,
             ...agentHomeEnv(scratch, { proxyHome: scratch }),
-            "GITHUB_ACTIONS": "",
-            "PATH": join(scratch, "no-bin"),
+            GITHUB_ACTIONS: "",
+            PATH: join(scratch, "no-bin"),
           },
         });
         // The guard's line must be the LAST thing on stderr and stdout stays empty: a guard
         // that printed but no longer exited would run on into the (unresolvable) spawn and
         // exit 1 for the wrong reason, with its own error after the hint.
         const stderrTail = proc.stderr.trimEnd().split("\n").at(-1);
-        expect({ script, exitCode: proc.exitCode, stdout: proc.stdout, stderrTail })
-          .toEqual({ script, exitCode: 1, stdout: "", stderrTail: line });
+        expect({ script, exitCode: proc.exitCode, stdout: proc.stdout, stderrTail }).toEqual({
+          script,
+          exitCode: 1,
+          stdout: "",
+          stderrTail: line,
+        });
       }
     },
   );
@@ -118,7 +124,9 @@ test("the floated smoke's verdict names the first failed check", () => {
     { name: "expected end state", evidence: healthy, failure: null },
   ];
   for (const row of cases) {
-    expect({ name: row.name, failure: floatedSmokeFailure(row.evidence) })
-      .toEqual({ name: row.name, failure: row.failure });
+    expect({ name: row.name, failure: floatedSmokeFailure(row.evidence) }).toEqual({
+      name: row.name,
+      failure: row.failure,
+    });
   }
 });

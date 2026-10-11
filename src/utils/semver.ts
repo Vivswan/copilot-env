@@ -12,7 +12,7 @@ export type SemverString =
 /** `v1.10` -> `1.10.0`. Null rather than a throw, so each boundary can name its own offender. */
 export function toSemverString(v: string): SemverString | null {
   const parsed = toSemver(v);
-  return parsed === null ? null : format(parsed) as SemverString;
+  return parsed === null ? null : (format(parsed) as SemverString);
 }
 
 /** tryParse takes the `v` prefix and whitespace itself but rejects a partial core, so `1.2` is

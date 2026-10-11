@@ -53,9 +53,8 @@ export function wrapLine(text: string, width: number | null, indent = "", hang =
   // one word: split it at the width without the spaces a re-wrap of joined pieces would add.
   return [first, ...tail].flatMap((line, i) => {
     const prefix = i === 0 ? indent : hang;
-    const pieces = stringWidth(line) > room(prefix)
-      ? splitHard(line, room(prefix), room(hang))
-      : [line];
+    const pieces =
+      stringWidth(line) > room(prefix) ? splitHard(line, room(prefix), room(hang)) : [line];
     return pieces.map((piece, k) => `${k === 0 ? prefix : hang}${piece}`);
   });
 }
@@ -77,12 +76,15 @@ const LEADING = new RegExp(`^((?:${String.fromCharCode(27)}\\[[0-9;]*m)*)(\\s*)`
  *  A line that fits is returned as it came, so table rows pass through untouched. */
 export function wrapMessage(text: string, width: number | null, lead = 0): string {
   if (width === null) return text;
-  return text.split("\n").flatMap((line, i) => {
-    const room = i === 0 ? width - lead : width;
-    if (stringWidth(line) <= room) return [line];
-    const [prefix = "", paint = "", indent = ""] = LEADING.exec(line) ?? [];
-    return wrapLine(`${paint}${line.slice(prefix.length)}`, room, indent, `${indent}${GAP}`);
-  }).join("\n");
+  return text
+    .split("\n")
+    .flatMap((line, i) => {
+      const room = i === 0 ? width - lead : width;
+      if (stringWidth(line) <= room) return [line];
+      const [prefix = "", paint = "", indent = ""] = LEADING.exec(line) ?? [];
+      return wrapLine(`${paint}${line.slice(prefix.length)}`, room, indent, `${indent}${GAP}`);
+    })
+    .join("\n");
 }
 
 /** console.log for prose lines (status reports, next steps): wrapped to the terminal, unwrapped
@@ -148,11 +150,12 @@ export function formatTable(body: TableRow[], options: TableOptions = {}): strin
   const cellRows = [...(header === undefined ? [] : [header]), ...records, ...footer];
   const columns = cellRows.reduce((m, r) => Math.max(m, r.length), 0);
   const rowIndent = body.some(isHeading) ? `${indent}${GAP}` : indent;
-  const natural = Array.from(
-    { length: columns },
-    (_, i) => Math.max(...cellRows.map((r) => stringWidth(r[i] ?? ""))),
+  const natural = Array.from({ length: columns }, (_, i) =>
+    Math.max(...cellRows.map((r) => stringWidth(r[i] ?? ""))),
   );
-  const total = stringWidth(rowIndent) + natural.reduce((a, b) => a + b, 0) +
+  const total =
+    stringWidth(rowIndent) +
+    natural.reduce((a, b) => a + b, 0) +
     GAP.length * Math.max(0, columns - 1);
   const floors = natural.map((_, i) => {
     const mode = wrap[i] ?? false;
@@ -160,13 +163,12 @@ export function formatTable(body: TableRow[], options: TableOptions = {}): strin
       mode === false ? 0 : WRAP_FLOOR,
       longestWord(header?.[i] ?? ""),
       ...[...records, ...footer].map((r) =>
-        mode === true ? longestWord(r[i] ?? "") : mode === "hard" ? 0 : stringWidth(r[i] ?? "")
+        mode === true ? longestWord(r[i] ?? "") : mode === "hard" ? 0 : stringWidth(r[i] ?? ""),
       ),
     );
   });
-  const widths = width === null || total <= width
-    ? natural
-    : fitWidths(natural, floors, total - width);
+  const widths =
+    width === null || total <= width ? natural : fitWidths(natural, floors, total - width);
   if (widths === null) return formatStacked(body, footer, header, indent, rowIndent, width, tint);
 
   const fmt = (row: string[]): string[] => {
@@ -184,13 +186,13 @@ export function formatTable(body: TableRow[], options: TableOptions = {}): strin
     // chunk that ends in them), so it is padded only when right-aligned.
     return Array.from({ length: height }, (_, k) => {
       const texts = cells.map((c) => c[k] ?? "");
-      const line = `${rowIndent}${
-        texts.map((text, i) =>
+      const line = `${rowIndent}${texts
+        .map((text, i) =>
           i < last || aligns[i] === "right"
             ? padCell(text, widths[i] ?? 0, aligns[i] ?? "left")
-            : text
-        ).join(GAP)
-      }`;
+            : text,
+        )
+        .join(GAP)}`;
       return (texts[last] ?? "") === "" ? line.trimEnd() : line;
     });
   };

@@ -3,17 +3,17 @@
 import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { join, relative } from "node:path";
 import { findCommand } from "../../../src/utils/command.ts";
-import { startInferenceFake } from "./inference_fake.mjs";
-import { claudeEvidenceFailures, type ClaudeIds, recordClaude } from "./claude.ts";
-import { die, ledger, log, parseArgs, writeFile } from "./cli.ts";
 import { registry } from "./children.ts";
-import { codexEvidenceFailures, type CodexIds, recordCodex } from "./codex.ts";
+import { type ClaudeIds, claudeEvidenceFailures, recordClaude } from "./claude.ts";
+import { die, ledger, log, parseArgs, writeFile } from "./cli.ts";
+import { type CodexIds, codexEvidenceFailures, recordCodex } from "./codex.ts";
 import {
   fakeUsageBySource,
   MinuteStraddle,
   requestTraceFailures,
   type TracedRequest,
 } from "./fake.ts";
+import { startInferenceFake } from "./inference_fake.mjs";
 import {
   copyScrubbed,
   IdMap,
@@ -41,14 +41,12 @@ function ensureEmptyOut(out: string): void {
 /** Remove every login artifact from the kept home; the failures come back for the summary. */
 function stripLogins(home: string): string[] {
   const failures: string[] = [];
-  for (
-    const artifact of [
-      join(home, ".codex", "auth.json"),
-      join(home, ".claude", ".credentials.json"),
-      join(home, ".claude", ".claude.json"),
-      join(home, ".claude", "backups"),
-    ]
-  ) {
+  for (const artifact of [
+    join(home, ".codex", "auth.json"),
+    join(home, ".claude", ".credentials.json"),
+    join(home, ".claude", ".claude.json"),
+    join(home, ".claude", "backups"),
+  ]) {
     try {
       if (!existsSync(artifact)) continue;
       rmSync(artifact, { recursive: true, force: true });
@@ -81,19 +79,19 @@ export async function main(): Promise<void> {
       failures.push(...stripLogins(home));
       const recorded = SUMMARY_SOURCES.map((s) => sources[s]).filter((c) => c !== null);
       const summary = {
-        "files": recorded.reduce((n, c) => n + c.files, 0),
-        "lines": recorded.reduce((n, c) => n + c.lines, 0),
-        "usageLines": {
-          "claude": sources.claude?.usageLines ?? 0,
-          "codex": sources.codex?.usageLines ?? 0,
+        files: recorded.reduce((n, c) => n + c.files, 0),
+        lines: recorded.reduce((n, c) => n + c.lines, 0),
+        usageLines: {
+          claude: sources.claude?.usageLines ?? 0,
+          codex: sources.codex?.usageLines ?? 0,
         },
-        "backend": args.real ? "real" : "fake",
-        "requests": trace.length,
-        "fakeUsage": args.real ? null : fakeUsageBySource(trace),
-        "sources": sources,
-        "written": ledger.written,
-        "removed": ledger.removed,
-        "failures": failures,
+        backend: args.real ? "real" : "fake",
+        requests: trace.length,
+        fakeUsage: args.real ? null : fakeUsageBySource(trace),
+        sources: sources,
+        written: ledger.written,
+        removed: ledger.removed,
+        failures: failures,
       };
       // One line, last on stdout: the consumer reads it with `tail -n 1 | jq`.
       console.log(JSON.stringify(summary));
@@ -138,10 +136,12 @@ export async function main(): Promise<void> {
 
     if (failures.length === 0) {
       const straddle = new MinuteStraddle();
-      const fake = args.real ? null : await startInferenceFake(0, () => {}, {
-        beforeReply: () => straddle.hold(),
-        onRequest: (request: TracedRequest) => trace.push(request),
-      });
+      const fake = args.real
+        ? null
+        : await startInferenceFake(0, () => {}, {
+            beforeReply: () => straddle.hold(),
+            onRequest: (request: TracedRequest) => trace.push(request),
+          });
       if (fake !== null) log("fake inference backend listening on loopback");
       let claudeIds: ClaudeIds | undefined;
       let codexIds: CodexIds | undefined;

@@ -109,8 +109,9 @@ test("withPowershellChildEnv: a 5.1 child sees no PSModulePath under any casing,
   const parentOwn = psModulePathIn(process.env);
   // The map is what a spawn passes as the child's whole env; the parent's own is left as is.
   const childSees = (env: Record<string, string>) =>
-    runSync(process.execPath, ["-e", 'console.log(process.env.PSModulePath ?? "")'], { env })
-      .stdout.trim();
+    runSync(process.execPath, ["-e", 'console.log(process.env.PSModulePath ?? "")'], {
+      env,
+    }).stdout.trim();
 
   const desktop = withPowershellChildEnv("powershell", (env) => ({
     map: psModulePathIn(env),

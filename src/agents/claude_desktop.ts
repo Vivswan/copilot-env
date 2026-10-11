@@ -15,12 +15,12 @@ import {
   type DesktopTargetResolution,
   inspectClaudeDesktopWiring,
 } from "../claude/desktop_status.ts";
-import { Credential } from "../copilot_api/credential.ts";
 import { configDefaultBoolean } from "../copilot_api/config_registry.ts";
+import { Credential } from "../copilot_api/credential.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { CopilotEnvState } from "../copilot_api/env_state.ts";
 import { CopilotApiPaths } from "../copilot_api/paths.ts";
-import { profileLabel, type ProfileName } from "../copilot_api/profile.ts";
+import { type ProfileName, profileLabel } from "../copilot_api/profile.ts";
 import { errMessage } from "../utils/error.ts";
 import { createStderrLogger, narrationMuted } from "../utils/logger.ts";
 import { type ManagedWrite, resolveCredentialWiring, resolvedDirectToken } from "./configure.ts";
@@ -158,9 +158,12 @@ async function reportClaudeDesktopReady(resolution: DesktopTargetResolution): Pr
   const status = inspectClaudeDesktopWiring(resolution);
   if (status.kind !== "inspected") return;
   const ready =
-    status.entries.some((e) =>
-      e.profile === null && e.verdict.kind === "wired" && status.applied?.path === e.verdict.path
-    ) && status.app.kind === "read" && status.app.deploymentMode === "3p";
+    status.entries.some(
+      (e) =>
+        e.profile === null && e.verdict.kind === "wired" && status.applied?.path === e.verdict.path,
+    ) &&
+    status.app.kind === "read" &&
+    status.app.deploymentMode === "3p";
   if (!ready) return;
   if ((await claudeDesktopRunning()) === "present") {
     logger.warn(
@@ -189,9 +192,10 @@ async function syncTarget({ profile, mode }: DesktopTarget): Promise<void> {
     const credential = resolveCredentialWiring("claude", mode, profile, ghToken);
     // A static credential is already resolved: the identity probe and discovery reuse it.
     const token = ghToken ?? resolvedDirectToken(mode, credential);
-    const write: ManagedWrite = mode === "direct"
-      ? { mode: "direct", direct: rendered, credential }
-      : { mode: "proxy", credential };
+    const write: ManagedWrite =
+      mode === "direct"
+        ? { mode: "direct", direct: rendered, credential }
+        : { mode: "proxy", credential };
     await syncClaudeDesktopWiring({ ...write, profile, directToken: token });
   } catch (e) {
     logger.warn(`  Could not refresh ${profileLabel(profile)}'s Desktop entry: ${errMessage(e)}`);

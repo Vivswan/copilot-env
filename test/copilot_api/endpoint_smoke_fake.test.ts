@@ -9,8 +9,8 @@ import { CLAUDE_ENDPOINT_SMOKE } from "../../src/claude/config.ts";
 import { CODEX_ENDPOINT_SMOKE } from "../../src/codex/config.ts";
 import { directSmoke } from "../../src/copilot_api/endpoint_smoke.ts";
 import type { ProbeFetch } from "../../src/copilot_api/integration_identity.ts";
-import { type FakeModelEndpoint, SCENARIO_HEADER } from "../helpers/fake_model_endpoint.ts";
 import { type ScenarioName, startFakeEndpoint } from "../helpers/fake_endpoint.ts";
+import { type FakeModelEndpoint, SCENARIO_HEADER } from "../helpers/fake_model_endpoint.ts";
 import { afterEach, beforeEach, expect, tempDir, test } from "../helpers/testing.ts";
 
 let fake: FakeModelEndpoint;
@@ -75,9 +75,9 @@ test("the claude smoke: the haiku pick, then one 1-token /v1/messages call under
   expect(ping?.headers["copilot-integration-id"]).toBe("vscode-chat");
   expect(ping?.headers["openai-intent"]).toBe("conversation-edits");
   expect(ping?.body).toMatchObject({
-    "model": "claude-haiku-4-5",
-    "max_tokens": 1,
-    "messages": [{ "role": "user", "content": "x" }],
+    model: "claude-haiku-4-5",
+    max_tokens: 1,
+    messages: [{ role: "user", content: "x" }],
   });
   expect(ping?.interrupted).toBe(false);
 });
@@ -96,7 +96,7 @@ test("the codex smoke: the reduced-tier pick, then one capped /responses call wi
   // aimock journals its NORMALIZED view of a Responses body (`input` and `max_output_tokens`
   // fold into its chat shape), so only the fields it keeps are pinned here; the raw ping body
   // is pinned in endpoint_smoke.test.ts.
-  expect(ping?.body).toMatchObject({ "model": "gpt-5.4-mini", "stream": false });
+  expect(ping?.body).toMatchObject({ model: "gpt-5.4-mini", stream: false });
 });
 
 test("every rejection the endpoint can answer lands as a false verdict carrying the body's reason", async () => {

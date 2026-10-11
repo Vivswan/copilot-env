@@ -4,8 +4,8 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, realpathSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
-import { fileURLToPath } from "node:url";
 import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { currentReleaseTarget } from "../src/install/targets.ts";
 import { looksLikeInstallRoot } from "../src/utils/root.ts";
 
@@ -114,7 +114,9 @@ while (args.length > 0) {
   // A separated value that looks like a flag is a missing value, not a path: `--dir --yes` must
   // not install into <cwd>/--yes.
   if (
-    value === undefined || value === "" || (inlineValue === undefined && value.startsWith("--"))
+    value === undefined ||
+    value === "" ||
+    (inlineValue === undefined && value.startsWith("--"))
   ) {
     die(
       `${flag.posix} needs a ${flag.value} argument; a ${flag.value} that starts with -- is spelled ${flag.posix}=${flag.value}.`,
@@ -147,7 +149,8 @@ if (force) {
   // The installers' exact precedence (--dir, then `${COPILOT_ENV_DIR:-default}`, PS
   // falsy-empty): only the EMPTY value reads as unset, or deletion and install could diverge.
   const envDir = process.env.COPILOT_ENV_DIR;
-  const requested = installDirArg ??
+  const requested =
+    installDirArg ??
     (envDir !== undefined && envDir !== "" ? envDir : join(homedir(), ".copilot-env"));
   if (existsSync(requested)) {
     // Physical paths on BOTH sides (mirrors the installers' canonicalization):
@@ -173,7 +176,7 @@ const installerArgs = forwarded.flatMap(({ flag, value }) => [
   isWindows ? flag.windows : flag.posix,
   ...(value === undefined ? [] : [value]),
 ]);
-const env = { "COPILOT_ENV_DOWNLOAD_BASE": join(ROOT, "dist") };
+const env = { COPILOT_ENV_DOWNLOAD_BASE: join(ROOT, "dist") };
 if (isWindows) {
   run(
     "powershell",

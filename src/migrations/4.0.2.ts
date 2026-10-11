@@ -6,21 +6,22 @@
 //   sole login, no saved credential (env-only token)    -> auto; pinning would break a working slot
 //   several logins, or the account look never ran       -> auto; only the user can choose
 //   already pinned, or not gh-cli                       -> untouched
-import { consola } from "consola";
+
 import { join, normalize } from "node:path";
+import { consola } from "consola";
 import { reconcileClaudeDesktopWiring } from "../agents/claude_desktop.ts";
 import { desktopHelperScriptWiring } from "../claude/desktop_helper_scripts.ts";
 import { claudeDesktopInstalled, readFileOrNull } from "../claude/desktop_library.ts";
 import { type GhAccountsLook, ghAccountsLook, ghAuthTokenLook } from "../copilot_api/credential.ts";
-import { CopilotEnvState } from "../copilot_api/env_state.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
-import { OwnershipLedger } from "../copilot_api/ownership.ts";
+import { CopilotEnvState } from "../copilot_api/env_state.ts";
 import { GH_COPILOT_HOST, GH_LOGIN_RE } from "../copilot_api/gh_cli.ts";
+import { OwnershipLedger } from "../copilot_api/ownership.ts";
 import { resolveRootHome } from "../copilot_api/paths.ts";
 import type { Profile } from "../copilot_api/profile.ts";
+import * as fs from "../utils/fs_facade.ts";
 import { isRecord } from "../utils/json.ts";
 import type { Migration } from "./index.ts";
-import * as fs from "../utils/fs_facade.ts";
 
 /** The same pin-or-ask rule the auth flow settles with. An unproven look pins nothing, and so
  *  does any count but one, where EVERY github.com entry counts, broken ones included: a broken

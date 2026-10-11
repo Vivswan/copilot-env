@@ -90,7 +90,8 @@ type Contribution = CodexContribution | ClaudeContribution;
 
 /** The contribution type each source produces, so a reconcile call cannot pair
  *  a source with the other source's parsers. */
-export type ContributionOf<S extends UsageSource> = S extends "codex" ? CodexContribution
+export type ContributionOf<S extends UsageSource> = S extends "codex"
+  ? CodexContribution
   : ClaudeContribution;
 
 // ---------- scanning ----------

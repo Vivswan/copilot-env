@@ -58,19 +58,18 @@ function parseClientHeaderSet(raw: string): ClientHeaderSet {
 export function isCopilotApiHost(url: string, configuredHost: string | null = null): boolean {
   try {
     const parsed = new URL(url);
-    return parsed.hostname === "githubcopilot.com" ||
+    return (
+      parsed.hostname === "githubcopilot.com" ||
       parsed.hostname.endsWith(".githubcopilot.com") ||
-      (configuredHost !== null && parsed.host === new URL(configuredHost).host);
+      (configuredHost !== null && parsed.host === new URL(configuredHost).host)
+    );
   } catch {
     return false;
   }
 }
 
 /** `current` with the set applied: every named header set or deleted, everything else kept. */
-function applyClientHeaders(
-  current: HeadersInit | undefined,
-  set: ClientHeaderSet,
-): Headers {
+function applyClientHeaders(current: HeadersInit | undefined, set: ClientHeaderSet): Headers {
   const headers = new Headers(current);
   for (const [name, value] of Object.entries(set)) {
     if (value === null) headers.delete(name);
@@ -136,22 +135,24 @@ function composeUndiciDispatcher(set: ClientHeaderSet, configuredHost: string | 
   if (published.length === 0) {
     throw new Error(
       `client_headers_preload: the proxy at ${Deno.mainModule} publishes no undici global ` +
-        `dispatcher under ${
-          UNDICI_GLOBAL_DISPATCHERS.map((key) => key.description).join(" or ")
-        }, so its WebSocket transport ` +
+        `dispatcher under ${UNDICI_GLOBAL_DISPATCHERS.map((key) => key.description).join(
+          " or ",
+        )}, so its WebSocket transport ` +
         "cannot carry the client identity; refusing to run under the proxy's own. Update this " +
         "preload for the floated proxy version (never the package); until then the `daemon.version` " +
         "config key pins the previous version.",
     );
   }
-  const rewrite = (dispatch: Dispatch): Dispatch => (opts, handler) => {
-    const origin = typeof opts.origin === "string" ? opts.origin : opts.origin?.href;
-    if (origin === undefined || !isCopilotApiHost(origin, configuredHost)) {
-      return dispatch(opts, handler);
-    }
-    const headers = applyClientHeaders(dispatchHeaders(opts.headers), set);
-    return dispatch({ ...opts, headers: Object.fromEntries(headers) }, handler);
-  };
+  const rewrite =
+    (dispatch: Dispatch): Dispatch =>
+    (opts, handler) => {
+      const origin = typeof opts.origin === "string" ? opts.origin : opts.origin?.href;
+      if (origin === undefined || !isCopilotApiHost(origin, configuredHost)) {
+        return dispatch(opts, handler);
+      }
+      const headers = applyClientHeaders(dispatchHeaders(opts.headers), set);
+      return dispatch({ ...opts, headers: Object.fromEntries(headers) }, handler);
+    };
   for (const [key, dispatcher] of published) scope[key] = dispatcher.compose(rewrite);
 }
 

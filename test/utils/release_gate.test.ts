@@ -3,9 +3,10 @@
 // release-gate.yml (a job in checks.yml, a second one in nightly.yml) runs the gate twice with no
 // error. GitHub itself rejects the rest of the caller's contract (inputs, secrets, permissions
 // past contents: read) on the release PR, and the platform's standard-checks lint the syntax.
-import { parse as parseYaml } from "@std/yaml";
+
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { parse as parseYaml } from "@std/yaml";
 import { isRecord } from "../../src/utils/json.ts";
 import { ROOT } from "../helpers/run.ts";
 import { expect, test } from "../helpers/testing.ts";
@@ -27,7 +28,7 @@ function gateCallers(workflows: Record<string, unknown>): string[] {
   return Object.entries(workflows).flatMap(([file, workflow]) =>
     Object.entries(jobsOf(workflow))
       .filter(([, job]) => isRecord(job) && job.uses === GATE)
-      .map(([id]) => `${file}:${id}`)
+      .map(([id]) => `${file}:${id}`),
   );
 }
 
@@ -44,8 +45,10 @@ test("every release-gate job is bounded, and one repository-side job calls the g
   expect(callers, callers.join(", ")).toHaveLength(1);
 
   // Controls: a job with no timeout and a second caller are each seen.
-  expect(unboundedJobs({ jobs: { a: { "timeout-minutes": 5 }, b: { "runs-on": "x" } } }))
-    .toEqual(["b"]);
-  expect(gateCallers({ ...repoOwned, "checks.yml": { jobs: { gate: { uses: GATE } } } }))
-    .toHaveLength(2);
+  expect(unboundedJobs({ jobs: { a: { "timeout-minutes": 5 }, b: { "runs-on": "x" } } })).toEqual([
+    "b",
+  ]);
+  expect(
+    gateCallers({ ...repoOwned, "checks.yml": { jobs: { gate: { uses: GATE } } } }),
+  ).toHaveLength(2);
 });

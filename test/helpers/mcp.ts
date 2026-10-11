@@ -104,7 +104,7 @@ export class McpClient {
   }
 
   async request(id: number | string, method: string, params?: unknown): Promise<JsonRpcMessage> {
-    this.send({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
+    this.send({ jsonrpc: "2.0", id: id, method: method, params: params });
     return await this.waitFor(id);
   }
 
@@ -116,7 +116,7 @@ export class McpClient {
   }
 
   notify(method: string): void {
-    this.send({ "jsonrpc": "2.0", "method": method });
+    this.send({ jsonrpc: "2.0", method: method });
   }
 
   private async nextLine(): Promise<string> {

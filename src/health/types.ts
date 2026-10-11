@@ -17,7 +17,7 @@ export const HEALTH_SCOPES = [
   "claude",
 ] as const;
 
-export type HealthScope = typeof HEALTH_SCOPES[number];
+export type HealthScope = (typeof HEALTH_SCOPES)[number];
 
 // SINGLE SOURCE for scope membership, shared by the fact-gatherer (probe.ts gates which facts to
 // collect) and the check descriptors below (which stamp CheckResult.scopes), so the two cannot

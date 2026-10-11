@@ -24,13 +24,13 @@ function serverParams() {
 }
 
 const WEB_SEARCH_INPUT_SCHEMA = {
-  "type": "object" as const,
-  "properties": { "query": { "type": "string", "description": "The web search query." } },
-  "required": ["query"],
+  type: "object" as const,
+  properties: { query: { type: "string", description: "The web search query." } },
+  required: ["query"],
 };
 
 /** New wire output of the v2 port; without this assertion its removal would be silent. */
-const WEB_SEARCH_ANNOTATIONS = { "readOnlyHint": true, "openWorldHint": true };
+const WEB_SEARCH_ANNOTATIONS = { readOnlyHint: true, openWorldHint: true };
 
 interface ToolCallView {
   isError?: boolean;
@@ -92,28 +92,24 @@ const eras: { era: string; connect: () => Promise<InteropClient> }[] = [
 ];
 
 for (const { era, connect } of eras) {
-  test(
-    `${era} lists web_search and gets the no-credential tool error`,
-    async () => {
-      const client = await connect();
-      try {
-        const { tools } = await client.listTools();
-        expect(tools.map((t) => t.name)).toEqual(["web_search"]);
-        expect(tools[0]?.inputSchema).toEqual(WEB_SEARCH_INPUT_SCHEMA);
-        expect(tools[0]?.annotations).toEqual(WEB_SEARCH_ANNOTATIONS);
+  test(`${era} lists web_search and gets the no-credential tool error`, async () => {
+    const client = await connect();
+    try {
+      const { tools } = await client.listTools();
+      expect(tools.map((t) => t.name)).toEqual(["web_search"]);
+      expect(tools[0]?.inputSchema).toEqual(WEB_SEARCH_INPUT_SCHEMA);
+      expect(tools[0]?.annotations).toEqual(WEB_SEARCH_ANNOTATIONS);
 
-        // v1's callTool return is a union with the pre-2024 compatibility shape;
-        // this server speaks the current shape, so view it structurally.
-        const res = (await client.callTool({
-          "name": "web_search",
-          "arguments": { "query": "anything" },
-        })) as ToolCallView;
-        expect(res.isError).toBe(true);
-        expect(res.content[0]?.text).toContain("agent auth");
-      } finally {
-        await client.close();
-      }
-    },
-    20_000,
-  );
+      // v1's callTool return is a union with the pre-2024 compatibility shape;
+      // this server speaks the current shape, so view it structurally.
+      const res = (await client.callTool({
+        name: "web_search",
+        arguments: { query: "anything" },
+      })) as ToolCallView;
+      expect(res.isError).toBe(true);
+      expect(res.content[0]?.text).toContain("agent auth");
+    } finally {
+      await client.close();
+    }
+  }, 20_000);
 }

@@ -15,9 +15,9 @@ import { parseProfileName } from "../../src/copilot_api/profile.ts";
 import { childEnvWithPath, cliSpawn, resolveCommand } from "../../src/utils/command.ts";
 import { readTextResult } from "../../src/utils/fs_facade.ts";
 import { proxyTokenCommand } from "../../src/utils/root.ts";
+import { envSnapshot, isolateAgentHomes } from "../helpers/env.ts";
 import { runSync } from "../helpers/run.ts";
 import { afterEach, expect, test } from "../helpers/testing.ts";
-import { envSnapshot, isolateAgentHomes } from "../helpers/env.ts";
 
 const restoreEnv = envSnapshot();
 let dir = "";
@@ -93,12 +93,12 @@ test("a named write lands the selector in <name>.config.toml and no [profiles.<n
   // the selector's only home is the profile file, and the file carries nothing else of ours.
   const codexHome = isolate();
   const profilePath = codexProfileConfigPath(codexHome, WORK);
-  writeFileSync(profilePath, stringify({ "model": "gpt-5.4-mini", "model_provider": "openai" }));
+  writeFileSync(profilePath, stringify({ model: "gpt-5.4-mini", model_provider: "openai" }));
   writeProxyProfile(codexHome);
 
   expect(asRecord(parse(readFileSync(profilePath, "utf8")))).toEqual({
-    "model": "gpt-5.4-mini",
-    "model_provider": "copilot-env-work",
+    model: "gpt-5.4-mini",
+    model_provider: "copilot-env-work",
   });
   const config = asRecord(parse(configText(codexHome)));
   expect(config.profiles).toBeUndefined();
@@ -155,7 +155,7 @@ test("removing a profile deletes its file, or only our selector when the user's 
     doc.model = "gpt-5.4-mini";
   });
   removeCodexProfile(codexHome, WORK);
-  expect(asRecord(parse(readFileSync(profilePath, "utf8")))).toEqual({ "model": "gpt-5.4-mini" });
+  expect(asRecord(parse(readFileSync(profilePath, "utf8")))).toEqual({ model: "gpt-5.4-mini" });
 
   // A user-repointed selector is no longer ours: the file stays whole.
   writeProxyProfile(codexHome);
@@ -164,8 +164,8 @@ test("removing a profile deletes its file, or only our selector when the user's 
   });
   removeCodexProfile(codexHome, WORK);
   expect(asRecord(parse(readFileSync(profilePath, "utf8")))).toEqual({
-    "model": "gpt-5.4-mini",
-    "model_provider": "openai",
+    model: "gpt-5.4-mini",
+    model_provider: "openai",
   });
 
   // A profile file that cannot be read refuses the whole removal: config.toml keeps the provider
@@ -201,7 +201,7 @@ test("one drifted detail on a named profile's provider table reads its mode but 
       drift: "foreign auth command",
       mode: "proxy",
       mutate: (doc) => {
-        profileProvider(doc).auth = { "command": "/usr/local/bin/my-token", "args": [] };
+        profileProvider(doc).auth = { command: "/usr/local/bin/my-token", args: [] };
       },
       inspect: {},
       wiring: {
@@ -218,7 +218,7 @@ test("one drifted detail on a named profile's provider table reads its mode but 
       mode: "proxy",
       mutate: (doc) => {
         const auth = proxyTokenCommand();
-        profileProvider(doc).auth = { "command": auth.command, "args": auth.args };
+        profileProvider(doc).auth = { command: auth.command, args: auth.args };
       },
       inspect: {},
       wiring: { envKeyMatches: false, providerWired: false },
@@ -468,7 +468,7 @@ test("no <name>.config.toml, or one without a selector, reads as none for the na
 
   // `codex --profile work` would then run on config.toml alone (the DEFAULT credential), which a
   // named profile must never read as its own wiring.
-  for (const seed of [null, stringify({ "model": "gpt-5.4-mini" })]) {
+  for (const seed of [null, stringify({ model: "gpt-5.4-mini" })]) {
     if (seed !== null) writeFileSync(codexProfileConfigPath(codexHome, WORK), seed);
     const wiring = inspectWork(codexHome);
     expect(wiring, seed ?? "absent").toMatchObject({
@@ -564,7 +564,7 @@ liveCodex(
     // An MCP entry the profile file alone carries: listed under `--profile work` only if Codex
     // applied the file's keys, which is what the writer relies on for the selector.
     mutateToml(codexProfileConfigPath(codexHome, WORK), (doc) => {
-      doc.mcp_servers = { "profile-only": { "command": "true" } };
+      doc.mcp_servers = { "profile-only": { command: "true" } };
     });
     const codexPath = CODEX_PATH ?? "";
     const run = (home: string) => {
@@ -584,7 +584,7 @@ liveCodex(
     // Negative control: the same selector as a [profiles.work] table is what Codex refuses, so a
     // Codex that accepted both would make the positive run prove nothing.
     mutateConfig(codexHome, (doc) => {
-      doc.profiles = { work: { "model_provider": "copilot-env-work" } };
+      doc.profiles = { work: { model_provider: "copilot-env-work" } };
     });
     const refused = run(codexHome);
     expect(refused.exitCode).not.toBe(0);

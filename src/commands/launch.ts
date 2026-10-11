@@ -8,27 +8,27 @@
 // (the write-report flush, the scratch cleanup).
 import { spawnSync } from "node:child_process";
 import { constants } from "node:os";
-import { assertNever } from "../utils/assert.ts";
-import { wireBothAgents } from "../agents/profile_wiring.ts";
 import { runClaude, runCodex } from "../agents/configure_defaults.ts";
+import { wireBothAgents } from "../agents/profile_wiring.ts";
 import { BASE_URL_ENV, managedClaudeBaseUrl } from "../claude/config.ts";
 import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
 import { refreshCodexCatalogAndSync } from "../codex/catalog_reference.ts";
 import { narrateCodexHome, resolveCodexHome } from "../codex/host.ts";
-import { CopilotEnvState, partialSlotGap, type ProfileMode } from "../copilot_api/env_state.ts";
+import { CopilotEnvState, type ProfileMode, partialSlotGap } from "../copilot_api/env_state.ts";
 import {
-  parseProfileFlag,
-  parseProfileName,
   type Profile,
   type ProfileName,
+  parseProfileFlag,
+  parseProfileName,
 } from "../copilot_api/profile.ts";
+import { assertNever } from "../utils/assert.ts";
 import { childEnvWithPath, findCommand, verbatimCliSpawn } from "../utils/command.ts";
 import { errMessage } from "../utils/error.ts";
 import { deferWriteReports, flushWriteReports } from "../utils/report_write.ts";
 import type { ManagedEnvValue } from "../utils/shell_quote.ts";
+import { printWrappedToStderr } from "../utils/table.ts";
 import { runDryRun } from "./dry_run.ts";
 import { proxyTokenDeps, resolveProxyToken } from "./proxy_token.ts";
-import { printWrappedToStderr } from "../utils/table.ts";
 
 /** Each name is also the command spawned. */
 const LAUNCH_CLIS = ["claude", "codex", "copilot"] as const;

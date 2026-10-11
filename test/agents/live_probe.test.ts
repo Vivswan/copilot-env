@@ -5,13 +5,13 @@ import {
   CODEX_CATALOG_NOISE_RE,
   CODEX_PROBE,
   type ProbeDescriptor,
-  probeDirectWorks,
   type ProbeOutcome,
+  probeDirectWorks,
   summarizeProbeFailure,
 } from "../../src/agents/live_probe.ts";
-import type { CommandLook } from "../../src/utils/command.ts";
 import type { DirectSmoke, SmokeModelOutcome } from "../../src/copilot_api/endpoint_smoke.ts";
 import { ghAuthVerdict, ghTokenFromEnv } from "../../src/copilot_api/gh_cli.ts";
+import type { CommandLook } from "../../src/utils/command.ts";
 import { envSnapshot } from "../helpers/env.ts";
 import { captureAllWrites } from "../helpers/output.ts";
 import { expect, test } from "../helpers/testing.ts";
@@ -270,15 +270,17 @@ test("probeDirectWorks: Copilot's too-old-CLI reply is no verdict: the probe thr
     next: { ok: true, model: "claude-fable-5" },
   });
   let runs = 0;
-  await expect(probeDirectWorks(
-    FAKE_DESCRIPTOR,
-    () => {},
-    smoke,
-    passingDeps(() => {
-      runs++;
-      return { ok: false, detail: tooOld };
-    }),
-  )).rejects.toThrow(repair);
+  await expect(
+    probeDirectWorks(
+      FAKE_DESCRIPTOR,
+      () => {},
+      smoke,
+      passingDeps(() => {
+        runs++;
+        return { ok: false, detail: tooOld };
+      }),
+    ),
+  ).rejects.toThrow(repair);
   expect([runs, smoke.fallbackAsks]).toEqual([1, 0]);
   // The endpoint arm (no CLI on the machine): the ping's failure detail carries the same reply.
   const pinging: DirectSmoke = {
@@ -286,9 +288,11 @@ test("probeDirectWorks: Copilot's too-old-CLI reply is no verdict: the probe thr
     ping: () =>
       Promise.resolve({ ok: false, detail: `POST /v1/messages returned 400 (${tooOld})` }),
   };
-  await expect(probeDirectWorks(FAKE_DESCRIPTOR, () => {}, pinging, {
-    findCommand: () => ({ kind: "absent" }),
-  })).rejects.toThrow(repair);
+  await expect(
+    probeDirectWorks(FAKE_DESCRIPTOR, () => {}, pinging, {
+      findCommand: () => ({ kind: "absent" }),
+    }),
+  ).rejects.toThrow(repair);
 });
 
 // --- probeDirectWorks: no drivable model means no CLI run ----------------------
@@ -400,11 +404,10 @@ test("probeDirectWorks walks the smoke's model hops on a MODEL rejection only: t
 test("probeDirectWorks runs a catalog-free first hop whatever the catalog says: Direct on a pass, and a rejection whose fallback cannot be read stops with the rejection", async () => {
   // A GET /models that fails must not skip a hop that never needed it (the CLI resolves the alias
   // itself); once the alias is rejected, an unreadable catalog leaves no second hop.
-  const unreadable = fakeSmoke(
-    { ok: false, detail: "GET /models returned 503" },
-    true,
-    { first: "haiku", next: { ok: false, detail: "GET /models returned 503" } },
-  );
+  const unreadable = fakeSmoke({ ok: false, detail: "GET /models returned 503" }, true, {
+    first: "haiku",
+    next: { ok: false, detail: "GET /models returned 503" },
+  });
   const models: string[] = [];
   const passes = await probeDirectWorks(
     FAKE_DESCRIPTOR,

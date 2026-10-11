@@ -57,9 +57,7 @@ export function registerMachineCommands(program: Command): void {
   config
     .command("set")
     .summary("Set a machine key or a shared default")
-    .description(
-      "Set a machine key, or the shared default of a proxy.* / probe.* key.",
-    )
+    .description("Set a machine key, or the shared default of a proxy.* / probe.* key.")
     .argument("<key>", "A key of `agent config`, or `<key>=<value>`.")
     .argument("[value]", "The value; omit it with `<key>=<value>`.")
     .option("--dry-run", DRY_RUN_HELP)
@@ -77,9 +75,7 @@ export function registerMachineCommands(program: Command): void {
   config
     .command("get")
     .summary("Show a key's value and where it comes from")
-    .description(
-      "Show a key's value (stdout) and its origin (stderr). No key: every key.",
-    )
+    .description("Show a key's value (stdout) and its origin (stderr). No key: every key.")
     .argument("[key]", "A key of `agent config`.")
     .action((key: string | undefined) => {
       if (key !== undefined) refuseProfileKey(key);
@@ -159,7 +155,7 @@ export function registerMachineCommands(program: Command): void {
         autoStatus: Boolean(opts.autoStatus),
         verify: opts.verify as boolean | undefined,
         dryRun: Boolean(opts.dryRun),
-      })
+      }),
     );
 
   program
@@ -191,7 +187,7 @@ export function registerMachineCommands(program: Command): void {
         noPrereqs: opts.prereqs === false,
         allHosts: Boolean(opts.allHosts),
         dryRun: Boolean(opts.dryRun),
-      })
+      }),
     );
 
   program
@@ -236,7 +232,7 @@ export function registerMachineCommands(program: Command): void {
         yes: Boolean(opts.yes),
         dryRun: Boolean(opts.dryRun),
         force: Boolean(opts.force),
-      })
+      }),
     );
 
   // `agent update` and an `agent install` over a prior version invoke this on the NEW install after
@@ -254,6 +250,6 @@ export function registerMachineCommands(program: Command): void {
     .argument("<to>", "The version updated to.")
     .option("--dry-run", "Show each step's moves and removals; change nothing.")
     .action((from: string, to: string, opts: Opts) =>
-      opts.dryRun ? runDryRun(() => runMigrations(from, to)) : runMigrations(from, to)
+      opts.dryRun ? runDryRun(() => runMigrations(from, to)) : runMigrations(from, to),
     );
 }

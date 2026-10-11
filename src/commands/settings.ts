@@ -13,8 +13,8 @@ import {
   planImport,
   previewImportChanges,
   rollbackCommand,
-  serializeSettingsBundle,
   type SettingsBundle,
+  serializeSettingsBundle,
   writeSettingsBackup,
 } from "../agents/transfer.ts";
 import {
@@ -30,12 +30,12 @@ import {
 import { CopilotEnvConfig, type CopilotEnvConfigData } from "../copilot_api/env_config.ts";
 import { assertProfileSlot } from "../copilot_api/env_state.ts";
 import {
-  parseProfileFlag,
   type Profile,
+  parseProfileFlag,
   profileKey,
   profileLabel,
 } from "../copilot_api/profile.ts";
-import { type FileChange } from "../utils/dry_run.ts";
+import type { FileChange } from "../utils/dry_run.ts";
 import { renderDryRun } from "../utils/dry_run_report.ts";
 import { errMessage } from "../utils/error.ts";
 import * as fs from "../utils/fs_facade.ts";
@@ -119,7 +119,9 @@ export function importRestartHints(
     Object.values(data.profiles).some((section) => section[key] !== undefined);
   const projectedChanges = CONFIG_REGISTRY.some(
     (def) =>
-      isProxyProjected(def) && isGlobalMapKey(def.key) && isProfileMapKey(def.key) &&
+      isProxyProjected(def) &&
+      isGlobalMapKey(def.key) &&
+      isProfileMapKey(def.key) &&
       (carries(config, def.key) || carries(preImportPrefs, def.key)),
   );
   return projectedChanges ? [PROXY_RESTART_HINT_ALL] : [];
@@ -167,7 +169,7 @@ function runExport(target: string | boolean, withCredentials: boolean, build: Bu
 /** The dry run's own rows, each file bulleted and its attribute rows hanging under it. */
 async function confirmImport(changes: readonly FileChange[], file: string): Promise<boolean> {
   const lines = renderDryRun(changes).map((line) =>
-    line.startsWith("  ") ? `    ${line}` : `  • ${line}`
+    line.startsWith("  ") ? `    ${line}` : `  • ${line}`,
   );
   logger.log(`Importing ${file} will overwrite:\n${lines.join("\n")}`);
   if (!process.stdin.isTTY) {
@@ -255,9 +257,8 @@ async function runImport(
 
   for (const line of outcome.skipped) logger.warn(line);
   for (const line of outcome.failures) logger.warn(line);
-  const wired = outcome.wiredProfiles.length > 0
-    ? ` (profiles: ${outcome.wiredProfiles.join(", ")})`
-    : "";
+  const wired =
+    outcome.wiredProfiles.length > 0 ? ` (profiles: ${outcome.wiredProfiles.join(", ")})` : "";
   if (outcome.failures.length > 0) {
     // failures carries both a failed profile commit and a failed default-agent wiring; the summary
     // must not claim only "wiring".
@@ -329,7 +330,7 @@ async function runScopedSettings(
   if (action.kind === "export") {
     if (action.dryRun) {
       await runDryRun(() =>
-        Promise.resolve(runExport(action.target, action.withCredentials, build))
+        Promise.resolve(runExport(action.target, action.withCredentials, build)),
       );
     } else {
       runExport(action.target, action.withCredentials, build);
@@ -347,10 +348,7 @@ function isSharedDefaultKey(key: string): boolean {
   return configKeyDef(key)?.scope === "profile-default";
 }
 
-function pickGlobal(
-  global: GlobalConfigData,
-  keep: (key: string) => boolean,
-): GlobalConfigData {
+function pickGlobal(global: GlobalConfigData, keep: (key: string) => boolean): GlobalConfigData {
   return Object.fromEntries(
     Object.entries(global).filter(([key]) => keep(key)),
   ) as GlobalConfigData;
@@ -388,8 +386,8 @@ function assertProfileBundle(bundle: SettingsBundle, profile: Profile, file: str
   const stray: string[] = [];
   const foreignSections = Object.keys(bundle.config.profiles).filter((k) => k !== key);
   if (foreignSections.length > 0) stray.push(`preferences of ${foreignSections.join(", ")}`);
-  const foreignGlobal = Object.keys(bundle.config.global).filter((k) =>
-    profile !== null || !isSharedDefaultKey(k)
+  const foreignGlobal = Object.keys(bundle.config.global).filter(
+    (k) => profile !== null || !isSharedDefaultKey(k),
   );
   if (foreignGlobal.length > 0) stray.push(`machine preferences (${foreignGlobal.join(", ")})`);
   const foreignSlots = Object.keys(bundle.profiles).filter((k) => k !== profile);
@@ -405,9 +403,9 @@ function assertProfileBundle(bundle: SettingsBundle, profile: Profile, file: str
   }
   if (stray.length > 0) {
     throw new Error(
-      `${file} is not a bundle of ${profileLabel(profile)} alone: it carries ${
-        stray.join("; ")
-      }. The whole store imports with \`agent settings --import\`; one profile's bundle comes from ` +
+      `${file} is not a bundle of ${profileLabel(profile)} alone: it carries ${stray.join(
+        "; ",
+      )}. The whole store imports with \`agent settings --import\`; one profile's bundle comes from ` +
         "`agent profile [<name>] settings --export`.",
     );
   }
@@ -433,8 +431,9 @@ function widenToStore(bundle: SettingsBundle, profile: Profile): SettingsBundle 
   const profiles = { ...current.profiles };
   delete profiles[key];
   Object.assign(profiles, pickSection(bundle.config.profiles, key));
-  const global = profile === null
-    ? { ...pickGlobal(current.global, (k) => !isSharedDefaultKey(k)), ...bundle.config.global }
-    : current.global;
+  const global =
+    profile === null
+      ? { ...pickGlobal(current.global, (k) => !isSharedDefaultKey(k)), ...bundle.config.global }
+      : current.global;
   return { ...bundle, config: { global, profiles } };
 }

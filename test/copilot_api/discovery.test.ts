@@ -8,8 +8,8 @@ import {
   type ProbeFetch,
 } from "../../src/copilot_api/integration_identity.ts";
 import { withDryRun } from "../../src/utils/dry_run.ts";
-import { afterEach, expect, test } from "../helpers/testing.ts";
 import { envSnapshot, isolateProxyHome } from "../helpers/env.ts";
+import { afterEach, expect, test } from "../helpers/testing.ts";
 
 // Verification verdicts persist in the shared state store, so every test isolates its own home.
 const restoreEnv = envSnapshot();
@@ -52,9 +52,7 @@ function stubFetch(opts: StubOptions): ProbeFetch {
       opts.calls?.push(`catalog:${identity}`);
       const ids = opts.catalogs[identity];
       if (ids === undefined) return Promise.resolve(new Response("{}", { status: 403 }));
-      return Promise.resolve(
-        Response.json({ data: ids.map((id) => ({ id })) }),
-      );
+      return Promise.resolve(Response.json({ data: ids.map((id) => ({ id })) }));
     }
     const body = JSON.parse(String(init?.body)) as {
       model: string;
@@ -65,14 +63,13 @@ function stubFetch(opts: StubOptions): ProbeFetch {
       if (opts.oracleServable?.includes(body.model)) {
         return Promise.resolve(new Response("{}", { status: 200 }));
       }
-      const message = opts.allowlist === undefined
-        ? "The requested model is not supported."
-        : `The requested model is not available for integrator "x". Available models: [${
-          opts.allowlist.join(" ")
-        }]`;
-      return Promise.resolve(
-        new Response(JSON.stringify({ error: { message } }), { status: 400 }),
-      );
+      const message =
+        opts.allowlist === undefined
+          ? "The requested model is not supported."
+          : `The requested model is not available for integrator "x". Available models: [${opts.allowlist.join(
+              " ",
+            )}]`;
+      return Promise.resolve(new Response(JSON.stringify({ error: { message } }), { status: 400 }));
     }
     // /v1/messages: the small ping vs the oversized 1m probe, by prompt size.
     const big = (body.messages?.[0]?.content.length ?? 0) > 100_000;
@@ -116,7 +113,7 @@ test("identical catalogs across identities: advertised only, zero oracle/ping tr
   const result = await discoverServableClaudeModels("ghu_x", UA, null, DEFAULT_COPILOT_API_BASE, {
     fetchImpl: stubFetch({
       catalogs: {
-        "none": same,
+        none: same,
         "vscode-chat": same,
         "copilot-developer-cli": same,
         "copilot-developer-sandbox": same,
@@ -134,7 +131,7 @@ test("full pipeline: oracle extras verified one by one, 1m probed, failures excl
   const result = await discoverServableClaudeModels("ghu_x", UA, null, DEFAULT_COPILOT_API_BASE, {
     fetchImpl: stubFetch({
       catalogs: {
-        "none": ["claude-haiku-4.5"],
+        none: ["claude-haiku-4.5"],
         "vscode-chat": ["claude-haiku-4.5"],
         // A cli-only id becomes the oracle trigger.
         "copilot-developer-cli": ["claude-haiku-4.5", "claude-sonnet-4.6"],
@@ -170,7 +167,7 @@ test("an unrecognizable oracle error degrades to catalog-only, never a guess", a
   const result = await discoverServableClaudeModels("ghu_x", UA, null, DEFAULT_COPILOT_API_BASE, {
     fetchImpl: stubFetch({
       catalogs: {
-        "none": ["claude-haiku-4.5"],
+        none: ["claude-haiku-4.5"],
         "vscode-chat": ["claude-haiku-4.5", "claude-sonnet-4.6"],
         "copilot-developer-cli": ["claude-haiku-4.5"],
         "copilot-developer-sandbox": ["claude-haiku-4.5"],
@@ -213,7 +210,7 @@ test("verification verdicts are cached: a rerun pays zero pings until the TTL la
   isolate();
   const opts = {
     catalogs: {
-      "none": ["claude-haiku-4.5"],
+      none: ["claude-haiku-4.5"],
       "vscode-chat": ["claude-haiku-4.5"],
       "copilot-developer-cli": ["claude-haiku-4.5", "claude-sonnet-4.6"],
       "copilot-developer-sandbox": ["claude-haiku-4.5"],
@@ -257,7 +254,7 @@ test("answers got on the fs overlay are reused by the real run in the same proce
   isolate();
   const opts = {
     catalogs: {
-      "none": ["claude-haiku-4.5"],
+      none: ["claude-haiku-4.5"],
       "vscode-chat": ["claude-haiku-4.5"],
       "copilot-developer-cli": ["claude-haiku-4.5", "claude-sonnet-4.6", "claude-opus-4.1"],
       "copilot-developer-sandbox": ["claude-haiku-4.5"],
@@ -315,7 +312,7 @@ test("an inconclusive ping (a 503, a non-200 2xx) is never servable and never ca
     isolate();
     const opts = {
       catalogs: {
-        "none": ["claude-haiku-4.5"],
+        none: ["claude-haiku-4.5"],
         "vscode-chat": ["claude-haiku-4.5"],
         "copilot-developer-cli": ["claude-haiku-4.5", "claude-sonnet-4.6"],
         "copilot-developer-sandbox": ["claude-haiku-4.5"],
@@ -340,8 +337,10 @@ test("an inconclusive ping (a 503, a non-200 2xx) is never servable and never ca
       }),
       nowMs: () => t0 + 1000,
     });
-    expect({ ping: row.ping, pinged: calls.includes("ping:claude-fable-5") })
-      .toEqual({ ping: row.ping, pinged: true });
+    expect({ ping: row.ping, pinged: calls.includes("ping:claude-fable-5") }).toEqual({
+      ping: row.ping,
+      pinged: true,
+    });
     expect(second.models, row.ping).toContainEqual({ id: "claude-fable-5", is1m: true });
   }
 });
@@ -350,7 +349,7 @@ test("servable-yes with a transient 1m probe: listed without 1m, verdict uncache
   isolate();
   const opts = {
     catalogs: {
-      "none": ["claude-haiku-4.5"],
+      none: ["claude-haiku-4.5"],
       "vscode-chat": ["claude-haiku-4.5"],
       "copilot-developer-cli": ["claude-haiku-4.5", "claude-sonnet-4.6"],
       "copilot-developer-sandbox": ["claude-haiku-4.5"],
@@ -366,7 +365,7 @@ test("servable-yes with a transient 1m probe: listed without 1m, verdict uncache
     discoverServableClaudeModels("ghu_x", UA, null, DEFAULT_COPILOT_API_BASE, {
       fetchImpl: stubFetch({ ...opts, transient1m: ["claude-fable-5"] }),
       nowMs: () => t0,
-    })
+    }),
   );
   const first = preview.status === "done" ? preview.result : null;
   expect(first?.models).toContainEqual({ id: "claude-fable-5", is1m: false });
@@ -391,7 +390,7 @@ test("verdicts are credential-exact: a different token probes for itself", async
   isolate();
   const opts = {
     catalogs: {
-      "none": ["claude-haiku-4.5"],
+      none: ["claude-haiku-4.5"],
       "vscode-chat": ["claude-haiku-4.5"],
       "copilot-developer-cli": ["claude-haiku-4.5", "claude-sonnet-4.6"],
       "copilot-developer-sandbox": ["claude-haiku-4.5"],
@@ -431,8 +430,8 @@ test("the no-header identity's answers never stand in for an identity pinned `de
   isolate();
   const opts = {
     catalogs: {
-      "none": ["claude-haiku-4.5"],
-      "default": ["claude-haiku-4.5"],
+      none: ["claude-haiku-4.5"],
+      default: ["claude-haiku-4.5"],
       "vscode-chat": ["claude-haiku-4.5"],
       "copilot-developer-cli": ["claude-haiku-4.5", "claude-sonnet-4.6"],
       "copilot-developer-sandbox": ["claude-haiku-4.5"],

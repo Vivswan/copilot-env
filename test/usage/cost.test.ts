@@ -8,7 +8,10 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { consola } from "consola";
 import { GITHUB_RATE_CARD_URL } from "../../src/copilot_api/config_registry.ts";
+import { CopilotEnvConfig } from "../../src/copilot_api/env_config.ts";
+import { USAGE_INDEX_DIR_NAME } from "../../src/copilot_api/paths.ts";
 import {
   type IndexStats,
   parseEveryCandidate,
@@ -36,10 +39,7 @@ import {
   parseWindowFlags,
   perDayRows,
 } from "../../src/usage/day_metrics.ts";
-import { consola } from "consola";
-import { CopilotEnvConfig } from "../../src/copilot_api/env_config.ts";
 import { openUsageIndex } from "../../src/usage/index.ts";
-import { USAGE_INDEX_DIR_NAME } from "../../src/copilot_api/paths.ts";
 import {
   estimateCost,
   loadPricing,
@@ -135,7 +135,7 @@ test("computeDayMetrics sums tokens per day and reconciles cost with the aggrega
   ]);
   const estimate = estimateCost(report, pricing);
   const days = computeDayMetrics(report, pricing, estimate).sort((a, b) =>
-    a.day.localeCompare(b.day)
+    a.day.localeCompare(b.day),
   );
 
   expect(days.map((d) => d.day)).toEqual(["2026-06-01", "2026-06-02", "2026-06-03"]);
@@ -153,15 +153,18 @@ test("computeDayMetrics keeps a model unpriced in the aggregate at $0 every day"
   // Day 1 alone uses cacheCreation, which the pricing omits, so the aggregate is unpriced.
   // Day 2 would be priceable in isolation and must still contribute $0, or the breakdown
   // stops reconciling with the excluded aggregate.
-  const report = makeReport({
-    "2026-06-01": {
-      "anthropic/claude-opus-4.8": usage({ input: 1_000_000, cacheCreation: 50, events: 1 }),
+  const report = makeReport(
+    {
+      "2026-06-01": {
+        "anthropic/claude-opus-4.8": usage({ input: 1_000_000, cacheCreation: 50, events: 1 }),
+      },
+      "2026-06-02": { "anthropic/claude-opus-4.8": usage({ input: 3_000_000, events: 1 }) },
     },
-    "2026-06-02": { "anthropic/claude-opus-4.8": usage({ input: 3_000_000, events: 1 }) },
-  }, {
-    // Undated usage of the same model: its synthetic row obeys the same rule.
-    "anthropic/claude-opus-4.8": usage({ input: 500_000, events: 1 }),
-  });
+    {
+      // Undated usage of the same model: its synthetic row obeys the same rule.
+      "anthropic/claude-opus-4.8": usage({ input: 500_000, events: 1 }),
+    },
+  );
   const pricing = new Map<string, PricingTier>([
     ["anthropic/claude-opus-4.8", { input: 1, output: 2 }], // no cacheCreation rate
   ]);
@@ -219,10 +222,11 @@ test("undated usage prints as its own row so the TOTAL's columns add up", () => 
   const estimate = estimateCost(report, pricing);
 
   // computeDayMetrics stays dated-only (per-day medians are per-DAY statistics).
-  expect(computeDayMetrics(report, pricing, estimate).map((d) => d.day).sort()).toEqual([
-    "2026-06-01",
-    "2026-06-02",
-  ]);
+  expect(
+    computeDayMetrics(report, pricing, estimate)
+      .map((d) => d.day)
+      .sort(),
+  ).toEqual(["2026-06-01", "2026-06-02"]);
 
   const rows = perDayRows(report, pricing, estimate);
   expect(rows.map((r) => r.kind)).toEqual(["dated", "dated", "undated"]);
@@ -244,16 +248,15 @@ test("undated usage prints as its own row so the TOTAL's columns add up", () => 
 
   const allUndated = makeReport({}, { "openai/gpt-5.5": usage({ input: 42, events: 1 }) });
   const undatedEstimate = estimateCost(allUndated, pricing);
-  expect(perDayRows(allUndated, pricing, undatedEstimate).map((r) => r.kind)).toEqual([
-    "undated",
-  ]);
+  expect(perDayRows(allUndated, pricing, undatedEstimate).map((r) => r.kind)).toEqual(["undated"]);
 
   const dated = makeReport({
     "2026-06-01": { "openai/gpt-5.5": usage({ input: 5, events: 1 }) },
   });
   expect(
-    perDayRows(dated, pricing, estimateCost(dated, pricing))
-      .map((r) => (r.kind === "dated" ? r.day : r.kind)),
+    perDayRows(dated, pricing, estimateCost(dated, pricing)).map((r) =>
+      r.kind === "dated" ? r.day : r.kind,
+    ),
   ).toEqual(["2026-06-01"]);
 
   // The JSON contract is deliberately different: usageByModel and totalUsd
@@ -386,8 +389,9 @@ test("daysCutoffMs: a calendar window starts at the local midnight N-1 days back
 // days are known instants in the NAMED zone, whatever zone the runner sits in.
 test("daysCutoffMs: a calendar window's midnight is a real local midnight across DST, month, and year rollovers", () => {
   const cal = (days: number, nowIso: string): string =>
-    new Date(daysCutoffMs({ kind: "calendar", days }, Date.parse(nowIso), "America/New_York"))
-      .toISOString();
+    new Date(
+      daysCutoffMs({ kind: "calendar", days }, Date.parse(nowIso), "America/New_York"),
+    ).toISOString();
   // Spring forward: Mar 8 is 23 hours long. Today's midnight is EST (05:00Z); the
   // day after starts in EDT (04:00Z), 23h later, not 24.
   expect(cal(1, "2026-03-08T17:00:00Z")).toBe("2026-03-08T05:00:00.000Z");
@@ -441,10 +445,12 @@ test("describeDaysWindow phrases each window kind for the report header", () => 
 const PRICE_URL = "https://pricing.example/models";
 
 const PRICED_BODY = {
-  data: [{
-    id: "anthropic/claude-opus-4.8",
-    pricing: { prompt: "0.000015", completion: "0.000075" },
-  }],
+  data: [
+    {
+      id: "anthropic/claude-opus-4.8",
+      pricing: { prompt: "0.000015", completion: "0.000075" },
+    },
+  ],
 };
 
 /** `fail` rejects with the TypeError shape the real transport throws. Serves `body` to every URL,
@@ -485,7 +491,10 @@ function routedFetch(
       : list(input, init)) as typeof fetch;
 }
 
-function recordingFetch(body: unknown, opts: { fail?: boolean } = {}): {
+function recordingFetch(
+  body: unknown,
+  opts: { fail?: boolean } = {},
+): {
   fetch: typeof fetch;
   urls: string[];
 } {
@@ -514,7 +523,11 @@ function snapshotIndex(home: string): IndexSnapshot {
  *  the index closes after both return, fold included, so such a request was made after the
  *  whole synchronous parse. Only the FIRST request looks at the index: the look itself (a
  *  read-only connection) leaves a WAL sidecar behind that a later look would read as open. */
-function afterParseFetch(home: string, parsedPath: string, body: unknown): {
+function afterParseFetch(
+  home: string,
+  parsedPath: string,
+  body: unknown,
+): {
   fetch: typeof fetch;
   sawAtRequests: () => IndexSnapshot[];
   requests: () => number;
@@ -576,7 +589,10 @@ function withoutRuntime(payload: CostJson): Omit<CostJson, "runtime"> {
 }
 
 /** Parses the WHOLE of stdout: a stray line there breaks every consumer, so it fails here. */
-async function jsonRun(args: CostArgs, deps: CostDeps): Promise<{
+async function jsonRun(
+  args: CostArgs,
+  deps: CostDeps,
+): Promise<{
   payload: CostJson;
   stderr: string;
 }> {
@@ -588,7 +604,7 @@ test("runCost with no sources returns early and never asks for the price list", 
   withCostHome(async () => {
     const net = recordingFetch(null, { fail: true });
     const out = await captureAllWrites(() =>
-      runCost({ pricingUrl: PRICE_URL }, { fetchImpl: net.fetch, ...NO_SOURCES })
+      runCost({ pricingUrl: PRICE_URL }, { fetchImpl: net.fetch, ...NO_SOURCES }),
     );
     expect(out).toContain("no copilot-api usage databases");
     expect(out).not.toContain("could not fetch OpenRouter pricing");
@@ -602,10 +618,13 @@ test("a cold run fetches the price list only after the synchronous parse, so the
     const transcript = join(claudeRoot, "-Users-x-proj", "aaa.jsonl");
     const net = afterParseFetch(home, transcript, PRICED_BODY);
     // No price cache exists yet, so this run has to go to the network: the list, then the card.
-    const { payload, stderr } = await jsonRun({ pricingUrl: PRICE_URL }, {
-      fetchImpl: net.fetch,
-      ...rootsOf([], [claudeRoot]),
-    });
+    const { payload, stderr } = await jsonRun(
+      { pricingUrl: PRICE_URL },
+      {
+        fetchImpl: net.fetch,
+        ...rootsOf([], [claudeRoot]),
+      },
+    );
     const afterParse = { open: false, paths: [transcript] };
     expect(net.sawAtRequests()).toEqual([afterParse]);
     expect(net.requests()).toBe(2);
@@ -619,15 +638,18 @@ test("runCost discovers roots before it opens the index, so a failing discovery 
     const net = recordingFetch(PRICED_BODY);
     await expect(
       captureAllWrites(() =>
-        runCost({ pricingUrl: PRICE_URL }, {
-          fetchImpl: net.fetch,
-          sessionRoots: {
-            codex: () => {
-              throw new Error("codex homes unreadable");
+        runCost(
+          { pricingUrl: PRICE_URL },
+          {
+            fetchImpl: net.fetch,
+            sessionRoots: {
+              codex: () => {
+                throw new Error("codex homes unreadable");
+              },
+              claude: () => [claudeRoot],
             },
-            claude: () => [claudeRoot],
           },
-        })
+        ),
       ),
     ).rejects.toThrow("codex homes unreadable");
     // Opening the index creates its directory, and no cache landed there either (the run never
@@ -637,10 +659,13 @@ test("runCost discovers roots before it opens the index, so a failing discovery 
     const indexDir = join(home, USAGE_INDEX_DIR_NAME);
     expect(existsSync(indexDir)).toBe(false);
     await captureAllWrites(() =>
-      runCost({ pricingUrl: PRICE_URL }, {
-        fetchImpl: fakeFetch(null, { fail: true }),
-        ...rootsOf([], [claudeRoot]),
-      })
+      runCost(
+        { pricingUrl: PRICE_URL },
+        {
+          fetchImpl: fakeFetch(null, { fail: true }),
+          ...rootsOf([], [claudeRoot]),
+        },
+      ),
     );
     expect(existsSync(indexDir)).toBe(true);
   }));
@@ -712,9 +737,16 @@ const PRICE_LIST_WARNINGS: {
   },
 ];
 
-for (
-  const { name, url, stored, seed, noIndex, fetchImpl, lines, totalUsd } of PRICE_LIST_WARNINGS
-) {
+for (const {
+  name,
+  url,
+  stored,
+  seed,
+  noIndex,
+  fetchImpl,
+  lines,
+  totalUsd,
+} of PRICE_LIST_WARNINGS) {
   test(`runCost warns when ${name}`, () =>
     withCostHome(async ({ home, claudeRoot }) => {
       if (stored) new CopilotEnvConfig().set({ "cost.pricing-url": url });
@@ -739,10 +771,13 @@ async function runtimeOf(
   args: { noIndex?: boolean },
   roots: { codex: string[]; claude: string[] },
 ): Promise<CostRuntime> {
-  const { payload } = await jsonRun({ pricingUrl: PRICE_URL, ...args }, {
-    fetchImpl: fakeFetch(PRICED_BODY),
-    ...rootsOf(roots.codex, roots.claude),
-  });
+  const { payload } = await jsonRun(
+    { pricingUrl: PRICE_URL, ...args },
+    {
+      fetchImpl: fakeFetch(PRICED_BODY),
+      ...rootsOf(roots.codex, roots.claude),
+    },
+  );
   return payload.runtime;
 }
 
@@ -754,7 +789,7 @@ test("a message's GitHub bill lands once in billedUsd and in one report line, ho
     "claude-fable-5-1",
     "msg_billed",
     claudeUsage(4, 262, 912_223, 6_399),
-    { "copilot_usage": { "token_details": [], "total_nano_aiu": 40_000_000_000 } },
+    { copilot_usage: { token_details: [], total_nano_aiu: 40_000_000_000 } },
   );
   writeTranscript(proj, "aaa.jsonl", [
     billed,
@@ -762,15 +797,17 @@ test("a message's GitHub bill lands once in billedUsd and in one report line, ho
   ]);
   writeTranscript(proj, "bbb.jsonl", [billed]);
   const fable = {
-    data: [{
-      id: "anthropic/claude-fable-5.1",
-      pricing: {
-        prompt: "0.00001",
-        completion: "0.00005",
-        "input_cache_read": "0.00000025",
-        "input_cache_write": "0.0000125",
+    data: [
+      {
+        id: "anthropic/claude-fable-5.1",
+        pricing: {
+          prompt: "0.00001",
+          completion: "0.00005",
+          input_cache_read: "0.00000025",
+          input_cache_write: "0.0000125",
+        },
       },
-    }],
+    ],
   };
   const deps = { fetchImpl: fakeFetch(fable), ...rootsOf([], [claudeRoot]) };
 
@@ -782,7 +819,7 @@ test("a message's GitHub bill lands once in billedUsd and in one report line, ho
   // The like-for-like line: GitHub's bill against OUR price for that one request (4 input, 262
   // output, 912,223 cache reads, 6,399 cache writes at fable's card = $0.32).
   const { stdout } = await captureChannels(() =>
-    runCost({ pricingUrl: PRICE_URL, noIndex: true }, deps)
+    runCost({ pricingUrl: PRICE_URL, noIndex: true }, deps),
   );
   expect(stdout).toContain(
     "GitHub billed $0.40 for the 1 request that carried a bill; our estimate for those same requests: $0.32",
@@ -791,10 +828,13 @@ test("a message's GitHub bill lands once in billedUsd and in one report line, ho
   // No price list at all (a URL with no cached copy, and the fetch fails): the bill still prints,
   // and the estimate is named unpriced, never $0.
   const tokensOnly = await captureChannels(() =>
-    runCost({ pricingUrl: "https://pricing.example/unreachable-models", noIndex: true }, {
-      fetchImpl: fakeFetch(null, { fail: true }),
-      ...rootsOf([], [claudeRoot]),
-    })
+    runCost(
+      { pricingUrl: "https://pricing.example/unreachable-models", noIndex: true },
+      {
+        fetchImpl: fakeFetch(null, { fail: true }),
+        ...rootsOf([], [claudeRoot]),
+      },
+    ),
   );
   expect(tokensOnly.stdout).toContain(
     "GitHub billed $0.40 for the 1 request that carried a bill; our estimate for those same requests: unpriced (claude-fable-5.1)",
@@ -811,10 +851,13 @@ test("runCost --json keeps stdout pure JSON while the index narrates a rebuild o
     });
     expect(stale).not.toBeNull();
     stale!.close();
-    const { payload, stderr } = await jsonRun({ pricingUrl: PRICE_URL }, {
-      fetchImpl: fakeFetch(PRICED_BODY),
-      ...rootsOf([], [claudeRoot]),
-    });
+    const { payload, stderr } = await jsonRun(
+      { pricingUrl: PRICE_URL },
+      {
+        fetchImpl: fakeFetch(PRICED_BODY),
+        ...rootsOf([], [claudeRoot]),
+      },
+    );
     expect(stderr).toContain("rebuilding the usage index (parser_fingerprint another-parser).");
     expect(payload.runtime.indexed).toBe(true);
     expect(payload.runtime.index.filesParsedWhole).toBe(1);
@@ -837,11 +880,14 @@ test("runtime.timing.pricing is the wait for the price list alone, never the war
     }) as typeof consola.warn;
     try {
       const runtime = async (fetchImpl: typeof fetch): Promise<CostRuntime> => {
-        const { payload } = await jsonRun({ pricingUrl: PRICE_URL, noIndex: true }, {
-          fetchImpl,
-          ...rootsOf([], [claudeRoot]),
-          now: () => nowMs,
-        });
+        const { payload } = await jsonRun(
+          { pricingUrl: PRICE_URL, noIndex: true },
+          {
+            fetchImpl,
+            ...rootsOf([], [claudeRoot]),
+            now: () => nowMs,
+          },
+        );
         return payload.runtime;
       };
       // Rejected load: the warning prints, the clock jumps, pricing stays at the wait. The rate
@@ -869,8 +915,7 @@ test("runCost reads GitHub's card from the stored URL, prices at it, names the c
     const cardUrl = "https://rates.example/models-and-pricing.yml";
     new CopilotEnvConfig().set({ "cost.github-pricing-url": cardUrl });
     // The published card plus a row this build has no id for.
-    const card =
-      `${RATE_CARD_TEXT}\n- model: GPT-7\n  provider: openai\n  input: $1.00\n  cached_input: $0.10\n  output: $2.00\n`;
+    const card = `${RATE_CARD_TEXT}\n- model: GPT-7\n  provider: openai\n  input: $1.00\n  cached_input: $0.10\n  output: $2.00\n`;
     const deps = (text: string, url = cardUrl): CostDeps => ({
       fetchImpl: routedFetch(PRICED_BODY, text, url),
       ...rootsOf([], [claudeRoot]),
@@ -890,12 +935,13 @@ test("runCost reads GitHub's card from the stored URL, prices at it, names the c
     // Inside the day the cache answers, so the garbled card is never read: the footer names the
     // day the card was fetched and the row it has no id for; --json says cached, same stamp.
     const { stdout } = await captureChannels(() =>
-      runCost({ pricingUrl: PRICE_URL, noIndex: true }, deps("not a card"))
+      runCost({ pricingUrl: PRICE_URL, noIndex: true }, deps("not a card")),
     );
     expect(stdout).toContain(
-      `Priced at GitHub's rate card (fetched ${
-        fetchedAt.slice(0, 10)
-      }), not OpenRouter's: claude-opus-4.8`,
+      `Priced at GitHub's rate card (fetched ${fetchedAt.slice(
+        0,
+        10,
+      )}), not OpenRouter's: claude-opus-4.8`,
     );
     expect(stdout).toContain(
       "GitHub's rate card also lists models with no id here (unmapped): GPT-7",
@@ -946,10 +992,13 @@ for (const vanished of ["codex", "claude"] as const) {
       const seeded = await runtimeOf({}, { codex: [codexRoot], claude: [claudeRoot] });
       expect(seeded.index.filesParsedWhole).toBe(4);
 
-      const after = await runtimeOf({}, {
-        codex: vanished === "codex" ? [] : [codexRoot],
-        claude: vanished === "claude" ? [] : [claudeRoot],
-      });
+      const after = await runtimeOf(
+        {},
+        {
+          codex: vanished === "codex" ? [] : [codexRoot],
+          claude: vanished === "claude" ? [] : [claudeRoot],
+        },
+      );
       expect(after.index.filesDeleted).toBe(2);
       expect(after.index.filesReused).toBe(2);
       expect(after.index.filesSeen).toBe(2);
@@ -966,11 +1015,17 @@ test("the combined view counts a request the proxy DB and a client log both reco
     // no client line at all (an agent whose logs are not on this machine) and keeps counting.
     appendFileSync(
       join(claudeRoot, "-Users-x-proj", "aaa.jsonl"),
-      `${
-        assistantLine("2026-06-01T10:00:02.000Z", "claude-opus-4-8", "msg_1", claudeUsage(10, 35))
-      }\n${
-        assistantLine("2026-06-01T10:01:30.000Z", "claude-opus-4-8", "msg_1", claudeUsage(10, 35))
-      }\n`,
+      `${assistantLine(
+        "2026-06-01T10:00:02.000Z",
+        "claude-opus-4-8",
+        "msg_1",
+        claudeUsage(10, 35),
+      )}\n${assistantLine(
+        "2026-06-01T10:01:30.000Z",
+        "claude-opus-4-8",
+        "msg_1",
+        claudeUsage(10, 35),
+      )}\n`,
     );
     const relayed: ProxyRow = {
       at: "2026-06-01T10:01:35.000Z",
@@ -1041,7 +1096,7 @@ test("runCost's human report ends with one index line only when the index was us
       "usage index: 1 files reused, 0 tail-parsed, 0 whole-parsed, 0 B read",
     );
     const plain = await captureAllWrites(() =>
-      runCost({ pricingUrl: PRICE_URL, noIndex: true }, deps)
+      runCost({ pricingUrl: PRICE_URL, noIndex: true }, deps),
     );
     expect(plain).not.toContain("usage index:");
   }));
@@ -1078,10 +1133,13 @@ test("ReconcileMeter bills a reader's synchronous fold, never a microtask queued
     nowMs += 11;
     return Promise.resolve("folded");
   };
-  const parseTimed = new ReconcileMeter((source, walked, parseWhole, parseTail) => {
-    nowMs += 7;
-    return parseEveryCandidate(source, walked, parseWhole, parseTail);
-  }, () => nowMs);
+  const parseTimed = new ReconcileMeter(
+    (source, walked, parseWhole, parseTail) => {
+      nowMs += 7;
+      return parseEveryCandidate(source, walked, parseWhole, parseTail);
+    },
+    () => nowMs,
+  );
   // Queued BEFORE the read: it runs when the meter first yields, and would land in
   // `fold` if the clock were read after the await instead of at the return.
   queueMicrotask(() => {

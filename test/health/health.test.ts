@@ -1,13 +1,12 @@
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { CommandLook } from "../../src/utils/command.ts";
 import { directHelperCommand } from "../../src/claude/config.ts";
 import { CopilotEnvConfig } from "../../src/copilot_api/env_config.ts";
-import { parseProfileName } from "../../src/copilot_api/profile.ts";
 import {
   markInference,
   resetInferenceActivityForTests,
 } from "../../src/copilot_api/inference_activity.ts";
+import { parseProfileName } from "../../src/copilot_api/profile.ts";
 import {
   buildHealthJson,
   exitCodeFor,
@@ -30,13 +29,12 @@ import {
   evaluateAll,
 } from "../../src/health/checks.ts";
 import { checkClaude, checkCodex } from "../../src/health/checks_agents.ts";
-import { codexLiveLaunch } from "../../src/health/live_launch.ts";
 import {
   type AuthFacts,
   type BootstrapFacts,
-  classifyPortState,
   type CodexFacts,
   type CodexHostFacts,
+  classifyPortState,
   type DaemonProbed,
   type DefaultRuntimeTarget,
   type HealthFacts,
@@ -44,6 +42,7 @@ import {
   type ProxyFacts,
   type WatchdogFacts,
 } from "../../src/health/facts.ts";
+import { codexLiveLaunch } from "../../src/health/live_launch.ts";
 import { gatherFacts } from "../../src/health/probe.ts";
 import { runLiveCli } from "../../src/health/probe_deps.ts";
 import {
@@ -53,8 +52,7 @@ import {
   type HealthScope,
   meta,
 } from "../../src/health/types.ts";
-import { probeOf, runIdentity, runOrphan, runPid, runPort } from "../helpers/health.ts";
-import { expect, removeDir, tempDir, test } from "../helpers/testing.ts";
+import type { CommandLook } from "../../src/utils/command.ts";
 import { envSnapshot, isolateProxyHome } from "../helpers/env.ts";
 import {
   type ClaudeSettingsOptions,
@@ -63,6 +61,8 @@ import {
   writeCodexConfigToml,
   writeRunState,
 } from "../helpers/fixtures.ts";
+import { probeOf, runIdentity, runOrphan, runPid, runPort } from "../helpers/health.ts";
+import { expect, removeDir, tempDir, test } from "../helpers/testing.ts";
 
 // --- fixtures ---------------------------------------------------------------
 
@@ -401,8 +401,7 @@ test("proxy sidecar: absent is fatal wherever the proxy may spawn; a found deno 
         version: null,
         standalone: false,
       }),
-    )
-      .status,
+    ).status,
   ).toBe("fail");
 
   const checkoutPath = checkProxySidecar(
@@ -544,12 +543,16 @@ test("gatherFacts probes the proxy at 127.0.0.1, never localhost (Windows IPv6 s
   try {
     writeRunState({ port: 4141 });
     let probed = "";
-    await gatherFacts("runtime", {}, {
-      reach: async (url: string) => {
-        probed = url;
-        return true;
+    await gatherFacts(
+      "runtime",
+      {},
+      {
+        reach: async (url: string) => {
+          probed = url;
+          return true;
+        },
       },
-    });
+    );
     expect(probed).toBe("http://127.0.0.1:4141/");
   } finally {
     restoreEnv();
@@ -658,9 +661,10 @@ test("runtime port + pid verdicts over the probe states of a default target", ()
     if (row.port) assertVerdict(`${row.name} port`, runPort(row.target), row.port);
     if (row.pid) assertVerdict(`${row.name} pid`, runPid(row.target), row.pid);
     if (row.exitCode !== undefined) {
-      expect<number>(exitCodeFor(evaluateAll("runtime", { runtimes: [row.target] })), row.name).toBe(
-        row.exitCode,
-      );
+      expect<number>(
+        exitCodeFor(evaluateAll("runtime", { runtimes: [row.target] })),
+        row.name,
+      ).toBe(row.exitCode);
     }
     if (row.fullExitCode !== undefined) {
       expect<number>(exitCodeFor(evaluateAll("full", { runtimes: [row.target] })), row.name).toBe(
@@ -736,36 +740,46 @@ test("classifyPortState matches the pre-union ownership decision tree over every
   }
   // A few named anchors, so a broken oracle cannot silently agree with a broken
   // classifier on the states the checks actually branch on.
-  expect(classifyPortState({
-    proxyExpected: true,
-    reachable: true,
-    pidTracked: true,
-    identityConfirmed: true,
-  })).toEqual({ kind: "tracked" });
-  expect(classifyPortState({
-    proxyExpected: true,
-    reachable: true,
-    pidTracked: true,
-    identityConfirmed: false,
-  })).toEqual({ kind: "foreign" });
-  expect(classifyPortState({
-    proxyExpected: true,
-    reachable: true,
-    pidTracked: false,
-    identityConfirmed: null,
-  })).toEqual({ kind: "orphan", identity: "unconfirmed" });
-  expect(classifyPortState({
-    proxyExpected: false,
-    reachable: true,
-    pidTracked: false,
-    identityConfirmed: null,
-  })).toEqual({ kind: "unrouted" });
-  expect(classifyPortState({
-    proxyExpected: true,
-    reachable: false,
-    pidTracked: false,
-    identityConfirmed: null,
-  })).toEqual({ kind: "down" });
+  expect(
+    classifyPortState({
+      proxyExpected: true,
+      reachable: true,
+      pidTracked: true,
+      identityConfirmed: true,
+    }),
+  ).toEqual({ kind: "tracked" });
+  expect(
+    classifyPortState({
+      proxyExpected: true,
+      reachable: true,
+      pidTracked: true,
+      identityConfirmed: false,
+    }),
+  ).toEqual({ kind: "foreign" });
+  expect(
+    classifyPortState({
+      proxyExpected: true,
+      reachable: true,
+      pidTracked: false,
+      identityConfirmed: null,
+    }),
+  ).toEqual({ kind: "orphan", identity: "unconfirmed" });
+  expect(
+    classifyPortState({
+      proxyExpected: false,
+      reachable: true,
+      pidTracked: false,
+      identityConfirmed: null,
+    }),
+  ).toEqual({ kind: "unrouted" });
+  expect(
+    classifyPortState({
+      proxyExpected: true,
+      reachable: false,
+      pidTracked: false,
+      identityConfirmed: null,
+    }),
+  ).toEqual({ kind: "down" });
 });
 
 test("runtime watchdog: off, disabled, and active states are all ok with informative detail", () => {
@@ -888,9 +902,9 @@ test("runtime identity: confirmed ok, foreign warns, down/not-probed stays ok", 
   expect(foreign.fix).toContain("free the port");
 
   // runtime.port owns the down verdict.
-  expect(
-    runIdentity(defaultTarget({ reachable: false, identityConfirmed: null })).status,
-  ).toBe("ok");
+  expect(runIdentity(defaultTarget({ reachable: false, identityConfirmed: null })).status).toBe(
+    "ok",
+  );
   expect(runIdentity(defaultTarget({ identityConfirmed: null })).status).toBe("ok");
   expect(runIdentity(defaultTarget()).scopes).toEqual(["full", "proxy"]);
 });
@@ -904,9 +918,9 @@ test("runtime orphan: untracked-but-ours warns, foreign defers to identity, trac
   expect(orphan.fix).toContain("agent stop");
 
   // A foreign listener is runtime.identity's verdict, so orphan must not also warn.
-  expect(
-    runOrphan(defaultTarget({ pidTracked: false, identityConfirmed: false })).status,
-  ).toBe("ok");
+  expect(runOrphan(defaultTarget({ pidTracked: false, identityConfirmed: false })).status).toBe(
+    "ok",
+  );
 
   // A foreign responder while the tracked pid is alive: orphan stays ok and must not claim the
   // tracked daemon owns the port; the misrouting warning is runtime.identity's.
@@ -917,9 +931,7 @@ test("runtime orphan: untracked-but-ours warns, foreign defers to identity, trac
 
   expect(runOrphan(defaultTarget()).status).toBe("ok");
 
-  expect(
-    runOrphan(defaultTarget({ pidTracked: false, proxyExpected: false })).status,
-  ).toBe("ok");
+  expect(runOrphan(defaultTarget({ pidTracked: false, proxyExpected: false })).status).toBe("ok");
 });
 
 test("gatherFacts probes identity only in an identity-probing scope and only when an agent routes through the proxy", async () => {
@@ -1007,14 +1019,18 @@ test("gatherFacts probes identity only in an identity-probing scope and only whe
       if (row.claude) writeClaudeSettings(claudeHome, row.claude);
       const homes = { codexHome: () => codexHome, claudeHome: () => claudeHome };
       let identityCalls = 0;
-      const facts = await gatherFacts(row.scope, {}, {
-        ...homes,
-        reach: async () => true, // a listener answers on the port
-        proxyIdentity: async () => {
-          identityCalls++;
-          return row.proxyAnswers; // false: no x-trace-id, a foreign service
+      const facts = await gatherFacts(
+        row.scope,
+        {},
+        {
+          ...homes,
+          reach: async () => true, // a listener answers on the port
+          proxyIdentity: async () => {
+            identityCalls++;
+            return row.proxyAnswers; // false: no x-trace-id, a foreign service
+          },
         },
-      });
+      );
       const target = facts.runtimes?.[0];
       if (!target) throw new Error(`${row.name}: expected the default runtime target`);
       expect(identityCalls, row.name).toBe(row.identityCalls);
@@ -1101,18 +1117,22 @@ test("health's own proxy probes do not move the watchdog activity signal", async
     resetInferenceActivityForTests();
     markInference(100_000); // the persisted mark of an old real request
     let probes = 0;
-    const facts = await gatherFacts("proxy", {}, {
-      reach: async () => {
-        probes++;
-        return true;
+    const facts = await gatherFacts(
+      "proxy",
+      {},
+      {
+        reach: async () => {
+          probes++;
+          return true;
+        },
+        proxyIdentity: async () => {
+          probes++;
+          return true;
+        },
+        classifyTrackedPid: async () => "yes",
+        now: () => 5_000_000,
       },
-      proxyIdentity: async () => {
-        probes++;
-        return true;
-      },
-      classifyTrackedPid: async () => "yes",
-      now: () => 5_000_000,
-    });
+    );
     expect(probes).toBeGreaterThan(0);
     expect(facts.runtimes?.[0]?.watchdog).toEqual({
       autoStart: true,
@@ -1221,8 +1241,7 @@ test("optional CLI + tools: missing warns (not fail), present ok, a FAILED look 
   expect(
     checkCli({ command: "claude", name: "Claude", look: { kind: "found", path: "/bin/claude" } })
       .status,
-  )
-    .toBe("ok");
+  ).toBe("ok");
   const missing = checkCli({ command: "codex", name: "Codex", look: { kind: "absent" } });
   expect(missing.status).toBe("warn");
   expect(missing.detail).toBe("not installed (optional)");
@@ -1238,12 +1257,13 @@ test("optional CLI + tools: missing warns (not fail), present ok, a FAILED look 
   expect(unproven.value).toEqual({ command: "codex", resolved: null, lookFailed: true });
 
   // The tools share the CLI census's look row under their own registered ids.
-  expect(checkLook(meta("setup.tool.node"), { kind: "found", path: "/usr/bin/node" }))
-    .toMatchObject({
-      id: "setup.tool.node",
-      label: "node",
-      status: "ok",
-    });
+  expect(
+    checkLook(meta("setup.tool.node"), { kind: "found", path: "/usr/bin/node" }),
+  ).toMatchObject({
+    id: "setup.tool.node",
+    label: "node",
+    status: "ok",
+  });
   expect(checkLook(meta("setup.tool.npm"), { kind: "absent" })).toMatchObject({
     status: "warn",
     detail: "not installed (optional)",
@@ -1326,11 +1346,13 @@ test("checkAuth: gh-cli with an UNPROVEN gh probe warns could-not-check, never `
     pinnedIntegrationId: null,
   });
   expect(unproven.status).toBe("warn");
-  expect(unproven.detail).toBe([
-    "provider 'gh-cli' is selected but its credential could not be checked",
-    "could not check gh authentication " +
-    "(`gh auth token` did not run to completion; AUTO - follows gh's active account)",
-  ].join("\n"));
+  expect(unproven.detail).toBe(
+    [
+      "provider 'gh-cli' is selected but its credential could not be checked",
+      "could not check gh authentication " +
+        "(`gh auth token` did not run to completion; AUTO - follows gh's active account)",
+    ].join("\n"),
+  );
   expect(unproven.fix).toBe("agent auth");
   expect(unproven.value).toMatchObject({ ghAuthUnproven: true });
   // An unproven PINNED look names the gh call that timed out and keeps what the completed call
@@ -1361,11 +1383,13 @@ test("checkAuth: gh-cli with an UNPROVEN gh probe warns could-not-check, never `
     profiles: {},
     pinnedIntegrationId: null,
   });
-  expect(proven.detail).toBe([
-    "provider 'gh-cli' is selected but no credential resolves",
-    "`gh` is unauthenticated (AUTO - follows gh's active account) - run `gh auth login`, " +
-    "or `agent auth` to switch provider",
-  ].join("\n"));
+  expect(proven.detail).toBe(
+    [
+      "provider 'gh-cli' is selected but no credential resolves",
+      "`gh` is unauthenticated (AUTO - follows gh's active account) - run `gh auth login`, " +
+        "or `agent auth` to switch provider",
+    ].join("\n"),
+  );
   // A failing AUTO slot names the account it follows: the failure is about octocat's credential.
   const provenNamed = checkAuth({
     storedToken: false,
@@ -1389,11 +1413,13 @@ test("checkAuth: gh-cli with an UNPROVEN gh probe warns could-not-check, never `
     profiles: {},
     pinnedIntegrationId: null,
   });
-  expect(pinned.detail).toBe([
-    "provider 'gh-cli' is selected but no credential resolves",
-    "`gh` is not authenticated as account 'work-bot' - run `gh auth login` for that account, " +
-    "or `agent auth` to switch",
-  ].join("\n"));
+  expect(pinned.detail).toBe(
+    [
+      "provider 'gh-cli' is selected but no credential resolves",
+      "`gh` is not authenticated as account 'work-bot' - run `gh auth login` for that account, " +
+        "or `agent auth` to switch",
+    ].join("\n"),
+  );
   const pinnedOk = checkAuth({
     storedToken: false,
     ghAuthenticated: true,

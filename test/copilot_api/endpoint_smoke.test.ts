@@ -28,7 +28,7 @@ function fetchStub(responses: (Response | Error)[]): { calls: string[]; impl: ty
 }
 
 const catalog = () =>
-  new Response(JSON.stringify({ data: [{ "id": "claude-fable-5" }] }), { status: 200 });
+  new Response(JSON.stringify({ data: [{ id: "claude-fable-5" }] }), { status: 200 });
 
 test("directSmoke: only a 200 ping is Direct; every other arm reports its own reason", async () => {
   const cases: {
@@ -80,7 +80,7 @@ test("directSmoke: only a 200 ping is Direct; every other arm reports its own re
     },
     {
       name: "no model on the wire",
-      responses: [new Response(JSON.stringify({ data: [{ "id": "gpt-6" }] }), { status: 200 })],
+      responses: [new Response(JSON.stringify({ data: [{ id: "gpt-6" }] }), { status: 200 })],
       pings: 0,
       ok: false,
       detail: /no model on the messages wire/,

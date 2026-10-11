@@ -39,8 +39,8 @@ function fold(path: string): string {
  *  bookkeeping, which the import's confirmation lists only when it overwrites. */
 export function underInternalRoot(path: string): boolean {
   const target = fold(path);
-  return INTERNAL_ROOTS.map((root) => fold(root())).some((root) =>
-    target === root || target.startsWith(root + sep)
+  return INTERNAL_ROOTS.map((root) => fold(root())).some(
+    (root) => target === root || target.startsWith(root + sep),
   );
 }
 

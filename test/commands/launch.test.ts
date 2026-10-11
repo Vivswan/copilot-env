@@ -14,22 +14,22 @@ import {
 } from "../../src/commands/launch.ts";
 import { CopilotEnvConfig } from "../../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../../src/copilot_api/env_state.ts";
-import { CopilotApiPaths } from "../../src/copilot_api/paths.ts";
 import {
   resetIntegrationIdentityCache,
   setIntegrationProbeFetch,
 } from "../../src/copilot_api/integration_identity.ts";
 import { renderModelAliases } from "../../src/copilot_api/launch.ts";
+import { CopilotApiPaths } from "../../src/copilot_api/paths.ts";
 import { parseProfileName } from "../../src/copilot_api/profile.ts";
 import type { FileChange } from "../../src/utils/dry_run.ts";
 import { getSanitizedHostname } from "../../src/utils/hostname.ts";
+import { sidecarTest, spawnDenoChild } from "../helpers/deno_sidecar.ts";
+import { dryRunChanges } from "../helpers/dry_run.ts";
+import { type AgentHomes, agentHomeEnv, envSnapshot, isolateAgentHomes } from "../helpers/env.ts";
+import { writeClaudeSettings, writeCodexConfigToml, writeRunState } from "../helpers/fixtures.ts";
 import { captureChannels } from "../helpers/output.ts";
 import { runCli } from "../helpers/run.ts";
-import { sidecarTest, spawnDenoChild } from "../helpers/deno_sidecar.ts";
 import { afterEach, expect, tempDir, test } from "../helpers/testing.ts";
-import { writeClaudeSettings, writeCodexConfigToml, writeRunState } from "../helpers/fixtures.ts";
-import { agentHomeEnv, type AgentHomes, envSnapshot, isolateAgentHomes } from "../helpers/env.ts";
-import { dryRunChanges } from "../helpers/dry_run.ts";
 
 const WORK = parseProfileName("work");
 const skipWin = test.skipIf(process.platform === "win32");
@@ -81,7 +81,9 @@ test("renderModelAliases wraps a long alias list inside its own column at width 
   // Wrapping drops no alias and moves none to another target's row.
   const text = rows.join(" ").replace(/\s+/g, " ");
   for (const target of Object.values(targets)) {
-    const sources = Object.keys(mappings).filter((s) => mappings[s] === target).sort();
+    const sources = Object.keys(mappings)
+      .filter((s) => mappings[s] === target)
+      .sort();
     expect(text).toContain(`${target} <- ${sources.join(", ")}`);
   }
   expect(renderModelAliases(mappings, null, false).split("\n")).toHaveLength(3);
@@ -170,7 +172,7 @@ function seedDirectProfile(): void {
     mode: "direct",
   });
   setIntegrationProbeFetch(() =>
-    Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 }))
+    Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 })),
   );
 }
 
@@ -181,20 +183,22 @@ function seedDirectProfile(): void {
 // home the sync resolved.
 test("--profile: a partial slot hard-fails naming its gap; a Direct slot syncs both agents and launches without the proxy", async () => {
   const homes = scratchState();
-  await expect(prepareLaunch({ kind: "codex", profile: WORK, relaxed: false, args: [] })).rejects
-    .toThrow(
-      "profile 'work' does not exist - create it with `agent profile work add --direct|--proxy`",
-    );
+  await expect(
+    prepareLaunch({ kind: "codex", profile: WORK, relaxed: false, args: [] }),
+  ).rejects.toThrow(
+    "profile 'work' does not exist - create it with `agent profile work add --direct|--proxy`",
+  );
   const state = new CopilotEnvState();
   state.commitProfile(WORK, {
     credential: { kind: "stored", provider: "gh-token", token: "tok" },
     mode: "proxy",
   });
   state.clearCredential(WORK);
-  await expect(prepareLaunch({ kind: "claude", profile: WORK, relaxed: false, args: [] })).rejects
-    .toThrow(
-      "profile 'work' has no credential - repair it with `agent profile work auth` or `agent profile work add`",
-    );
+  await expect(
+    prepareLaunch({ kind: "claude", profile: WORK, relaxed: false, args: [] }),
+  ).rejects.toThrow(
+    "profile 'work' has no credential - repair it with `agent profile work auth` or `agent profile work add`",
+  );
   seedDirectProfile();
   const settings = settingsPathFor(homes.claudeHome, WORK);
   const codexConfig = codexConfigPath(homes.codexHome);
@@ -232,8 +236,10 @@ test("--profile: a partial slot hard-fails naming its gap; a Direct slot syncs b
     const baseUrlOf = (path: string, key: string): unknown =>
       changes.find((c) => c.path === path)?.attributes.find((attr) => attr.key === key)?.next;
     expect(baseUrlOf(settings, "env.ANTHROPIC_BASE_URL"), row.action.kind).toBe(DIRECT_BASE);
-    expect(baseUrlOf(codexConfig, "model_providers.copilot-env-work.base_url"), row.action.kind)
-      .toBe(DIRECT_BASE);
+    expect(
+      baseUrlOf(codexConfig, "model_providers.copilot-env-work.base_url"),
+      row.action.kind,
+    ).toBe(DIRECT_BASE);
   }
 });
 
@@ -248,7 +254,7 @@ test("codex --profile: a failed wiring refresh warns and launches with the exist
   let plan: LaunchPlan | null = null;
   const { stderr } = await captureChannels(async () => {
     ({ result: plan } = await dryRunChanges(() =>
-      prepareLaunch({ kind: "codex", profile: WORK, relaxed: false, args: [] })
+      prepareLaunch({ kind: "codex", profile: WORK, relaxed: false, args: [] }),
     ));
   });
   expect(stderr).toContain(
@@ -267,7 +273,7 @@ function seedDefault(mode: "direct" | "proxy"): void {
   state.setCredential(null, { kind: "stored", provider: "gh-token", token: "tok" });
   state.recordDefaultMode(mode);
   setIntegrationProbeFetch(() =>
-    Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 }))
+    Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 })),
   );
 }
 
@@ -284,7 +290,7 @@ test("codex default proxy: the daemon is ensured before the wiring, which bakes 
   // A port left by a daemon that is gone: the start does not honor it for the default profile.
   writeRunState({ port: 9999 });
   const { changes, result } = await dryRunChanges(() =>
-    prepareLaunch({ kind: "codex", profile: null, relaxed: false, args: [] })
+    prepareLaunch({ kind: "codex", profile: null, relaxed: false, args: [] }),
   );
   expect(result).toEqual({
     command: "codex",
@@ -317,19 +323,20 @@ test("codex default direct: the catalog refresh runs to completion inside the pr
   // Top level, ahead of the provider table the fixture ends with.
   writeFileSync(
     config,
-    `model_catalog_json = ${JSON.stringify(paths.codexModelCatalogFile)}\n${
-      readFileSync(config, "utf8")
-    }`,
+    `model_catalog_json = ${JSON.stringify(paths.codexModelCatalogFile)}\n${readFileSync(
+      config,
+      "utf8",
+    )}`,
   );
   const rowsOf = async (kind: "codex" | "claude"): Promise<[unknown, unknown]> => {
     const { changes } = await dryRunChanges(() =>
-      prepareLaunch({ kind, profile: null, relaxed: false, args: [] })
+      prepareLaunch({ kind, profile: null, relaxed: false, args: [] }),
     );
     return [
       plannedValue(changes, paths.stateStoreFile, "global.codexCatalogLastAttemptMs"),
-      changes.find((c) => c.path === config)?.attributes.find((row) =>
-        row.key === "model_catalog_json"
-      )?.status,
+      changes
+        .find((c) => c.path === config)
+        ?.attributes.find((row) => row.key === "model_catalog_json")?.status,
     ];
   };
   const [attempt, reference] = await rowsOf("codex");
@@ -460,12 +467,9 @@ test.skipIf(process.platform !== "win32")(
     writeFileSync(join(bin, "claude.cmd"), "@echo off\r\nexit 99\r\n");
     writeFileSync(
       join(bin, "claude.ps1"),
-      [
-        "$i = 0",
-        'foreach ($a in $args) { $i++; Write-Output "ARG$i=[$a]" }',
-        "exit 0",
-        "",
-      ].join("\n"),
+      ["$i = 0", 'foreach ($a in $args) { $i++; Write-Output "ARG$i=[$a]" }', "exit 0", ""].join(
+        "\n",
+      ),
     );
     recordDefault(root, "direct");
     writeClaudeSettings(join(root, ".claude"), {
@@ -541,74 +545,78 @@ skipWin("e2e: a proxy-wired Claude launch aborts (exit 1) when the start offer i
 // POSIX e2e also needs the sidecar deno.
 const sidecarPosix = process.platform === "win32" ? skipWin : sidecarTest;
 
-sidecarPosix("e2e: with the proxy up, the wire re-syncs Claude and only success records", async () => {
-  const root = e2eRoot();
-  const bin = fakeCliBin(root, "claude");
-  // With no daemon lock (this decoy holds none), proxyStatus falls back to pid classification: the
-  // tracked pid must be a deno process running a copilot-api-named entry with the `start`
-  // subcommand, and the recorded loopback port must really listen. proxy_token.test.ts stages
-  // the same.
-  const decoy = join(root, "copilot-api-decoy.mjs");
-  writeFileSync(decoy, "setTimeout(() => {}, 30_000);\n");
-  const daemon = spawnDenoChild({ args: [decoy, "start"], stdout: "ignore", stderr: "ignore" });
-  const { server, port } = await new Promise<{ server: Server; port: number }>(
-    (resolve, reject) => {
-      const srv = createServer();
-      srv.once("error", reject);
-      srv.listen(0, "127.0.0.1", () => {
-        const address = srv.address();
-        if (address === null || typeof address === "string") {
-          reject(new Error("expected an AddressInfo"));
-          return;
-        }
-        resolve({ server: srv, port: address.port });
-      });
-    },
-  );
-  const previousHome = process.env.COPILOT_API_HOME;
-  try {
-    process.env.COPILOT_API_HOME = join(root, "api-home"); // writeRunState resolves from env
-    writeRunState({ pid: daemon.pid, port });
-    // Codex already wired to the live proxy: once the auto-wire re-syncs Claude,
-    // the pair agrees, so the launch must record the default mode as proxy.
-    writeCodexConfigToml(join(root, ".codex"), {
-      baseUrl: `http://127.0.0.1:${port}/v1`,
-      envKey: "OPENAI_API_KEY",
-    });
-
-    // Success-only: a FAILED wire records nothing. The launcher reads the default slot's recorded
-    // mode (none yet: the wire IS attempted), never settings.json.
-    //   plain file where the Claude home should be -> the settings write (mkdir over a file) fails
-    //                                                  for any uid
-    writeFileSync(join(root, ".claude"), "");
-    const failed = runCli(["profile", "launch", "claude", "--"], { env: launchEnv(root, bin) });
-    expect(failed.exitCode).not.toBe(0);
-    expect(failed.stdout).not.toContain("ARGS="); // claude was never launched
-    expect(recordedMode(root)).toBeUndefined(); // nothing landed: no record
-
-    rmSync(join(root, ".claude"), { force: true });
-    writeClaudeSettings(join(root, ".claude"), {
-      apiKeyHelper: proxyHelperCommand(),
-      baseUrl: "http://127.0.0.1:1", // stale port; the launch must re-sync it
-    });
-    const res = runCli(["profile", "launch", "claude", "--"], { env: launchEnv(root, bin) });
-    expect(res.stderr).not.toContain("Start it now?"); // up: nothing to offer
-    expect(res.stdout).toContain(`BASE=http://127.0.0.1:${port}`);
-    const settings = readFileSync(join(root, ".claude", "settings.json"), "utf8");
-    expect(settings).toContain(`http://127.0.0.1:${port}`);
-    expect(res.exitCode).toBe(0);
-    expect(recordedMode(root)).toBe("proxy");
-  } finally {
-    process.env.COPILOT_API_HOME = previousHome;
-    await new Promise<void>((resolve) => server.close(() => resolve()));
+sidecarPosix(
+  "e2e: with the proxy up, the wire re-syncs Claude and only success records",
+  async () => {
+    const root = e2eRoot();
+    const bin = fakeCliBin(root, "claude");
+    // With no daemon lock (this decoy holds none), proxyStatus falls back to pid classification: the
+    // tracked pid must be a deno process running a copilot-api-named entry with the `start`
+    // subcommand, and the recorded loopback port must really listen. proxy_token.test.ts stages
+    // the same.
+    const decoy = join(root, "copilot-api-decoy.mjs");
+    writeFileSync(decoy, "setTimeout(() => {}, 30_000);\n");
+    const daemon = spawnDenoChild({ args: [decoy, "start"], stdout: "ignore", stderr: "ignore" });
+    const { server, port } = await new Promise<{ server: Server; port: number }>(
+      (resolve, reject) => {
+        const srv = createServer();
+        srv.once("error", reject);
+        srv.listen(0, "127.0.0.1", () => {
+          const address = srv.address();
+          if (address === null || typeof address === "string") {
+            reject(new Error("expected an AddressInfo"));
+            return;
+          }
+          resolve({ server: srv, port: address.port });
+        });
+      },
+    );
+    const previousHome = process.env.COPILOT_API_HOME;
     try {
-      daemon.kill("SIGKILL");
-    } catch {
-      // already gone
+      process.env.COPILOT_API_HOME = join(root, "api-home"); // writeRunState resolves from env
+      writeRunState({ pid: daemon.pid, port });
+      // Codex already wired to the live proxy: once the auto-wire re-syncs Claude,
+      // the pair agrees, so the launch must record the default mode as proxy.
+      writeCodexConfigToml(join(root, ".codex"), {
+        baseUrl: `http://127.0.0.1:${port}/v1`,
+        envKey: "OPENAI_API_KEY",
+      });
+
+      // Success-only: a FAILED wire records nothing. The launcher reads the default slot's recorded
+      // mode (none yet: the wire IS attempted), never settings.json.
+      //   plain file where the Claude home should be -> the settings write (mkdir over a file) fails
+      //                                                  for any uid
+      writeFileSync(join(root, ".claude"), "");
+      const failed = runCli(["profile", "launch", "claude", "--"], { env: launchEnv(root, bin) });
+      expect(failed.exitCode).not.toBe(0);
+      expect(failed.stdout).not.toContain("ARGS="); // claude was never launched
+      expect(recordedMode(root)).toBeUndefined(); // nothing landed: no record
+
+      rmSync(join(root, ".claude"), { force: true });
+      writeClaudeSettings(join(root, ".claude"), {
+        apiKeyHelper: proxyHelperCommand(),
+        baseUrl: "http://127.0.0.1:1", // stale port; the launch must re-sync it
+      });
+      const res = runCli(["profile", "launch", "claude", "--"], { env: launchEnv(root, bin) });
+      expect(res.stderr).not.toContain("Start it now?"); // up: nothing to offer
+      expect(res.stdout).toContain(`BASE=http://127.0.0.1:${port}`);
+      const settings = readFileSync(join(root, ".claude", "settings.json"), "utf8");
+      expect(settings).toContain(`http://127.0.0.1:${port}`);
+      expect(res.exitCode).toBe(0);
+      expect(recordedMode(root)).toBe("proxy");
+    } finally {
+      process.env.COPILOT_API_HOME = previousHome;
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      try {
+        daemon.kill("SIGKILL");
+      } catch {
+        // already gone
+      }
+      await daemon.exited;
     }
-    await daemon.exited;
-  }
-}, 60_000);
+  },
+  60_000,
+);
 
 /** codex-host on with the farm's config in place (a direct one, so the launch probes no proxy);
  *  the preference store lives under root/api-home, where the launched CLI reads. */

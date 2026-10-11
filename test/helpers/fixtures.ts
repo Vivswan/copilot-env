@@ -63,8 +63,8 @@ export interface ClaudeSettingsOptions {
 }
 
 export function claudeSettingsJson(opts: ClaudeSettingsOptions): string {
-  const doc: Record<string, unknown> = { "apiKeyHelper": opts.apiKeyHelper };
-  if (opts.baseUrl !== undefined) doc.env = { "ANTHROPIC_BASE_URL": opts.baseUrl };
+  const doc: Record<string, unknown> = { apiKeyHelper: opts.apiKeyHelper };
+  if (opts.baseUrl !== undefined) doc.env = { ANTHROPIC_BASE_URL: opts.baseUrl };
   Object.assign(doc, opts.extra);
   return opts.pretty ? `${JSON.stringify(doc, null, 2)}\n` : JSON.stringify(doc);
 }

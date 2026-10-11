@@ -7,8 +7,8 @@ import {
   FALLBACK_CODEX_UA_VERSION,
   resetCodexVersionMemo,
 } from "../../src/codex/user_agent.ts";
-import { afterEach, expect, test } from "../helpers/testing.ts";
 import { envSnapshot, isolateAgentHomes } from "../helpers/env.ts";
+import { afterEach, expect, test } from "../helpers/testing.ts";
 
 const restoreEnv = envSnapshot(["PATH", CI_NO_LIVE_LOOKUPS_ENV]);
 let dir = "";

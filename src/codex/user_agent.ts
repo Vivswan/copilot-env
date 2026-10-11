@@ -1,10 +1,10 @@
 // The Direct User-Agent both agents send (`codex_exec/<version>`), and the version chain behind it.
 // A leaf: config.ts and catalog.ts both need the header, so it lives below both of them.
 import { spawnSync } from "node:child_process";
-import { CODEX_EXEC_USER_AGENT } from "../copilot_api/integration_identity.ts";
-import { cliSpawn } from "../utils/command.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { CODEX_EXEC_USER_AGENT } from "../copilot_api/integration_identity.ts";
+import { cliSpawn } from "../utils/command.ts";
 import { removeScratchDir, scratchDir } from "../utils/fs_facade.ts";
 
 // Local-only runs (no network) that may still cold-start the CLI.
@@ -42,9 +42,10 @@ export function installedCodexVersion(): string | null {
     windowsHide: true,
     shell: s.shell,
   });
-  cachedCodexVersion = result.error || result.status !== 0
-    ? null
-    : parseCodexVersion(`${result.stdout ?? ""}\n${result.stderr ?? ""}`);
+  cachedCodexVersion =
+    result.error || result.status !== 0
+      ? null
+      : parseCodexVersion(`${result.stdout ?? ""}\n${result.stderr ?? ""}`);
   return cachedCodexVersion;
 }
 
@@ -75,9 +76,8 @@ function latestNpmCodexVersion(): string | null {
         npm_config_update_notifier: "false",
       },
     });
-    cachedNpmCodexVersion = result.error || result.status !== 0
-      ? null
-      : parseCodexVersion(result.stdout ?? "");
+    cachedNpmCodexVersion =
+      result.error || result.status !== 0 ? null : parseCodexVersion(result.stdout ?? "");
   } finally {
     removeScratchDir(cache);
   }

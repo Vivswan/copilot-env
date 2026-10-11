@@ -1,6 +1,6 @@
 import { consola } from "consola";
 import { type CliSetup, installAgentClis } from "../agents/cli_install.ts";
-import { configSetCommand, CopilotEnvConfig } from "../copilot_api/env_config.ts";
+import { CopilotEnvConfig, configSetCommand } from "../copilot_api/env_config.ts";
 import { runShellIntegration } from "../shell/integration.ts";
 import { assertNonNegativeDays } from "../utils/time.ts";
 import { runDryRun } from "./dry_run.ts";
@@ -75,8 +75,9 @@ function applyShell(action: ShellAction): void {
   consola.info(
     new CopilotEnvConfig().launchersEnabled()
       ? "Launchers: enabled (the shell.launchers config key) - cl / co / cx (+ clx / cox / cxx) load via `agent profile env`."
-      : `Launchers: disabled (the shell.launchers config key) - \`${
-        configSetCommand("shell.launchers", "true")
-      }\` defines cl / co / cx.`,
+      : `Launchers: disabled (the shell.launchers config key) - \`${configSetCommand(
+          "shell.launchers",
+          "true",
+        )}\` defines cl / co / cx.`,
   );
 }

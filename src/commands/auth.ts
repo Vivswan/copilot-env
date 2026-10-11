@@ -8,16 +8,16 @@ import {
   accountSourceLabel,
   Credential,
   type GhAccountsLook,
+  type GhTokenLook,
   ghAccountsLook,
   ghAuthTokenLook,
-  type GhTokenLook,
 } from "../copilot_api/credential.ts";
 import { stopTrackedProxy } from "../copilot_api/daemon.ts";
-import { configSetCommand, CopilotEnvConfig } from "../copilot_api/env_config.ts";
+import { CopilotEnvConfig, configSetCommand } from "../copilot_api/env_config.ts";
 import {
-  assertProfileSlot,
   AUTH_PROVIDERS,
   type AuthProvider,
+  assertProfileSlot,
   CopilotEnvState,
   type ProvisionedCredential,
 } from "../copilot_api/env_state.ts";
@@ -31,8 +31,8 @@ import {
   ghTokensInEnv,
 } from "../copilot_api/gh_cli.ts";
 import {
-  githubDeviceFlowLogin,
   type GithubLoginLook,
+  githubDeviceFlowLogin,
   githubLoginLook,
 } from "../copilot_api/github_login.ts";
 import { profileHomeNames } from "../copilot_api/paths.ts";
@@ -40,17 +40,17 @@ import { DAEMON_SIGKILL_GRACE_MS } from "../copilot_api/process.ts";
 import {
   agentAuthCommand,
   agentStopCommand,
-  parseProfileFlag,
   type Profile,
-  profileLabel,
   type ProfileName,
+  parseProfileFlag,
+  profileLabel,
 } from "../copilot_api/profile.ts";
 import { cyan } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
-import { createStderrLogger, prompt } from "../utils/logger.ts";
-import { printWrapped, terminalWidth, wrapMessage } from "../utils/table.ts";
 import { PLANNED_SECRET } from "../utils/dry_run.ts";
 import { dryRunActive } from "../utils/fs_facade.ts";
+import { createStderrLogger, prompt } from "../utils/logger.ts";
+import { printWrapped, terminalWidth, wrapMessage } from "../utils/table.ts";
 import { runDryRun } from "./dry_run.ts";
 import {
   chooseIdentity,
@@ -93,9 +93,7 @@ function asProvider(provider: string): AuthProvider {
 
 /** Auto is never a flag value: it is what `choose` may select (GhAccountSelection), carrying the
  *  active login so the narration names the account in use when gh reports one. */
-type GhCliAccountChoice =
-  | { kind: "pinned"; login: string }
-  | { kind: "choose" };
+type GhCliAccountChoice = { kind: "pinned"; login: string } | { kind: "choose" };
 
 /** PINNING IS THE ONLY DEFAULT: the credential never follows an account the user did not choose,
  *  or their Copilot credit would burn on it after a `gh auth login`. Auto is the picker's explicit
@@ -152,9 +150,7 @@ export function parseAcquisition(
 ): CredentialAcquisition {
   if (ghUser !== undefined) {
     if (set !== undefined) {
-      throw new Error(
-        "--gh-user only applies to `--provider gh-cli` (--set implies gh-token)",
-      );
+      throw new Error("--gh-user only applies to `--provider gh-cli` (--set implies gh-token)");
     }
     if (provider !== undefined && asProvider(provider) !== "gh-cli") {
       throw new Error("--gh-user only applies to `--provider gh-cli`");
@@ -168,7 +164,8 @@ export function parseAcquisition(
     return { kind: "gh-cli", account: { kind: "pinned", login } };
   }
   if (set !== undefined) {
-    const isGhToken = provider === undefined ||
+    const isGhToken =
+      provider === undefined ||
       (opts.setConflictWins
         ? provider.trim().toLowerCase() === "gh-token"
         : asProvider(provider) === "gh-token");
@@ -183,7 +180,7 @@ export function parseAcquisition(
 
 /** Keyed exhaustively on AuthProvider so a vocabulary change fails the compile here. */
 const PROVIDER_PICKER_DETAIL: Record<AuthProvider, string> = {
-  "copilot": "device-flow browser login (read:user scope)",
+  copilot: "device-flow browser login (read:user scope)",
   "gh-cli": "use the machine's `gh auth login`",
   "gh-token": "paste a GitHub token",
   "gh-env": `copy a token from ${ghTokenEnvVarsLabel(" / ")} (headless)`,
@@ -298,7 +295,9 @@ export async function chooseGhAccount(
         const notes = [
           login === active ? "currently active" : null,
           env === null ? null : `via $${env}; pinning needs a saved login`,
-        ].filter((n) => n !== null).join("; ");
+        ]
+          .filter((n) => n !== null)
+          .join("; ");
         return {
           label: `${login} - always use this account${notes ? ` (${notes})` : ""}`,
           value: login,
@@ -393,7 +392,7 @@ async function promptForGhToken(): Promise<string> {
 // <name> add` commits later, atomically with the profile's mode, and which could still fail after
 // this prints.
 async function loginWithGhToken(inline: string | null): Promise<string> {
-  const token = providedToken(inline ?? await promptForGhToken());
+  const token = providedToken(inline ?? (await promptForGhToken()));
   const look = await githubLoginLook(token);
   logger.success(`  Using ${tokenLabel("the provided GitHub token", token, look)}.`);
   return token;
@@ -467,9 +466,9 @@ export function loginWithGhCli(
     slot.ghUser !== null
       ? `  Using the gh CLI login (account ${slot.ghUser}) as the Direct credential.`
       : slot.activeLogin !== null
-      ? `  Using the gh CLI login on AUTO (currently account ${slot.activeLogin}; follows gh ` +
-        "account switches) as the Direct credential."
-      : "  Using the gh CLI login on AUTO (follows gh account switches) as the Direct credential.",
+        ? `  Using the gh CLI login on AUTO (currently account ${slot.activeLogin}; follows gh ` +
+          "account switches) as the Direct credential."
+        : "  Using the gh CLI login on AUTO (follows gh account switches) as the Direct credential.",
   );
   return slot;
 }
@@ -529,17 +528,15 @@ function settleGhCliAccount(
 function ghCliMiss(gh: Exclude<GhTokenLook, { kind: "found" }>, ghUser: string | null): Error {
   switch (gh.kind) {
     case "unproven":
-      return new Error(
-        `could not check gh authentication (${gh.detail}) - retry \`agent auth\``,
-      );
+      return new Error(`could not check gh authentication (${gh.detail}) - retry \`agent auth\``);
     case "absent":
       return new Error(
         ghUser === null
           ? `gh is not authenticated (${gh.detail}) - run \`gh auth login\`, then retry \`agent auth\``
           : `gh cannot serve account '${ghUser}' by name (${gh.detail}) - run \`gh auth login\` for ` +
-            "that account (a logged-out login and a hosts.yml written before gh 2.40 both need it), " +
-            "pass --gh-user <login> for another, or drop --gh-user and let " +
-            "`agent auth --provider gh-cli` settle the account (auto included)",
+              "that account (a logged-out login and a hosts.yml written before gh 2.40 both need it), " +
+              "pass --gh-user <login> for another, or drop --gh-user and let " +
+              "`agent auth --provider gh-cli` settle the account (auto included)",
       );
     default:
       return assertNever(gh);
@@ -563,9 +560,10 @@ async function plannedAcquisition(
   look: (ghUser: string | null) => GhTokenLook,
   chooseAccount: () => Promise<GhAccountSelection>,
 ): Promise<ProvisionedCredential> {
-  const slot = profile === null
-    ? "the default profile's credential slot"
-    : `${profileLabel(profile)}'s credential slot`;
+  const slot =
+    profile === null
+      ? "the default profile's credential slot"
+      : `${profileLabel(profile)}'s credential slot`;
   switch (acquisition.kind) {
     case "choose":
       throw new Error(
@@ -604,9 +602,8 @@ async function plannedAcquisition(
     case "gh-cli": {
       // The real command's pin resolution, off gh's saved accounts (a read); the arm that would
       // prompt says to pass --gh-user instead.
-      const account = acquisition.account.kind === "choose"
-        ? await chooseAccount()
-        : acquisition.account;
+      const account =
+        acquisition.account.kind === "choose" ? await chooseAccount() : acquisition.account;
       // The same read-only `gh auth token` looks, refused and settled the same way (an env-only
       // account has no saved credential to pin).
       const settled = settleGhCliAccount(account, look);
@@ -641,9 +638,8 @@ export async function acquireCredential(
       seams.chooseAccount ?? (() => chooseGhAccount(undefined, "dry-run")),
     );
   }
-  const resolved = acquisition.kind === "choose"
-    ? acquisitionForProvider(await chooseProvider())
-    : acquisition;
+  const resolved =
+    acquisition.kind === "choose" ? acquisitionForProvider(await chooseProvider()) : acquisition;
   if (resolved.kind === "gh-token") {
     return { kind: "stored", provider: "gh-token", token: await loginWithGhToken(resolved.token) };
   }
@@ -654,9 +650,10 @@ export async function acquireCredential(
     return { kind: "stored", provider: "copilot", token: await loginWithCopilot() };
   }
   const look = seams.look ?? ghAuthTokenLook;
-  const account: GhAccountSelection = resolved.account.kind === "choose"
-    ? await (seams.chooseAccount ?? chooseGhAccount)()
-    : resolved.account;
+  const account: GhAccountSelection =
+    resolved.account.kind === "choose"
+      ? await (seams.chooseAccount ?? chooseGhAccount)()
+      : resolved.account;
   return { kind: "gh-cli", ghUser: loginWithGhCli(account, look).ghUser };
 }
 
@@ -705,11 +702,15 @@ function profileSlotMissing(profile: ProfileName): boolean {
  *  missingProfileSlotError in env_state.ts does, never as "no such profile". */
 function noSuchProfileHint(profile: ProfileName): string {
   if (profileHomeNames().includes(profile)) {
-    return `profile '${profile}' has no store slot (half-created; its daemon home exists) - ` +
-      `re-create it with \`agent profile ${profile} add --direct|--proxy\``;
+    return (
+      `profile '${profile}' has no store slot (half-created; its daemon home exists) - ` +
+      `re-create it with \`agent profile ${profile} add --direct|--proxy\``
+    );
   }
-  return `no such profile '${profile}' - create it with ` +
-    `\`agent profile ${profile} add --direct|--proxy\``;
+  return (
+    `no such profile '${profile}' - create it with ` +
+    `\`agent profile ${profile} add --direct|--proxy\``
+  );
 }
 
 function resolveOrReport(profile: Profile): string | null {
@@ -793,7 +794,7 @@ async function runCheck(profile: Profile): Promise<void> {
     process.exitCode = 1;
     return;
   }
-  const source = await accountSourceLabel(credential.read()) ?? provider;
+  const source = (await accountSourceLabel(credential.read())) ?? provider;
   if (resolves) {
     printWrapped(`authenticated (${source})${label}`);
     process.exitCode = 0;
@@ -836,11 +837,11 @@ type AuthAction =
   | { kind: "identities"; profile: Profile }
   | { kind: "identity"; profile: Profile; choice: IdentityRequest }
   | {
-    kind: "authenticate";
-    profile: Profile;
-    acquisition: CredentialAcquisition;
-    dryRun: boolean;
-  };
+      kind: "authenticate";
+      profile: Profile;
+      acquisition: CredentialAcquisition;
+      dryRun: boolean;
+    };
 
 const SUB_ACTION_FLAGS = "--get/--del/--check";
 
@@ -865,9 +866,7 @@ function parseAuthAction(args: AuthArgs): AuthAction {
     args.identity !== undefined,
   ].filter(Boolean).length;
   if (subActions > 1) {
-    throw new Error(
-      "--get, --del, and --check are mutually exclusive",
-    );
+    throw new Error("--get, --del, and --check are mutually exclusive");
   }
   if (args.set !== undefined && subActions > 0) {
     throw new Error(`--set provisions a token and cannot combine with ${SUB_ACTION_FLAGS}`);
@@ -890,9 +889,8 @@ function parseAuthAction(args: AuthArgs): AuthAction {
   if (args.identities) return { kind: "identities", profile };
   if (args.identity !== undefined) {
     // Validated here, like --provider, so a bad id fails before any probe or prompt.
-    const choice: IdentityRequest = args.identity === true
-      ? { kind: "choose" }
-      : parseIdentityChoice(String(args.identity));
+    const choice: IdentityRequest =
+      args.identity === true ? { kind: "choose" } : parseIdentityChoice(String(args.identity));
     return { kind: "identity", profile, choice };
   }
   return {
@@ -931,9 +929,11 @@ export async function runAuth(args: AuthArgs): Promise<void> {
       }
       if (!process.stdin.isTTY) {
         throw new Error(
-          `not a terminal - pass the identity: \`${
-            configSetCommand("identity", "<id|auto>", action.profile)
-          }\` (see \`agent profile identity\`)`,
+          `not a terminal - pass the identity: \`${configSetCommand(
+            "identity",
+            "<id|auto>",
+            action.profile,
+          )}\` (see \`agent profile identity\`)`,
         );
       }
       const token = resolveOrReport(action.profile);
@@ -968,7 +968,7 @@ async function runAuthenticate(
     const { provider, resolves } = credential.status();
     if (provider !== null && resolves) {
       // Names the account like every landing does; the look is a label, never a gate.
-      const source = await accountSourceLabel(credential.read()) ?? provider;
+      const source = (await accountSourceLabel(credential.read())) ?? provider;
       return () => {
         const auth = agentAuthCommand(profile);
         logger.success(
@@ -1014,11 +1014,8 @@ async function runAuthenticate(
 function noteStaticKeyStale(profile: Profile): void {
   const scope = new CopilotEnvConfig().staticKeyScope(profile);
   if (scope === "none") return;
-  const whose = scope === "all"
-    ? "Claude's and Codex's"
-    : scope === "claude"
-    ? "Claude's"
-    : "Codex's";
+  const whose =
+    scope === "all" ? "Claude's and Codex's" : scope === "claude" ? "Claude's" : "Codex's";
   const rewire = profile === null ? "agent init" : `agent profile ${profile} add --direct|--proxy`;
   logger.info(
     `static-key is ${scope}: ${whose} baked value stays as it is until \`${rewire}\` rewrites it.`,

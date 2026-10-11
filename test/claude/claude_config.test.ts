@@ -8,13 +8,13 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import type { CommandLook } from "../../src/utils/command.ts";
 import { directWiring } from "../../src/agents/configure.ts";
+import { runClaude } from "../../src/agents/configure_defaults.ts";
 import {
   AUTH_TOKEN_ENV,
   CLAUDE_HAIKU_ALIAS,
-  configureClaudeConfig,
   CUSTOM_HEADERS_ENV,
+  configureClaudeConfig,
   detectClaudeDirect,
   directHelperCommand,
   inspectClaudeWiring,
@@ -25,7 +25,6 @@ import {
   syncDefaultWebSearch,
   WEBSEARCH_DENY_RULE,
 } from "../../src/claude/config.ts";
-import { runClaude } from "../../src/agents/configure_defaults.ts";
 import { cmdHelperBody } from "../../src/claude/helper_body.ts";
 import { claudeJsonPath } from "../../src/claude/mcp_registration.ts";
 import { resolveClaudeHome } from "../../src/claude/paths.ts";
@@ -40,12 +39,13 @@ import { OwnershipLedger } from "../../src/copilot_api/ownership.ts";
 import { CopilotApiPaths } from "../../src/copilot_api/paths.ts";
 import { copilotApiResolvePort } from "../../src/copilot_api/port.ts";
 import { parseProfileName } from "../../src/copilot_api/profile.ts";
+import type { CommandLook } from "../../src/utils/command.ts";
 import { deferWriteReports, flushWriteReports } from "../../src/utils/report_write.ts";
-import { captureChannels } from "../helpers/output.ts";
-import { afterEach, expect, removeDir, test } from "../helpers/testing.ts";
+import { linesNaming } from "../helpers/dry_run.ts";
 import { envSnapshot, isolateAgentHomes } from "../helpers/env.ts";
 import { writeClaudeSettings } from "../helpers/fixtures.ts";
-import { linesNaming } from "../helpers/dry_run.ts";
+import { captureChannels } from "../helpers/output.ts";
+import { afterEach, expect, removeDir, test } from "../helpers/testing.ts";
 
 /** A recorded Direct default whose slot holds its pair, so a single-agent write is a re-render
  *  (zero probes, no credential needed); with no pair it would land both agents and ask to log in. */
@@ -472,8 +472,7 @@ test("detectClaudeDirect: the CLI runs the catalog's claude model and its verdic
       ...ok,
       runProbe: () => ({ ok: false }),
     }),
-  )
-    .toBe(false);
+  ).toBe(false);
   // A set probe.claude-model is the model the smoke runs, as-is: no alias, no catalog fetch.
   new CopilotEnvConfig().set({ "probe.claude-model": "claude-sonnet-5" });
   urls.length = 0;
@@ -512,7 +511,7 @@ test("detectClaudeDirect: with no claude CLI the endpoint smoke judges the crede
       headers: { ...(init?.headers as Record<string, string>) },
       body: typeof init?.body === "string" ? JSON.parse(init.body) : null,
     });
-    const catalog = { data: [{ "id": "gpt-6" }, { "id": "claude-fable-5" }] };
+    const catalog = { data: [{ id: "gpt-6" }, { id: "claude-fable-5" }] };
     return Promise.resolve(
       new Response(requests.length === 1 ? JSON.stringify(catalog) : "{}", { status: 200 }),
     );
@@ -530,7 +529,7 @@ test("detectClaudeDirect: with no claude CLI the endpoint smoke judges the crede
   );
   expect(verdict).toBe(true);
   expect(requests.length).toBe(2);
-  const [catalogReq, ping] = requests as [typeof requests[0], typeof requests[0]];
+  const [catalogReq, ping] = requests as [(typeof requests)[0], (typeof requests)[0]];
   // Both requests carry the wiring's exact identity: the same credential under other headers can
   // be rejected, so a bare fetch would mint a verdict for a request Claude never sends.
   for (const r of [catalogReq, ping]) {
@@ -542,9 +541,9 @@ test("detectClaudeDirect: with no claude CLI the endpoint smoke judges the crede
   expect(ping.headers["anthropic-version"]).toBe("2023-06-01");
   // The 1-token ping on the first claude model: gpt-6 is not on Claude's wire.
   expect(ping.body).toEqual({
-    "model": "claude-fable-5",
-    "max_tokens": 1,
-    "messages": [{ "role": "user", "content": "x" }],
+    model: "claude-fable-5",
+    max_tokens: 1,
+    messages: [{ role: "user", content: "x" }],
   });
 });
 
@@ -590,7 +589,7 @@ test("a Claude home that cannot be made leaves ~/.claude.json untouched: the Dir
         mode: "direct",
         direct: null,
         credential: COMMAND,
-      })
+      }),
     ).toThrow("could not create Claude config directory");
   });
   expect(readFileSync(claudeJsonPath(), "utf8")).toBe("{}\n");
@@ -601,10 +600,9 @@ test("configureClaudeConfig refuses to overwrite a malformed settings.json", () 
   const home = tmpHome();
   configureClaudeConfig(home, { mode: "direct", direct: null, credential: COMMAND }); // creates the dir + a valid file
   writeFileSync(join(home, "settings.json"), "{ this is : not json");
-  expect(() => configureClaudeConfig(home, { mode: "direct", direct: null, credential: COMMAND }))
-    .toThrow(
-      "not valid JSON",
-    );
+  expect(() =>
+    configureClaudeConfig(home, { mode: "direct", direct: null, credential: COMMAND }),
+  ).toThrow("not valid JSON");
 });
 
 test("runClaude --direct with static-key covering Claude fails closed without a credential, before any probe, and bakes a stored one", async () => {
@@ -657,10 +655,8 @@ test("a direct default write registers the MCP server and denies the builtin Web
   configureClaudeConfig(home, { mode: "direct", direct: null, credential: COMMAND });
   expect(denyOf(readSettings(home))).toEqual([WEBSEARCH_DENY_RULE]);
   const servers = readClaudeJson().mcpServers as Record<string, unknown>;
-  expect(servers["copilot-env"]).toMatchObject({ "type": "stdio" });
-  expect(new OwnershipLedger().ownedPaths("webSearchDeny")).toEqual([
-    join(home, "settings.json"),
-  ]);
+  expect(servers["copilot-env"]).toMatchObject({ type: "stdio" });
+  expect(new OwnershipLedger().ownedPaths("webSearchDeny")).toEqual([join(home, "settings.json")]);
 
   const seeded = readSettings(home);
   seeded.permissions = { allow: ["Bash"], deny: ["Foreign", WEBSEARCH_DENY_RULE] };
@@ -693,8 +689,9 @@ test.skipIf(WIN || process.getuid?.() === 0)(
         ledgerFile,
       );
       expect(denyOf(readSettings(home))).toEqual([WEBSEARCH_DENY_RULE]);
-      expect((readClaudeJson().mcpServers as Record<string, unknown>)["copilot-env"])
-        .toMatchObject({ "type": "stdio" });
+      expect((readClaudeJson().mcpServers as Record<string, unknown>)["copilot-env"]).toMatchObject(
+        { type: "stdio" },
+      );
     } finally {
       chmodSync(ledgerFile, 0o600);
     }
@@ -725,11 +722,9 @@ test("registration failure skips a fresh deny and strips a PRIOR managed one - n
   // A foreign .claude.json entry under our name: the registration fails, so no deny is written.
   writeFileSync(
     claudeJsonPath(),
-    `${
-      JSON.stringify({
-        mcpServers: { "copilot-env": { "type": "stdio", "command": "npx", "args": ["other"] } },
-      })
-    }\n`,
+    `${JSON.stringify({
+      mcpServers: { "copilot-env": { type: "stdio", command: "npx", args: ["other"] } },
+    })}\n`,
   );
   configureClaudeConfig(home, { mode: "direct", direct: null, credential: COMMAND });
   expect(denyOf(readSettings(home))).toBeUndefined();
@@ -820,13 +815,11 @@ test("a command-shape NAMED write blanks the baked token so a static default can
 // keeps its claim.
 test("removeClaudeDefaultWiring over a foreign-edited, foreign, unverifiable, or vanished config strips only an owned deny it can verify and reports one it cannot, and leaves an 'other' wiring and the helper file it names whole", () => {
   const FOREIGN_HELPER = "/usr/local/bin/my-helper";
-  const FOREIGN_TEXT = `${
-    JSON.stringify(
-      { apiKeyHelper: FOREIGN_HELPER, permissions: { deny: [WEBSEARCH_DENY_RULE] } },
-      null,
-      2,
-    )
-  }\n`;
+  const FOREIGN_TEXT = `${JSON.stringify(
+    { apiKeyHelper: FOREIGN_HELPER, permissions: { deny: [WEBSEARCH_DENY_RULE] } },
+    null,
+    2,
+  )}\n`;
   const rows: {
     name: string;
     arrange: (home: string, settingsPath: string) => void;
@@ -1117,10 +1110,7 @@ test("the default write reclaims a helper-path apiKeyHelper, leaving the user's 
 test("mode inspection recognizes the managed helper from ANY copilot-env root", () => {
   // A dev checkout and ~/.copilot-env spell different roots into apiKeyHelper; both resolve the same
   // shared store, so inspection reads both as managed.
-  const posixDirect = [
-    "/opt/somewhere/bin/agent auth --get",
-    "'/with space/bin/agent' auth --get",
-  ];
+  const posixDirect = ["/opt/somewhere/bin/agent auth --get", "'/with space/bin/agent' auth --get"];
   for (const value of posixDirect) {
     expect(managedHelperShape(value, ["auth", "--get"], false)).toBe(true);
   }
@@ -1130,8 +1120,7 @@ test("mode inspection recognizes the managed helper from ANY copilot-env root", 
       ["profile", "proxy-token", "--yes"],
       false,
     ),
-  )
-    .toBe(true);
+  ).toBe(true);
   expect(
     managedHelperShape(
       "/opt/x/bin/agent profile work auth --get",
@@ -1140,42 +1129,20 @@ test("mode inspection recognizes the managed helper from ANY copilot-env root", 
     ),
   ).toBe(true);
   // Negatives: wrong binary name, trailing junk, foreign command, wrong profile args.
-  expect(
-    managedHelperShape(
-      "/opt/x/bin/agent-evil auth --get",
-      ["auth", "--get"],
-      false,
-    ),
-  ).toBe(
+  expect(managedHelperShape("/opt/x/bin/agent-evil auth --get", ["auth", "--get"], false)).toBe(
     false,
   );
-  expect(
-    managedHelperShape(
-      "/opt/x/bin/agent auth --get --extra",
-      ["auth", "--get"],
-      false,
-    ),
-  ).toBe(
+  expect(managedHelperShape("/opt/x/bin/agent auth --get --extra", ["auth", "--get"], false)).toBe(
     false,
   );
   expect(managedHelperShape("gh auth token", ["auth", "--get"], false)).toBe(false);
   // Shell metacharacters can never classify as managed: only shToken's bare charset
   // (or a fully quoted path) is a spelling the writer can produce.
+  expect(managedHelperShape("evil;/bin/agent auth --get", ["auth", "--get"], false)).toBe(false);
+  expect(managedHelperShape("$(evil)/bin/agent auth --get", ["auth", "--get"], false)).toBe(false);
+  expect(managedHelperShape("a b/bin/agent auth --get", ["auth", "--get"], false)).toBe(false);
   expect(
-    managedHelperShape("evil;/bin/agent auth --get", ["auth", "--get"], false),
-  ).toBe(false);
-  expect(
-    managedHelperShape("$(evil)/bin/agent auth --get", ["auth", "--get"], false),
-  ).toBe(false);
-  expect(
-    managedHelperShape("a b/bin/agent auth --get", ["auth", "--get"], false),
-  ).toBe(false);
-  expect(
-    managedHelperShape(
-      "/opt/x/bin/agent auth --get",
-      ["profile", "w", "auth", "--get"],
-      false,
-    ),
+    managedHelperShape("/opt/x/bin/agent auth --get", ["profile", "w", "auth", "--get"], false),
   ).toBe(false);
   // Windows shape: only the QUOTED -File path spelling is managed.
   expect(

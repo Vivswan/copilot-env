@@ -3,8 +3,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { USAGE_INDEX_DB_NAME } from "../../src/usage/index.ts";
 import { USAGE_INDEX_DIR_NAME } from "../../src/copilot_api/paths.ts";
+import { USAGE_INDEX_DB_NAME } from "../../src/usage/index.ts";
 
 /** `home` is the data home. */
 export function indexDbFile(home: string): string {

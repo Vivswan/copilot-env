@@ -871,10 +871,9 @@ const UNREMOVABLE: { name: string; sabotage: () => void; line: () => string | Re
       rmSync(`${dbPath()}-shm`, { force: true });
       mkdirSync(dbPath());
     },
-    // The path is spelled by the SQLite binding (Deno 2.9.7 resolves symlinks, so macOS's /tmp
-    // prints as /private/tmp); the cause and the fallback are the contract, the spelling is not.
-    line: () =>
-      /could not open the usage index \(unable to open database file: .*\); running without it\./,
+    // The cause is spelled by the SQLite binding (each runtime words it, and the path, its own
+    // way); the refusal and the fallback are the contract, the spelling is not.
+    line: () => /could not open the usage index \(.*\); running without it\./,
   },
   {
     name: "a directory that cannot be created",

@@ -68,9 +68,7 @@ function jobs(): number {
  * it is unset, which consola reads as a test run and silences the info output the logger tests
  * assert on, in the test process and in every child that inherits its env (test/helpers/testing.ts
  * pins the same value once loaded). `--no-env-file` on the same child keeps a .env in the
- * checkout out of the suite. Bun reads os.homedir() once at startup, so a HOME the helpers
- * retarget later never reaches it: the child must start under the scratch one, or a test that
- * resolves a path through homedir() writes into the developer's real home.
+ * checkout out of the suite.
  */
 function childEnv(home: string): Record<string, string | undefined> {
   const env: Record<string, string | undefined> = {
@@ -82,16 +80,29 @@ function childEnv(home: string): Record<string, string | undefined> {
   return env;
 }
 
+/** Scratch homes of the children still running, removed on an interrupt too. */
+const liveHomes = new Set<string>();
+
 /** The child's HOME: the persistent TEST_HOME_ENV directory, else a scratch one removed with the
- *  child. */
+ *  child. Bun reads os.homedir() once at startup, so a HOME the test helpers retarget later never
+ *  reaches it: the child must START under this one, or a path resolved through homedir() lands in
+ *  the developer's real home. */
 function childHome(): { home: string; dispose: () => void } {
   const persistent = process.env[TEST_HOME_ENV];
   if (persistent !== undefined && persistent !== "") {
-    mkdirSync(persistent, { recursive: true });
-    return { home: persistent, dispose: () => {} };
+    const home = resolve(persistent);
+    mkdirSync(home, { recursive: true });
+    return { home, dispose: () => {} };
   }
   const home = mkdtempSync(join(tmpdir(), "copilot-env-test-home-"));
-  return { home, dispose: () => rmSync(home, { recursive: true, force: true }) };
+  liveHomes.add(home);
+  return {
+    home,
+    dispose: () => {
+      liveHomes.delete(home);
+      rmSync(home, { recursive: true, force: true });
+    },
+  };
 }
 
 /** Aborted on SIGINT or SIGTERM, so an interrupted run leaves no `bun test` behind. */
@@ -185,6 +196,7 @@ async function main(): Promise<number> {
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
     process.on(signal, () => {
       cancel.abort();
+      for (const home of liveHomes) rmSync(home, { recursive: true, force: true });
       process.exit(130);
     });
   }

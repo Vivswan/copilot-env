@@ -7,7 +7,8 @@
 #   -Quiet                               -> no warning: the profile function re-runs bin/agent.ps1
 #                                           for every `agent profile env` refresh and must not repeat it
 #   no bun at all                        -> the .bun-version release (the latest when the file is
-#                                           absent), once, into $env:BUN_INSTALL\bin\bun.exe
+#                                           absent), once, into $env:BUN_INSTALL (bin\bun.exe,
+#                                           bin\bunx.exe, uninstall.ps1)
 
 # The version of the bun executable $Exe ("1.4.2" -> "1.4.2"), or $null when it does not run.
 function Get-CopilotEnvBunVersion {
@@ -55,7 +56,7 @@ function Install-CopilotEnvBun {
     }
 
     $label = if ($want) { $want } else { '(latest)' }
-    [Console]::Error.WriteLine("==> Installing bun $label (one-time; none found on PATH) into $installed ...")
+    [Console]::Error.WriteLine("==> Installing bun $label (one-time; none found on PATH) into $bunHome (bin\bun.exe, bin\bunx.exe, uninstall.ps1) ...")
     if (-not (Get-Command curl.exe -ErrorAction SilentlyContinue)) {
         throw 'curl.exe is required to install bun and was not found on PATH.'
     }
@@ -67,8 +68,9 @@ function Install-CopilotEnvBun {
         if ($LASTEXITCODE -ne 0) { throw 'could not download the bun installer.' }
         # The official installer with its side effects switched off: PATH is bin/agent.ps1's and
         # shell/agents.ps1's job, and it registers no uninstaller and installs no completions. It
-        # writes only under $bunHome. Its failures are printed, not exit codes, so the installed
-        # file is checked below. A hashtable splat: an array splat binds positionally.
+        # still writes bunx.exe and uninstall.ps1 beside bun.exe, all under $bunHome. Its failures
+        # are printed, not exit codes, so the installed file is checked below. A hashtable splat:
+        # an array splat binds positionally.
         $installArgs = @{ NoPathUpdate = $true; NoRegisterInstallation = $true; NoCompletions = $true }
         if ($want) { $installArgs.Version = $want }
         & $script @installArgs | ForEach-Object { [Console]::Error.WriteLine($_) }

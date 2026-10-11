@@ -39,7 +39,7 @@ import {
 } from "../../src/usage/index.ts";
 import { releaseFileLock, tryAcquireFileLock } from "../../src/utils/file_lock.ts";
 import { captureAllWrites } from "../helpers/output.ts";
-import { afterEach, expect, tempDir, test } from "../helpers/testing.ts";
+import { afterEach, expect, removeDir, tempDir, test } from "../helpers/testing.ts";
 import { indexBytesOnDisk } from "../helpers/usage_index.ts";
 
 let root = "";
@@ -55,7 +55,9 @@ afterEach(() => {
       // already closed by the test
     }
   }
-  if (root) rmSync(root, { recursive: true, force: true });
+  // removeDir, not rmSync: on Windows bun's sqlite releases the database handle a beat after
+  // close(), and the retry absorbs that EBUSY.
+  if (root) removeDir(root);
   root = "";
 });
 

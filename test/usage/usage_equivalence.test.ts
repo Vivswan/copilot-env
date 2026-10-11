@@ -28,13 +28,15 @@ import {
   writeTranscript,
 } from "../helpers/session_fixtures.ts";
 import { CLAUDE_SCENARIOS, CODEX_SCENARIOS } from "../helpers/session_scenarios.ts";
-import { afterEach, expect, tempDir, test } from "../helpers/testing.ts";
+import { afterEach, expect, removeDir, tempDir, test } from "../helpers/testing.ts";
 import { storedIndexPaths } from "../helpers/usage_index.ts";
 
 const dirs: string[] = [];
 
 afterEach(() => {
-  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  // removeDir, not rmSync: on Windows bun's sqlite releases a database handle a beat after
+  // close(), and the retry absorbs that EBUSY.
+  for (const dir of dirs.splice(0)) removeDir(dir);
 });
 
 function trackedDir(): string {

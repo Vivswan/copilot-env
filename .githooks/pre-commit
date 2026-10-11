@@ -1,7 +1,7 @@
 #!/bin/sh
-# Wired by scripts/setup-env.sh (.ps1 on Windows) through core.hooksPath. Bun's own checks only:
-# shellcheck and PSScriptAnalyzer are separately installed tools, so the `check` job in
-# .github/workflows/checks.yml runs those.
+# Wired by scripts/setup-env.sh (.ps1 on Windows) through core.hooksPath. Bun's own checks only;
+# the shell linters (shellcheck, PSScriptAnalyzer) are separately installed tools, so the `check`
+# job in .github/workflows/checks.yml runs those.
 #
 # A hook installs nothing: a missing bun or node_modules fails here, naming the one-time
 # bootstrap, instead of being fetched by the first task.

@@ -19,7 +19,7 @@ import {
   installedBinaryName,
   RELEASE_TARGETS,
   releaseAssetName,
-} from "../../src/install/targets.ts";
+} from "../../src/utils/targets.ts";
 import { CURRENT_LINK, VERSIONS_DIR } from "../../src/utils/root.ts";
 import { afterEach, beforeEach, describe, expect, tempDir, test } from "../helpers/testing.ts";
 

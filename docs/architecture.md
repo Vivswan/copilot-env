@@ -338,7 +338,6 @@ graph TD
   codex --> agents
   codex --> copilot_api
   codex --> utils
-  copilot_api --> install
   copilot_api --> proxy_float
   copilot_api --> utils
   proxy_float --> agents

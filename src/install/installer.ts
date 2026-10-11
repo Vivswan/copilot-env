@@ -41,7 +41,7 @@ import {
   INSTALLED_BINARY_POSIX,
   INSTALLED_BINARY_WINDOWS,
   installedBinaryName,
-} from "./targets.ts";
+} from "../utils/targets.ts";
 
 /** Embedded AND materialized: something outside this process opens these by path (the daemon's
  *  `--preload` shims, the shell payload the rc block sources, the plugin/skill surface other

@@ -22,7 +22,7 @@ import {
   installedBinaryName,
   RELEASE_TARGETS,
   releaseAssetName,
-} from "../../src/install/targets.ts";
+} from "../../src/utils/targets.ts";
 import { withPowershellChildEnv } from "../../src/utils/command.ts";
 import { readProjectConfig, readSidecarDenoVersion } from "../../src/utils/project_config.ts";
 import { ROOT, runScript, runSync } from "../helpers/run.ts";

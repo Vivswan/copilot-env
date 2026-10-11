@@ -21,7 +21,7 @@ const GH = {
 } as const;
 
 /** The tag picks the release and the running platform picks the asset within it
- *  (releaseAssetName, src/install/targets.ts), so nothing else from the API row is needed. */
+ *  (releaseAssetName, src/utils/targets.ts), so nothing else from the API row is needed. */
 export interface Release {
   tag: string;
   dateSeconds: number;

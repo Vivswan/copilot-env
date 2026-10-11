@@ -8,7 +8,7 @@
 //                            unverified byte never lands unpacked
 import { spawnSync } from "node:child_process";
 import { basename, isAbsolute, join } from "node:path";
-import { currentReleaseTarget, RELEASE_TARGETS, type ReleaseTarget } from "../install/targets.ts";
+import { currentReleaseTarget, RELEASE_TARGETS, type ReleaseTarget } from "../utils/targets.ts";
 import { resolveExecutablePath } from "../utils/command.ts";
 import { sha256Hex } from "../utils/digest.ts";
 import { errMessage } from "../utils/error.ts";
@@ -138,7 +138,7 @@ export function parseDenoVersionLine(content: string, source: string): string {
 }
 
 /** Deno names its release archives by the same rust triples copilot-env's own binaries carry
- *  (src/install/targets.ts), and ships one for every platform copilot-env does, so the release
+ *  (src/utils/targets.ts), and ships one for every platform copilot-env does, so the release
  *  target table is the one owner of the mapping. */
 type DenoReleaseTarget = ReleaseTarget["triple"];
 

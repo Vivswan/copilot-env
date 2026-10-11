@@ -18,7 +18,7 @@ import {
   sidecarBinPath,
   unzipCommand,
 } from "../../src/copilot_api/sidecar.ts";
-import { RELEASE_TARGETS } from "../../src/install/targets.ts";
+import { RELEASE_TARGETS } from "../../src/utils/targets.ts";
 import { envSnapshot } from "../helpers/env.ts";
 import {
   afterEach,

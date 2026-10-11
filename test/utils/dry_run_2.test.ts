@@ -51,7 +51,7 @@ import {
   currentReleaseTarget,
   installedBinaryName,
   releaseAssetName,
-} from "../../src/install/targets.ts";
+} from "../../src/utils/targets.ts";
 import { removeEnvKey } from "../../src/migrations/4.0.0.ts";
 import {
   foldRootStores,

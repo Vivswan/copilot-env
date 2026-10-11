@@ -31,7 +31,7 @@ import {
   versionDirName,
   writeTopLevelShims,
 } from "../../src/install/installer.ts";
-import { installedBinaryName } from "../../src/install/targets.ts";
+import { installedBinaryName } from "../../src/utils/targets.ts";
 import { CI_PS_DOCUMENTS_DIR_ENV, CI_RC_DIR_ENV } from "../../src/shell/integration.ts";
 import { deferWriteReports, flushWriteReports } from "../../src/utils/report_write.ts";
 import {

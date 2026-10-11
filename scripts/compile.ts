@@ -22,7 +22,7 @@ import {
   RELEASE_TARGETS,
   type ReleaseTarget,
   releaseAssetName,
-} from "../src/install/targets.ts";
+} from "../src/utils/targets.ts";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const OUT_DIR = "dist";

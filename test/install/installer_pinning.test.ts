@@ -17,14 +17,14 @@ import {
   MATERIALIZED_ASSET_DIRS,
   MATERIALIZED_ASSET_FILES,
 } from "../../src/install/installer.ts";
+import { withPowershellChildEnv } from "../../src/utils/command.ts";
+import { readProjectConfig, readSidecarDenoVersion } from "../../src/utils/project_config.ts";
 import {
   currentReleaseTarget,
   installedBinaryName,
   RELEASE_TARGETS,
   releaseAssetName,
 } from "../../src/utils/targets.ts";
-import { withPowershellChildEnv } from "../../src/utils/command.ts";
-import { readProjectConfig, readSidecarDenoVersion } from "../../src/utils/project_config.ts";
 import { ROOT, runScript, runSync } from "../helpers/run.ts";
 import { describe, expect, removeDir, tempDir, test } from "../helpers/testing.ts";
 import { tsFilesUnder as srcFiles } from "../helpers/tree.ts";

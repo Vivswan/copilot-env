@@ -14,13 +14,13 @@ import {
   pointCurrentAt,
   readCurrentVersionName,
 } from "../../src/install/installer.ts";
+import { CURRENT_LINK, VERSIONS_DIR } from "../../src/utils/root.ts";
 import {
   currentReleaseTarget,
   installedBinaryName,
   RELEASE_TARGETS,
   releaseAssetName,
 } from "../../src/utils/targets.ts";
-import { CURRENT_LINK, VERSIONS_DIR } from "../../src/utils/root.ts";
 import { afterEach, beforeEach, describe, expect, tempDir, test } from "../helpers/testing.ts";
 
 // The update is prepare-then-commit, so a pre-flip failure leaves the old version fully live:

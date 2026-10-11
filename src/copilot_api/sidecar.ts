@@ -8,7 +8,6 @@
 //                            unverified byte never lands unpacked
 import { spawnSync } from "node:child_process";
 import { basename, isAbsolute, join } from "node:path";
-import { currentReleaseTarget, RELEASE_TARGETS, type ReleaseTarget } from "../utils/targets.ts";
 import { resolveExecutablePath } from "../utils/command.ts";
 import { sha256Hex } from "../utils/digest.ts";
 import { errMessage } from "../utils/error.ts";
@@ -16,6 +15,7 @@ import * as fs from "../utils/fs_facade.ts";
 import { readSidecarDenoVersion } from "../utils/project_config.ts";
 import { isStandaloneBinary } from "../utils/root.ts";
 import { isStableVersion, versionLessThan } from "../utils/semver.ts";
+import { currentReleaseTarget, RELEASE_TARGETS, type ReleaseTarget } from "../utils/targets.ts";
 import type { ProbeFetch } from "./integration_identity.ts";
 import { resolveRootHome } from "./paths.ts";
 

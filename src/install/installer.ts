@@ -36,12 +36,12 @@ import {
 } from "../utils/root.ts";
 import { stripV } from "../utils/semver.ts";
 import { printWrapped } from "../utils/table.ts";
-import { packageVersion } from "../utils/version.ts";
 import {
   INSTALLED_BINARY_POSIX,
   INSTALLED_BINARY_WINDOWS,
   installedBinaryName,
 } from "../utils/targets.ts";
+import { packageVersion } from "../utils/version.ts";
 
 /** Embedded AND materialized: something outside this process opens these by path (the daemon's
  *  `--preload` shims, the shell payload the rc block sources, the plugin/skill surface other

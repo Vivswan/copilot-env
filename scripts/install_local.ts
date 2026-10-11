@@ -6,8 +6,8 @@ import { existsSync, mkdirSync, realpathSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { currentReleaseTarget } from "../src/utils/targets.ts";
 import { looksLikeInstallRoot } from "../src/utils/root.ts";
+import { currentReleaseTarget } from "../src/utils/targets.ts";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 

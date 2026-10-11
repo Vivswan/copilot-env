@@ -3,8 +3,8 @@
 // so the two agree on the matrix, the paths, the serializer, the digest, and the run.
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { zstdDecompressSync } from "node:zlib";
 import path from "node:path";
+import { zstdDecompressSync } from "node:zlib";
 import * as v from "valibot";
 import { SHA256_HEX_SCHEMA } from "../../src/copilot_api/config_registry.ts";
 import { type CostRuntime, runCost } from "../../src/usage/cost.ts";

@@ -46,10 +46,10 @@ import {
   writeTopLevelShims,
 } from "../install/installer.ts";
 import type { Release } from "../install/resolve-release.ts";
-import { currentReleaseTarget, installedBinaryName, releaseAssetName } from "../utils/targets.ts";
 import { errMessage } from "../utils/error.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { installStateRoot, PROJECT_ROOT, readInstallManifest } from "../utils/root.ts";
+import { currentReleaseTarget, installedBinaryName, releaseAssetName } from "../utils/targets.ts";
 import { COPILOT_ENV_USER_AGENT } from "../utils/user_agent.ts";
 
 const REPO = "Vivswan/copilot-env";

@@ -47,11 +47,6 @@ import {
   readCurrentVersionName,
   versionDirName,
 } from "../../src/install/installer.ts";
-import {
-  currentReleaseTarget,
-  installedBinaryName,
-  releaseAssetName,
-} from "../../src/utils/targets.ts";
 import { removeEnvKey } from "../../src/migrations/4.0.0.ts";
 import {
   foldRootStores,
@@ -65,6 +60,11 @@ import { errMessage } from "../../src/utils/error.ts";
 import * as fs from "../../src/utils/fs_facade.ts";
 import { pidAlive } from "../../src/utils/pid.ts";
 import { VERSIONS_DIR } from "../../src/utils/root.ts";
+import {
+  currentReleaseTarget,
+  installedBinaryName,
+  releaseAssetName,
+} from "../../src/utils/targets.ts";
 import { killAndAwaitExit, launchFakeDaemon, until } from "../helpers/daemon.ts";
 import { changedPaths, dryRunChanges, fingerprintTree } from "../helpers/dry_run.ts";
 import {

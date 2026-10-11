@@ -12,7 +12,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { readDvmrcPin } from "../src/copilot_api/sidecar.ts";
+import { readProjectConfig } from "../src/utils/project_config.ts";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const IMAGE = "copilot-env-test";
@@ -83,7 +83,7 @@ const buildCode = await run(
     "--build-arg",
     `BUN_VERSION=${bunVersion()}`,
     "--build-arg",
-    `DENO_VERSION=${readDvmrcPin(ROOT)}`,
+    `DENO_VERSION=${readProjectConfig(ROOT).sidecarDenoVersion}`,
     "-t",
     IMAGE,
     ".",

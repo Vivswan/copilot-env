@@ -1,7 +1,7 @@
 # Hermetic test-runner image: the throwaway HOME the lifecycle smoke needs.
 #   fully-qualified ref, ARG before FROM, no BuildKit-only syntax  -> builds under Podman too
 #   BUN_VERSION has no default   -> .bun-version is the only pin; `bun run test:docker` passes it
-#   DENO_VERSION has no default  -> the sidecar pin in copilot-env.config is the only one; same
+#   DENO_VERSION has no default  -> the SIDECAR_DENO_VERSION line of copilot-env.config is the only pin; same
 ARG BUN_VERSION
 FROM docker.io/oven/bun:${BUN_VERSION}
 ARG DENO_VERSION

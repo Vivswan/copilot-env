@@ -9,9 +9,10 @@ import { fileURLToPath } from "node:url";
 import { launcherFunctionLines } from "../../src/commands/env.ts";
 import { resolveRootHome } from "../../src/copilot_api/paths.ts";
 import { resolveExecutablePath } from "../../src/utils/command.ts";
-import { readDvmrcPin, SIDECAR_DENO_ENV, sidecarBinPath } from "../../src/copilot_api/sidecar.ts";
+import { SIDECAR_DENO_ENV, sidecarBinPath } from "../../src/copilot_api/sidecar.ts";
 import { daemonConfigFile } from "../../src/proxy_float.ts";
 import { isRecord } from "../../src/utils/json.ts";
+import { readProjectConfig } from "../../src/utils/project_config.ts";
 
 const step = process.argv[2];
 const isWindows = process.platform === "win32";
@@ -348,7 +349,7 @@ function verifySidecarDaemonSpawn(launcher: string): void {
   process.env[SIDECAR_DENO_ENV] = isWindows ? "C:\\bogus\\deno.exe" : "/bogus/deno";
   delete process.env[SIDECAR_DENO_ENV];
   const rootHome = resolveRootHome();
-  const sidecar = sidecarBinPath(rootHome, readDvmrcPin());
+  const sidecar = sidecarBinPath(rootHome, readProjectConfig().sidecarDenoVersion);
   const pathDeno = resolveExecutablePath("deno");
   if (pathDeno === null) {
     console.error("::error::no deno on PATH to plant as the sidecar");

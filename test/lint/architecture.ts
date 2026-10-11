@@ -145,7 +145,7 @@ export function lintArchitecture(arch: Architecture, graph: ImportGraph): string
 // --- the module map ------------------------------------------------------------
 
 export const GENERATED_BEGIN =
-  "<!-- BEGIN GENERATED: architecture-map (deno task docs:arch; derived from architecture.json) -->";
+  "<!-- BEGIN GENERATED: architecture-map (bun run docs:arch; derived from architecture.json) -->";
 export const GENERATED_END = "<!-- END GENERATED: architecture-map -->";
 
 /** Over the DECLARED edges, never the import graph. */

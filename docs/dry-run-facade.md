@@ -60,7 +60,7 @@ The seam is synchronous and node:fs-shaped: the codes on the thrown errors (`ENO
 
 Demonstrated by: [test/utils/fs_facade.test.ts](../test/utils/fs_facade.test.ts).
 
-Two lint rules in `test/lint/no_unreported_fs_writes.ts` keep it the one seam: `no-unreported-fs-writes` refuses a raw node:fs write anywhere else in `src/`, and `no-raw-fs-reads` refuses a raw read (a file handle included, whatever its flags).
+Two rules in `test/lint/no_unreported_fs_writes.ts`, run over `src/` by `test/utils/fs_write_lint.test.ts`, keep it the one seam: `no-unreported-fs-writes` refuses a raw node:fs write anywhere else in `src/`, and `no-raw-fs-reads` refuses a raw read (a file handle included, whatever its flags).
 
 Both rules exempt `fs_disk.ts`, the dry-run marker, the lock protocol, the preload that patches the proxy's stream, and `src/migrations/`. The read rule also exempts `src/usage/` (partial reads through a fd on the `agent cost` hot path, over inputs no dry run touches) and the preload that runs before the seam exists.
 

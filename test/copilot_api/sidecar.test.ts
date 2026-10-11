@@ -2,25 +2,22 @@ import { existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from "nod
 import { join } from "node:path";
 import {
   DENO_LATEST_URL,
-  DENO_RELEASE_TARGETS,
   denoReleaseTarget,
   denoReleaseUrl,
   detectSidecar,
   downloadSidecar,
-  DVMRC_FILENAME,
   ensureSidecar,
   fetchLatestDenoVersion,
   fetchReleaseSha256,
   parseAbsolutePath,
-  parseDvmrcPin,
   provisionedSidecar,
-  readDvmrcPin,
   resolveDenoBin,
   SIDECAR_DENO_ENV,
   sidecarBinPath,
   unzipCommand,
 } from "../../src/copilot_api/sidecar.ts";
 import { resolveRootHome } from "../../src/copilot_api/paths.ts";
+import { RELEASE_TARGETS } from "../../src/install/targets.ts";
 import {
   afterEach,
   beforeEach,
@@ -144,23 +141,11 @@ describe("the sidecar ladder", () => {
         resolved: { value: "/opt/deno/bin/deno" },
       },
       {
-        label: "a checkout's own deno outranks a PATH deno: subprocesses match the parent",
-        rootHome: home,
-        opts: {
-          "env": {},
-          "runtimeExecPath": "/checkout/deno",
-          "findDeno": () => "/opt/homebrew/bin/deno",
-        },
-        state: { value: { "kind": "dev", "denoBin": parseAbsolutePath("/checkout/deno") } },
-        resolved: { value: "/checkout/deno" },
-      },
-      {
-        label: "a compiled standalone uses the deno already on PATH, over a provisioned copy",
+        label: "the deno already on PATH answers, over a provisioned copy: the user's toolchain wins",
         rootHome: versions,
         opts: {
           "env": {},
-          "runtimeExecPath": null,
-          "platform": "darwin",
+            "platform": "darwin",
           "findDeno": () => "/usr/local/bin/deno",
         },
         state: { value: { "kind": "path", "denoBin": parseAbsolutePath("/usr/local/bin/deno") } },
@@ -169,7 +154,7 @@ describe("the sidecar ladder", () => {
       {
         label: "no PATH deno: the NEWEST provisioned sidecar under the root home answers",
         rootHome: versions,
-        opts: { "env": {}, "runtimeExecPath": null, "platform": "darwin", "findDeno": () => null },
+        opts: { "env": {}, "platform": "darwin", "findDeno": () => null },
         state: {
           value: {
             "kind": "provisioned",
@@ -182,7 +167,7 @@ describe("the sidecar ladder", () => {
       {
         label: "a provisioned binary on win32 carries the .exe suffix",
         rootHome: windowsHome,
-        opts: { "env": {}, "runtimeExecPath": null, "platform": "win32", "findDeno": () => null },
+        opts: { "env": {}, "platform": "win32", "findDeno": () => null },
         state: {
           value: {
             "kind": "provisioned",
@@ -194,7 +179,7 @@ describe("the sidecar ladder", () => {
       },
       {
         label: "rootHome DEFAULTS to the resolved root home, so bare call sites find the sidecar",
-        opts: { "env": {}, "runtimeExecPath": null, "platform": "linux", "findDeno": () => null },
+        opts: { "env": {}, "platform": "linux", "findDeno": () => null },
         state: {
           value: {
             "kind": "provisioned",
@@ -205,9 +190,9 @@ describe("the sidecar ladder", () => {
         resolved: { value: provisioned },
       },
       {
-        label: "a compiled standalone with no deno anywhere is absent: a hard, actionable error",
+        label: "no deno anywhere is absent: a hard, actionable error, checkout and binary alike",
         rootHome: empty,
-        opts: { "env": {}, "runtimeExecPath": null, "platform": "linux", "findDeno": () => null },
+        opts: { "env": {}, "platform": "linux", "findDeno": () => null },
         state: { value: { "kind": "absent" } },
         resolved: absent,
       },
@@ -251,26 +236,6 @@ describe("provisionedSidecar", () => {
   });
 });
 
-describe(".dvmrc reference version", () => {
-  // One trimmed x.y.z line and nothing else; the file read names a missing file actionably.
-  test("parses one trimmed x.y.z line, rejects anything else; readDvmrcPin reads the project-root file", () => {
-    const rows: { text: string; expected: Outcome<string> }[] = [
-      { text: "2.9.5\n", expected: { value: "2.9.5" } },
-      { text: "  2.9.5  ", expected: { value: "2.9.5" } },
-      { text: "v2.9.5", expected: { error: "x.y.z" } },
-      { text: "2.9", expected: { error: "x.y.z" } },
-      { text: "2.9.5\n2.9.6", expected: { error: "x.y.z" } },
-      { text: "", expected: { error: "x.y.z" } },
-    ];
-    for (const row of rows) {
-      expectOutcome(row.text, outcomeOf(() => parseDvmrcPin(row.text)), row.expected);
-    }
-    writeFileSync(join(dir, DVMRC_FILENAME), "2.9.5\n");
-    expect(readDvmrcPin(dir)).toBe("2.9.5");
-    expect(() => readDvmrcPin(join(dir, "nowhere"))).toThrow("cannot read");
-  });
-});
-
 describe("denoReleaseTarget", () => {
   test("maps every supported platform-arch pair; an unsupported pair throws, listing them", () => {
     expect(denoReleaseTarget("darwin", "arm64")).toBe("aarch64-apple-darwin");
@@ -280,7 +245,7 @@ describe("denoReleaseTarget", () => {
     expect(denoReleaseTarget("win32", "x64")).toBe("x86_64-pc-windows-msvc");
     expect(() => denoReleaseTarget("linux", "ia32")).toThrow("linux-ia32");
     expect(() => denoReleaseTarget("linux", "ia32")).toThrow(
-      Object.keys(DENO_RELEASE_TARGETS).join(", "),
+      RELEASE_TARGETS.map((target) => `${target.os}-${target.arch}`).join(", "),
     );
   });
 });
@@ -473,7 +438,7 @@ describe("ensureSidecar", () => {
       },
       {
         label: "a PATH deno answers with no download -- the user's toolchain wins",
-        opts: { "runtimeExecPath": null, "findDeno": () => "/opt/homebrew/bin/deno" },
+        opts: { "findDeno": () => "/opt/homebrew/bin/deno" },
         bin: "/opt/homebrew/bin/deno",
       },
     ];
@@ -502,8 +467,7 @@ describe("ensureSidecar", () => {
       return Promise.resolve(new Response(null, { "status": 404 }));
     }) as typeof fetch;
     const bin = await ensureSidecar(dir, {
-      "runtimeExecPath": null,
-      "findDeno": () => null,
+            "findDeno": () => null,
       "platform": "linux",
       "arch": "x64",
       "fetchLike": fetchLike,

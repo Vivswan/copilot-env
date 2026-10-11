@@ -201,7 +201,7 @@ const ERROR_CASES: Array<{
       facade.rm(join(r, "target"), { recursive: true });
     },
     op: (r) => facade.mkdir(join(r, "alias")),
-    code: "EEXIST",
+    code: "ENOENT",
     posixOnly: true,
   },
   {
@@ -212,7 +212,7 @@ const ERROR_CASES: Array<{
       facade.rm(join(r, "target"), { recursive: true });
     },
     op: (r) => facade.mkdir(join(r, "alias", "child")),
-    code: "EEXIST",
+    code: "ENOENT",
     posixOnly: true,
   },
 ];

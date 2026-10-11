@@ -4,7 +4,7 @@ import { directHelperCommand } from "../../src/claude/config.ts";
 import { CopilotEnvConfig } from "../../src/copilot_api/env_config.ts";
 import {
   daemonConfigFile,
-  DEFAULT_RELEASE_COOLDOWN_SECONDS,
+  defaultReleaseCooldownSeconds,
   type DenoRunner,
   ensureProxyNpmrc,
   type FetchLike,
@@ -154,7 +154,7 @@ function fakeDeno(
 /** The artifact set a COMPLETED prior float leaves behind. A record alone is a half-written
  *  float: cacheResolves' unproven arm checks the cache dir exists before vouching. */
 function seedFloat(version: string, atMs: number, denoDir?: string): void {
-  writeDaemonConfig(dir, ROOT);
+  writeDaemonConfig(dir);
   writeResolvedVersionRecord(dir, version, atMs, denoDir);
   mkdirSync(denoDir ?? proxyDenoDir(dir), { "recursive": true });
 }
@@ -356,7 +356,7 @@ describe("resolveMinimumReleaseAgeSeconds", () => {
   // env override > stored config > built-in default; a non-numeric override is refused, never
   // read as zero.
   test("the env override wins over the stored cooldown, which wins over the default", () => {
-    expect(resolveMinimumReleaseAgeSeconds()).toBe(DEFAULT_RELEASE_COOLDOWN_SECONDS);
+    expect(resolveMinimumReleaseAgeSeconds()).toBe(defaultReleaseCooldownSeconds());
     new CopilotEnvConfig().set({ "daemon.release-cooldown": 172800 });
     expect(resolveMinimumReleaseAgeSeconds()).toBe(172800);
     for (const [env, seconds] of [["100", 100], ["0", 0]] as const) {
@@ -904,17 +904,20 @@ describe("writeDaemonConfig", () => {
     //     date"), because only the caret range is in deno.lock;
     //   - `nodeModulesDir` routes resolution through a node_modules tree a compiled
     //     install does not have.
-    writeDaemonConfig(dir, ROOT);
+    writeDaemonConfig(dir);
     const config = JSON.parse(readFileSync(daemonConfigFile(dir), "utf8"));
 
     expect(config.imports[PROXY_PKG]).toBeDefined();
     expect(config.lock).toBeUndefined();
     expect(config.nodeModulesDir).toBeUndefined();
 
-    // The import map must be complete, not just the proxy: the preload shims resolve
-    // their OWN imports through it, and `--cached-only` gives no second chance.
-    const source = JSON.parse(readFileSync(join(ROOT, "deno.json"), "utf8"));
-    expect(Object.keys(config.imports).sort()).toEqual(Object.keys(source.imports).sort());
+    // The import map must be complete, not just the proxy: the preload shims resolve their OWN
+    // imports through it, and `--cached-only` gives no second chance. Every runtime dependency
+    // of this build (package.json's `dependencies`, which the CLI itself installs) is mapped.
+    const manifest = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")) as {
+      dependencies: Record<string, string>;
+    };
+    expect(Object.keys(config.imports).sort()).toEqual(Object.keys(manifest.dependencies).sort());
   });
 
   test("the float writes it before caching", async () => {
@@ -935,15 +938,12 @@ describe("writeDaemonConfig", () => {
   });
 });
 
-// A compiled install root has no deno.json on disk (the checkout marker), so both no-float
-// spawn paths (a COPILOT_API_ENTRY override, the mapped package fallback) must generate the
-// daemon config from the embedded assets. The mode is injected because the suite always runs
-// in checkout mode; the installer smoke covers the ambient default against a real binary.
-describe("resolveCopilotApiEntry on a compiled root", () => {
-  const compiledMode = () => ({ "kind": "compiled", "root": join(dir, "install-root") }) as const;
-
-  test("both no-float entries resolve under a daemon config generated from the embedded assets", () => {
-    const fallback = resolveCopilotApiEntry(compiledMode());
+// No root carries a deno config of its own (the CLI runs on Bun), so both no-float spawn paths
+// (a COPILOT_API_ENTRY override, the mapped package fallback) generate the daemon config from
+// the embedded manifest, checkout and compiled install alike.
+describe("resolveCopilotApiEntry with no float record", () => {
+  test("both no-float entries resolve under a daemon config generated from the embedded manifest", () => {
+    const fallback = resolveCopilotApiEntry();
     expect(fallback.kind).toBe("package");
     expect(fallback.configFile).toBe(daemonConfigFile(dir));
     const config = JSON.parse(readFileSync(daemonConfigFile(dir), "utf8"));
@@ -953,7 +953,7 @@ describe("resolveCopilotApiEntry on a compiled root", () => {
     rmSync(daemonConfigFile(dir));
     process.env.COPILOT_API_ENTRY = join(dir, "fake-proxy.mjs");
     try {
-      expect(resolveCopilotApiEntry(compiledMode())).toEqual({
+      expect(resolveCopilotApiEntry()).toEqual({
         "kind": "file",
         "path": join(dir, "fake-proxy.mjs"),
         "configFile": daemonConfigFile(dir),
@@ -970,18 +970,11 @@ describe("resolveCopilotApiEntry on a compiled root", () => {
     const sentinel = '{"imports":{"sentinel":"npm:sentinel@1.0.0"}}\n';
     mkdirSync(join(dir, "proxy"), { recursive: true });
     writeFileSync(daemonConfigFile(dir), sentinel);
-    const entry = resolveCopilotApiEntry(compiledMode());
+    const entry = resolveCopilotApiEntry();
     expect(entry.configFile).toBe(daemonConfigFile(dir));
     const config = JSON.parse(readFileSync(daemonConfigFile(dir), "utf8"));
     expect(config.imports.sentinel).toBeUndefined();
     expect(config.imports[PROXY_PKG]).toBeDefined();
-  });
-
-  test("a checkout root keeps the on-disk fallback, with no write side effect", () => {
-    const entry = resolveCopilotApiEntry({ "kind": "checkout", "root": ROOT });
-    expect(entry.kind).toBe("package");
-    expect(entry.configFile).toBe(join(ROOT, "deno.json"));
-    expect(existsSync(daemonConfigFile(dir))).toBe(false);
   });
 });
 

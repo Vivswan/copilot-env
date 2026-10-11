@@ -18,11 +18,12 @@ import {
 import type { DaemonCredential } from "../../src/copilot_api/process.ts";
 import { launchDaemon } from "../../src/copilot_api/process.ts";
 import type { Profile, ProfileName } from "../../src/copilot_api/profile.ts";
-import { parseAbsolutePath } from "../../src/copilot_api/sidecar.ts";
+import { resolveDenoBin } from "../../src/copilot_api/sidecar.ts";
+import { resolveRootHome } from "../../src/copilot_api/paths.ts";
+import { daemonConfigFile, writeDaemonConfig } from "../../src/proxy_float.ts";
 import { acquireDaemonLockForLife, daemonLockPath } from "../../src/copilot_api/daemon_lock.ts";
 import { releaseFileLock } from "../../src/utils/file_lock.ts";
 import { pidAlive } from "../../src/utils/pid.ts";
-import { sidecarDeno } from "./deno_sidecar.ts";
 import { writeRunState } from "./fixtures.ts";
 import { bunRunArgs, ROOT, spawnChild } from "./run.ts";
 import { testAbortSignal } from "./testing.ts";
@@ -51,12 +52,14 @@ export const FAKE_DAEMON_CREDENTIAL: DaemonCredential = {
 export const FAKE_DAEMON_HOST = DEFAULT_COPILOT_API_BASE;
 
 /** A real detached daemon over `home`, preloads included, so it takes the daemon.lock at boot like
- *  production. The daemon runs under the sidecar deno, so a caller outside `sidecarTest` fails
- *  here, by name, on a machine with no deno on PATH. */
+ *  production: under the generated daemon config and the resolved sidecar deno. A caller outside
+ *  `sidecarTest` fails here, by name, on a machine with no deno anywhere. */
 export function launchFakeDaemon(home: string, port: number): number {
   mkdirSync(home, { recursive: true });
   const logFile = join(home, "daemon.log");
   writeFileSync(logFile, "");
+  const rootHome = resolveRootHome();
+  writeDaemonConfig(rootHome);
   return launchDaemon({
     port,
     logFile,
@@ -69,9 +72,9 @@ export function launchFakeDaemon(home: string, port: number): number {
     entry: {
       kind: "file",
       path: join(ROOT, "test", "copilot-api-fake.mjs"),
-      configFile: join(ROOT, "deno.json"),
+      configFile: daemonConfigFile(rootHome),
     },
-    denoBin: parseAbsolutePath(sidecarDeno()),
+    denoBin: resolveDenoBin(),
   });
 }
 

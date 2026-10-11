@@ -23,7 +23,7 @@ afterEach(() => {
 });
 
 test("resolveHome prefers COPILOT_API_HOME and falls back to the documented ~/.local/share/copilot-env (empty included)", () => {
-  // The fallback is spelled out, not read from DEFAULT_HOME: AGENTS.md documents this path as
+  // The fallback is spelled out, not read from defaultHome(): AGENTS.md documents this path as
   // the truth root, and a constant moved elsewhere would otherwise carry the test with it.
   const documented = join(homedir(), ".local", "share", "copilot-env");
   process.env.COPILOT_API_HOME = "/tmp/copilot-env-paths-home";

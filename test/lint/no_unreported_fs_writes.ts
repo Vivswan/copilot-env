@@ -15,7 +15,9 @@
 //                            file_lock.ts (the lock protocol's per-acquisition marker file, a
 //                            transient the seam documents), log_mute_preload.ts (patches the
 //                            PROXY's own createWriteStream, no write of ours), and
-//                            src/migrations/ (one-time fix-ups that narrate their own moves).
+//                            src/migrations/ (one-time fix-ups that narrate their own moves);
+//                            report_write.ts may `writeSync` to a DESCRIPTOR (its stderr line),
+//                            never to a path.
 //   no-raw-fs-reads          the same, plus src/usage/ (read-only inputs no dry run touches, on
 //                            the `agent cost` hot path with partial reads through a fd the seam has
 //                            no primitive for) and node_compat_preload.ts (runs before the seam
@@ -72,6 +74,12 @@ const READ_EXEMPT_PREFIX = "src/usage/";
  *  updater hashes, the daemon's `/dev/null` stdin); every other read in these files still goes
  *  through the seam. */
 const READ_HANDLE_ALLOWED = new Set(["src/install/checksums.ts", "src/copilot_api/process.ts"]);
+
+/** The one file that writes a descriptor rather than a path: the seam's own report line goes to
+ *  fd 2 through node:fs `writeSync`, which is console output, not a mutation. Every path write in
+ *  that file is still guarded. */
+const STDERR_WRITE_ALLOWED = new Set(["src/utils/report_write.ts"]);
+const FD_WRITE_NAMES = new Set(["write", "writeSync"]);
 
 /** node:fs mutation entry points, sync and promise spellings alike. */
 const FS_WRITE_NAMES = new Set([
@@ -240,6 +248,10 @@ const DENO_OPEN_WRITE_OPTIONS = new Set(["write", "append", "create", "createNew
 
 function withoutOpens(names: ReadonlySet<string>): ReadonlySet<string> {
   return new Set([...names].filter((name) => !FS_OPEN_NAMES.has(name)));
+}
+
+function withoutFdWrites(names: ReadonlySet<string>): ReadonlySet<string> {
+  return new Set([...names].filter((name) => !FD_WRITE_NAMES.has(name)));
 }
 
 const CHILD_PROCESS_MODULE = "node:child_process";
@@ -736,7 +748,7 @@ export function scanFsReach(path: string, source: string): FsFinding[] {
   const visitors: VisitorObject[] = [];
   if (guarded(path)) {
     const scan = newScan(WRITES_RULE, {
-      fs: FS_WRITE_NAMES,
+      fs: STDERR_WRITE_ALLOWED.has(path) ? withoutFdWrites(FS_WRITE_NAMES) : FS_WRITE_NAMES,
       deno: DENO_WRITE_NAMES,
       bun: BUN_WRITE_NAMES,
       message: WRITE_MESSAGE,

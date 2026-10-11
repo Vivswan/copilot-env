@@ -1,6 +1,7 @@
 import {
   chmodSync,
   copyFileSync,
+  existsSync,
   mkdirSync,
   readFileSync,
   realpathSync,
@@ -76,7 +77,7 @@ const BASE: DaemonSpec = {
   entry: {
     kind: "package",
     specifier: PROXY_PACKAGE_NAME,
-    configFile: join(ROOT, "deno.json"),
+    configFile: daemonConfigFile("/the/root/home"),
   },
   denoBin: parseAbsolutePath("/opt/deno/deno"),
 };
@@ -235,17 +236,19 @@ test("the preload set and its environment derive from the spec, in load order", 
 
 test("with no float record the argv runs the mapped package, offline-only, ending in start", () => {
   delete process.env.COPILOT_API_ENTRY;
+  // The generated daemon config, rendered on every resolve: no root carries a deno config of its own.
   expect(resolveCopilotApiEntry()).toEqual({
     kind: "package",
     specifier: PROXY_PACKAGE_NAME,
-    configFile: join(ROOT, "deno.json"),
+    configFile: daemonConfigFile(dir),
   });
+  expect(existsSync(daemonConfigFile(dir))).toBe(true);
 
   const argv = daemonArgv({ ...BASE, port: 4242 });
   expect(argv[0]).toBe("run");
   // The config is PINNED, never discovered: a package specifier has no directory to
   // discover from, and the preloads resolve their imports through this file's import map.
-  expect(argv.slice(1, 3)).toEqual(["--config", join(ROOT, "deno.json")]);
+  expect(argv.slice(1, 3)).toEqual(["--config", BASE.entry.configFile]);
   expect(argv).toContain("--cached-only");
   // The grants are an exact visible list: never a blanket -A, never one grant more than the daemon needs.
   expect(argv.filter((a) => a === "-A" || a.startsWith("--allow"))).toEqual([
@@ -255,7 +258,7 @@ test("with no float record the argv runs the mapped package, offline-only, endin
     "--allow-net",
     "--allow-sys",
   ]);
-  // deno.json's import map is the single source of the proxy version, so no version
+  // The generated config's import map is the single source of the proxy version, so no version
   // string is restated on the command line.
   expect(argv.slice(-5)).toEqual([
     PROXY_PACKAGE_NAME,
@@ -268,11 +271,11 @@ test("with no float record the argv runs the mapped package, offline-only, endin
   expect(daemonEnvironment(BASE, {}).DENO_DIR).toBeUndefined();
 });
 
-test("a daemon config with no float record runs the mapped package under that config, like the file override does", () => {
-  // One rule for every non-floated entry: the float's generated config wherever it exists, else the
-  // checkout's deno.json. The file override already answered this way; the package entry now agrees.
+test("a daemon config already on disk is re-rendered, never trusted as written", () => {
+  // One rule for every non-floated entry: the generated config, rewritten on every resolve, so a
+  // stale or foreign file cannot steer a spawn.
   delete process.env.COPILOT_API_ENTRY;
-  writeDaemonConfig(dir, ROOT);
+  writeFileSync(daemonConfigFile(dir), '{"imports":{"sentinel":"npm:sentinel@1.0.0"}}\n');
   expect(resolveCopilotApiEntry()).toEqual({
     kind: "package",
     specifier: PROXY_PACKAGE_NAME,
@@ -296,11 +299,10 @@ test("a float record moves the entry to that exact version, run out of the cache
 
   const spec = { ...BASE, entry };
   const argv = daemonArgv(spec);
-  // THE regression pin: the checkout's deno.json has `lock: {frozen: true}`, which rejects this
-  // specifier, and under `--cached-only` its import map demands packages the float's DENO_DIR never
-  // held. Both were live launch failures.
+  // THE regression pin: a config with a frozen lock rejects this exact specifier, and one whose
+  // import map names packages the float's DENO_DIR never held fails under `--cached-only`. Both
+  // were live launch failures; the generated config beside the record carries neither.
   expect(argv.slice(1, 3)).toEqual(["--config", daemonConfigFile(dir)]);
-  expect(argv).not.toContain(join(ROOT, "deno.json"));
   // A compiled install has no node_modules; resolution stays inside the float's cache.
   expect(argv).toContain("--node-modules-dir=none");
   // The resolve still never reaches the network: the float pre-warmed the cache DENO_DIR points at.
@@ -334,29 +336,24 @@ test("a floated resolve never rewrites the daemon config: the verify/float gate 
 });
 
 // A COPILOT_API_ENTRY override runs that file whether or not a float record exists, so the CI fake
-// is never shadowed by a real resolve; the config it runs under is whichever the float has written
-// (on an installed binary the generated one is the ONLY config on disk), else the checkout's.
-test("a COPILOT_API_ENTRY override runs that file under the float's config, never a cached package", () => {
+// is never shadowed by a real resolve; it runs under the generated daemon config either way.
+test("a COPILOT_API_ENTRY override runs that file under the generated config, never a cached package", () => {
   const fake = join(ROOT, "test", "copilot-api-fake.mjs");
   process.env.COPILOT_API_ENTRY = fake;
-  const rows: Array<{ floated: boolean; configFile: string }> = [
-    { floated: false, configFile: join(ROOT, "deno.json") },
-    { floated: true, configFile: daemonConfigFile(dir) },
-  ];
-  for (const row of rows) {
-    if (row.floated) {
-      writeDaemonConfig(dir, ROOT);
+  for (const floated of [false, true]) {
+    if (floated) {
       writeResolvedVersionRecord(dir, "1.14.30", Date.now(), join(dir, "deno", "cache"));
     }
-    expect({ ...row, entry: resolveCopilotApiEntry() }).toEqual({
-      ...row,
-      entry: { kind: "file", path: fake, configFile: row.configFile },
+    expect({ floated, entry: resolveCopilotApiEntry() }).toEqual({
+      floated,
+      entry: { kind: "file", path: fake, configFile: daemonConfigFile(dir) },
     });
+    expect(existsSync(daemonConfigFile(dir)), String(floated)).toBe(true);
   }
 
   const argv = daemonArgv({
     ...BASE,
-    entry: { kind: "file", path: fake, configFile: join(ROOT, "deno.json") },
+    entry: { kind: "file", path: fake, configFile: daemonConfigFile(dir) },
   });
   // `--cached-only` is about resolving a package; a file entry must never carry it.
   expect(argv).not.toContain("--cached-only");
@@ -385,12 +382,13 @@ sidecarTest("launchDaemon spawns exactly the spec's denoBin, never a re-derived 
   const entryFile = join(dir, "report-exec-path.ts");
   writeFileSync(entryFile, "console.log('EXEC:' + Deno.execPath());\n");
   const logFile = join(dir, "spawn.log");
+  writeDaemonConfig(dir);
   const pid = launchDaemon({
     ...BASE,
     denoBin: parseAbsolutePath(sidecar),
     home: dir,
     logFile,
-    entry: { kind: "file", path: entryFile, configFile: join(ROOT, "deno.json") },
+    entry: { kind: "file", path: entryFile, configFile: daemonConfigFile(dir) },
   });
   try {
     expect(pid).toBeGreaterThan(0);
@@ -508,7 +506,7 @@ test("the sweep signature matches every real daemon shape, straight from daemonA
     isDaemonProcess(
       daemonRow({
         ...BASE,
-        entry: { kind: "file", path: fake, configFile: join(ROOT, "deno.json") },
+        entry: { kind: "file", path: fake, configFile: daemonConfigFile(dir) },
       }),
     ),
   ).toBe(true);

@@ -18,13 +18,13 @@ import {
   checkAuth,
   checkAutoupdate,
   checkCli,
-  checkDeno,
   checkLaunchers,
   checkLook,
   checkNodeModules,
   checkProxyPackage,
   checkProxyResolved,
   checkProxySidecar,
+  checkRuntime,
   checkRuntimeWatchdog,
   checkShellIntegration,
   evaluateAll,
@@ -126,12 +126,12 @@ function defaultTarget(overrides: TargetOverrides = {}): DefaultRuntimeTarget {
 
 const BOOTSTRAP_OK: BootstrapFacts = {
   cliVersion: "3.1.0",
-  denoVersion: "2.9.5",
+  runtimeVersion: "1.4.2",
   nodeModules: { present: true, fresh: true },
 };
 
-const DEV_SIDECAR: ProxyFacts["sidecar"] = {
-  kind: "dev",
+const PATH_SIDECAR: ProxyFacts["sidecar"] = {
+  kind: "path",
   referenceVersion: "2.9.5",
   denoBin: "/deno",
   version: "2.9.5",
@@ -222,11 +222,11 @@ test("proxy package: the version bounds decide status and fix, the cooldown the 
       cooldownSeconds: 604800,
       floatSkips: false,
       resolved: null,
-      sidecar: DEV_SIDECAR,
+      sidecar: PATH_SIDECAR,
       ...facts,
     });
   const standalone: ProxyFacts["sidecar"] = {
-    ...DEV_SIDECAR,
+    ...PATH_SIDECAR,
     kind: "provisioned",
     standalone: true,
   };
@@ -319,7 +319,7 @@ test("proxy package: the version bounds decide status and fix, the cooldown the 
       name: "missing, both agents direct",
       facts: { ...missing, floatSkips: true },
       status: "fail",
-      fix: "deno install --frozen",
+      fix: "bun install --frozen-lockfile",
     },
     {
       name: "in bounds, both agents direct",
@@ -366,7 +366,7 @@ test("proxy package: the version bounds decide status and fix, the cooldown the 
   }
 });
 
-test("proxy sidecar: absent is fatal for a compiled build, a warning for a checkout", () => {
+test("proxy sidecar: absent is fatal wherever the proxy may spawn; a found deno is named by where it came from", () => {
   const facts = (sidecar: ProxyFacts["sidecar"]): ProxyFacts => ({
     version: "1.10.5",
     bounds: { ok: true, version: "1.10.5" },
@@ -391,7 +391,7 @@ test("proxy sidecar: absent is fatal for a compiled build, a warning for a check
   expect(compiled.status).toBe("fail");
   expect(compiled.fix).toBe("install deno (https://deno.com), or `agent start` to provision one");
 
-  // From a checkout the runtime itself is the answer, so a missing sidecar is not fatal.
+  // A checkout is no different: the CLI runs on Bun, so it has no deno of its own to fall back on.
   expect(
     checkProxySidecar(
       facts({
@@ -403,19 +403,19 @@ test("proxy sidecar: absent is fatal for a compiled build, a warning for a check
       }),
     )
       .status,
-  ).toBe("warn");
+  ).toBe("fail");
 
-  const dev = checkProxySidecar(
+  const checkoutPath = checkProxySidecar(
     facts({
-      kind: "dev",
+      kind: "path",
       referenceVersion: "2.9.5",
       denoBin: "/usr/bin/deno",
       version: "2.9.5",
       standalone: false,
     }),
   );
-  expect(dev.status).toBe("ok");
-  expect(dev.detail).toContain("/usr/bin/deno");
+  expect(checkoutPath.status).toBe("ok");
+  expect(checkoutPath.detail).toContain("/usr/bin/deno");
 
   const provisioned = checkProxySidecar(
     facts({
@@ -503,7 +503,7 @@ test("proxy resolved: no record is ok, a record with a missing cache fails", () 
     floatSkips,
     resolved,
     sidecar: {
-      kind: "dev",
+      kind: "path",
       referenceVersion: "2.9.5",
       denoBin: "/deno",
       version: "2.9.5",
@@ -511,7 +511,7 @@ test("proxy resolved: no record is ok, a record with a missing cache fails", () 
     },
   });
 
-  // Never floated: the deno.json baseline runs, which is a working fallback.
+  // Never floated: the mapped package runs under the generated config, which is a working fallback.
   const none = checkProxyResolved(facts(null));
   expect(none.status).toBe("ok");
   expect(none.detail).toContain("not floated");
@@ -1180,8 +1180,8 @@ test("with no recorded port the default target probes the configured port, marke
 
 // --- bootstrap checks -------------------------------------------------------
 
-test("deno is named; node_modules absent fails, stale warns, fresh ok", () => {
-  expect(checkDeno(BOOTSTRAP_OK)).toMatchObject({ status: "ok", detail: "deno 2.9.5" });
+test("the runtime is named; node_modules absent fails, stale warns, fresh ok", () => {
+  expect(checkRuntime(BOOTSTRAP_OK)).toMatchObject({ status: "ok", detail: "bun 1.4.2" });
   expect(checkNodeModules(BOOTSTRAP_OK).status).toBe("ok");
   expect(
     checkNodeModules({ ...BOOTSTRAP_OK, nodeModules: { present: false, fresh: false } }).status,
@@ -1523,7 +1523,7 @@ test("evaluateAll: each scope yields its own check ids", () => {
       cooldownSeconds: 604800,
       floatSkips: false,
       resolved: null,
-      sidecar: DEV_SIDECAR,
+      sidecar: PATH_SIDECAR,
     },
     shell: { files: [], integrationWired: true, launchersWired: false },
     clis: [{ command: "claude", name: "Claude", look: { kind: "absent" } }],

@@ -177,6 +177,10 @@ test("scoped to src/, minus each rule's own exemptions", () => {
     expect(lint(write + read, handle), handle).toEqual({ writes: 1, reads: 1 });
     expect(lint(writeOpen, handle), handle).toEqual({ writes: 1, reads: 0 });
   }
+  // The report writes its line to fd 2 raw; a path write there is still a write.
+  const fdWrite = 'import { writeSync } from "node:fs"; writeSync(2, "x");';
+  expect(lint(fdWrite, "src/utils/report_write.ts")).toEqual({ writes: 0, reads: 0 });
+  expect(lint(fdWrite, "src/commands/example.ts")).toEqual({ writes: 1, reads: 0 });
   // The seam's overlay and report read the disk through fs_disk.ts, not around it.
   for (const seam of [
     "src/utils/fs_facade.ts",

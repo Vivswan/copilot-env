@@ -42,7 +42,7 @@ export function changedPaths(before: Map<string, string>, after: Map<string, str
   }
   for (const path of before.keys()) if (!after.has(path)) changed.add(path);
   for (const path of changed) {
-    if (/\.lock$|\.oslock$|\.tmp\.\d+$/.test(path) && !before.has(path)) changed.delete(path);
+    if (/\.lock$|\.tmp\.\d+$/.test(path) && !before.has(path)) changed.delete(path);
   }
   return changed;
 }

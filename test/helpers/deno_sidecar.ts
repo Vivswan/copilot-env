@@ -1,15 +1,17 @@
 // The proxy daemon, its preload shims, and the daemon-side modules they load still run under the
 // Deno sidecar, so a test of daemon-side behaviour spawns a deno, never the running bun. The deno
-// comes from PATH (the gate puts the sidecar's there) and is never a pinned path; a machine with
-// none skips those tests by name, so a missing sidecar is visible in the run, never a silent green.
+// comes from PATH through the shared resolver (test/helpers/sidecar.ts, the finder production uses)
+// and is never a pinned path; a machine with none skips those tests by name, so a missing sidecar
+// is visible in the run, never a silent green.
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { type RunOptions, runSync, spawnChild, type SpawnChildOptions } from "./run.ts";
+import { sidecarDenoOnPath } from "./sidecar.ts";
 import { tempDir, test } from "./testing.ts";
 
 type RegisterTest = ReturnType<typeof test.skipIf>;
 
-const SIDECAR_DENO: string | null = Bun.which("deno");
+const SIDECAR_DENO: string | null = sidecarDenoOnPath();
 
 const SKIP_REASON = "skipped: no deno on PATH, and the daemon side still runs under the sidecar";
 

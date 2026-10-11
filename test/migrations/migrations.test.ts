@@ -39,6 +39,7 @@ import {
   v409IdentityCache,
   v409ProfileVerbTree,
 } from "../../src/migrations/4.0.9.ts";
+import { removeOsLockSidecars } from "../../src/migrations/5.0.1.ts";
 import { dueMigrations, type Migration, runMigrations } from "../../src/migrations/index.ts";
 import { MARKER, MARKER_END } from "../../src/shell/integration.ts";
 import { agentAuthGetArgs, agentLauncherCommand, proxyTokenCommand } from "../../src/utils/root.ts";
@@ -1772,3 +1773,33 @@ test(
   },
   120_000,
 );
+
+test("5.0.1 sweeps every .oslock sidecar under the root home and the install's .autoupdate, nested dirs included, and nothing else", () => {
+  // The marker file is the lock now (src/utils/file_lock.ts), so a sidecar a 5.0.0 run left is
+  // debris wherever it sits: beside a store lock at the root, a profile home's daemon.lock, a
+  // run dir's start lock, the autoupdate throttle. The marker itself and every neighbour stay.
+  const home = tempDir("copilot-migrate-oslock-");
+  const autoupdateHome = join(home, "install", ".autoupdate");
+  const debris = [
+    join(home, "locks", "credentials.json.lock.oslock"),
+    join(home, "profiles", "work", "daemon.lock.oslock"),
+    join(home, "run", "default", ".start.lock.oslock"),
+    join(autoupdateHome, "update.lock.oslock"),
+  ];
+  const kept = [
+    join(home, "locks", "credentials.json.lock"),
+    join(home, "profiles", "work", "daemon.lock"),
+    join(home, "notes.txt"),
+    join(autoupdateHome, "state.json"),
+  ];
+  for (const path of [...debris, ...kept]) {
+    mkdirSync(join(path, ".."), { recursive: true });
+    writeFileSync(path, path.endsWith(".oslock") ? "" : "kept");
+  }
+  const said = warningsDuring(() => removeOsLockSidecars([home, autoupdateHome]), "info");
+  expect(debris.map((path) => existsSync(path))).toEqual([false, false, false, false]);
+  expect(kept.map((path) => existsSync(path))).toEqual([true, true, true, true]);
+  for (const path of debris) expect(said).toContain(path);
+  // A second run has nothing to do and says nothing: the step is idempotent.
+  expect(warningsDuring(() => removeOsLockSidecars([home, autoupdateHome]), "info")).toBe("");
+});

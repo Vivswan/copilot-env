@@ -102,23 +102,24 @@ test("childPathPrepending dedupes the dirs; childEnvWithPath builds the child en
 const psModulePathIn = (env: Record<string, string | undefined>) =>
   Object.fromEntries(Object.entries(env).filter(([key]) => /^psmodulepath$/i.test(key)));
 
-test("withPowershellChildEnv: a 5.1 child sees no PSModulePath under any casing, a pwsh child the parent's own, and the parent has it back after", () => {
+test("withPowershellChildEnv: a 5.1 child sees no PSModulePath under any casing, a pwsh child the parent's own, and the parent's env is never touched", () => {
   process.env.PSModulePath = "/pwsh/Modules";
   // One key on Windows, where env names are case-insensitive; a second casing elsewhere.
   if (process.platform !== "win32") process.env.psmodulepath = "/pwsh/modules";
   const parentOwn = psModulePathIn(process.env);
-  const childSees = () =>
-    runSync(process.execPath, ["-e", 'console.log(process.env.PSModulePath ?? "")']).stdout
-      .trim();
+  // The map is what a spawn passes as the child's whole env; the parent's own is left as is.
+  const childSees = (env: Record<string, string>) =>
+    runSync(process.execPath, ["-e", 'console.log(process.env.PSModulePath ?? "")'], { env })
+      .stdout.trim();
 
   const desktop = withPowershellChildEnv("powershell", (env) => ({
     map: psModulePathIn(env),
-    child: childSees(),
+    child: childSees(env),
   }));
   expect(desktop).toEqual({ map: {}, child: "" });
   const core = withPowershellChildEnv("pwsh", (env) => ({
     map: psModulePathIn(env),
-    child: childSees(),
+    child: childSees(env),
   }));
   expect(core).toEqual({ map: parentOwn, child: "/pwsh/Modules" });
   expect(psModulePathIn(process.env)).toEqual(parentOwn);

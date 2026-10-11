@@ -147,7 +147,7 @@ describe("buildInstallPlan", () => {
   test("refuses a binary whose embedded assets are incomplete, naming the missing one", () => {
     // Anything the plan expects to find in the VFS but that compile.ts never
     // embedded has to fail loudly here, not produce a half-built install.
-    const missing = ["shell", ".dvmrc", "src/utils/json.ts", "copilot-env.config"];
+    const missing = ["shell", "bunfig.toml", "src/utils/json.ts", "copilot-env.config"];
     for (const asset of missing) {
       writeAssetSource(source);
       rmSync(join(source, asset), { recursive: true, force: true });

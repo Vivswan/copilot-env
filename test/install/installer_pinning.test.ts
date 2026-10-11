@@ -23,10 +23,8 @@ import {
   RELEASE_TARGETS,
   releaseAssetName,
 } from "../../src/install/targets.ts";
-import { readDvmrcPin } from "../../src/copilot_api/sidecar.ts";
 import { withPowershellChildEnv } from "../../src/utils/command.ts";
-import { writeDaemonConfig } from "../../src/proxy_float.ts";
-import { readProjectConfig } from "../../src/utils/project_config.ts";
+import { readProjectConfig, readSidecarDenoVersion } from "../../src/utils/project_config.ts";
 import { ROOT, runScript, runSync } from "../helpers/run.ts";
 import { describe, expect, removeDir, tempDir, test } from "../helpers/testing.ts";
 import { tsFilesUnder as srcFiles } from "../helpers/tree.ts";
@@ -152,18 +150,16 @@ describe("bundled-only assets are never read through PROJECT_ROOT", () => {
   });
 
   test("a VFS holding exactly the bundled-only assets satisfies every run-time reader", () => {
-    // The converse guard: an asset a reader takes from ASSET_ROOT at run time (the daemon's
-    // import map, the sidecar's version pin, the project config) that left BUNDLED_ONLY_ASSETS
-    // breaks every compiled install while the suite stays green on the checkout copy.
+    // The converse guard: an asset a reader takes from ASSET_ROOT at run time (the sidecar's
+    // version pin, the project config) that left BUNDLED_ONLY_ASSETS breaks every compiled
+    // install while the suite stays green on the checkout copy.
     const vfs = tempDir("ce-vfs-");
-    const home = tempDir("ce-vfs-home-");
     try {
       for (const asset of BUNDLED_ONLY_ASSETS) {
         copyFileSync(join(ROOT, asset), join(vfs, asset));
       }
       const readers: Record<string, (root: string) => unknown> = {
-        "daemon import map": (root) => writeDaemonConfig(home, root),
-        "sidecar version pin": readDvmrcPin,
+        "sidecar version pin": readSidecarDenoVersion,
         "project config": readProjectConfig,
       };
       for (const [name, read] of Object.entries(readers)) {
@@ -173,7 +169,6 @@ describe("bundled-only assets are never read through PROJECT_ROOT", () => {
       }
     } finally {
       removeDir(vfs);
-      removeDir(home);
     }
   });
 });

@@ -291,7 +291,7 @@ Each node is one layer, labelled with the paths it owns; an arrow means the laye
 
 An edge is any relative import: runtime, type-only, re-export, side-effect, or a string-literal `import()`. Imports inside one layer are not edges, and a layer absent from `edges` imports nothing outside itself.
 
-<!-- BEGIN GENERATED: architecture-map (deno task docs:arch; derived from architecture.json) -->
+<!-- BEGIN GENERATED: architecture-map (bun run docs:arch; derived from architecture.json) -->
 
 ```mermaid
 graph TD

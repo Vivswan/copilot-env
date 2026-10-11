@@ -5,8 +5,8 @@
 //                       never preempts the deadline race that tears a test's children down
 //   output           -> a file's stdout and stderr are kept in arrival order and printed as one
 //                       block when the file finishes, so parallel files never interleave
-import { statSync } from "node:fs";
-import { availableParallelism } from "node:os";
+import { mkdirSync, mkdtempSync, rmSync, statSync } from "node:fs";
+import { availableParallelism, tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -14,6 +14,8 @@ const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const TEST_DIR = join(ROOT, "test");
 const TEST_GLOB = "**/*.test.ts";
 const JOBS_ENV = "COPILOT_ENV_TEST_JOBS";
+/** A persistent HOME for every `bun test` child, in place of the per-child scratch one. */
+const TEST_HOME_ENV = "COPILOT_ENV_TEST_HOME";
 // Windows runners are the slow leg.
 const PER_TEST_TIMEOUT_MS = process.platform === "win32" ? 120_000 : 60_000;
 
@@ -62,14 +64,34 @@ function jobs(): number {
 }
 
 /**
- * The parent's env with NODE_ENV pinned: `bun test` sets NODE_ENV=test when it is unset, which
- * consola reads as a test run and silences the info output the logger tests assert on, in the
- * test process and in every child that inherits its env (test/helpers/testing.ts pins the same
- * value once loaded). `--no-env-file` on the same child keeps a .env in the checkout out of the
- * suite.
+ * The parent's env with NODE_ENV pinned and HOME at `home`: `bun test` sets NODE_ENV=test when
+ * it is unset, which consola reads as a test run and silences the info output the logger tests
+ * assert on, in the test process and in every child that inherits its env (test/helpers/testing.ts
+ * pins the same value once loaded). `--no-env-file` on the same child keeps a .env in the
+ * checkout out of the suite. Bun reads os.homedir() once at startup, so a HOME the helpers
+ * retarget later never reaches it: the child must start under the scratch one, or a test that
+ * resolves a path through homedir() writes into the developer's real home.
  */
-function childEnv(): Record<string, string | undefined> {
-  return { ...process.env, NODE_ENV: "development" };
+function childEnv(home: string): Record<string, string | undefined> {
+  const env: Record<string, string | undefined> = {
+    ...process.env,
+    NODE_ENV: "development",
+    HOME: home,
+  };
+  if (process.platform === "win32") env.USERPROFILE = home;
+  return env;
+}
+
+/** The child's HOME: the persistent TEST_HOME_ENV directory, else a scratch one removed with the
+ *  child. */
+function childHome(): { home: string; dispose: () => void } {
+  const persistent = process.env[TEST_HOME_ENV];
+  if (persistent !== undefined && persistent !== "") {
+    mkdirSync(persistent, { recursive: true });
+    return { home: persistent, dispose: () => {} };
+  }
+  const home = mkdtempSync(join(tmpdir(), "copilot-env-test-home-"));
+  return { home, dispose: () => rmSync(home, { recursive: true, force: true }) };
 }
 
 /** Aborted on SIGINT or SIGTERM, so an interrupted run leaves no `bun test` behind. */
@@ -77,30 +99,35 @@ const cancel = new AbortController();
 
 async function runFile(file: string): Promise<FileResult> {
   const started = performance.now();
-  const child = Bun.spawn(
-    [process.execPath, "test", "--no-env-file", "--timeout", String(PER_TEST_TIMEOUT_MS), file],
-    {
-      cwd: ROOT,
-      env: childEnv(),
-      stdin: "ignore",
-      stdout: "pipe",
-      stderr: "pipe",
-      signal: cancel.signal,
-      killSignal: "SIGKILL",
-    },
-  );
-  const chunks: string[] = [];
-  const collect = async (stream: ReadableStream<Uint8Array>): Promise<void> => {
-    const decoder = new TextDecoder();
-    for await (const chunk of stream) chunks.push(decoder.decode(chunk, { stream: true }));
-    chunks.push(decoder.decode());
-  };
-  const [exitCode] = await Promise.all([
-    child.exited,
-    collect(child.stdout),
-    collect(child.stderr),
-  ]);
-  return { file, exitCode, output: chunks.join(""), ms: performance.now() - started };
+  const { home, dispose } = childHome();
+  try {
+    const child = Bun.spawn(
+      [process.execPath, "test", "--no-env-file", "--timeout", String(PER_TEST_TIMEOUT_MS), file],
+      {
+        cwd: ROOT,
+        env: childEnv(home),
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
+        signal: cancel.signal,
+        killSignal: "SIGKILL",
+      },
+    );
+    const chunks: string[] = [];
+    const collect = async (stream: ReadableStream<Uint8Array>): Promise<void> => {
+      const decoder = new TextDecoder();
+      for await (const chunk of stream) chunks.push(decoder.decode(chunk, { stream: true }));
+      chunks.push(decoder.decode());
+    };
+    const [exitCode] = await Promise.all([
+      child.exited,
+      collect(child.stdout),
+      collect(child.stderr),
+    ]);
+    return { file, exitCode, output: chunks.join(""), ms: performance.now() - started };
+  } finally {
+    dispose();
+  }
 }
 
 async function runAll(files: string[], limit: number): Promise<FileResult[]> {

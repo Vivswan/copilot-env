@@ -1,12 +1,13 @@
-// Under the daemon's permission set (everything but --allow-run) the null signal throws Deno's
-// NotCapable with code undefined, which an EPERM-only catch read as DEAD; pidAlive=false gates
-// tracking clears and sweeps. The restricted run below produces the real NotCapable, so the
-// "unproven" mapping and withUnprovablePidProbe (test/helpers/daemon.ts) are anchored to the
-// genuine shape.
+// The daemon runs on the Deno sidecar under a permission set without --allow-run, where the null
+// signal throws Deno's NotCapable with code undefined; an EPERM-only catch read that as DEAD, and
+// pidAlive=false gates tracking clears, sweeps, and now the file lock's takeover. The restricted
+// run below produces the real NotCapable, so the "unproven" mapping and withUnprovablePidProbe
+// (test/helpers/daemon.ts) are anchored to the genuine shape.
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { resolveDenoBin } from "../../src/copilot_api/sidecar.ts";
 import { pidAlive, pidLiveness } from "../../src/utils/pid.ts";
-import { denoRunArgs, importSpecifier, ROOT, runSync } from "../helpers/run.ts";
+import { bunRunArgs, importSpecifier, ROOT, runSync } from "../helpers/run.ts";
 import { expect, tempDir, test } from "../helpers/testing.ts";
 
 // A pid no real process holds (far above any OS pid ceiling we run on).
@@ -40,8 +41,9 @@ test(
         "]));\n",
     );
     // The daemon's own grants (PROXY_PERMISSIONS minus net): everything BUT --allow-run,
-    // the capability the null signal needs -- the set every in-daemon consumer runs under.
-    const restricted = runSync(Deno.execPath(), [
+    // the capability the null signal needs -- the set every in-daemon consumer runs under. The
+    // deno is the sidecar's (PATH or the override), the one the daemon itself runs on.
+    const restricted = runSync(resolveDenoBin(), [
       "run",
       "--quiet",
       "--no-prompt",
@@ -55,10 +57,10 @@ test(
     // A live pid and a never-assigned pid read the SAME: the probe could not look, so neither is a
     // verdict, and the wrapper flattens both to true so no boolean consumer acts on an unproven death.
     expect(JSON.parse(restricted.stdout)).toEqual(["unproven", "unproven", true, true]);
-    // Control: the identical script under the run-granted test permission set proves the
-    // reading above is the permission set's doing, not the harness's: our own pid reads alive
-    // and a never-assigned pid reads dead.
-    const control = runSync(Deno.execPath(), [...denoRunArgs(), script]);
+    // Control: the identical script under the CLI's own runtime proves the reading above is the
+    // permission set's doing, not the harness's: our own pid reads alive and a never-assigned pid
+    // reads dead.
+    const control = runSync(process.execPath, [...bunRunArgs(), script]);
     expect(control.exitCode).toBe(0);
     expect(JSON.parse(control.stdout)).toEqual(["alive", "dead", true, false]);
   },

@@ -2,7 +2,7 @@
 // through `agent migrate <from> <to>`: runPostFlipMigrations (src/install/installer.ts) spawns it
 // on the NEW binary after `agent update` or a reinstall flips `current`, so the migrations load
 // from the new code, not the already-running old process. A dev checkout may run it directly:
-//   deno run -P=cli src/migrations/index.ts <fromVersion> <toVersion>
+//   bun src/migrations/index.ts <fromVersion> <toVersion>
 import "../utils/dotenv.ts";
 import { consola } from "consola";
 import { errMessage } from "../utils/error.ts";
@@ -21,6 +21,7 @@ import {
   v409StateFold,
   v409StaticKeyScope,
 } from "./4.0.9.ts";
+import { v501OsLockSidecars } from "./5.0.1.ts";
 import { dryRunActive } from "../utils/fs_facade.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
 
@@ -62,6 +63,7 @@ const MIGRATIONS: Migration[] = [
   v409IdentityCache,
   v409LaunchersBlock,
   v409ProfileVerbTree,
+  v501OsLockSidecars,
 ];
 
 // versionLessThan tolerates unparseable input by answering "not less-than", so a
@@ -137,7 +139,7 @@ if (import.meta.main) {
   configureConsolaOutput();
   const [from, to] = process.argv.slice(2);
   if (!from || !to) {
-    consola.error("usage: deno run -P=cli src/migrations/index.ts <fromVersion> <toVersion>");
+    consola.error("usage: bun src/migrations/index.ts <fromVersion> <toVersion>");
     process.exitCode = 2;
   } else {
     runMigrations(from, to).catch((e: unknown) => {

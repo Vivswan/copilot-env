@@ -1,7 +1,8 @@
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   LockBusyError,
+  probeFileLock,
   releaseFileLock,
   removeMarkerWithRetry,
   tryAcquireFileLock,
@@ -9,13 +10,15 @@ import {
   withFileLockSync,
   withRequiredFileLockSync,
 } from "../../src/utils/file_lock.ts";
+import type { PidLiveness } from "../../src/utils/pid.ts";
 import { ROOT } from "../helpers/run.ts";
 import { expect, tempDir, test } from "../helpers/testing.ts";
 import { tsFilesUnder } from "../helpers/tree.ts";
 
 // The multi-process mutual-exclusion proof is config_lock.test.ts. Here every judgment is
 // deterministic: probes use an injected clock or staleMs=Infinity, so a suspended test
-// process can never age a lock mid-test.
+// process can never age a lock mid-test, and another process is played by a marker naming a
+// foreign pid under an injected liveness.
 
 let dir = "";
 function tmp(name: string): string {
@@ -24,7 +27,9 @@ function tmp(name: string): string {
 }
 
 const DEAD_PID = 2_147_483_646; // never a live process
+const OTHER_PID = process.pid + 1; // another process, as the injected liveness says
 const marker = (pid: number, ts: number): string => `${pid}\n${ts}\n`;
+const alive = (): PidLiveness => "alive";
 
 test("acquire, contend against a fresh live holder, release, re-acquire", () => {
   const path = tmp("x.lock");
@@ -36,9 +41,9 @@ test("acquire, contend against a fresh live holder, release, re-acquire", () => 
   expect(tryAcquireFileLock(path, 10_000, { nowMs: 3_000 })).toBe(true);
 });
 
-test("a HELD lock's marker stays readable and deletable by path (the sidecar invariant)", () => {
-  // Other processes read the marker to judge the holder. An exclusive LockFileEx on Windows
-  // fails reads from every other handle, so the OS lock lives on a sidecar, not the marker.
+test("the lock file IS the marker: it names the holder's pid and clock, readable by path", () => {
+  // Other processes read it to judge the holder (the daemon verdict, LockBusyError's pid), and
+  // the daemon on the Deno sidecar creates the same file, so the text is the whole protocol.
   const path = tmp("x.lock");
   expect(tryAcquireFileLock(path, 10_000, { nowMs: 1_000 })).toBe(true);
   expect(readFileSync(path, "utf-8")).toBe(marker(process.pid, 1_000));
@@ -70,15 +75,13 @@ test("the marker delete is retried through an open-handle refusal, and gives up 
   expect(refusals).toBe(1);
 });
 
-// A marker under a free OS lock is a leftover the acquirer overwrites, never a holder to wait out.
-// The incident shape is the first row: on Windows a scanner's open handle refused the release's
-// delete, and while the marker was judged, every writer (the ex-holder included) backed off from
-// that fresh marker, wrote unlocked once its 4 s wait ran out, and only stopped colliding when the
-// marker aged out at 10 s.
-test("a leftover marker under a free OS lock never delays an acquirer, whatever its pid or age", () => {
+// The takeover rule, row by row. A leftover is a file no live process stands behind: a dead pid
+// (a crash, a SIGKILL), a malformed marker, or this process's own pid with nothing in the record
+// (a release Windows refused). Each is taken over at once, whatever its age; the acquirer's own
+// marker replaces it.
+test("a leftover marker (dead pid, malformed, or our own pid with no hold) is taken over, whatever its age", () => {
   const rows: { label: string; leftover: string }[] = [
-    { label: "this process, fresh", leftover: marker(process.pid, Date.now()) },
-    { label: "another live pid, fresh", leftover: marker(process.ppid, Date.now()) },
+    { label: "this process, fresh, not held", leftover: marker(process.pid, Date.now()) },
     { label: "a dead pid, fresh", leftover: marker(DEAD_PID, Date.now()) },
     { label: "malformed", leftover: "garbage" },
   ];
@@ -93,17 +96,64 @@ test("a leftover marker under a free OS lock never delays an acquirer, whatever 
   });
 });
 
+// The other half of the rule: a pid that lives, or one this process cannot judge, is a holder.
+// `unproven` is the daemon's own reading (its Deno permission set cannot signal), so a daemon never
+// takes over a lock on a guess; the CLI, which can judge, does.
+test("a marker naming a live pid, or one whose liveness is unproven, is a holder: refused, left byte for byte", () => {
+  const rows: { label: string; liveness: PidLiveness }[] = [
+    { label: "alive", liveness: "alive" },
+    { label: "unproven", liveness: "unproven" },
+  ];
+  dir = tempDir("copilot-env-file-lock-");
+  rows.forEach((row, i) => {
+    const path = join(dir, `${i}.lock`);
+    const leftover = marker(OTHER_PID, 1_000);
+    writeFileSync(path, leftover);
+    const acquired = tryAcquireFileLock(path, 10_000, {
+      nowMs: Date.now(),
+      liveness: () => row.liveness,
+    });
+    expect({ label: row.label, acquired, marker: readFileSync(path, "utf-8") })
+      .toEqual({ label: row.label, acquired: false, marker: leftover });
+  });
+});
+
+// The probe's four answers, and that it never writes: the daemon verdict (daemon_lock.ts) and the
+// dry-run marker (dry_run.ts) read through it.
+test("probeFileLock: held by a live pid or by us, free under a dead pid or our unheld pid, absent, unknown when unjudgeable", () => {
+  dir = tempDir("copilot-env-file-lock-");
+  const path = join(dir, "probe.lock");
+  expect(probeFileLock(path)).toEqual({ kind: "absent" });
+
+  writeFileSync(path, marker(OTHER_PID, 1_000));
+  expect(probeFileLock(path, alive)).toEqual({ kind: "held", markerPid: OTHER_PID });
+  expect(probeFileLock(path, () => "dead")).toEqual({ kind: "free", markerPid: OTHER_PID });
+  expect(probeFileLock(path, () => "unproven")).toEqual({ kind: "unknown" });
+  expect(readFileSync(path, "utf-8")).toBe(marker(OTHER_PID, 1_000)); // never written
+
+  writeFileSync(path, marker(process.pid, 1_000));
+  expect(probeFileLock(path)).toEqual({ kind: "free", markerPid: process.pid }); // ours, unheld
+  rmSync(path);
+  expect(tryAcquireFileLock(path, 10_000, { nowMs: 2_000 })).toBe(true);
+  expect(probeFileLock(path)).toEqual({ kind: "held", markerPid: process.pid });
+  releaseFileLock(path);
+
+  // A directory at the path is a marker that cannot be read: unknown, never free.
+  mkdirSync(path);
+  expect(probeFileLock(path)).toEqual({ kind: "unknown" });
+});
+
 // The release judgment reads the marker at the path: only OUR marker is deleted. A release by a
 // non-holder (a test's cleanup, a stray primitive call) leaves another pid's marker byte-for-byte,
 // or it would blind the probes to the live holder's pid; our own marker goes even when its ts half
-// is corrupted (a torn write). A declined delete still drops our OS lock and handle.
+// is corrupted (a torn write).
 test("release deletes our marker only: another pid's survives, a corrupted ts of ours does not", () => {
   // arrange writes the path and returns the marker expected there AFTER the release (null = gone).
   const rows: { label: string; arrange: (path: string) => string | null }[] = [
     {
       label: "release by a non-holder is refused (another pid's marker survives)",
       arrange: (path) => {
-        const other = marker(process.pid + 1, 2_000);
+        const other = marker(OTHER_PID, 2_000);
         writeFileSync(path, other);
         return other;
       },
@@ -123,10 +173,6 @@ test("release deletes our marker only: another pid's survives, a corrupted ts of
     releaseFileLock(path);
     const after = existsSync(path) ? readFileSync(path, "utf-8") : null;
     expect({ label: row.label, after }).toEqual({ label: row.label, after: expectedAfter });
-    // Acquirable again at once: a surviving marker under a free OS lock is a leftover, not a holder.
-    expect({ label: row.label, reacquired: tryAcquireFileLock(path, 5_000, { nowMs: 3_000 }) })
-      .toEqual({ label: row.label, reacquired: true });
-    releaseFileLock(path);
   });
 });
 
@@ -323,6 +369,7 @@ test("the lock primitives stay out of src/", () => {
   // scoped API, which keeps acquisition, release, and evidence in one owner. Each name is
   // allowed ONLY in its listed modules.
   //   tryAcquireFileLock, probeFileLock in daemon_lock.ts  -> released by process death, so no scope
+  //   probeFileLock in dry_run.ts                          -> a child's read of the marker
   const allowedIn: Record<string, string[]> = {
     tryAcquireFileLock: [
       join(ROOT, "src", "utils", "file_lock.ts"),
@@ -331,6 +378,7 @@ test("the lock primitives stay out of src/", () => {
     probeFileLock: [
       join(ROOT, "src", "utils", "file_lock.ts"),
       join(ROOT, "src", "copilot_api", "daemon_lock.ts"),
+      join(ROOT, "src", "utils", "dry_run.ts"),
     ],
     releaseFileLock: [join(ROOT, "src", "utils", "file_lock.ts")],
   };
@@ -392,27 +440,28 @@ test("withRequiredFileLockSync never runs fn unlocked: a holder past the wait is
 
 // The bounded wait measures one holder's silence, not the queue. Behind live writers the marker
 // changes at every hold (a release, then the successor's pid+ts), so a contender waits them all out
-// however long the queue is; only a marker unchanged for waitMs is a hung or leaked holder. The OS
-// lock is refused through the seam, and the marker at the path plays the other process.
+// however long the queue is; only a marker unchanged for waitMs is a hung or leaked holder. The
+// other process is played by a marker naming a foreign pid, kept alive by the injected liveness,
+// which is consulted on every refused attempt and so can rewrite the marker between them.
 test("the bounded wait restarts on every holder change: live writers never starve a contender, a silent holder still gives up at waitMs", () => {
   const path = tmp("queue.lock");
-  const OTHER = process.pid + 1;
   const HOLDS = 20;
   const policy = { staleMs: 10_000, waitMs: 40, retryMs: 5 };
 
   // One writer that releases and re-acquires between every attempt (same pid, a new ts): HOLDS
   // refusals x retryMs is far past waitMs, and the contender still takes the lock afterwards.
   let attempts = 0;
-  const churning = (file: Deno.FsFile): boolean => {
+  writeFileSync(path, marker(OTHER_PID, 1_000));
+  const churning = (): PidLiveness => {
     attempts += 1;
-    if (attempts > HOLDS) return file.tryLockSync(true);
-    writeFileSync(path, marker(OTHER, 1_000 + attempts));
-    return false;
+    if (attempts > HOLDS) return "dead";
+    writeFileSync(path, marker(OTHER_PID, 1_000 + attempts));
+    return "alive";
   };
   const t0 = Date.now();
   const held = withRequiredFileLockSync(
     path,
-    { ...policy, osLock: churning },
+    { ...policy, liveness: churning },
     (lock) => lock.held,
   );
   expect({ held, attempts, outlastedWait: Date.now() - t0 >= policy.waitMs })
@@ -422,51 +471,45 @@ test("the bounded wait restarts on every holder change: live writers never starv
   // The same refusals under a marker that never changes: a LockBusyError naming that pid at about
   // waitMs, well short of the churning row's attempts, and the holder's marker untouched.
   attempts = 0;
-  writeFileSync(path, marker(OTHER, 1_000));
-  const silent = (): boolean => {
+  writeFileSync(path, marker(OTHER_PID, 1_000));
+  const silent = (): PidLiveness => {
     attempts += 1;
-    return false;
+    return "alive";
   };
   let ran = false;
   expect(() =>
-    withRequiredFileLockSync(path, { ...policy, osLock: silent }, () => {
+    withRequiredFileLockSync(path, { ...policy, liveness: silent }, () => {
       ran = true;
     })
-  ).toThrow(`pid ${OTHER}`);
+  ).toThrow(`pid ${OTHER_PID}`);
   expect({ ran, gaveUp: attempts <= HOLDS, leftover: readFileSync(path, "utf-8") })
-    .toEqual({ ran: false, gaveUp: true, leftover: marker(OTHER, 1_000) });
+    .toEqual({ ran: false, gaveUp: true, leftover: marker(OTHER_PID, 1_000) });
 });
 
-// The OS lock operation itself can throw (ENOLCK on a filesystem without locking, EACCES): the
-// lock's own I/O failing, so it rides the bounded wait like a refused marker write.
-test("a throwing OS lock operation is retried through the wait, then rethrown as itself (required) or not-held (best-effort)", () => {
-  const path = tmp("nolock.lock");
-  const enolck = (): never => {
-    throw Object.assign(new Error("no locks available"), { code: "ENOLCK" });
-  };
-  // Throws once, then locks for real: a required writer that gave up at the throw would surface it.
+// The lock's own I/O can fail (its directory cannot be made, the create is refused): the lock's
+// own failure, so it rides the bounded wait like a refused marker write and then surfaces as
+// itself, never as a holder nobody can stop.
+test("a lock whose own I/O fails is retried through the wait, then rethrown as itself (required) or not-held (best-effort)", () => {
+  dir = tempDir("copilot-env-file-lock-");
+  // A regular file where the lock's directory must be: every mkdir of it fails, on every platform.
+  const blocker = join(dir, "not-a-dir");
+  writeFileSync(blocker, "");
+  const path = join(blocker, "x.lock");
   let attempts = 0;
-  const once = (file: Deno.FsFile): boolean =>
-    (attempts += 1) === 1 ? enolck() : file.tryLockSync(true);
-  const held = withRequiredFileLockSync(
-    path,
-    { staleMs: 10_000, waitMs: Number.POSITIVE_INFINITY, retryMs: 5, osLock: once },
-    (lock) => lock.held,
-  );
-  expect({ held, attempts }).toEqual({ held: true, attempts: 2 });
-  expect(existsSync(path)).toBe(false); // released on the way out
-
-  // Never locks: past the wait a required writer rethrows the cause as itself and a best-effort
-  // caller sees not-held; nobody is told a holder is there, and no marker is written.
-  const never = { staleMs: 10_000, waitMs: 0, osLock: enolck };
+  const counting = (): PidLiveness => {
+    attempts += 1;
+    return "alive";
+  };
+  const policy = { staleMs: 10_000, waitMs: 20, retryMs: 5, liveness: counting };
   let ran = false;
   expect(() =>
-    withRequiredFileLockSync(path, never, () => {
+    withRequiredFileLockSync(path, policy, () => {
       ran = true;
     })
-  ).toThrow("no locks available");
+  ).toThrow(/ENOTDIR|EEXIST|ENOENT/);
   expect(ran).toBe(false);
-  expect(withFileLockSync(path, never, (o) => o))
+  expect(attempts).toBe(0); // no marker was there to judge: the failure is the lock's own
+  expect(withFileLockSync(path, policy, (o) => o))
     .toEqual({ held: false, reason: "unavailable", cause: expect.any(Error) });
   expect(existsSync(path)).toBe(false);
 });

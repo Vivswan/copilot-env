@@ -2,9 +2,9 @@ import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { CopilotApiConfig } from "../../src/copilot_api/config.ts";
 import {
+  bunRunArgs,
   CHILD_VALUES,
   childValuesEnv,
-  denoRunArgs,
   importSpecifier,
   ROOT,
   spawnChild,
@@ -21,18 +21,18 @@ interface WorkerExit {
   stderr: string;
 }
 
-function spawnWorker(worker: string, store: string): Promise<WorkerExit> {
-  const child = spawnChild(Deno.execPath(), {
-    args: [...denoRunArgs(), worker],
+async function spawnWorker(worker: string, store: string): Promise<WorkerExit> {
+  const child = spawnChild([process.execPath, ...bunRunArgs(), worker], {
     env: childValuesEnv({ store }),
-    stdout: "piped",
-    stderr: "piped",
+    stdout: "pipe",
+    stderr: "pipe",
   });
-  return child.output().then((o) => ({
-    code: o.code,
-    stdout: new TextDecoder().decode(o.stdout),
-    stderr: new TextDecoder().decode(o.stderr),
-  }));
+  const [code, stdout, stderr] = await Promise.all([
+    child.exited,
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+  ]);
+  return { code, stdout, stderr };
 }
 
 /** A red names the worker's own error (its stderr, with the exit code) instead of a bare exit
@@ -74,9 +74,9 @@ test("update() serializes concurrent writers across processes (no lost updates)"
 }, 30_000);
 
 // The Windows incident: a scanner's open handle refused the release's marker delete, leaving a
-// fresh marker under a live pid. While the marker was judged, every writer (that pid's own process
-// included) waited it out and wrote unlocked; now the OS lock alone decides and update() lands at once.
-test("update() lands at once over a fresh leftover marker, its own pid's included", () => {
+// fresh marker naming a live pid, this process's own. Nothing in this process holds it, so it is a
+// leftover the next update() takes over at once, whatever its age.
+test("update() lands at once over a fresh leftover marker of its own pid", () => {
   const dir = tempDir("copilot-lock-");
   try {
     const store = join(dir, "s.json");

@@ -1,11 +1,12 @@
-// The one pid-liveness judgment, so no two consumers (copilot_api/process.ts, the health probes)
-// can disagree about a pid. It lives in utils because the daemon shims' import closure must not
-// pull in copilot_api/process.ts, which reaches the daemon spawn and proxy-float graph.
+// The one pid-liveness judgment, so no two consumers (copilot_api/process.ts, the health probes,
+// the file lock) can disagree about a pid. It lives in utils because the daemon shims' import
+// closure must not pull in copilot_api/process.ts, which reaches the daemon spawn and proxy-float
+// graph.
 
 /** Three states on purpose: a probe that could not run is not a death, and every consumer whose
- *  "dead" licenses a destructive act (a tracking clear, a kill) must never read it as
- *  one. */
-type PidLiveness = "alive" | "dead" | "unproven";
+ *  "dead" licenses a destructive act (a tracking clear, a kill, a lock takeover) must never read
+ *  it as one. */
+export type PidLiveness = "alive" | "dead" | "unproven";
 
 export function pidLiveness(pid: number): PidLiveness {
   try {
@@ -17,8 +18,8 @@ export function pidLiveness(pid: number): PidLiveness {
     // EPERM is answered only for a pid that exists: a sandboxed token (Codex's packaged app
     // spawning us) cannot signal it.
     if (code === "EPERM") return "alive";
-    // Deno's NotCapable (code undefined) under a permission set without --allow-run, the daemon's
-    // own.
+    // Anything else is a probe that did not run: the daemon's Deno sidecar refuses the null
+    // signal under its permission set (NotCapable, code undefined).
     return "unproven";
   }
 }

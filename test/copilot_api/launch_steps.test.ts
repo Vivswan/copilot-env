@@ -441,8 +441,9 @@ test("a live daemon.lock holder in any daemon home is never listed for the sweep
   }
 });
 
-// Two ways the lock probe fails to name a holder, one verdict: indeterminate, so the sweep lists
-// nothing and the holder stop skips. Reading either as "nobody there" would sweep a protected daemon.
+// A lock probe that cannot read the marker (the marker IS the lock, so a malformed one is a
+// leftover to take over, never a nameless holder) reads indeterminate: the sweep lists nothing and
+// the holder stop skips. Reading it as "nobody there" would sweep a protected daemon.
 test("a lock probe that cannot name a holder reads indeterminate: the sweep lists nothing, the holder stop skips", async () => {
   const home = tmpHome();
   const listPids = () => Promise.resolve([333]);
@@ -456,17 +457,6 @@ test("a lock probe that cannot name a holder reads indeterminate: the sweep list
       name: "unreadable marker",
       arrange: () => mkdirSync(daemonLockPath(home), { recursive: true }),
       restore: () => rmSync(daemonLockPath(home), { recursive: true, force: true }),
-    },
-    {
-      // Hold the lock, then corrupt the marker: the OS lock proves SOMEONE lives, but no pid can
-      // be named.
-      name: "held lock whose marker names nobody",
-      arrange: () => {
-        expect(acquireDaemonLockForLife(home, { waitMs: 0 })).toBe(true);
-        writeFileSync(daemonLockPath(home), "not a marker\n");
-        expect(daemonLockHolderPid(home)).toBe(null); // nobody NAMEABLE to signal
-      },
-      restore: () => releaseFileLock(daemonLockPath(home)),
     },
   ];
   for (const row of rows) {
@@ -586,41 +576,6 @@ sidecarTest(
     }
   },
   60_000,
-);
-
-// A lock-dead tracked pid (never signalled by the tracked stop) recycled onto a live lockless
-// daemon must still reach the orphan sweep: the sweep's keep set is taken after this slot's
-// clear, so the stale record cannot spare it.
-sidecarTest(
-  "planCleanup: a lock-dead tracked pid recycled onto a lockless daemon is still swept",
-  async () => {
-    const home = tmpHome();
-    const child = spawnDenoChild({
-      args: [join(ROOT, "test", "copilot-api-fake.mjs"), "start"],
-      stdout: "ignore",
-      stderr: "ignore",
-    });
-    try {
-      mkdirSync(home, { recursive: true });
-      // A free lock whose marker names the child: the daemon that wrote it died and the
-      // OS released the lock; the pid number was then recycled onto the lockless child.
-      writeFileSync(daemonLockPath(home), `${child.pid}\n${Date.now()}\n`);
-      writeRunState({ pid: child.pid, port: 4141 });
-      expect(daemonLockVerdict(home, child.pid)).toBe("dead"); // control: no tracked signal
-
-      const plan = await planCleanup(home, null, new CopilotEnvRunState(), () =>
-        Promise.resolve([child.pid]),
-      );
-      expect(plan).toEqual([
-        { kind: "clear-tracking", pid: child.pid },
-        { kind: "stop-orphan", pid: child.pid },
-      ] satisfies CleanupAction[]);
-      expect(pidAlive(child.pid)).toBe(true); // planning is read-only
-    } finally {
-      await killAndAwaitExit(child.pid);
-    }
-  },
-  30_000,
 );
 
 sidecarTest(

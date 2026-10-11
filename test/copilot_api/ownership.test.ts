@@ -70,13 +70,11 @@ test("reads write nothing on a fresh home (no lock sidecar); a mutation takes th
     }),
   ).toEqual([]);
   expect(readdirSync(dirname(paths.stateStoreFile)).sort()).toEqual(before);
-  // The control, on disk: a mutation takes the store's one lock (its sidecar lands under
-  // locks/) and writes the ledger -- bookkeeping inside the data home, so it
-  // prints nothing either.
-  const sidecar = `${paths.stateStoreLock}.oslock`;
-  expect(existsSync(sidecar)).toBe(false);
+  // The control, on disk: a mutation takes the store's one lock (the marker under locks/, released
+  // on return) and writes the ledger -- bookkeeping inside the data home, so it prints nothing
+  // either.
   expect(reported(() => ledger.record("claudeDesktop", "/lib/uuid.json"))).toEqual([]);
-  expect(existsSync(sidecar)).toBe(true);
+  expect(existsSync(paths.stateStoreLock)).toBe(false);
   expect(existsSync(paths.stateStoreFile)).toBe(true);
 });
 

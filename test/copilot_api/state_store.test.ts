@@ -33,9 +33,9 @@ test("the three writers share one file under one lock, and each preserves the ke
     token: "ghu_x",
   });
   new OwnershipLedger().record("claudeDesktop", "/lib/uuid.json");
-  // One lock sidecar for the whole store, under locks/; none per former store.
-  expect(existsSync(`${paths.stateStoreLock}.oslock`)).toBe(true);
-  expect(existsSync(join(paths.locksDir, "credentials.json.lock.oslock"))).toBe(false);
+  // One lock marker for the whole store, under locks/, released on return; none per former store.
+  expect(existsSync(paths.stateStoreLock)).toBe(false);
+  expect(existsSync(join(paths.locksDir, "credentials.json.lock"))).toBe(false);
   // A newer release's keys in `global` and in a profile map survive a settings write, and the
   // state keys sharing the maps survive it too.
   const doc = JSON.parse(readFileSync(paths.stateStoreFile, "utf8")) as {

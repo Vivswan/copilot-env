@@ -20,12 +20,13 @@ import { resolveRootHome } from "../../src/copilot_api/paths.ts";
 import type { DaemonCredential } from "../../src/copilot_api/process.ts";
 import { launchDaemon } from "../../src/copilot_api/process.ts";
 import type { Profile, ProfileName } from "../../src/copilot_api/profile.ts";
-import { resolveDenoBin } from "../../src/copilot_api/sidecar.ts";
+import { parseAbsolutePath } from "../../src/copilot_api/sidecar.ts";
 import { daemonConfigFile, writeDaemonConfig } from "../../src/proxy_float.ts";
 import { releaseFileLock } from "../../src/utils/file_lock.ts";
 import { pidAlive } from "../../src/utils/pid.ts";
 import { writeRunState } from "./fixtures.ts";
 import { bunRunArgs, ROOT, spawnChild } from "./run.ts";
+import { sidecarDenoOnPath } from "./sidecar.ts";
 import { testAbortSignal } from "./testing.ts";
 
 /** `agent start`'s two credential steps as one call, the refusal gate and the resolution it feeds,
@@ -52,8 +53,15 @@ export const FAKE_DAEMON_CREDENTIAL: DaemonCredential = {
 export const FAKE_DAEMON_HOST = DEFAULT_COPILOT_API_BASE;
 
 /** A real detached daemon over `home`, preloads included, so it takes the daemon.lock at boot like
- *  production: under the generated daemon config and the resolved sidecar deno. A caller outside
- *  `sidecarTest` fails here, by name, on a machine with no deno anywhere. */
+ *  production: under the generated daemon config and the sidecar deno found when the helpers
+ *  loaded (a test that narrows PATH to a scratch bin for its agent lookups must not lose it). A
+ *  caller outside `sidecarTest` fails here, by name, on a machine with no deno on PATH. */
+function sidecarDeno(): string {
+  const deno = sidecarDenoOnPath();
+  if (deno === null) throw new Error("no deno on PATH: the fake daemon runs under the sidecar");
+  return deno;
+}
+
 export function launchFakeDaemon(home: string, port: number): number {
   mkdirSync(home, { recursive: true });
   const logFile = join(home, "daemon.log");
@@ -74,7 +82,7 @@ export function launchFakeDaemon(home: string, port: number): number {
       path: join(ROOT, "test", "copilot-api-fake.mjs"),
       configFile: daemonConfigFile(rootHome),
     },
-    denoBin: resolveDenoBin(),
+    denoBin: parseAbsolutePath(sidecarDeno()),
   });
 }
 

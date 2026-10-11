@@ -31,19 +31,13 @@ const ENTRY = "src/cli.ts";
 const KNOWN_TRIPLES = RELEASE_TARGETS.map((target) => target.triple);
 
 function usage(): string {
-  return `Usage: bun run build [--target TRIPLE]...
-       bun scripts/compile.ts --host
+  return `Usage: bun run build [--target TRIPLE|host]...
 
 Compiles ${ENTRY} for every release target into ${OUT_DIR}/ and writes
 ${OUT_DIR}/checksums.txt. --target (repeatable) restricts the build to the
-given triple(s), e.g. for a quick local host build:
+given triple(s); \`host\` is this machine's, e.g. for a quick local build:
 
-  bun run build --target aarch64-apple-darwin
-
---host prints this machine's triple on stdout and exits, for a workflow that
-builds the host binary:
-
-  bun run build --target "$(bun scripts/compile.ts --host)"
+  bun run build --target host
 
 Targets: ${KNOWN_TRIPLES.join(" ")}`;
 }
@@ -53,31 +47,34 @@ function die(message: string): never {
   process.exit(2);
 }
 
+/** `host` is this machine's target: the installer workflows build only that one. */
 function knownTarget(triple: string): ReleaseTarget {
+  if (triple === "host") {
+    const host = currentReleaseTarget();
+    if (host === null) {
+      die(`no release target for this platform (${process.platform}/${process.arch}).`);
+    }
+    return host;
+  }
   const target = RELEASE_TARGETS.find((candidate) => candidate.triple === triple);
   if (target === undefined) {
-    die(`unknown target '${triple}' (known: ${KNOWN_TRIPLES.join(" ")}).`);
+    die(`unknown target '${triple}' (known: host ${KNOWN_TRIPLES.join(" ")}).`);
   }
   return target;
 }
 
-function parseCli(): { host: boolean; help: boolean; targets: ReleaseTarget[] } {
+function parseCli(): { help: boolean; targets: ReleaseTarget[] } {
   try {
     const { values } = parseArgs({
       args: process.argv.slice(2),
       options: {
         help: { type: "boolean", short: "h" },
-        host: { type: "boolean" },
         target: { type: "string", multiple: true },
       },
       strict: true,
       allowPositionals: false,
     });
-    return {
-      host: values.host === true,
-      help: values.help === true,
-      targets: (values.target ?? []).map(knownTarget),
-    };
+    return { help: values.help === true, targets: (values.target ?? []).map(knownTarget) };
   } catch (error) {
     die(`${error instanceof Error ? error.message : String(error)} (try --help)`);
   }
@@ -86,14 +83,6 @@ function parseCli(): { host: boolean; help: boolean; targets: ReleaseTarget[] } 
 const cli = parseCli();
 if (cli.help) {
   console.log(usage());
-  process.exit(0);
-}
-if (cli.host) {
-  const host = currentReleaseTarget();
-  if (host === null) {
-    die(`no release target for this platform (${process.platform}/${process.arch}).`);
-  }
-  console.log(host.triple);
   process.exit(0);
 }
 const targets = cli.targets.length > 0 ? cli.targets : [...RELEASE_TARGETS];

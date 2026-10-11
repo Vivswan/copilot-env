@@ -139,7 +139,7 @@ function run(command: string, args: string[], env: Record<string, string> = {}):
   if (result.status !== 0) process.exit(result.status ?? 1);
 }
 
-run("bun", ["run", "build", "--target", target.triple]);
+run("bun", ["run", "build", "--target", "host"]);
 
 // Delete only after a successful build, so a broken build never leaves the
 // machine with no install at all.

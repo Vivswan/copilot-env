@@ -1,16 +1,14 @@
-# Repo-owned release gate: the checks required before a release that run nowhere on PRs or
-# pushes to main. Everything that runs on every PR stays in checks.yml; this file holds only what
-# would otherwise first run after the tag exists (update-release.yml's upload-assets job) or only
-# on a push to main (the path-filtered floated lifecycle). The managed ci.yml calls it on the
-# release-please PR and on a manual dispatch, where all-green blocks on it; nightly.yml calls it
-# on the schedule so a break shows the next morning instead of on the release PR. checks.yml
-# never calls it: ci.yml already does, and a second call runs every job twice.
+# Repo-owned release gate: the checks required before a release that run nowhere on a PR or a
+# push to main. Everything that runs on a PR stays in checks.yml; this file holds only what would
+# otherwise first run after the tag exists (update-release.yml's upload-assets job). The managed
+# ci.yml calls it on the release-please PR and on a workflow_dispatch, where all-green blocks on
+# it; nightly.yml calls it on the schedule so a break shows the next morning instead of on the
+# release PR. checks.yml never calls it: ci.yml already does, and a second call runs every job
+# twice.
 #
-#   release-assets    -> the installer assets pinned to a synthetic tag and validated, the five
-#                        cross-compiled binaries with dist/checksums.txt verified, every asset
-#                        present at a real size, the host's binary running --help
-#   floated-lifecycle -> the real proxy from the live registry, asserted up to auth; checks.yml
-#                        runs the same smoke path-filtered on PRs, so this is the unconditional run
+#   release-assets -> the installer assets pinned to a synthetic tag and validated, the five
+#                     cross-compiled binaries with dist/checksums.txt verified, every asset
+#                     present at a real size, the host's binary running --help
 #
 # The caller's contract: workflow_call only, no inputs, no secrets, contents: read, every job
 # bounded by timeout-minutes (test/utils/release_gate.test.ts).
@@ -49,9 +47,13 @@ jobs:
       - name: Install dependencies
         run: deno install --frozen
 
+      # Read through the repository's one version owner (src/utils/version.ts), not a second
+      # package.json reader.
       - name: Name the synthetic release tag
         id: tag
-        run: echo "tag=v$(jq -r .version package.json)" >> "$GITHUB_OUTPUT"
+        run: |
+          version="$(deno eval 'import { packageVersion } from "./src/utils/version.ts"; console.log(packageVersion())')"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
 
       - name: Create installer assets
         env:
@@ -71,10 +73,11 @@ jobs:
           deno task compile
           (cd dist && sha256sum -c checksums.txt)
 
-      # checksums.txt lists whatever compile produced, so a target that never compiled is absent
-      # from it rather than wrong in it: the expected names come from the targets' one source of
-      # truth (src/install/targets.ts) instead. A denort that failed to embed leaves a stub well
-      # under the floor; the host's binary also has to start.
+      # scripts/compile.ts already fails the step above when a target does not compile. What only
+      # this step catches is a zero-exit compile that left a stub or a truncated artifact (a denort
+      # that failed to embed, a download cut short): the size floor and the host's --help run
+      # expose both. The expected names come from the targets' one source of truth
+      # (src/install/targets.ts), since checksums.txt lists only what compile wrote.
       - name: Prove every release asset exists and the host's runs
         run: |
           set -euo pipefail
@@ -87,32 +90,3 @@ jobs:
           done
           chmod +x "dist/$host"
           "./dist/$host" --help
-
-  # The one job that floats the REAL proxy against the live registry and runs the daemon to auth.
-  # It asserts up to auth, not through a lifecycle: there is no credential here.
-  #
-  #   checks.yml lifecycle smoke     -> the fake (COPILOT_API_ENTRY)                 -> start/stop + health
-  #   checks.yml test-container      -> the real proxy, offline from the warmed cache -> the suite is hermetic
-  #   checks.yml floated-lifecycle   -> the real proxy, live registry, path-filtered  -> a PR that can break the float
-  #   this floated-lifecycle         -> the real proxy, live registry, unconditional  -> the release and the night
-  floated-lifecycle:
-    name: floated lifecycle (real proxy)
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
-        with:
-          deno-version-file: .dvmrc
-          cache: true
-
-      - name: Install dependencies
-        run: deno ci
-
-      # No COPILOT_API_ENTRY: `agent start` resolves and runs the real proxy.
-      # The runner's HOME is disposable, which is what the smoke's guard wants.
-      - name: Float the proxy and assert the daemon reaches auth
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: deno run --allow-env --allow-read --allow-run=deno .github/scripts/floated-smoke.ts

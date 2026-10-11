@@ -70,4 +70,10 @@ What a red means: usually a claude or codex release changed the shape our probe 
 
 ### The release gate
 
-`.github/workflows/release-gate.yml` holds the checks required before a release that run nowhere on PRs or pushes to main: the five-target cross-compile with `dist/checksums.txt` verified, every asset proven present and the host's binary proven to run, the installer assets pinned to a synthetic tag and validated (`.github/scripts/release-assets.ts`, the same steps `update-release.yml` runs after the tag), and the floated proxy lifecycle run unconditionally (`checks.yml` runs it path-filtered on PRs). The managed `ci.yml` calls it on the release-please PR and on a dispatch, where `all-green` blocks on it; `nightly.yml` calls it on the schedule. `checks.yml` is what every PR runs and never calls it.
+`.github/workflows/release-gate.yml` holds the checks required before a release that run nowhere on a PR or a push to main. Its one job, `release-assets`, runs the build and validation that `update-release.yml` otherwise first runs after the tag exists:
+
+- the five-target cross-compile with `dist/checksums.txt` verified
+- the release-assets prepare and validate against a synthetic tag (`.github/scripts/release-assets.ts`), with the installers' syntax checks
+- every asset proven present at a real size, and the host's binary run with `--help`
+
+The managed `ci.yml` calls it on the release-please PR and on a dispatch, where `all-green` blocks on it; `nightly.yml` calls it on the schedule. `checks.yml` is what every PR runs and never calls it.

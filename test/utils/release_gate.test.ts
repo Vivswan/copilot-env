@@ -17,14 +17,12 @@ function jobsOf(workflow: unknown): Record<string, unknown> {
   return isRecord(workflow) && isRecord(workflow.jobs) ? workflow.jobs : {};
 }
 
-/** The jobs of a release-gate document with no numeric `timeout-minutes`. */
 function unboundedJobs(workflow: unknown): string[] {
   return Object.entries(jobsOf(workflow))
     .filter(([, job]) => !(isRecord(job) && typeof job["timeout-minutes"] === "number"))
     .map(([id]) => id);
 }
 
-/** `<file>:<job>` for every job across the given workflow documents that calls the gate. */
 function gateCallers(workflows: Record<string, unknown>): string[] {
   return Object.entries(workflows).flatMap(([file, workflow]) =>
     Object.entries(jobsOf(workflow))
@@ -36,7 +34,7 @@ function gateCallers(workflows: Record<string, unknown>): string[] {
 test("every release-gate job is bounded, and one repository-side job calls the gate", () => {
   const workflows = Object.fromEntries(
     readdirSync(WORKFLOWS)
-      .filter((name) => name.endsWith(".yml"))
+      .filter((name) => /\.ya?ml$/.test(name))
       .map((name) => [name, parseYaml(readFileSync(join(WORKFLOWS, name), "utf8"))]),
   );
   expect(unboundedJobs(workflows["release-gate.yml"])).toEqual([]);

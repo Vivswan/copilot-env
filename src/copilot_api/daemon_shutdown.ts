@@ -55,19 +55,20 @@ function withDeadline(promise: Promise<unknown>, ms: number): Promise<void> {
 export function shutdownDaemon(code = 0): Promise<void> {
   if (shuttingDown !== null) return shuttingDown;
   const server = daemonServer;
-  if (server === null) Deno.exit(code);
+  if (server === null) process.exit(code);
   shuttingDown = withDeadline(Promise.resolve(server.shutdown()), DRAIN_DEADLINE_MS).then(() =>
-    Deno.exit(code),
+    process.exit(code),
   );
   return shuttingDown;
 }
 
 /** POSIX only: on Windows node's `process.kill(pid, "SIGTERM")` is TerminateProcess, which no
- *  in-process handler can intercept, and deno's signal listeners there accept only SIGINT/SIGBREAK.
- *  The Windows daemon keeps the hard kill; SQLite WAL recovery is what makes that safe. */
+ *  in-process handler can intercept. The Windows daemon keeps the hard kill; SQLite WAL recovery
+ *  is what makes that safe. The process API, not the runtime's own: this module runs inside the
+ *  deno daemon and under the CLI's bun-side watchdog test alike. */
 export function installTerminationHandler(): void {
-  if (Deno.build.os === "windows") return;
-  Deno.addSignalListener("SIGTERM", () => {
+  if (process.platform === "win32") return;
+  process.on("SIGTERM", () => {
     void shutdownDaemon(0);
   });
 }

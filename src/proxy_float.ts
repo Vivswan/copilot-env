@@ -286,7 +286,7 @@ export function writeDaemonConfig(rootHome: string): void {
 }
 
 /** `dependencies` is the test seam; the default is the embedded manifest's. An aliased entry
- *  (`"semver": "npm:@jsr/std__semver@^1"`) already names its package: the alias is the map key and
+ *  (`"@std/semver": "npm:@jsr/std__semver@^1"`) already names its package: the alias is the map key and
  *  the specifier is taken as written. */
 function renderDaemonConfig(dependencies: Record<string, string> = packageDependencies()): string {
   if (dependencies[PROXY_PKG] === undefined) {

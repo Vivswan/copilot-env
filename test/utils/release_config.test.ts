@@ -3,7 +3,7 @@
 // merging one would move the published tag.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { greaterThan, parse } from "semver";
+import { greaterThan, parse } from "@std/semver";
 import { PROJECT_ROOT } from "../../src/utils/root.ts";
 import { expect, test } from "../helpers/testing.ts";
 

@@ -1,5 +1,5 @@
 // Tolerant on purpose: a ragged (`1.2`) or `v`-prefixed input never throws.
-import { format, lessThan, type SemVer, tryParse } from "semver";
+import { format, lessThan, type SemVer, tryParse } from "@std/semver";
 
 /** A compile-time tripwire, not a proof of parseability: a literal `x.y.z` assigns structurally, an
  *  arbitrary runtime string must pass through `toSemverString` first, and boundaries still parse.

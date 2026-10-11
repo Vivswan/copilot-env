@@ -233,8 +233,9 @@ export async function prepareLaunch(action: LaunchAction): Promise<LaunchPlan | 
 
 function spawnAgentCli(plan: LaunchPlan): number {
   const spawn = verbatimCliSpawn(plan.command, plan.args);
-  // Deno's node:child_process MERGES the `env` option over the parent environment (node replaces),
-  // so a scrubbed key must also be cleared from the parent for the child's span, then restored.
+  // A scrubbed key is also cleared from the parent for the child's span, then restored, so the
+  // child sees it under neither spawn semantics (an `env` merged over the parent's, or one
+  // replacing it).
   const scrubbed: [string, string][] = [];
   for (const [key, value] of Object.entries(process.env)) {
     if (value !== undefined && plan.scrub.includes(key.toUpperCase())) {

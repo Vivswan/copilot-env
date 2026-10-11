@@ -4,7 +4,7 @@
 // shell start.
 //
 // The digest shim MUST load before the first sigstore import: tuf-js and @sigstore/core call
-// node:crypto verify() without a digest, which Deno rejects.
+// node:crypto verify() without a digest, which a runtime that infers no default rejects.
 import "../utils/node_crypto_digest_shim.ts";
 import { bundleFromJSON } from "@sigstore/bundle";
 import type { TrustedRoot } from "@sigstore/protobuf-specs";

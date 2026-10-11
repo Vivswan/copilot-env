@@ -54,5 +54,5 @@ if (host !== null) {
     }
     return rebodied(res, rewriteEndpointsApi(body, host) ? JSON.stringify(body) : text);
   };
-  globalThis.fetch = wrapped;
+  globalThis.fetch = wrapped as typeof fetch;
 }

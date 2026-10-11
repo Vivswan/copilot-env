@@ -1,21 +1,24 @@
-// Which `deno` binary copilot-env's own subprocess work runs on, and how a deno-less machine gets one.
-//   .dvmrc              -> the TESTED REFERENCE version alone (what CI runs on, what health compares a PATH deno against); nothing here installs it
-//   no sha256 expected  -> a REFUSAL, never a skip; the archive is hashed as it streams, so an unverified byte never lands unpacked
-import { Buffer } from "node:buffer";
+// Which `deno` binary copilot-env's proxy work runs on, and how a deno-less machine gets one. The
+// CLI itself runs on Bun; the proxy daemon runs on this sidecar, with the preload shims under
+// src/scripts/.
+//   SIDECAR_DENO_VERSION  -> the TESTED REFERENCE version alone (copilot-env.config: what CI runs
+//                            the daemon tests on, what health compares a found deno against);
+//                            nothing here installs it
+//   no sha256 expected    -> a REFUSAL, never a skip; the archive is hashed as it streams, so an
+//                            unverified byte never lands unpacked
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { basename, isAbsolute, join } from "node:path";
-import { ASSET_ROOT, devDenoExecPath, isStandaloneBinary } from "../utils/root.ts";
+import { isStandaloneBinary } from "../utils/root.ts";
 import { resolveExecutablePath } from "../utils/command.ts";
 import { errMessage } from "../utils/error.ts";
+import { readProjectConfig } from "../utils/project_config.ts";
 import { isStableVersion, versionLessThan } from "../utils/semver.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { resolveRootHome } from "./paths.ts";
-import { crypto } from "@std/crypto";
 
 /** Set by the compiled launcher. */
 export const SIDECAR_DENO_ENV = "COPILOT_ENV_SIDECAR_DENO";
-
-export const DVMRC_FILENAME = ".dvmrc";
 
 /** Only `parseAbsolutePath` mints one, so holding the type is the proof: no sidecar state can carry a
  *  relative path that would silently resolve against a drifting cwd. */
@@ -32,27 +35,20 @@ export function parseAbsolutePath(path: string): AbsolutePath {
   return trimmed as AbsolutePath;
 }
 
-/**
- * The ONE owner of the fast-path order: the override (the documented recovery hatch), then our own
- * runtime binary when it is a real deno. A checkout's subprocesses must run on the SAME deno as the
- * parent, which is why dev outranks even a PATH deno.
- */
-function sidecarFastPath(
+/** The override is the documented recovery hatch and outranks every discovery. */
+function sidecarOverride(
   env: Record<string, string | undefined>,
-  runtimeExecPath: string | null | undefined,
-): { kind: "override" | "dev"; denoBin: AbsolutePath } | null {
+): { kind: "override"; denoBin: AbsolutePath } | null {
   const override = env[SIDECAR_DENO_ENV]?.trim();
   if (override) return { "kind": "override", "denoBin": parseAbsolutePath(override) };
-  const exec = runtimeExecPath === undefined ? devDenoExecPath() : runtimeExecPath;
-  if (exec !== null) return { "kind": "dev", "denoBin": parseAbsolutePath(exec) };
   return null;
 }
 
 /**
  * `rootHome` defaults to the resolved root so every bare call site (the daemon spawn, the proxy float)
- * finds the sidecar a compiled install provisioned there. The standalone case
- * is why the sidecar exists: a compiled binary IS a deno runtime but not a deno CLI, so it can neither
- * warm the float's cache nor spawn the proxy.
+ * finds the sidecar an install provisioned there. The sidecar exists because the CLI's own runtime
+ * is Bun: nothing in this process can warm the float's cache or spawn the proxy, checkout and
+ * compiled binary alike.
  */
 export function resolveDenoBin(
   env: Record<string, string | undefined> = process.env,
@@ -62,9 +58,9 @@ export function resolveDenoBin(
   const state = detectSidecar(rootHome, { ...opts, "env": env });
   if (state.kind !== "absent") return state.denoBin;
   throw new Error(
-    `no usable deno binary: this is a compiled build, no deno is on PATH, and no sidecar ` +
-      `is provisioned. Install deno (https://deno.com), run \`agent start\` to provision ` +
-      `one, or set ${SIDECAR_DENO_ENV} to a deno binary.`,
+    `no usable deno binary: no deno is on PATH, and no sidecar is provisioned. Install deno ` +
+      `(https://deno.com), run \`agent start\` to provision one, or set ${SIDECAR_DENO_ENV} to ` +
+      `a deno binary.`,
   );
 }
 
@@ -78,13 +74,11 @@ export function sidecarBinPath(
 
 /** Precedence is detectSidecar's; the user's PATH deno always beats a provisioned one.
  *    override     -> COPILOT_ENV_SIDECAR_DENO
- *    dev          -> a checkout under Deno itself reuses its own runtime binary
  *    path         -> a deno on PATH
  *    provisioned  -> the newest `<rootHome>/deno/<x.y.z>/` from an earlier download
  *    absent       -> ensureSidecar downloads the LATEST release */
 type SidecarState =
   | { kind: "override"; denoBin: AbsolutePath }
-  | { kind: "dev"; denoBin: AbsolutePath }
   | { kind: "path"; denoBin: AbsolutePath }
   | { kind: "provisioned"; denoBin: AbsolutePath; version: string }
   | { kind: "absent" };
@@ -92,9 +86,6 @@ type SidecarState =
 interface SidecarDetectOptions {
   env?: Record<string, string | undefined>;
   platform?: string;
-  /** The default applies the standalone guard (devDenoExecPath): a compiled binary must never
-   *  classify itself as the `dev` deno, since it cannot act as one. */
-  runtimeExecPath?: string | null;
   /** An ABSOLUTE path, or null. */
   findDeno?: () => string | null;
 }
@@ -104,8 +95,8 @@ export function detectSidecar(
   opts: SidecarDetectOptions = {},
 ): SidecarState {
   const env = opts.env ?? process.env;
-  const fast = sidecarFastPath(env, opts.runtimeExecPath);
-  if (fast !== null) return fast;
+  const override = sidecarOverride(env);
+  if (override !== null) return override;
   const findDeno = opts.findDeno ?? (() => resolveExecutablePath("deno"));
   const onPath = findDeno();
   if (onPath !== null) return { "kind": "path", "denoBin": parseAbsolutePath(onPath) };
@@ -136,7 +127,8 @@ export function provisionedSidecar(
   };
 }
 
-export function parseDvmrcPin(content: string, source: string = DVMRC_FILENAME): string {
+/** One x.y.z line, as the latest-release endpoint and the project config both carry it. */
+export function parseDenoVersionLine(content: string, source: string): string {
   const trimmed = content.trim();
   if (!isStableVersion(trimmed)) {
     throw new Error(
@@ -146,17 +138,10 @@ export function parseDvmrcPin(content: string, source: string = DVMRC_FILENAME):
   return trimmed;
 }
 
-/** Defaults to ASSET_ROOT, not the install root: `.dvmrc` is embedded in the binary at build time and
- *  never materialized onto disk, so an installed root has no copy. */
-export function readDvmrcPin(projectRoot: string = ASSET_ROOT): string {
-  const path = join(projectRoot, DVMRC_FILENAME);
-  let content: string;
-  try {
-    content = fs.readText(path);
-  } catch (e) {
-    throw new Error(`cannot read the Deno version pin ${path}: ${String(e)}`);
-  }
-  return parseDvmrcPin(content, path);
+/** The TESTED REFERENCE deno version: SIDECAR_DENO_VERSION in copilot-env.config, read out of the
+ *  binary like the rest of that file. `root` is for test fixtures. */
+export function readSidecarDenoPin(root?: string): string {
+  return readProjectConfig(root).sidecarDenoVersion;
 }
 
 /** Keys follow process.platform/process.arch vocabulary. */
@@ -201,7 +186,7 @@ export async function fetchLatestDenoVersion(fetchLike: typeof fetch = fetch): P
     const response = await fetchLike(DENO_LATEST_URL);
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const body = await response.text();
-    return parseDvmrcPin(body.replace(/^\s*v/, ""), DENO_LATEST_URL);
+    return parseDenoVersionLine(body.replace(/^\s*v/, ""), DENO_LATEST_URL);
   } catch (e) {
     throw new Error(
       `could not resolve the latest deno release from ${DENO_LATEST_URL} (${errMessage(e)}): ` +
@@ -265,8 +250,13 @@ function defaultUnzipRunner(command: string, args: string[]): UnzipRunResult {
 
 /** pipeTo closes the file with the stream, on success and on abort alike. */
 async function writeStreamToFile(stream: ReadableStream<Uint8Array>, path: string): Promise<void> {
-  const file = await fs.openWritable(path);
-  await stream.pipeTo(file.writable);
+  await stream.pipeTo(await fs.openWritable(path));
+}
+
+async function sha256Hex(stream: ReadableStream<Uint8Array>): Promise<string> {
+  const hash = createHash("sha256");
+  for await (const chunk of stream) hash.update(chunk);
+  return hash.digest("hex");
 }
 
 /**
@@ -304,11 +294,7 @@ export async function downloadSidecar(
   const zipPath = join(scratch, `deno-${target}.zip`);
   try {
     const [toDisk, toHash] = response.body.tee();
-    const [digest] = await Promise.all([
-      crypto.subtle.digest("SHA-256", toHash),
-      writeStreamToFile(toDisk, zipPath),
-    ]);
-    const actual = Buffer.from(digest).toString("hex");
+    const [actual] = await Promise.all([sha256Hex(toHash), writeStreamToFile(toDisk, zipPath)]);
     if (actual !== expectedSha256.toLowerCase()) {
       throw new Error(
         `sha256 mismatch for ${url}: expected ${expectedSha256.toLowerCase()}, got ${actual}; refusing to install`,
@@ -342,22 +328,16 @@ export async function downloadSidecar(
 }
 
 /**
- * Downloads only when nothing resolves at all; a checkout's own deno, a PATH deno, and an earlier
- * provisioned copy all answer without the network. Errors propagate: a compiled install with no deno
- * cannot start the proxy, so failing loudly here beats an opaque spawn failure later.
+ * Downloads only when nothing resolves at all; a PATH deno and an earlier provisioned copy answer
+ * without the network. Errors propagate: an install with no deno cannot start the proxy, so failing
+ * loudly here beats an opaque spawn failure later.
  */
 export async function ensureSidecar(
   rootHome: string,
-  seams:
-    & SidecarDownloadSeams
-    & Pick<SidecarDetectOptions, "runtimeExecPath" | "findDeno"> = {},
+  seams: SidecarDownloadSeams & Pick<SidecarDetectOptions, "findDeno"> = {},
 ): Promise<AbsolutePath> {
-  const { runtimeExecPath, findDeno, ...download } = seams;
-  const state = detectSidecar(rootHome, {
-    "platform": download.platform,
-    "runtimeExecPath": runtimeExecPath,
-    "findDeno": findDeno,
-  });
+  const { findDeno, ...download } = seams;
+  const state = detectSidecar(rootHome, { "platform": download.platform, "findDeno": findDeno });
   if (state.kind !== "absent") return state.denoBin;
   const fetchLike = download.fetchLike ?? fetch;
   const version = await fetchLatestDenoVersion(fetchLike);
@@ -382,13 +362,14 @@ function denoBinaryVersion(bin: string): string | null {
 
 export interface SidecarStatus {
   kind: SidecarState["kind"];
-  /** The TESTED REFERENCE version (.dvmrc, what CI runs on). */
+  /** The TESTED REFERENCE version (SIDECAR_DENO_VERSION, what CI runs the daemon tests on). */
   referenceVersion: string;
   denoBin: string | null;
-  /** The provisioned dir's name, or `deno --version` for a path/override/dev binary (null when it
+  /** The provisioned dir's name, or `deno --version` for a path/override binary (null when it
    *  could not be read). */
   version: string | null;
-  /** True when the running process is a compiled binary, so SOME deno is REQUIRED. */
+  /** True when the running process is a compiled binary: the proxy's import map then comes from
+   *  the float alone, with no node_modules to read a version from. */
   standalone: boolean;
 }
 
@@ -397,7 +378,7 @@ export function sidecarStatus(
   rootHome: string,
   denoVersionOf: (bin: string) => string | null = denoBinaryVersion,
 ): SidecarStatus {
-  const referenceVersion = readDvmrcPin();
+  const referenceVersion = readSidecarDenoPin();
   const state = detectSidecar(rootHome);
   return {
     "kind": state.kind,

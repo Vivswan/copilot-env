@@ -84,15 +84,15 @@ function isEnoent(e: unknown): boolean {
   return (e as NodeJS.ErrnoException).code === "ENOENT";
 }
 
-/** The mode a fresh entry lands with under Deno. A file's explicit mode is set by a chmod after the
- *  create, so it lands exactly; a directory's goes to the OS, which applies the umask, as it does
- *  to either default. */
+/** The mode a fresh entry lands with on the disk side (fs_disk.ts). A file's explicit mode is set
+ *  by a chmod after the create, so it lands exactly; a directory's goes to the OS, which applies
+ *  the umask, as it does to either default. */
 function freshMode(mode: number | undefined, kind: "file" | "dir"): number {
   if (mode !== undefined && kind === "file") return platformMode(mode);
   return platformMode((mode ?? (kind === "file" ? 0o666 : 0o777)) & ~umask());
 }
 
-/** The mode the platform reports for `mode`. Windows keeps one bit, read-only: Deno's stat says
+/** The mode the platform reports for `mode`. Windows keeps one bit, read-only: stat there says
  *  0666 for anything writable and 0444 otherwise, for a directory too. */
 function platformMode(mode: number): number {
   if (WINDOWS) return (mode & 0o222) === 0 ? 0o444 : 0o666;
@@ -105,7 +105,7 @@ function underFile(syscall: string): string {
   return !WINDOWS || syscall === "mkdir" ? "ENOTDIR" : "ENOENT";
 }
 
-/** Windows has no umask (Deno refuses the call), and no bits for one to mask. */
+/** Windows has no umask (the call throws there), and no bits for one to mask. */
 function umask(): number {
   try {
     return process.umask();
@@ -569,9 +569,10 @@ export class Overlay {
 
   // --- writes ------------------------------------------------------------------------------------
 
-  /** An explicit mode lands whether the file exists or not (Deno chmods after the write); without
-   *  one an existing file keeps its mode and a fresh inode takes the default. A staged write
-   *  (`replace`) lands at the path itself, so a link there is replaced, as the real rename does. */
+  /** An explicit mode lands whether the file exists or not (the disk side chmods after the
+   *  write); without one an existing file keeps its mode and a fresh inode takes the default. A
+   *  staged write (`replace`) lands at the path itself, so a link there is replaced, as the real
+   *  rename does. */
   writeText(path: string, text: string, write: OverlayWrite = {}): void {
     this.land(path, new TextEncoder().encode(text), true, write);
   }
@@ -636,7 +637,8 @@ export class Overlay {
   mkdir(path: string, mode?: number): void {
     const asked = this.key(path, "mkdir");
     // A link on the way whose target is gone (a `~/.local` link whose target the run removed) is
-    // what mkdir meets, and it refuses it as EEXIST rather than creating the target behind it.
+    // what mkdir meets: node's recursive mkdir reports the missing target as ENOENT rather than
+    // creating it behind the link.
     const spelled = split(resolve(path));
     for (let cur = spelled.root, i = 0; i < spelled.parts.length; i++) {
       cur = join(cur, spelled.parts[i] as string);
@@ -645,7 +647,7 @@ export class Overlay {
         link !== null && link.stats.isSymbolicLink() &&
         this.view(this.key(cur, "mkdir"), "mkdir", path) === null
       ) {
-        throw errno("EEXIST", "mkdir", path);
+        throw errno("ENOENT", "mkdir", path);
       }
     }
     const missing: [string, string][] = [];
@@ -702,7 +704,7 @@ export class Overlay {
     if (seen.stats.isSymbolicLink()) {
       if (!WINDOWS) throw errno("ENOTDIR", "rmdir", path);
     } else {
-      // At a regular file (not under one): ENOTDIR on Windows too, as Deno's rmdirSync raises it.
+      // At a regular file (not under one): ENOTDIR on Windows too, as node's rmdirSync raises it.
       if (!seen.stats.isDirectory()) throw errno("ENOTDIR", "rmdir", path);
       if (this.readdir(path).length > 0) throw errno("ENOTEMPTY", "rmdir", path);
     }

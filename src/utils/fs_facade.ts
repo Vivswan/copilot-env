@@ -221,9 +221,9 @@ export function atomicSymlink(target: string, link: string): void {
 }
 
 /** A file opened for writing (created or truncated at the open): the one way runtime code streams
- *  bytes to a path (a release download, the daemon's log). A dry run has no handle to hand back
- *  and refuses outside scratch. */
-export function openWritable(path: string): Promise<Deno.FsFile> {
+ *  bytes to a path (a release download, the deno sidecar's archive). A dry run has no handle to
+ *  hand back and refuses outside scratch. */
+export function openWritable(path: string): Promise<WritableStream<Uint8Array>> {
   refuseHandle(path);
   return disk.openWritable(path);
 }

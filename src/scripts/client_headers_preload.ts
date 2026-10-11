@@ -176,5 +176,5 @@ if (rawSet !== null) {
     }
     return originalFetch(input, { ...init, headers: fetchHeaders(input, init, set) });
   };
-  globalThis.fetch = wrappedFetch;
+  globalThis.fetch = wrappedFetch as typeof fetch;
 }

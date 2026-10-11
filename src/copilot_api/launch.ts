@@ -25,7 +25,6 @@ import {
 } from "./integration_identity.ts";
 import { generateAliases } from "./models.ts";
 import { CopilotApiPaths, DAEMON_KEEP_PORT_ENV, resolveRootHome, ROOT_HOME_ENV } from "./paths.ts";
-import { isStandaloneBinary } from "../utils/root.ts";
 import { colorEnabled, paintFor } from "../utils/ansi.ts";
 import { formatTable, terminalWidth } from "../utils/table.ts";
 import * as fs from "../utils/fs_facade.ts";
@@ -68,7 +67,7 @@ export function startLockPath(): string {
 
 /** The wait is UNBOUNDED and never proceeds unlocked, which could let a waiter reap the holder's daemon.
  *  Only a DEAD holder is reclaimed (staleMs Infinity), so a live holder keeps every other start waiting for
- *  as long as it runs -- and an unopenable `.start.lock.oslock` (EACCES) retries forever, with no holder.
+ *  as long as it runs -- and an uncreatable `.start.lock` (EACCES) retries forever, with no holder.
  *  So fn ALWAYS runs held: the launch critical section (ensureProxyFloor, cleanupExistingProxies) runs
  *  inside it, an order its one caller (commands/start.ts) keeps. */
 export function withStartLock<T>(fn: () => Promise<T>): Promise<T> {
@@ -112,10 +111,10 @@ export async function ensureProxyFloor(): Promise<CopilotApiEntry> {
   const preflight = resolveCopilotApiEntry();
   if (preflight.kind === "file") return preflight;
 
-  // A compiled build's own executable is not a deno CLI, so SOME deno (PATH or a provisioned sidecar)
-  // must exist before the float can warm a cache or the daemon can launch. A no-op from a checkout.
+  // The CLI runs on Bun, so SOME deno (PATH or a provisioned sidecar) must exist before the float
+  // can warm a cache or the daemon can launch.
   const sidecar = await ensureSidecar(resolveRootHome());
-  if (isStandaloneBinary()) consola.info(`Using deno for proxy work: ${sidecar}`);
+  consola.info(`Using deno for proxy work: ${sidecar}`);
 
   const status = await proxyFloatVerifyStatus();
   if (!status.upToDate) {
@@ -152,8 +151,7 @@ function judgeProxyFloor(): CopilotApiEntry {
   const version = entryProxyVersion(entry);
   if (version === null) {
     throw new Error(
-      `${PROXY_PACKAGE_NAME} is not resolved or installed - run 'agent start' online to float it, ` +
-        "or 'deno install' to restore the baseline.",
+      `${PROXY_PACKAGE_NAME} is not resolved or installed - run 'agent start' online to float it.`,
     );
   }
   let config: ProjectConfig;

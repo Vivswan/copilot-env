@@ -1,7 +1,6 @@
 import { spawn } from "node:child_process";
 import { closeSync, openSync } from "node:fs";
 import { devNull } from "node:os";
-import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { consola } from "consola";
 import { daemonConfigFile, readResolvedVersionRecord, writeDaemonConfig } from "../proxy_float.ts";
@@ -9,7 +8,6 @@ import { runPowershell } from "../utils/app_scan.ts";
 import { runCaptured } from "../utils/command.ts";
 import { pidAlive } from "../utils/pid.ts";
 import * as fs from "../utils/fs_facade.ts";
-import { type RootMode, rootMode } from "../utils/root.ts";
 import { terminalWidth, wrapMessage } from "../utils/table.ts";
 import {
   DAEMON_CLIENT_HEADERS_ENV,
@@ -24,8 +22,8 @@ import { PROXY_PACKAGE_NAME } from "./version.ts";
 /**
  * Three shapes rather than one string plus flags: only a package specifier can take `--cached-only`,
  * and only the floated form has a DENO_DIR to point the resolve at. Every form carries its
- * `configFile`, chosen at resolve time, so an installed binary (no checkout deno.json on disk) is
- * never handed a config that does not exist.
+ * `configFile`, chosen at resolve time, so the argv and the config it runs under come from one
+ * resolution.
  */
 export type CopilotApiEntry =
   /** The `COPILOT_API_ENTRY` override: run this file, resolve nothing. */
@@ -38,8 +36,8 @@ export type CopilotApiEntry =
     readonly denoDir: string;
     readonly configFile: string;
   }
-  /** deno.json's mapped specifier, resolved through the config entryConfigFile picks: the daemon
-   *  config wherever the float has written one, else the checkout's frozen-lock deno.json. */
+  /** The import map's mapped specifier under the daemon config, with no float record to pin a
+   *  version: the sidecar's cache must already hold it, or the launch fails at resolve. */
   | { readonly kind: "package"; readonly specifier: string; readonly configFile: string };
 
 /** Regenerated on every call (the float rewrites the same content on every warm), so a stale or
@@ -50,26 +48,24 @@ function ensuredDaemonConfig(rootHome: string): string {
 }
 
 /**
- * The ONE rule for which config a non-floated entry runs under. A compiled root ALWAYS answers with
- * the daemon config: an install root deliberately carries no deno.json on disk (there it is a
- * checkout marker). The preload shims resolve their own imports through whichever config is passed,
- * which is why every spawn passes one.
+ * The ONE rule for which config a non-floated entry runs under: the daemon config, re-rendered,
+ * in a checkout and a compiled install alike. Neither root carries a deno config of its own (the
+ * CLI runs on Bun), and the preload shims resolve their own imports through whichever config is
+ * passed, which is why every spawn passes one.
  */
-function entryConfigFile(rootHome: string, mode: RootMode): string {
-  if (mode.kind === "compiled") return ensuredDaemonConfig(rootHome);
-  const daemonConfig = daemonConfigFile(rootHome);
-  return fs.exists(daemonConfig) ? daemonConfig : join(mode.root, "deno.json");
+function entryConfigFile(rootHome: string): string {
+  return ensuredDaemonConfig(rootHome);
 }
 
 /**
  * `COPILOT_API_ENTRY` is the escape hatch: CI points `start` at a fake proxy so the daemon lifecycle
  * runs without GitHub Copilot auth. A compiled install where the float never ran is Direct-only.
  */
-export function resolveCopilotApiEntry(mode: RootMode = rootMode()): CopilotApiEntry {
+export function resolveCopilotApiEntry(): CopilotApiEntry {
   const rootHome = resolveRootHome();
   const override = process.env.COPILOT_API_ENTRY?.trim();
   if (override) {
-    return { kind: "file", path: override, configFile: entryConfigFile(rootHome, mode) };
+    return { kind: "file", path: override, configFile: entryConfigFile(rootHome) };
   }
   const record = readResolvedVersionRecord(rootHome);
   if (record !== null) {
@@ -87,7 +83,7 @@ export function resolveCopilotApiEntry(mode: RootMode = rootMode()): CopilotApiE
   return {
     kind: "package",
     specifier: PROXY_PACKAGE_NAME,
-    configFile: entryConfigFile(rootHome, mode),
+    configFile: entryConfigFile(rootHome),
   };
 }
 
@@ -117,12 +113,11 @@ export function copilotApiArgv(
     "run",
     // Always PINNED: a package specifier has no directory to discover a config from, so discovery would
     // fall back to the caller's cwd and could pick up an unrelated project's import map, which the
-    // preload shims resolve their own imports through. A checkout's deno.json carries a frozen lock
-    // that rejects a floated version outright, hence the float's generated config wherever it exists.
+    // preload shims resolve their own imports through.
     "--config",
     entry.configFile,
-    // Never reach the network: the float pre-warmed its cache for a floated entry and the frozen lock
-    // pre-warmed node_modules for the mapped one; a compiled install has no node_modules at all.
+    // Never reach the network: the float pre-warmed its cache for a floated entry, and a mapped
+    // entry runs only on what an earlier float left in the sidecar's cache.
     ...(entry.kind === "file" ? [] : ["--cached-only"]),
     ...(entry.kind === "floated" ? ["--node-modules-dir=none"] : []),
     ...PROXY_PERMISSIONS,

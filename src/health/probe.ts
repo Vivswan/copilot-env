@@ -148,10 +148,10 @@ function ghResolutionFacts(
   }
 }
 
-/** Same predicate as bin/agent's freshness gate: node_modules at least as new as deno.lock. */
+/** Same predicate as bin/agent's freshness gate: node_modules at least as new as bun.lock. */
 function nodeModulesFresh(): boolean {
   try {
-    const lock = fs.stat(join(PROJECT_ROOT, "deno.lock")).mtimeMs;
+    const lock = fs.stat(join(PROJECT_ROOT, "bun.lock")).mtimeMs;
     const modules = fs.stat(join(PROJECT_ROOT, "node_modules")).mtimeMs;
     return modules >= lock;
   } catch {
@@ -473,7 +473,7 @@ export async function gatherFacts(
         const sidecar = sidecarStatus(resolveRootHome());
         facts.bootstrap = {
           cliVersion: packageVersion(),
-          denoVersion: Deno.version.deno,
+          runtimeVersion: process.versions.bun,
           // A compiled binary embeds its dependencies: no node_modules to judge.
           nodeModules: sidecar.standalone ? null : {
             present: fs.exists(join(PROJECT_ROOT, "node_modules")),
@@ -483,8 +483,8 @@ export async function gatherFacts(
         const record = readResolvedVersionRecord(resolveRootHome());
         const resolved = record === null ? null : { ...record, cached: fs.exists(record.denoDir) };
         // The version that would actually RUN, in the daemon entry's own precedence: the float's
-        // recorded resolution, else the deno.json baseline in node_modules. Judging bounds on
-        // anything else would grade a copy the daemon never loads.
+        // recorded resolution, else the range package.json pins, read off the installed copy in
+        // node_modules. Judging bounds on anything else would grade a copy the daemon never loads.
         const version = resolved?.version ?? installedProxyVersion(PROJECT_ROOT);
         // A bad COPILOT_API_MIN_RELEASE_AGE / cooldown setting must not crash health.
         let cooldownSeconds: number | null = null;

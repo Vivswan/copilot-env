@@ -59,14 +59,15 @@ export function checkCliVersion(f: BootstrapFacts): CheckResult {
   };
 }
 
-/** Health runs on Deno, so the runtime is always present: the row names its version. */
-export function checkDeno(f: BootstrapFacts): CheckResult {
+/** Health runs on Bun, so the runtime is always present: the row names its version. The id keeps
+ *  its historical spelling (a JSON contract); the proxy's deno is `proxy.sidecar`. */
+export function checkRuntime(f: BootstrapFacts): CheckResult {
   return {
     ...meta("bootstrap.deno"),
     profile: null,
     status: "ok",
-    detail: `deno ${f.denoVersion}`,
-    value: { available: true, version: f.denoVersion },
+    detail: `bun ${f.runtimeVersion}`,
+    value: { available: true, version: f.runtimeVersion },
   };
 }
 
@@ -89,7 +90,7 @@ export function checkNodeModules(f: BootstrapFacts): CheckResult {
       ...base,
       status: "fail",
       detail: "node_modules is missing",
-      fix: "deno install --frozen",
+      fix: "bun install --frozen-lockfile",
       value,
     };
   }
@@ -98,7 +99,7 @@ export function checkNodeModules(f: BootstrapFacts): CheckResult {
       ...base,
       status: "warn",
       detail: "node_modules is stale (older than the lockfile)",
-      fix: "deno install --frozen",
+      fix: "bun install --frozen-lockfile",
       value,
     };
   }
@@ -131,8 +132,8 @@ export function checkProxyPackage(f: ProxyFacts): CheckResult {
     };
   } else if (bounds.reason === "missing") {
     if (f.sidecar.standalone) {
-      // A compiled install ships no deno.json baseline: the float resolves the proxy into its
-      // own cache at `agent start`, so "missing" is the normal pre-start state, not a broken
+      // A compiled install ships no node_modules: the float resolves the proxy into its own
+      // cache at `agent start`, so "missing" is the normal pre-start state, not a broken
       // install.
       standaloneMissing = true;
       outcome = {
@@ -146,14 +147,14 @@ export function checkProxyPackage(f: ProxyFacts): CheckResult {
       outcome = {
         status: "fail",
         detail: `${PROXY_PACKAGE_NAME} is not installed`,
-        fix: "deno install --frozen",
+        fix: "bun install --frozen-lockfile",
       };
     }
   } else if (bounds.reason === "belowFloor") {
     outcome = {
       status: "fail",
       detail: `proxy ${bounds.version} is below the floor ${bounds.floor}`,
-      fix: "deno install --frozen",
+      fix: "bun install --frozen-lockfile",
     };
   } else {
     outcome = {
@@ -195,9 +196,9 @@ function floatCooldownLabel(seconds: number | null): string {
   return `cooldown ${seconds}s`;
 }
 
-/** A checkout runs on its own runtime; a compiled binary is not a deno CLI, so it needs one from
- *  PATH, the SIDECAR_DENO_ENV override, or the provisioned copy, and having none of the three is
- *  a failure, not a note. */
+/** The CLI runs on Bun, so the proxy needs a deno from PATH, the SIDECAR_DENO_ENV override, or
+ *  the provisioned copy, checkout and compiled binary alike; having none of the three is a
+ *  failure, not a note. */
 export function checkProxySidecar(f: ProxyFacts): CheckResult {
   const base = { ...meta("proxy.sidecar"), profile: null };
   const { kind, referenceVersion, denoBin, version, standalone } = f.sidecar;
@@ -215,10 +216,8 @@ export function checkProxySidecar(f: ProxyFacts): CheckResult {
     }
     return {
       ...base,
-      status: standalone ? "fail" : "warn",
-      detail: `no deno found (PATH or provisioned)${
-        standalone ? "; a compiled build cannot spawn the proxy without one" : ""
-      }`,
+      status: "fail",
+      detail: "no deno found (PATH or provisioned); the proxy cannot spawn without one",
       fix: "install deno (https://deno.com), or `agent start` to provision one",
       value: { kind, referenceVersion, standalone },
     };
@@ -227,9 +226,7 @@ export function checkProxySidecar(f: ProxyFacts): CheckResult {
   // (upgrading is the user's job). An unreadable version is not a verdict, so it reads ok.
   const behind = version !== null && versionLessThan(version, referenceVersion);
   const named = version === null ? "deno (version unknown)" : `deno ${version}`;
-  const source = kind === "dev"
-    ? "running on this checkout's own deno"
-    : kind === "override"
+  const source = kind === "override"
     ? `${named} via ${SIDECAR_DENO_ENV}`
     : kind === "path"
     ? `${named} on PATH`
@@ -251,9 +248,8 @@ export function checkProxySidecar(f: ProxyFacts): CheckResult {
   };
 }
 
-/** Not resolved yet reads ok: a checkout falls back to the deno.json baseline, a compiled
- *  install waits for `agent start`. A RECORDED version whose cache has gone missing fails,
- *  because the launch asks for that exact version offline. */
+/** Not resolved yet reads ok: the proxy waits for `agent start` to float it in. A RECORDED version
+ *  whose cache has gone missing fails, because the launch asks for that exact version offline. */
 export function checkProxyResolved(f: ProxyFacts): CheckResult {
   const base = { ...meta("proxy.resolved"), profile: null };
   const resolved = f.resolved;
@@ -263,9 +259,7 @@ export function checkProxyResolved(f: ProxyFacts): CheckResult {
       status: "ok",
       detail: f.floatSkips
         ? "not floated; Codex + Claude are both direct, so the proxy is unused"
-        : f.sidecar.standalone
-        ? "not floated yet; `agent start` resolves it (a compiled install has no baseline)"
-        : "not floated yet; the deno.json baseline would run instead",
+        : "not floated yet; `agent start` resolves it",
       value: { resolved: false },
     };
   }
@@ -900,7 +894,7 @@ export function evaluateAll(scope: HealthScope, facts: HealthFacts): CheckResult
   if (facts.bootstrap) {
     out.push(
       checkCliVersion(facts.bootstrap),
-      checkDeno(facts.bootstrap),
+      checkRuntime(facts.bootstrap),
       checkNodeModules(facts.bootstrap),
     );
   }

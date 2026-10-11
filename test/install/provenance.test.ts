@@ -162,10 +162,15 @@ describe("verifyReleaseProvenance", () => {
   });
 
   test("control: a valid bundle with no reachable trust root is the fail-closed message", async () => {
-    // Unreachable by construction, not by permission set: under a wider grant (`-A`, an IDE
-    // runner) the empty cache would refresh from the mirror and the real bundle would verify.
-    expect((await Deno.permissions.revoke({ name: "net" })).state).not.toBe("granted");
+    // Unreachable by construction: tuf-js refreshes the empty cache through the global fetch, and
+    // for this test every fetch fails as a dead network does, or the mirror would answer and the
+    // real bundle would verify.
     const cachePath = tempDir("copilot-tuf-");
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (() =>
+      Promise.reject(
+        new TypeError("fetch failed: the network is unreachable"),
+      )) as unknown as typeof fetch;
     try {
       const err = await verifyReleaseProvenance(TAG, BUNDLE, [await checksumsSubject()], {
         cachePath,
@@ -174,6 +179,7 @@ describe("verifyReleaseProvenance", () => {
       expect((err as Error).message).toContain("trust root could not be refreshed");
       expect((err as Error).message).toContain("--no-verify");
     } finally {
+      globalThis.fetch = realFetch;
       rmSync(cachePath, { recursive: true, force: true });
     }
   });

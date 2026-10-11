@@ -1,5 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { crypto } from "@std/crypto";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import {
   applyUpdate,
@@ -53,10 +53,7 @@ function writeRelease(contents: string, digestOverride?: string): string {
 
 /** SHA256 of a string, via the same primitive the verifier uses. */
 function sha256Hex(text: string): string {
-  const digest = crypto.subtle.digestSync("SHA-256", new TextEncoder().encode(text));
-  return Array.from(new Uint8Array(digest))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
+  return createHash("sha256").update(text).digest("hex");
 }
 
 /** This platform's release target, or a failed test rather than a null deref. */
@@ -208,8 +205,8 @@ test("release targets: each shipped (platform, arch) maps to its distinct triple
     const target = currentReleaseTarget(platform, arch);
     expect(target?.triple ?? null, why).toBe(triple);
     if (target) {
-      expect(releaseAssetName(target), why).toBe(asset);
-      expect(installedBinaryName(platform), why).toBe(binary);
+      expect<string | undefined>(releaseAssetName(target), why).toBe(asset);
+      expect<string | undefined>(installedBinaryName(platform), why).toBe(binary);
     }
   }
   // Every shipped target has its own triple and asset: a duplicate would overwrite a release
@@ -592,7 +589,5 @@ describe("resolveProvenanceDecision", () => {
 /** Staging dirs applyUpdate creates inside the install root (rename needs one
  *  filesystem), which must never outlive the call. */
 function stagingDirs(): string[] {
-  return [...Deno.readDirSync(installDir)]
-    .filter((e) => e.name.startsWith(".update-"))
-    .map((e) => e.name);
+  return readdirSync(installDir).filter((name) => name.startsWith(".update-"));
 }

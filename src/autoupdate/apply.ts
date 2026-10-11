@@ -166,8 +166,7 @@ async function fetchReleaseFile(source: DownloadSource, name: string, dest: stri
   if (!res.ok || !res.body) {
     throw new Error(`failed to download ${name} (HTTP ${res.status})`);
   }
-  using file = await fs.openWritable(dest);
-  await res.body.pipeTo(file.writable);
+  await res.body.pipeTo(await fs.openWritable(dest));
 }
 
 async function download(tag: string, dir: string): Promise<Downloaded> {

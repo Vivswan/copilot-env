@@ -6,13 +6,17 @@ import { type SemverString, toSemverString, versionLessThan } from "./semver.ts"
 
 export const PROJECT_CONFIG_FILE = "copilot-env.config";
 
-const CONFIG_KEYS = ["PROXY_MIN_VERSION", "PROXY_MAX_VERSION"] as const;
+const CONFIG_KEYS = ["PROXY_MIN_VERSION", "PROXY_MAX_VERSION", "SIDECAR_DENO_VERSION"] as const;
 
 type ProjectConfigKey = (typeof CONFIG_KEYS)[number];
 
 export type ProjectConfig = {
   readonly proxyMinVersion: SemverString;
   readonly proxyMaxVersion: SemverString | null;
+  /** The TESTED REFERENCE version of the deno sidecar the proxy daemon runs on
+   *  (src/copilot_api/sidecar.ts): what CI runs the daemon tests on, and what health compares a
+   *  found deno against. Nothing installs it from here. */
+  readonly sidecarDenoVersion: SemverString;
 };
 
 function isProjectConfigKey(key: string): key is ProjectConfigKey {
@@ -70,7 +74,13 @@ export function parseProjectConfig(content: string, source = PROJECT_CONFIG_FILE
     );
   }
 
-  return { proxyMinVersion, proxyMaxVersion };
+  const sidecarDenoVersion = semverValue(
+    "SIDECAR_DENO_VERSION",
+    requiredValue(raw, "SIDECAR_DENO_VERSION", source),
+    source,
+  );
+
+  return { proxyMinVersion, proxyMaxVersion, sidecarDenoVersion };
 }
 
 /** ASSET_ROOT, not the install root: the file is embedded in the compiled binary and never

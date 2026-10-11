@@ -38,8 +38,8 @@ export type PowershellExe = "powershell" | "pwsh";
 
 /** Windows PowerShell 5.1 spawned from pwsh 7 inherits pwsh's PSModulePath and its in-box cmdlets
  *  fail to autoload, so a `powershell` child gets the variable under no casing and `pwsh` keeps
- *  its own. Deno's spawnSync merges `env` over the parent's, so the key leaves process.env for the
- *  span. */
+ *  its own. The key also leaves process.env for the span, so the child sees it under neither
+ *  spawn semantics (an `env` merged over the parent's, or one replacing it). */
 export function withPowershellChildEnv<T>(
   exe: PowershellExe,
   spawn: (env: Record<string, string>) => T,

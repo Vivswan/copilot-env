@@ -294,11 +294,10 @@ function defaultRunProbe(
   cwd: string,
 ): Promise<ProbeOutcome> {
   const s = cliSpawn(cliPath, args);
-  // `env` is the COMPLETE child environment probeDirectWorks built, and it reaches the child only
-  // through the async `spawn`: Deno's spawnSync (2.9.6, verified) merges the parent's variables
-  // back in whatever `env` says, and a shell ANTHROPIC_BASE_URL at a running proxy then answers
-  // the Claude smoke prompt for it. `cwd` is the throwaway home, never the caller's: both CLIs
-  // read project-level config from the working directory.
+  // `env` is the COMPLETE child environment probeDirectWorks built: a shell ANTHROPIC_BASE_URL at
+  // a running proxy must never reach the child, or it answers the Claude smoke prompt for it.
+  // `cwd` is the throwaway home, never the caller's: both CLIs read project-level config from the
+  // working directory.
   //
   //   stdout/stderr piped, utf8 -> a failure carries a reason (summarizeProbeFailure)
   //   close with a null code    -> our timeout when `killed`, so the detail says so

@@ -1,7 +1,7 @@
 // The in-binary `agent install`: finalize an install root around the compiled binary that
 // install.sh / install.ps1 downloaded to <root>/bin/copilot-env(.exe). A plan/apply split, like
-// planImport/applyImportPlan in src/agents/transfer.ts. Assets are read via URLs relative to
-// import.meta.url (the compiled VFS, or the checkout); that source root equalling the install
+// planImport/applyImportPlan in src/agents/transfer.ts. Assets are read under ASSET_ROOT (the
+// binary's embedded virtual filesystem, or the checkout); that source root equalling the install
 // root is what makes a run in-place.
 //
 //   in-place (dev checkout)   -> shell integration only; the checkout's own files are never touched
@@ -26,7 +26,6 @@ import * as fs from "../utils/fs_facade.ts";
 import {
   ASSET_ROOT,
   CURRENT_LINK,
-  denoRuntime,
   INSTALL_MANIFEST_FILE,
   type InstallManifest,
   installStateRoot,
@@ -82,20 +81,18 @@ export const MATERIALIZED_ASSET_FILES = [
   "src/utils/hostname.ts",
   "src/utils/json.ts",
   "src/utils/logger.ts",
+  "src/utils/pid.ts",
   "src/utils/report_write.ts",
   "src/utils/table.ts",
   "src/utils/time.ts",
 ] as const;
 
-/** Embedded and NEVER materialized: read in-process through ASSET_ROOT (the compiled VFS), a
- *  copy in the install root would be read by nothing and drift from the binary. Still verified
- *  present at plan time: absent from the VFS means a broken build.
+/** Embedded and NEVER materialized: read in-process through ASSET_ROOT (the binary's embedded
+ *  virtual filesystem), a copy in the install root would be read by nothing and drift from the
+ *  binary. Still verified present at plan time: absent from the binary means a broken build.
  *
- *    copilot-env.config -> readProjectConfig
- *    .dvmrc             -> readDvmrcPin
- *    deno.json          -> writeDaemonConfig; also a CHECKOUT_MARKERS entry, so on disk it would
- *                          make every install root read as a checkout */
-export const BUNDLED_ONLY_ASSETS = ["copilot-env.config", ".dvmrc", "deno.json"] as const;
+ *    copilot-env.config -> readProjectConfig (the float bounds and the sidecar's deno pin) */
+export const BUNDLED_ONLY_ASSETS = ["copilot-env.config"] as const;
 
 // --- The versioned layout ---------------------------------------------------------
 
@@ -361,7 +358,7 @@ export interface InstallOptions {
 
 /** Files only a source checkout carries at its root. With `.git` beside them they mark a live
  *  checkout an installed-mode plan must refuse to clobber. */
-export const CHECKOUT_MARKERS = ["package.json", "deno.json"] as const;
+export const CHECKOUT_MARKERS = ["package.json", "bun.lock"] as const;
 
 /** One shell-integration pass (Windows may need two: per-host and all-hosts profiles are
  *  separate targets). */
@@ -510,7 +507,7 @@ function planMaterialization(root: string, sourceRoot: string): Materialization 
   for (const asset of embedded) {
     if (!fs.exists(join(sourceRoot, asset))) {
       throw new Error(
-        `embedded assets are missing ${asset}; deno.json compile.include did not embed it`,
+        `embedded assets are missing ${asset}; the compile step (scripts/compile.ts) did not embed it`,
       );
     }
   }
@@ -537,8 +534,7 @@ function planMaterialization(root: string, sourceRoot: string): Materialization 
 }
 
 function defaultBinarySource(): string | null {
-  if (!isStandaloneBinary()) return null;
-  return denoRuntime()?.execPath() ?? null;
+  return isStandaloneBinary() ? process.execPath : null;
 }
 
 /** Exported for tests; `runInstall` is the composed entry point. */
@@ -553,8 +549,8 @@ export function buildInstallPlan(
     : { allHosts: options.allHosts };
 
   // The discriminant IS rootMode's, over the arguments: root.ts sets ASSET_ROOT === PROJECT_ROOT
-  // for a checkout and splits them for a compiled binary (VFS vs install root). Gating on
-  // `rootMode()` would ignore the parameters and make the installed branch unreachable from a
+  // for a checkout and splits them for a compiled binary (embedded files vs install root). Gating
+  // on `rootMode()` would ignore the parameters and make the installed branch unreachable from a
   // test, which is exactly the branch worth testing.
   if (resolve(sourceRoot) === resolve(root)) {
     return { kind: "in-place", root, shell };

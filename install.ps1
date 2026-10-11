@@ -211,7 +211,7 @@ $InstallDir = Resolve-SafeInstallDir
 # before the bin write touches the root; a worktree's .git is a file, so no -PathType.
 # Markers without .git are not a checkout, so the install proceeds.
 if (Test-Path -LiteralPath (Join-Path $InstallDir '.git')) {
-    foreach ($marker in @('package.json', 'deno.json')) {
+    foreach ($marker in @('package.json', 'bun.lock')) {
         if (Test-Path -LiteralPath (Join-Path $InstallDir $marker)) {
             throw "Refusing to install into ${InstallDir}: it holds $marker and .git, so it is a source checkout; choose another target with -InstallDir or `$env:COPILOT_ENV_DIR."
         }

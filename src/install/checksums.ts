@@ -1,7 +1,9 @@
 // The release's checksums.txt: the `shasum -a 256`-form manifest scripts/compile.ts emits next
 // to the binaries. install.sh / install.ps1 verify the same file with the platform's own sha256
 // tool before the binary lands; this module is the in-process twin `agent update` uses.
-import { crypto } from "@std/crypto";
+import { createHash } from "node:crypto";
+import { createReadStream } from "node:fs";
+import { pipeline } from "node:stream/promises";
 
 export type Checksums = ReadonlyMap<string, string>;
 
@@ -28,9 +30,7 @@ export function expectedDigest(checksums: Checksums, name: string): string {
  *  than reading it whole: release binaries run to tens of megabytes. The disk's
  *  in every mode: no run plans the file it streams. */
 export async function fileSha256(path: string): Promise<string> {
-  using file = await Deno.open(path, { read: true });
-  const digest = await crypto.subtle.digest("SHA-256", file.readable);
-  return Array.from(new Uint8Array(digest))
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
+  const hash = createHash("sha256");
+  await pipeline(createReadStream(path), hash);
+  return hash.digest("hex");
 }

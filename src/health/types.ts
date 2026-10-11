@@ -56,7 +56,7 @@ const CHECK_DESCRIPTORS = {
     group: "bootstrap",
     scopes: BOOTSTRAP_SCOPES,
   },
-  "bootstrap.deno": { label: "Deno runtime", group: "bootstrap", scopes: BOOTSTRAP_SCOPES },
+  "bootstrap.deno": { label: "Bun runtime", group: "bootstrap", scopes: BOOTSTRAP_SCOPES },
   "bootstrap.nodeModules": {
     label: "Dependencies (node_modules)",
     group: "bootstrap",

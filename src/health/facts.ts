@@ -151,8 +151,8 @@ export interface WatchdogFacts {
 
 export interface BootstrapFacts {
   cliVersion: string;
-  /** The runtime health itself runs on. */
-  denoVersion: string;
+  /** The Bun release health itself (the CLI) runs on; the proxy's deno is `proxy.sidecar`. */
+  runtimeVersion: string;
   /** null when running as a compiled binary: dependencies are embedded, so there
    *  is no node_modules to judge. */
   nodeModules: { present: boolean; fresh: boolean } | null;
@@ -178,8 +178,8 @@ export interface ProxyFacts {
   // proxyUnusedEverywhere in src/agents/wiring.ts). When it skips, the version
   // bounds are unenforceable and must not read as a failure.
   floatSkips: boolean;
-  // The float's record, or null when it has never resolved here (a fresh checkout
-  // or a Direct-only install, where the deno.json baseline is what would run).
+  // The float's record, or null when it has never resolved here (a fresh checkout or a
+  // Direct-only install: nothing has warmed the proxy into the sidecar's cache yet).
   resolved: ProxyResolvedFacts | null;
   // The deno binary every proxy spawn runs on.
   sidecar: SidecarStatus;

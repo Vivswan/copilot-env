@@ -299,7 +299,7 @@ test("`auth --provider <gh-cli|gh-env> --dry-run` resolves what the real command
         real = await acquire();
       });
       expect(real, name).toEqual(outcome.value);
-      expect((await dryRunChanges(acquire)).result, name).toEqual(outcome.value);
+      expect<unknown>((await dryRunChanges(acquire)).result, name).toEqual(outcome.value);
     }
   }
 });
@@ -664,7 +664,7 @@ test("`agent settings --import --dry-run` plans the pre-import backup and its pr
 // before any mkdir (the seam's planner), so each is pinned to this, not to the other: the real run
 // fails first at the store lock's directory, the dry run (no lock) at the home. Nothing was planned
 // before the failure, so no plan (and no "Before it failed" header) prints.
-test("`agent config set --dry-run` fails as the real mkdir fails when a home's ancestor is a regular file or a dangling symlink: the same ENOTDIR or EEXIST, no plan", async () => {
+test("`agent config set --dry-run` fails as the real mkdir fails when a home's ancestor is a regular file or a dangling symlink: the same ENOTDIR or ENOENT, no plan", async () => {
   const { dir } = scratch();
   const rows: {
     name: string;
@@ -682,7 +682,7 @@ test("`agent config set --dry-run` fails as the real mkdir fails when a home's a
       name: "dangling",
       posixOnly: true,
       ancestor: (path) => symlinkSync(join(dir, "nowhere"), path),
-      refusal: /^EEXIST: file already exists, mkdir '/,
+      refusal: /^ENOENT: no such file or directory, mkdir '/,
     },
   ];
   for (const { name, posixOnly, ancestor, refusal } of rows) {
@@ -725,13 +725,19 @@ test("the dry-run marker a child honours is one a live run holds: an ambient `1`
   const store = join(dir, "state.json");
   const set = (marker: string) =>
     runCli(["config", "set", "daemon.idle-timeout", "45"], { env: env(marker) });
-  // A marker-shaped directory nobody holds: made by hand, or left behind by a run that crashed.
+  // Marker-shaped directories nobody holds: one made by hand (an empty hold file), and one a run
+  // that crashed left behind (its hold file names a pid no process has).
   const forged = join(dir, `copilot-env-dry-run-${"0".repeat(32)}`);
   mkdirSync(forged);
   writeFileSync(join(forged, "held"), "");
+  const crashed = join(dir, `copilot-env-dry-run-${"1".repeat(32)}`);
+  mkdirSync(crashed);
+  writeFileSync(join(crashed, "held"), `${2_147_483_646}\n${Date.now()}\n`);
   // No dry run of ours spawned these: a shell's export, a pid (init's `1` is a live process of the
-  // container's root), a nonce with no run behind it, or the unheld marker.
-  for (const marker of ["1", String(process.pid), randomBytes(16).toString("hex"), forged]) {
+  // container's root), a nonce with no run behind it, or the unheld markers.
+  for (
+    const marker of ["1", String(process.pid), randomBytes(16).toString("hex"), forged, crashed]
+  ) {
     rmSync(store, { force: true });
     expect(spawnedByDryRun({ [DRY_RUN_ENV]: marker })).toBe(false);
     expect(set(marker).exitCode).toBe(0);

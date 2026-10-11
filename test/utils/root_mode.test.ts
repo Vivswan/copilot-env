@@ -1,4 +1,4 @@
-// `deno test` always runs in checkout mode, so the compiled half of the root contract is
+// `bun test` always runs in checkout mode, so the compiled half of the root contract is
 // only checkable by building a binary and running it from an install root.
 import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -42,7 +42,7 @@ test("protection follows the RootMode kind, with no filesystem probe", () => {
   // this replaced got both backwards in a container and in a non-git copy.
   expect(isProtectedRoot({ kind: "checkout", root: "/nowhere/clone" })).toBe(true);
   expect(isProtectedRoot({ kind: "compiled", root: "/nowhere/install" })).toBe(false);
-  expect(isProtectedRoot()).toBe(true); // the ambient mode, under `deno test`
+  expect(isProtectedRoot()).toBe(true); // the ambient mode, under `bun test`
 });
 
 test("looksLikeInstallRoot gates the recursive delete on the marker layout or a valid manifest; unreadable fails closed", () => {

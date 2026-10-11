@@ -5,18 +5,21 @@
 //   install.ps1   Resolve-Target     (Windows platform -> triple)
 
 export interface ReleaseTarget {
-  /** The rust-style triple `deno compile --target` takes. */
+  /** The rust-style triple the release asset is named after: an on-disk and URL contract that
+   *  outlived the compiler that first took it. */
   triple: string;
+  /** What `bun build --compile --target` takes for this platform. */
+  bunTarget: string;
   os: "darwin" | "linux" | "win32";
   arch: "x64" | "arm64";
 }
 
 export const RELEASE_TARGETS: readonly ReleaseTarget[] = [
-  { triple: "x86_64-apple-darwin", os: "darwin", arch: "x64" },
-  { triple: "aarch64-apple-darwin", os: "darwin", arch: "arm64" },
-  { triple: "x86_64-unknown-linux-gnu", os: "linux", arch: "x64" },
-  { triple: "aarch64-unknown-linux-gnu", os: "linux", arch: "arm64" },
-  { triple: "x86_64-pc-windows-msvc", os: "win32", arch: "x64" },
+  { triple: "x86_64-apple-darwin", bunTarget: "bun-darwin-x64", os: "darwin", arch: "x64" },
+  { triple: "aarch64-apple-darwin", bunTarget: "bun-darwin-arm64", os: "darwin", arch: "arm64" },
+  { triple: "x86_64-unknown-linux-gnu", bunTarget: "bun-linux-x64", os: "linux", arch: "x64" },
+  { triple: "aarch64-unknown-linux-gnu", bunTarget: "bun-linux-arm64", os: "linux", arch: "arm64" },
+  { triple: "x86_64-pc-windows-msvc", bunTarget: "bun-windows-x64", os: "win32", arch: "x64" },
 ];
 
 /** scripts/compile.ts writes exactly these names into dist/. */

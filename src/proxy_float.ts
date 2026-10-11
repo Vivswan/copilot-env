@@ -30,9 +30,8 @@ import {
 import { assertNever } from "./utils/assert.ts";
 import { errMessage } from "./utils/error.ts";
 import { isEnoentOrNotdir, readTextOrNull } from "./utils/fs.ts";
-import { parseJsonRecord } from "./utils/json.ts";
 import { type ProjectConfig, readProjectConfig } from "./utils/project_config.ts";
-import { ASSET_ROOT } from "./utils/root.ts";
+import { packageDependencies } from "./utils/version.ts";
 import { pickAgedVersion, versionLessThan } from "./utils/semver.ts";
 import { SECONDS_PER_DAY } from "./utils/time.ts";
 
@@ -274,26 +273,34 @@ export function proxyLockFile(rootHome: string): string {
   return join(rootHome, "proxy", "deno.lock");
 }
 
-/** This build's import map and compiler options, with `lock` and `nodeModulesDir` dropped on
- *  purpose: `lock: {frozen: true}` would reject `npm:<proxy>@<floated>` (the frozen lock is a DEV
- *  contract), and `nodeModulesDir` would resolve through a node_modules tree a compiled install
- *  lacks. The source is read through ASSET_ROOT because a compiled install root carries no
- *  deno.json on disk. Every float and verify re-renders it first, so a young record from an older
- *  build never keeps an outdated map steering daemon spawns until it ages out. */
-export function writeDaemonConfig(rootHome: string, sourceRoot: string = ASSET_ROOT): void {
-  fs.writeText(daemonConfigFile(rootHome), renderDaemonConfig(sourceRoot), { secretKeys: [] });
+/** The deno config every daemon spawn and float runs under: this build's runtime dependencies
+ *  (package.json, embedded in the binary) as an import map of `npm:` specifiers, so the proxy and
+ *  the preload shims' own imports (valibot, consola, the table renderers) resolve by bare name
+ *  under the sidecar's cache. No lock or node_modules setting on purpose: a lock would reject
+ *  `npm:<proxy>@<floated>`, and Bun's node_modules is not a layout deno resolves. Every float and
+ *  verify re-renders it first, so a young record from an older build never keeps an outdated map
+ *  steering daemon spawns until it ages out. */
+export function writeDaemonConfig(rootHome: string): void {
+  fs.writeText(daemonConfigFile(rootHome), renderDaemonConfig(), { secretKeys: [] });
 }
 
-function renderDaemonConfig(sourceRoot: string): string {
-  const source = parseJsonRecord(readTextOrNull(join(sourceRoot, "deno.json")) ?? "");
-  if (source === null) {
-    throw new Error(`could not read the import map from ${join(sourceRoot, "deno.json")}`);
+/** `dependencies` is the test seam; the default is the embedded manifest's. An aliased entry
+ *  (`"semver": "npm:@jsr/std__semver@^1"`) already names its package: the alias is the map key and
+ *  the specifier is taken as written. */
+export function renderDaemonConfig(
+  dependencies: Record<string, string> = packageDependencies(),
+): string {
+  if (dependencies[PROXY_PKG] === undefined) {
+    throw new Error(
+      `package.json does not list ${PROXY_PKG} under dependencies, so no import map can name the proxy`,
+    );
   }
-  const config = {
-    "imports": source.imports ?? {},
-    "compilerOptions": source.compilerOptions ?? {},
-  };
-  return `${JSON.stringify(config, null, 2)}\n`;
+  const imports = Object.fromEntries(
+    Object.entries(dependencies).map((
+      [name, range],
+    ) => [name, range.startsWith("npm:") ? range : `npm:${name}@${range}`]),
+  );
+  return `${JSON.stringify({ "imports": imports }, null, 2)}\n`;
 }
 
 /** Malformed reads as null, the caller's "install needed" path: a corrupt record must never brick.

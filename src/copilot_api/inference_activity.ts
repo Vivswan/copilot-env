@@ -131,7 +131,7 @@ export function observeServeArgs(args: readonly unknown[]): unknown[] {
 
 export function installInferenceObserver(): void {
   try {
-    const deno = (globalThis as { Deno?: { serve: ServeLike } }).Deno;
+    const deno = (globalThis as unknown as { Deno?: { serve: ServeLike } }).Deno;
     if (deno === undefined || typeof deno.serve !== "function") return;
     const realServe = deno.serve;
     deno.serve = (...args: unknown[]): unknown => {

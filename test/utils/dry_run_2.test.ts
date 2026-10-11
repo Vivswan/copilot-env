@@ -66,7 +66,7 @@ import * as fs from "../../src/utils/fs_facade.ts";
 import { pidAlive } from "../../src/utils/pid.ts";
 import { VERSIONS_DIR } from "../../src/utils/root.ts";
 import { captureChannels } from "../helpers/output.ts";
-import { denoRunArgs, spawnChild } from "../helpers/run.ts";
+import { bunRunArgs, spawnChild } from "../helpers/run.ts";
 import { afterEach, expect, removeDir, tempDir, test } from "../helpers/testing.ts";
 import {
   defaultHomeDir,
@@ -305,7 +305,7 @@ test("a dry run refuses a write handle outside scratch and opens nothing; inside
   try {
     const inScratch = join(scratch, "download.bin");
     const { result } = await dryRunChanges(() => fs.openWritable(inScratch));
-    result.close();
+    await result.close();
     expect(existsSync(inScratch)).toBe(true);
   } finally {
     fs.removeScratchDir(scratch);
@@ -431,13 +431,13 @@ test("settings --export refuses in the dry run where the real write refuses: a m
       args: { exportTo: loop },
       refusal: /ELOOP: too many symbolic links encountered, open '/,
     },
-    // The credential export mkdirs the parent: over a dangling link that is mkdir's EEXIST, and the
-    // link stays dangling.
+    // The credential export mkdirs the parent: over a dangling link that is mkdir's ENOENT (node
+    // reports the link's missing target rather than creating it), and the link stays dangling.
     {
       name: "under a dangling directory link, with credentials",
       posixOnly: true,
       args: { exportTo: join(alias, "bundle.json"), withCredentials: true },
-      refusal: /EEXIST: file already exists, mkdir '/,
+      refusal: /ENOENT: no such file or directory, mkdir '/,
       stillAbsent: alias,
     },
     // A link to a directory: the plain export's open follows it.
@@ -570,10 +570,9 @@ test("stop --dry-run names the daemon it would signal and clears nothing: the tr
   dir = isolateProxyHome("copilot-dry2-stop-");
   const script = join(dir, "sleeper.ts");
   writeFileSync(script, "setInterval(() => {}, 60_000);\n");
-  const child = spawnChild(Deno.execPath(), {
-    args: [...denoRunArgs(), script],
-    stdout: "null",
-    stderr: "null",
+  const child = spawnChild([process.execPath, ...bunRunArgs(), script], {
+    stdout: "ignore",
+    stderr: "ignore",
   });
   try {
     writeRunState({ pid: child.pid, port: 4141 });
@@ -601,7 +600,7 @@ test("stop --dry-run names the daemon it would signal and clears nothing: the tr
     } catch {
       // already gone
     }
-    await child.status;
+    await child.exited;
   }
 });
 

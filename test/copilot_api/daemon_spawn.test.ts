@@ -7,7 +7,7 @@ import {
   realpathSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { DRAIN_DEADLINE_MS } from "../../src/copilot_api/daemon_shutdown.ts";
 import {
   DAEMON_CLIENT_HEADERS_ENV,
@@ -275,6 +275,7 @@ test("a daemon config already on disk is re-rendered, never trusted as written",
   // One rule for every non-floated entry: the generated config, rewritten on every resolve, so a
   // stale or foreign file cannot steer a spawn.
   delete process.env.COPILOT_API_ENTRY;
+  mkdirSync(dirname(daemonConfigFile(dir)), { recursive: true });
   writeFileSync(daemonConfigFile(dir), '{"imports":{"sentinel":"npm:sentinel@1.0.0"}}\n');
   expect(resolveCopilotApiEntry()).toEqual({
     kind: "package",

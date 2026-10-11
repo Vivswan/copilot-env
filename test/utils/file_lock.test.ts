@@ -10,7 +10,7 @@ import {
   withRequiredFileLockSync,
 } from "../../src/utils/file_lock.ts";
 import type { PidLiveness } from "../../src/utils/pid.ts";
-import { ROOT } from "../helpers/run.ts";
+import { PROJECT_ROOT } from "../../src/utils/root.ts";
 import { expect, tempDir, test } from "../helpers/testing.ts";
 import { tsFilesUnder } from "../helpers/tree.ts";
 
@@ -328,22 +328,22 @@ test("the lock primitives stay out of src/", () => {
   //   probeFileLock in dry_run.ts                          -> a child's read of the marker
   const allowedIn: Record<string, string[]> = {
     tryAcquireFileLock: [
-      join(ROOT, "src", "utils", "file_lock.ts"),
-      join(ROOT, "src", "copilot_api", "daemon_lock.ts"),
+      join(PROJECT_ROOT, "src", "utils", "file_lock.ts"),
+      join(PROJECT_ROOT, "src", "copilot_api", "daemon_lock.ts"),
     ],
     probeFileLock: [
-      join(ROOT, "src", "utils", "file_lock.ts"),
-      join(ROOT, "src", "copilot_api", "daemon_lock.ts"),
-      join(ROOT, "src", "utils", "dry_run.ts"),
+      join(PROJECT_ROOT, "src", "utils", "file_lock.ts"),
+      join(PROJECT_ROOT, "src", "copilot_api", "daemon_lock.ts"),
+      join(PROJECT_ROOT, "src", "utils", "dry_run.ts"),
     ],
     removeLeftoverLock: [
-      join(ROOT, "src", "utils", "file_lock.ts"),
-      join(ROOT, "src", "copilot_api", "daemon_lock.ts"),
+      join(PROJECT_ROOT, "src", "utils", "file_lock.ts"),
+      join(PROJECT_ROOT, "src", "copilot_api", "daemon_lock.ts"),
     ],
-    releaseFileLock: [join(ROOT, "src", "utils", "file_lock.ts")],
+    releaseFileLock: [join(PROJECT_ROOT, "src", "utils", "file_lock.ts")],
   };
   const found: string[] = [];
-  for (const p of tsFilesUnder(join(ROOT, "src"))) {
+  for (const p of tsFilesUnder(join(PROJECT_ROOT, "src"))) {
     const source = readFileSync(p, "utf-8");
     for (const name of Object.keys(allowedIn)) {
       if (source.includes(name)) found.push(`${p}: ${name}`);

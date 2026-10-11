@@ -4,7 +4,7 @@
 // behaviour instead, which is what a dependency bump then changes under it.
 import { readFileSync } from "node:fs";
 import { join, relative } from "node:path";
-import { ROOT } from "../helpers/run.ts";
+import { PROJECT_ROOT } from "../../src/utils/root.ts";
 import { expect, test } from "../helpers/testing.ts";
 import { tsFilesUnder } from "../helpers/tree.ts";
 
@@ -12,9 +12,9 @@ test("smol-toml is named by src/utils/toml.ts and nowhere else under src/", () =
   // The specifier in any quote, bare or `npm:`-prefixed with a version: a named, default,
   // namespace, or dynamic import, or a re-export, all reach the parser without the owner. The
   // guard is against an omission, not a spelling built to evade it.
-  const importers = tsFilesUnder(join(ROOT, "src"))
+  const importers = tsFilesUnder(join(PROJECT_ROOT, "src"))
     .filter((file) => /(["'`])(?:npm:)?smol-toml(?:@[^"'`]*)?\1/.test(readFileSync(file, "utf8")))
-    .map((file) => relative(ROOT, file).replaceAll("\\", "/"))
+    .map((file) => relative(PROJECT_ROOT, file).replaceAll("\\", "/"))
     .sort();
   expect(importers).toEqual(["src/utils/toml.ts"]);
 });

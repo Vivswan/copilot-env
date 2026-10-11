@@ -8,10 +8,10 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse as parseYaml } from "@std/yaml";
 import { isRecord } from "../../src/utils/json.ts";
-import { ROOT } from "../helpers/run.ts";
+import { PROJECT_ROOT } from "../../src/utils/root.ts";
 import { expect, test } from "../helpers/testing.ts";
 
-const WORKFLOWS = join(ROOT, ".github", "workflows");
+const WORKFLOWS = join(PROJECT_ROOT, ".github", "workflows");
 const GATE = "./.github/workflows/release-gate.yml";
 
 function jobsOf(workflow: unknown): Record<string, unknown> {

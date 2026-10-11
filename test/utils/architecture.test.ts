@@ -3,13 +3,13 @@
 // layer owns is never dropped silently.
 
 import { join, relative } from "node:path";
-import { ROOT } from "../helpers/run.ts";
+import { PROJECT_ROOT } from "../../src/utils/root.ts";
 import { moduleSpecifiers, parseModule, resolveRelative } from "../helpers/syntax.ts";
 import { expect, test } from "../helpers/testing.ts";
 import { tsFilesUnder } from "../helpers/tree.ts";
 import { type ImportGraph, lintArchitecture, readArchitecture } from "../lint/architecture.ts";
 
-const arch = readArchitecture(ROOT);
+const arch = readArchitecture(PROJECT_ROOT);
 
 /**
  * The import graph under src/ as the parser reads it (test/helpers/syntax.ts): every source file
@@ -19,8 +19,8 @@ const arch = readArchitecture(ROOT);
  * in the resolver: a graph that silently dropped it would read a broken import as a missing edge.
  */
 function importGraph(): ImportGraph {
-  const files = tsFilesUnder(join(ROOT, "src"));
-  const repoPath = (file: string): string => relative(ROOT, file).replaceAll("\\", "/");
+  const files = tsFilesUnder(join(PROJECT_ROOT, "src"));
+  const repoPath = (file: string): string => relative(PROJECT_ROOT, file).replaceAll("\\", "/");
   const graph = new Map<string, string[]>();
   for (const file of files) {
     const targets = new Set<string>();

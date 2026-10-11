@@ -75,8 +75,11 @@ test("biome.json scopes the rule to the test tree, minus the two files that own 
     "src/copilot_api/process.ts": raw,
     "scripts/test_docker.ts": raw,
   };
+  // The counts are every plugin's: in a unit file the e2e-boundary rule
+  // (biome/no_e2e_helper_imports.grit) reports the same spawn, so test/example.test.ts reads 2;
+  // mcp.ts is a banned helper that rule leaves alone, so it reads this rule's 1.
   expect(lintFixtures(files, repositoryOverrides())).toEqual({
-    "test/example.test.ts": 1,
+    "test/example.test.ts": 2,
     "test/helpers/mcp.ts": 1,
     "test/helpers/run.ts": 0,
     "test/helpers/testing.ts": 0,

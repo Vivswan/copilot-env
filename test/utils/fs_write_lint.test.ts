@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { join, relative } from "node:path";
-import { ROOT } from "../helpers/run.ts";
+import { PROJECT_ROOT } from "../../src/utils/root.ts";
 import { expect, test } from "../helpers/testing.ts";
 import { tsFilesUnder } from "../helpers/tree.ts";
 import { READS_RULE, scanFsReach, WRITES_RULE } from "../lint/no_unreported_fs_writes.ts";
@@ -22,8 +22,8 @@ function lint(source: string, file = GUARDED): { writes: number; reads: number }
 
 test("no file under src/ reaches the filesystem around the seam", () => {
   const offenders: string[] = [];
-  for (const file of tsFilesUnder(join(ROOT, "src"))) {
-    const path = relative(ROOT, file).replaceAll("\\", "/");
+  for (const file of tsFilesUnder(join(PROJECT_ROOT, "src"))) {
+    const path = relative(PROJECT_ROOT, file).replaceAll("\\", "/");
     const source = readFileSync(file, "utf8");
     for (const finding of scanFsReach(path, source)) {
       const line = source.slice(0, finding.start).split("\n").length;

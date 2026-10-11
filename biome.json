@@ -76,6 +76,26 @@
     {
       "includes": ["test/**", "!test/helpers/testing.ts"],
       "plugins": ["./biome/no_unmanaged_temp_dir.grit"]
+    },
+    {
+      "includes": [
+        "test/**/*.ts",
+        "!**/*.e2e.test.ts",
+        "!test/helpers/testing.ts",
+        "!test/helpers/run.ts",
+        "!test/helpers/net.ts",
+        "!test/helpers/fake_model_endpoint.ts",
+        "!test/helpers/sidecar.ts",
+        "!test/helpers/fake_codex.ts",
+        "!test/helpers/usage_goldens.ts",
+        "!test/helpers/biome_plugin.ts",
+        "!test/helpers/daemon.ts",
+        "!test/helpers/deno_sidecar.ts",
+        "!test/helpers/fake_endpoint.ts",
+        "!test/helpers/mcp.ts",
+        "!test/helpers/scratch_home.ts"
+      ],
+      "plugins": ["./biome/no_e2e_helper_imports.grit"]
     }
   ]
 }

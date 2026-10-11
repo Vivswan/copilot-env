@@ -77,6 +77,10 @@ export function removeDir(dir: string): "" {
       const transient = code === "EPERM" || code === "EBUSY" || code === "ENOTEMPTY";
       if (!transient) throw err;
       failure = err as Error;
+      // bun's sqlite closes a database only once its unfinalized statements are collected
+      // (sqlite3_close_v2 leaves a zombie connection behind them), so on Windows a closed
+      // database under `dir` still holds the file until a collection runs.
+      Bun.gc(true);
     }
     if (isGone(dir)) return "";
     if (i >= maxRetries) throw failure ?? new Error(`${dir} still exists after removal`);

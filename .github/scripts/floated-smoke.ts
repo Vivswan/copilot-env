@@ -5,8 +5,8 @@
 // probing Copilot with it), so the daemon dying at upstream auth is the expected end state, not
 // a failure.
 //
-//   float resolves + installs a version -> daemon spawns under the production permission set
-//   with its `--preload` shims -> runs with the passed token, which upstream rejects
+//   float resolves + installs a version -> daemon spawns from the binary's own bun with its
+//   `--preload` shims -> runs with the passed token, which upstream rejects
 //
 // On a developer machine: bun run test:docker --floated-lifecycle
 import { type Dirent, readdirSync, readFileSync } from "node:fs";
@@ -28,11 +28,12 @@ export interface FloatedSmokeEvidence {
  * The first failed check, in assertion order, or null once the daemon ran with the token it was
  * handed. Pure; test/copilot_api/smoke_scripts.e2e.test.ts drives it.
  *
- * legacy home recreated  -> the spawn stopped pinning COPILOT_API_HOME
- * NotCapable in the log  -> THE regression this job exists for: the real dependency tree
- *                           probes the environment in ways the fake never does
- * the passed token       -> upstream's line for a `--github-token` it was handed; a daemon that
- *                           logged in on its own, or died before auth, never writes it
+ * legacy home recreated       -> the spawn stopped pinning COPILOT_API_HOME
+ * an unresolved import in the -> THE regression this job exists for: the real proxy and the shims
+ * log                            resolve their modules from the floated install in ways the fake
+ *                                never exercises
+ * the passed token            -> upstream's line for a `--github-token` it was handed; a daemon
+ *                                that logged in on its own, or died before auth, never writes it
  */
 export function floatedSmokeFailure(evidence: FloatedSmokeEvidence): string | null {
   if (!evidence.startOutput.includes("now using @jeffreycao/copilot-api@")) {
@@ -40,8 +41,8 @@ export function floatedSmokeFailure(evidence: FloatedSmokeEvidence): string | nu
   }
   if (evidence.proxyLog === null) return "the daemon never wrote a proxy log";
   if (evidence.legacyHomeExists) return "the daemon recreated the legacy copilot-api home";
-  if (/NotCapable|Requires all access/.test(evidence.proxyLog)) {
-    return "the daemon hit a permission error under the production grant set";
+  if (/Cannot find (?:package|module)|Could not resolve/.test(evidence.proxyLog)) {
+    return "the daemon failed to resolve a module from the floated install";
   }
   if (!evidence.proxyLog.includes("Using provided GitHub token")) {
     return "the daemon never ran with the passed token; see the log above";
@@ -89,6 +90,6 @@ if (import.meta.main) {
   });
   if (failure !== null) fail(failure);
   console.log(
-    `floated proxy smoke OK on ${runnerOs()}: float installed a version, daemon started under the production permissions and ran with the passed token`,
+    `floated proxy smoke OK on ${runnerOs()}: float installed a version, daemon started from the binary and ran with the passed token`,
   );
 }

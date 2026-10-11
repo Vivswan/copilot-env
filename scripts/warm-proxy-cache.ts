@@ -1,9 +1,7 @@
 // A REAL floated install under `.proxy-cache/` for the floated-spawn test to launch from: the
-// daemon config, proxy lockfile, warmed DENO_DIR and resolved-version record are genuine float
-// output. Run it where there IS a network (the container build); the test then runs offline.
-//
-//   bun install -> installs the workspace tree only; never resolves the proxy's bin entrypoint
-//   the float   -> caches that entrypoint, and only then its own dependencies (citty and friends)
+// proxy home (package.json, bun.lock, bunfig.toml, node_modules), the bun cache and the
+// resolved-version record are genuine float output. Run it where there IS a network (the
+// container build); the test then runs offline.
 import { join } from "node:path";
 import { installedProxyVersion, PROXY_PACKAGE_NAME } from "../src/copilot_api/version.ts";
 import { floatProxy, readResolvedVersionRecord } from "../src/proxy_float.ts";

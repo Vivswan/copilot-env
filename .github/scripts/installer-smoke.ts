@@ -3,16 +3,13 @@
 // COPILOT_ENV_DOWNLOAD_BASE at dist/, so the installer's real fetch/verify/handoff path runs
 // on every PR instead of only once a release exists.
 import { spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { launcherFunctionLines } from "../../src/commands/env.ts";
-import { resolveRootHome } from "../../src/copilot_api/paths.ts";
-import { SIDECAR_DENO_ENV, sidecarBinPath } from "../../src/copilot_api/sidecar.ts";
-import { daemonConfigFile } from "../../src/proxy_float.ts";
-import { resolveExecutablePath } from "../../src/utils/command.ts";
+import { CopilotApiPaths } from "../../src/copilot_api/paths.ts";
 import { isRecord } from "../../src/utils/json.ts";
-import { readProjectConfig } from "../../src/utils/project_config.ts";
+import { installedBinaryName } from "../../src/utils/targets.ts";
 
 const step = process.argv[2];
 const isWindows = process.platform === "win32";
@@ -273,8 +270,15 @@ function verifyInstalledLauncher(): string {
  *   the report's exit code -> environment-dependent (a fresh install fails the proxy runtime
  *                             probes), so never asserted
  *   the rows below         -> only what a compiled binary must get right about ITSELF
+ *   `binary`               -> the installed binary: the runtime row must name it as the
+ *                             executable the proxy daemon runs from, judged by `same`
+ *                             (sameExecutable in the smoke; the unit tests pass their own)
  */
-export function compiledHealthFailures(reportJson: unknown): string[] {
+export function compiledHealthFailures(
+  reportJson: unknown,
+  binary: string,
+  same: (a: string, b: string) => boolean = sameExecutable,
+): string[] {
   const checks =
     isRecord(reportJson) && Array.isArray(reportJson.checks) ? reportJson.checks : null;
   if (checks === null) {
@@ -302,16 +306,15 @@ export function compiledHealthFailures(reportJson: unknown): string[] {
       `proxy.package must be ok on a fresh compiled install (got ${JSON.stringify(pkg.status)})`,
     );
   }
-  const sidecar = row("proxy.sidecar");
-  if (sidecar !== undefined) {
-    const kind = isRecord(sidecar.value) ? sidecar.value.kind : undefined;
-    // CI runners have setup-deno's deno on PATH, so "path" is a legitimate
-    // compiled-install answer; "dev" is the one kind a compiled binary can
-    // never truthfully be.
-    if (kind !== "path" && kind !== "provisioned" && kind !== "absent") {
+  const runtime = row("bootstrap.runtime");
+  if (runtime !== undefined) {
+    const executable = isRecord(runtime.value) ? runtime.value.executable : undefined;
+    // The daemon is spawned from process.execPath: on a compiled install that is the installed
+    // binary, never a bun from PATH (the one a checkout would report).
+    if (typeof executable !== "string" || !same(executable, binary)) {
       failures.push(
-        `proxy.sidecar kind must be path|provisioned|absent on a compiled binary (got ${JSON.stringify(
-          kind,
+        `bootstrap.runtime must name the installed binary ${binary} as the executable (got ${JSON.stringify(
+          executable,
         )})`,
       );
     }
@@ -324,7 +327,7 @@ function verifyCompiledHealth(launcher: string): void {
   const raw = isWindows
     ? outputAnyExit("pwsh", ["-NoProfile", "-File", launcher, ...healthArgs])
     : outputAnyExit(launcher, healthArgs);
-  const failures = compiledHealthFailures(JSON.parse(raw));
+  const failures = compiledHealthFailures(JSON.parse(raw), installedBinary());
   for (const failure of failures) {
     console.error(`::error::${failure}`);
   }
@@ -334,40 +337,30 @@ function verifyCompiledHealth(launcher: string): void {
   console.log("compiled-install health invariants hold");
 }
 
+/** The installed binary behind the `current` link. */
+function installedBinary(): string {
+  const home = (isWindows ? process.env.USERPROFILE : process.env.HOME) ?? "";
+  return join(installRoot(installerArgs(), home), "current", "bin", installedBinaryName());
+}
+
+/** One executable under two spellings. Bun's Windows realpathSync keeps a non-link path's own
+ *  spelling (drive-letter case, an 8.3 name), so two spellings of one file compare unequal; the
+ *  native call resolves both to the OS's one, compared without case where the filesystem has none. */
+function sameExecutable(a: string, b: string): boolean {
+  const canonical = (path: string): string => {
+    const resolved = realpathSync.native(path);
+    return isWindows ? resolved.toLowerCase() : resolved;
+  };
+  return canonical(a) === canonical(b);
+}
+
 /**
- * A compiled binary is not a deno CLI, so a daemon spawn that resolves no deno starts nothing.
- * Offline.
- *
- *   provisioned copy planted       -> a copy of the runner's PATH deno (this process is bun);
- *                                     the PATH-vs-provisioned precedence is test/copilot_api/sidecar.test.ts's
- *   nothing under the daemon home  -> generating the daemon config is part of the proof
+ * The compiled binary spawns the daemon from ITSELF, as a bun CLI (BUN_BE_BUN), never from a runtime
+ * found on the runner. Offline: the fake proxy logs the executable it runs under, and that must be
+ * the installed binary.
  */
-function verifySidecarDaemonSpawn(launcher: string): void {
-  // A live override would let the start succeed without the resolution under test. The bogus
-  // value planted first is the scrub's negative control: dropping the scrub turns this red.
-  process.env[SIDECAR_DENO_ENV] = isWindows ? "C:\\bogus\\deno.exe" : "/bogus/deno";
-  delete process.env[SIDECAR_DENO_ENV];
-  const rootHome = resolveRootHome();
-  const sidecar = sidecarBinPath(rootHome, readProjectConfig().sidecarDenoVersion);
-  const pathDeno = resolveExecutablePath("deno");
-  if (pathDeno === null) {
-    console.error("::error::no deno on PATH to plant as the sidecar");
-    process.exit(1);
-  }
-  mkdirSync(dirname(sidecar), { recursive: true });
-  copyFileSync(pathDeno, sidecar);
-  if (!isWindows) {
-    chmodSync(sidecar, 0o755);
-  }
-  // The compiled binary must generate the daemon config itself; anything pre-existing
-  // here would stub exactly the step under test and hollow out this smoke's proof.
-  const daemonConfig = daemonConfigFile(rootHome);
-  if (existsSync(daemonConfig)) {
-    console.error(
-      `::error::daemon config pre-exists at ${daemonConfig}; nothing may write it before the compiled start`,
-    );
-    process.exit(1);
-  }
+function verifyDaemonSpawn(launcher: string): void {
+  const binary = installedBinary();
   const entryEnv = {
     COPILOT_API_ENTRY: fileURLToPath(new URL("../../test/copilot-api-fake.mjs", import.meta.url)),
   };
@@ -378,21 +371,28 @@ function verifySidecarDaemonSpawn(launcher: string): void {
   runLauncher(launcher, ["auth", "--set", "fake-default-token"], entryEnv);
   runLauncher(launcher, ["start"], entryEnv);
   runLauncher(launcher, ["stop"], entryEnv);
-  let generated: unknown;
+  // The fake's "Runtime:" line (test/copilot-api-fake.mjs) is process.execPath inside the daemon.
+  const logFile = new CopilotApiPaths().logFile;
+  let log: string;
   try {
-    generated = JSON.parse(readFileSync(daemonConfig, "utf8"));
+    log = readFileSync(logFile, "utf8");
   } catch (e) {
     console.error(
-      `::error::the compiled start left no readable daemon config at ${daemonConfig}: ${String(e)}`,
+      `::error::the compiled start left no readable daemon log at ${logFile}: ${String(e)}`,
     );
     process.exit(1);
   }
-  if (!isRecord(generated) || !isRecord(generated.imports)) {
-    console.error(`::error::the generated daemon config at ${daemonConfig} carries no import map`);
+  const runtime = /^Runtime: (.+)$/m.exec(log)?.[1]?.trim();
+  if (runtime === undefined) {
+    console.error(`::error::the daemon log at ${logFile} names no runtime executable`);
     process.exit(1);
   }
-  console.log(`compiled daemon spawn resolved a usable deno (planted sidecar at ${sidecar})`);
-  console.log(`compiled start generated the daemon config at ${daemonConfig}`);
+  // `current` is a link, and bun reports the resolved executable: one file, two spellings.
+  if (!sameExecutable(runtime, binary)) {
+    console.error(`::error::the daemon ran under ${runtime}, not the installed binary ${binary}`);
+    process.exit(1);
+  }
+  console.log(`compiled daemon spawned from the installed binary itself (${runtime})`);
 }
 
 /** Held to the reader's FULL contract (readInstallManifest in src/utils/root.ts), so a writer
@@ -443,7 +443,7 @@ function verifyOutcome(): void {
   const launcher = verifyInstalledLauncher();
   verifyInstallManifest();
   verifyCompiledHealth(launcher);
-  verifySidecarDaemonSpawn(launcher);
+  verifyDaemonSpawn(launcher);
   verifyOptionalClis();
   verifyShellWiring();
   verifyLauncherWiring(launcher);

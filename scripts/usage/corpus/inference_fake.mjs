@@ -708,7 +708,7 @@ export function startInferenceFake(
   });
 }
 
-/** Whether this module is the process entrypoint (Node and Deno both fill argv[1]). */
+/** Whether this module is the process entrypoint (Node and Bun both fill argv[1]). */
 function isMain() {
   const entry = process.argv[1];
   if (entry === undefined) return false;

@@ -90,10 +90,6 @@ jobs:
         run: |
           "$HOME/.copilot-env/bin/agent" config set shell.launchers true
 
-      # verify-outcome plants the PATH deno as the installed daemon's sidecar: the compiled
-      # binary's daemon still runs under the deno sidecar in this phase.
-      - uses: ./.github/actions/setup-sidecar-deno
-
       - name: Verify install.sh outcome
         run: bun .github/scripts/installer-smoke.ts verify-outcome
         env:

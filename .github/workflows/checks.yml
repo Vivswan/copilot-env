@@ -42,9 +42,6 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      # The lifecycle smoke and the suite's daemon tests start the daemon, which runs under the Deno sidecar.
-      - uses: ./.github/actions/setup-sidecar-deno
-
       # The real claude and codex CLIs run against the fake model endpoint
       # (test/helpers/fake_model_endpoint.ts) inside the suite; the opt-in below makes a missing
       # binary a failure there, never a skip. Same install as the nightly (nightly.yml).
@@ -111,7 +108,6 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # No sidecar step here: the image installs its own deno, and the host only drives the engine.
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version-file: .bun-version
@@ -202,7 +198,6 @@ jobs:
               - src/proxy_float.ts
               - src/copilot_api/process.ts
               - src/copilot_api/launch.ts
-              - src/copilot_api/sidecar.ts
               - src/copilot_api/shims.ts
               - src/copilot_api/paths.ts
               - src/scripts/**
@@ -226,10 +221,6 @@ jobs:
       - name: Install dependencies
         if: github.event_name != 'pull_request' || steps.scope.outputs.float == 'true'
         run: bun install --frozen-lockfile
-
-      # The real proxy runs under the Deno sidecar.
-      - uses: ./.github/actions/setup-sidecar-deno
-        if: github.event_name != 'pull_request' || steps.scope.outputs.float == 'true'
 
       # No COPILOT_API_ENTRY: `agent start` resolves and runs the real proxy.
       # The runner's HOME is disposable, which is what the smoke's guard wants.

@@ -12,7 +12,6 @@ import { spawn, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { readProjectConfig } from "../src/utils/project_config.ts";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const IMAGE = "copilot-env-test";
@@ -78,16 +77,7 @@ const engine = resolveEngine();
 
 const buildCode = await run(
   engine,
-  [
-    "build",
-    "--build-arg",
-    `BUN_VERSION=${bunVersion()}`,
-    "--build-arg",
-    `DENO_VERSION=${readProjectConfig(ROOT).sidecarDenoVersion}`,
-    "-t",
-    IMAGE,
-    ".",
-  ],
+  ["build", "--build-arg", `BUN_VERSION=${bunVersion()}`, "-t", IMAGE, "."],
   "piped",
 );
 if (buildCode !== 0) {

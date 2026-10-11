@@ -102,8 +102,7 @@ function stageAssets(stage: string): void {
 function build(target: ReleaseTarget, assetFlags: readonly string[]): number {
   const out = `${OUT_DIR}/${releaseAssetName(target)}`;
   console.error(`==> bun build --compile --target ${target.bunTarget} -> ${out}`);
-  // The deno binary autoloaded nothing from the cwd; a `.env` or bunfig.toml there must not
-  // reach the CLI's environment either.
+  // A `.env` or bunfig.toml in the cwd must not reach the CLI's environment.
   const result = spawnSync(
     process.execPath,
     [

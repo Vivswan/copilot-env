@@ -6,7 +6,9 @@
 // with an empty catalog), prints the exact "Listening on:" marker that `start`
 // waits for in the daemon log, and stays alive until killed -- exercising
 // start -> wait-for-listen -> stop without GitHub Copilot auth. Invoked as:
-// deno run copilot-api-fake.mjs start --port N
+// bun run copilot-api-fake.mjs start --port N
+// The "Runtime:" line is the installer smoke's proof (.github/scripts/installer-smoke.ts) that a
+// compiled install spawns the daemon from the binary itself.
 //
 // The filename MUST have a basename starting with "copilot-api": isCopilotApiPid
 // (process.ts) matches the daemon signature -- a runtime process whose entry token
@@ -37,6 +39,7 @@ const server = createServer((req, res) => {
 });
 
 server.listen(port, "127.0.0.1", () => {
+  console.log(`Runtime: ${process.execPath}`);
   // server.ts detects readiness by grepping the daemon log for this substring.
   console.log(`Listening on: http://127.0.0.1:${port}`);
 });

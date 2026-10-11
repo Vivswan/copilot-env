@@ -25,6 +25,19 @@ import {
 } from "../src/install/targets.ts";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
+/** `bun build --target` per rust triple; targets.ts carries this as `bunTarget` once it lands. */
+const BUN_TARGETS: Record<string, string> = {
+  "x86_64-apple-darwin": "bun-darwin-x64",
+  "aarch64-apple-darwin": "bun-darwin-arm64",
+  "x86_64-unknown-linux-gnu": "bun-linux-x64",
+  "aarch64-unknown-linux-gnu": "bun-linux-arm64",
+  "x86_64-pc-windows-msvc": "bun-windows-x64",
+};
+function bunTarget(target: ReleaseTarget): string {
+  const bun = BUN_TARGETS[target.triple];
+  if (bun === undefined) die(`no bun target for ${target.triple}`);
+  return bun;
+}
 const OUT_DIR = "dist";
 const ENTRY = "src/cli.ts";
 
@@ -101,13 +114,13 @@ function stageAssets(stage: string): void {
 /** The build's exit status. */
 function build(target: ReleaseTarget, assetFlags: readonly string[]): number {
   const out = `${OUT_DIR}/${releaseAssetName(target)}`;
-  console.error(`==> bun build --compile --target ${target.bunTarget} -> ${out}`);
+  console.error(`==> bun build --compile --target ${bunTarget(target)} -> ${out}`);
   // The deno binary autoloaded nothing from the cwd; a `.env` or bunfig.toml there must not
   // reach the CLI's environment either.
   const result = spawnSync(process.execPath, [
     "build",
     "--compile",
-    `--target=${target.bunTarget}`,
+    `--target=${bunTarget(target)}`,
     "--no-compile-autoload-dotenv",
     "--no-compile-autoload-bunfig",
     ...assetFlags,

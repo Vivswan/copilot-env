@@ -29,16 +29,36 @@ import { CopilotApiPaths, resolveRootHome } from "../../src/copilot_api/paths.ts
 import { classifyDaemonPid } from "../../src/copilot_api/process.ts";
 import { parseProfileName } from "../../src/copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../../src/copilot_api/run_state.ts";
-import { proxyHome, writeResolvedVersionRecord } from "../../src/proxy_float.ts";
+import { installedProxyVersion } from "../../src/copilot_api/version.ts";
+import {
+  proxyHome,
+  proxyInstallDir,
+  readResolvedVersionRecord,
+  writeResolvedVersionRecord,
+} from "../../src/proxy_float.ts";
 import { probeFileLock, withFileLock } from "../../src/utils/file_lock.ts";
 import { pidAlive } from "../../src/utils/pid.ts";
+import { MILLISECONDS_PER_DAY } from "../../src/utils/time.ts";
 import { packageVersion } from "../../src/utils/version.ts";
-import { killAndAwaitExit, launchFakeDaemon, stageRefusedStop, until } from "../helpers/daemon.ts";
+import {
+  killAndAwaitExit,
+  launchFakeDaemon,
+  plantProxyInstall,
+  stageRefusedStop,
+  until,
+} from "../helpers/daemon.ts";
 import { fingerprintTree } from "../helpers/dry_run.ts";
 import { defaultHomeDir, envSnapshot, isolateProxyHome, resetExitCode } from "../helpers/env.ts";
 import { writeRunState } from "../helpers/fixtures.ts";
 import { closeServer, freePort, listenEphemeral } from "../helpers/net.ts";
 import { captureChannels } from "../helpers/output.ts";
+import {
+  docFetch,
+  fakeInstall,
+  installCalls,
+  NOW_MS,
+  registryDoc,
+} from "../helpers/proxy_float.ts";
 import { ROOT } from "../helpers/run.ts";
 import { afterEach, expect, test } from "../helpers/testing.ts";
 
@@ -151,10 +171,147 @@ test("start --dry-run refuses a recorded proxy below the version floor with the 
   tmpHome();
   new Credential().store("gh-token", "ghp_fake_for_the_plan");
   writeResolvedVersionRecord(dir, "0.0.1", Date.now());
+  // Installed complete, so the entry IS the recorded version: a record alone resolves to the
+  // checkout's copy (floatedProxyEntry), which clears the floor.
+  plantProxyInstall(dir, "0.0.1");
   const before = fingerprintTree(dir);
   await expect(dryRunNarration()).rejects.toThrow(/0\.0\.1 is below the required .* floor/);
   expect(fingerprintTree(dir)).toEqual(before);
 });
+
+// `agent start` floats before it stops daemons (the floor gate fails closed before any running
+// daemon is disturbed), and the float never swaps under a daemon still running from the tree in
+// place. So a start that replaces a running daemon runs the gate once more after the cleanup
+// stopped it: the first float built and discarded its stage, the second reinstalls from the
+// per-version cache and swaps. One invocation lands the update, and a start with nothing to stop
+// runs the gate once. The versions are the fake registry's, above the floor copilot-env.config
+// pins; the installer plants the fake proxy as the package's bin, so the launch runs what the
+// float installed.
+//
+// The gate's passes are counted at the seam: every entry into the float (the verify look, the
+// float itself) builds one context from these deps and reads `nowMs` once, so a gate pass over a
+// stale record is two reads and a pass over the record it just wrote is one (the verify look
+// alone, up to date). An install count cannot tell an unconditional second pass apart, since the
+// fresh record short-circuits it before any install.
+const FLOATED_A = "2.9.0";
+const FLOATED_B = "2.9.1";
+const WEEK_SECONDS = 604_800;
+
+function updateToB(): {
+  calls: ReturnType<typeof fakeInstall>["calls"];
+  floatEntries: () => number;
+  deps: {
+    fetchLike: ReturnType<typeof docFetch>["fetchLike"];
+    runner: ReturnType<typeof fakeInstall>["runner"];
+    cooldownSeconds: number;
+    readonly nowMs: number;
+  };
+} {
+  const { fetchLike } = docFetch(registryDoc({ [FLOATED_A]: 40, [FLOATED_B]: 8 }));
+  const install = fakeInstall({
+    entrySource: readFileSync(join(ROOT, "test", "copilot-api-fake.mjs"), "utf8"),
+  });
+  let entries = 0;
+  return {
+    calls: install.calls,
+    floatEntries: () => entries,
+    deps: {
+      fetchLike,
+      runner: install.runner,
+      cooldownSeconds: WEEK_SECONDS,
+      get nowMs(): number {
+        entries += 1;
+        return NOW_MS;
+      },
+    },
+  };
+}
+
+function seedFloatedA(): void {
+  writeResolvedVersionRecord(dir, FLOATED_A, NOW_MS - 30 * MILLISECONDS_PER_DAY);
+  plantProxyInstall(dir, FLOATED_A);
+}
+
+/** The floated tree and record as the daemon reads them. */
+function floated(): { installed: string | null; recorded: string | undefined } {
+  return {
+    installed: installedProxyVersion(proxyInstallDir(dir)),
+    recorded: readResolvedVersionRecord(dir)?.version,
+  };
+}
+
+test("start --force over a running daemon lands an available update in one invocation", async () => {
+  const home = tmpHome();
+  delete process.env.COPILOT_API_ENTRY;
+  process.env[CI_NO_LIVE_LOOKUPS_ENV] = "1";
+  new Credential().store("gh-token", "ghp_fake_for_the_launch");
+  stubIdentityProbe();
+  seedFloatedA();
+  const runningPort = await freePort();
+  const running = launchFakeDaemon(home, runningPort);
+  const update = updateToB();
+  try {
+    await until(() => daemonLockHolderPid(home) === running);
+    await until(() => portListening(runningPort));
+    writeRunState({ pid: running, port: runningPort });
+    const port = await freePort();
+
+    await captureChannels(() =>
+      runStart(
+        { kind: "launch", dryRun: false, force: true, port, profile: null },
+        () => Promise.resolve(),
+        update.deps,
+      ),
+    );
+
+    // Twice: the float ahead of the cleanup found the daemon running and kept A; the pass after
+    // the cleanup installed and swapped B. Two gate passes over a stale record: four entries.
+    expect(installCalls(update.calls).map((c) => c.args)).toEqual([["install"], ["install"]]);
+    expect(update.floatEntries()).toBe(4);
+    expect(floated()).toEqual({ installed: FLOATED_B, recorded: FLOATED_B });
+    const launched = new CopilotEnvRunState().read().pid ?? null;
+    expect(launched).not.toBeNull();
+    expect(launched).not.toBe(running);
+    expect(pidAlive(launched as number)).toBe(true);
+    expect(pidAlive(running)).toBe(false);
+  } finally {
+    const launched = new CopilotEnvRunState().read().pid ?? null;
+    if (launched !== null && launched !== running) await killAndAwaitExit(launched);
+    await killAndAwaitExit(running);
+  }
+}, 90_000);
+
+test("start with nothing to stop runs the floor gate once", async () => {
+  tmpHome();
+  delete process.env.COPILOT_API_ENTRY;
+  process.env[CI_NO_LIVE_LOOKUPS_ENV] = "1";
+  new Credential().store("gh-token", "ghp_fake_for_the_launch");
+  stubIdentityProbe();
+  seedFloatedA();
+  const update = updateToB();
+  const port = await freePort();
+  try {
+    await captureChannels(() =>
+      runStart(
+        { kind: "launch", dryRun: false, force: false, port, profile: null },
+        () => Promise.resolve(),
+        update.deps,
+      ),
+    );
+
+    expect(installCalls(update.calls).map((c) => c.args)).toEqual([["install"]]);
+    // One gate pass (the verify look, then the float): a second pass, which the fresh record
+    // would short-circuit at its verify look, would make three.
+    expect(update.floatEntries()).toBe(2);
+    expect(floated()).toEqual({ installed: FLOATED_B, recorded: FLOATED_B });
+    const launched = new CopilotEnvRunState().read().pid ?? null;
+    expect(launched).not.toBeNull();
+    expect(pidAlive(launched as number)).toBe(true);
+  } finally {
+    const launched = new CopilotEnvRunState().read().pid ?? null;
+    if (launched !== null) await killAndAwaitExit(launched);
+  }
+}, 90_000);
 
 // The heartbeat lands in the NAMED daemon's run state alone. A real proxy profile always has run
 // state before its resolver heartbeats (the port reservation writes it); a profile WITHOUT state

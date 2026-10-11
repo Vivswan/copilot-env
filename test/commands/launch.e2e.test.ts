@@ -550,6 +550,10 @@ skipWin(
     // tracked pid must be a bun process running a copilot-api-named entry with the `start`
     // subcommand, and the recorded loopback port must really listen. proxy_token.e2e.test.ts stages
     // the same.
+    // Set BEFORE the decoy spawns: its root-home mark (the preload file under the proxy home) and
+    // writeRunState's store both resolve from the env, and the launched CLI reads the same home.
+    const previousHome = process.env.COPILOT_API_HOME;
+    process.env.COPILOT_API_HOME = join(root, "api-home");
     const decoy = join(root, "copilot-api-decoy.mjs");
     writeFileSync(decoy, "setTimeout(() => {}, 30_000);\n");
     const daemon = spawnDaemonShapedChild(decoy);
@@ -567,9 +571,7 @@ skipWin(
         });
       },
     );
-    const previousHome = process.env.COPILOT_API_HOME;
     try {
-      process.env.COPILOT_API_HOME = join(root, "api-home"); // writeRunState resolves from env
       writeRunState({ pid: daemon.pid, port });
       // Codex already wired to the live proxy: once the auto-wire re-syncs Claude,
       // the pair agrees, so the launch must record the default mode as proxy.

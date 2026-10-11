@@ -116,9 +116,15 @@ export function defaultDaemonHome(): string {
   return join(resolveHome(), PROFILES_DIR_NAME, DEFAULT_PROFILE_DIR);
 }
 
-/** The sweep and corroboration sites' one list producer, so no caller enumerates homes with a different rule. */
-export function allDaemonHomes(): string[] {
-  return [defaultDaemonHome(), ...profileHomeNames().map(profileHome)];
+/** The sweep and corroboration sites' one list producer, so no caller enumerates homes with a
+ *  different rule. `rootHome` names ANOTHER root's homes (the float warming a fixture root); unset,
+ *  the resolved root's, where the default daemon's home follows the env pins. */
+export function allDaemonHomes(rootHome?: string): string[] {
+  if (rootHome === undefined) return [defaultDaemonHome(), ...profileHomeNames().map(profileHome)];
+  return [
+    join(rootHome, PROFILES_DIR_NAME, DEFAULT_PROFILE_DIR),
+    ...profileHomeNamesUnder(rootHome).map((name) => join(rootHome, PROFILES_DIR_NAME, name)),
+  ];
 }
 
 /** Complements the credential store's `profiles` map: a proxy-mode profile can exist here with no
@@ -126,9 +132,13 @@ export function allDaemonHomes(): string[] {
  *  dir reads as "no profiles": callers use this list to avoid port collisions and to protect tracked
  *  daemons from the orphan sweep, where an incomplete answer is worse than an error. */
 export function profileHomeNames(): ProfileName[] {
+  return profileHomeNamesUnder(resolveRootHome());
+}
+
+function profileHomeNamesUnder(rootHome: string): ProfileName[] {
   try {
     return fs
-      .readdirEntries(join(resolveRootHome(), PROFILES_DIR_NAME))
+      .readdirEntries(join(rootHome, PROFILES_DIR_NAME))
       .filter((entry) => entry.isDirectory() && isValidProfileName(entry.name))
       .map((entry) => parseProfileName(entry.name))
       .sort();

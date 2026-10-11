@@ -61,7 +61,7 @@ const CASES: readonly (readonly [string, number, number])[] = [
   ['export { default as fs } from "node:fs";', 1, 1],
   ['export { default as fsp } from "node:fs/promises";', 1, 1],
   ['export { readFileSync, rmSync } from "node:fs";', 1, 1],
-  // The Deno namespace (the daemon side still runs under the sidecar), spelled every way.
+  // The Deno namespace, spelled every way: nothing in src/ runs under it any more.
   ['Deno.writeTextFileSync("x", "y");', 1, 0],
   ['await globalThis.Deno.remove("x");', 1, 0],
   ["const { makeTempDirSync } = Deno;", 1, 0],

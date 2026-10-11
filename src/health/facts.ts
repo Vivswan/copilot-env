@@ -159,11 +159,13 @@ export interface BootstrapFacts {
   nodeModules: { present: boolean; fresh: boolean } | null;
 }
 
-/** The proxy float's resolved-version record, as health reads it back. */
+/** The proxy float's resolution as health reads it: the version from the install tree in place
+ *  when one is complete (the version that runs), else the record's. */
 interface ProxyResolvedFacts {
   version: string;
+  /** The record's; 0 when a complete tree stands with no record (a record write the swap outran). */
   resolvedAtMs: number;
-  /** True when the proxy home's node_modules holds exactly the recorded version. */
+  /** True when the proxy home's install tree is complete for `version`. */
   installed: boolean;
 }
 

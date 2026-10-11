@@ -1,8 +1,11 @@
-// The float installs the proxy into the proxy home, `<rootHome>/proxy/`: a package.json naming the
-// proxy at the resolved version (and the preload shims' own npm dependencies), the bun.lock `bun
-// install` resolves from it, and the node_modules it populates. The successful resolution is
-// recorded in <rootHome>/proxy/resolved-version.json: the freshness oracle every status here
-// reads, and the record src/copilot_api/process.ts turns into the daemon's entry.
+// The float installs the proxy into `<rootHome>/proxy/install/`: a package.json naming the proxy
+// at the resolved version (and the preload shims' own npm dependencies), the bun.lock `bun
+// install` resolves from it, and the node_modules it populates; every install is built in a
+// sibling stage, verified, and swapped in, so that directory is only ever a complete install, and
+// the one truth for the version that runs: floatedProxyEntry reads it, and so do the spawn
+// (src/copilot_api/process.ts) and health. <rootHome>/proxy/resolved-version.json records when it
+// was resolved, the freshness oracle every status here reads, and names the version as a cache the
+// tree overrides at every float entry.
 //
 // npm lifecycle scripts never run for the proxy home's install (bun runs none for a dependency it
 // does not trust), so a target declaring them would misbehave silently at runtime: the default
@@ -17,8 +20,9 @@ import { join } from "node:path";
 import { createConsola } from "consola";
 import * as v from "valibot";
 import { proxyUnusedEverywhere } from "./agents/wiring.ts";
+import { daemonLockHold } from "./copilot_api/daemon_lock.ts";
 import { CopilotEnvConfig, configSetCommand } from "./copilot_api/env_config.ts";
-import { resolveRootHome } from "./copilot_api/paths.ts";
+import { allDaemonHomes, resolveRootHome } from "./copilot_api/paths.ts";
 import { DAEMON_SHIM_DEPENDENCIES } from "./copilot_api/shims.ts";
 import {
   installedProxyPackage,
@@ -145,7 +149,9 @@ export function parseRegistryDoc(raw: unknown): ProxyRegistryDoc {
   return { releases: releases, distTags: parsed.output["dist-tags"] };
 }
 
-export type FetchLike = (url: string) => Promise<Response>;
+/** fetch's shape, narrowed to what the float and the start summary call: the one seam a test
+ *  replaces to keep every registry read offline. */
+export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
 
 async function fetchRegistryDoc(fetchLike: FetchLike = fetch): Promise<ProxyRegistryDoc> {
   let response: Response;
@@ -256,17 +262,40 @@ const RECORD_SCHEMA = v.object({
   resolved_at_ms: v.pipe(v.number(), v.finite(), v.minValue(0)),
 });
 
-/** The one tree the float installs into and the daemon runs from: its package.json, bun.lock,
- *  bunfig.toml, and node_modules. The daemon's cwd too (src/copilot_api/process.ts), so bun's
- *  own discovery finds this bunfig and this package.json, never the caller's. */
+/** The float's home, `<rootHome>/proxy/`: the record, and the install tree the daemon runs from.
+ *  The daemon's cwd (src/copilot_api/process.ts): bun's own discovery then finds nothing of the
+ *  caller's, and a running daemon never pins the tree that a later float swaps out. */
 export function proxyHome(rootHome: string): string {
   return join(rootHome, "proxy");
 }
 
-/** bun's download cache for the proxy home's installs, pinned under the root home so no float
- *  writes into the user's own `~/.bun`. */
+/**
+ * The installed tree: package.json, bunfig.toml, bun.lock, node_modules. A directory that exists
+ * only because an install COMPLETED and was verified: every install is built beside it
+ * (`install.next`), checked, and swapped in by rename, so no half-state ever carries this name
+ * (installIntoProxyHome). `install.prev` is the tree a swap retired, removed after it.
+ */
+export function proxyInstallDir(rootHome: string): string {
+  return join(proxyHome(rootHome), "install");
+}
+
+function stagingDir(rootHome: string): string {
+  return join(proxyHome(rootHome), "install.next");
+}
+
+function retiredDir(rootHome: string): string {
+  return join(proxyHome(rootHome), "install.prev");
+}
+
+/** bun's download caches for the proxy home's installs, one per installed version (the shims-only
+ *  tree under `shims`), under the root home so no float writes into the user's own `~/.bun`. A
+ *  completed install prunes every other version's. */
 export function proxyBunCacheDir(rootHome: string): string {
   return join(rootHome, "bun", "cache");
+}
+
+function installCacheDir(rootHome: string, version: string | null): string {
+  return join(proxyBunCacheDir(rootHome), version ?? "shims");
 }
 
 export function resolvedVersionFile(rootHome: string): string {
@@ -274,21 +303,20 @@ export function resolvedVersionFile(rootHome: string): string {
 }
 
 export function proxyManifestFile(rootHome: string): string {
-  return join(proxyHome(rootHome), "package.json");
+  return join(proxyInstallDir(rootHome), "package.json");
 }
 
 /** `bun install` writes it; it pins TRANSITIVE resolution between floats (the proxy's own ranges
- *  would otherwise re-resolve on every warm), which is why a re-warm of the recorded version runs
- *  `--frozen-lockfile` against it. */
+ *  would otherwise re-resolve on every warm), which is why a reinstall of the tree in place copies
+ *  it into the stage and runs `--frozen-lockfile` against it. */
 export function proxyLockFile(rootHome: string): string {
-  return join(proxyHome(rootHome), "bun.lock");
+  return join(proxyInstallDir(rootHome), "bun.lock");
 }
 
-/** The proxy home's own bunfig: `[install] minimumReleaseAge` is how the cooldown reaches bun's
- *  resolver, and `auto = "disable"` keeps a daemon started from this cwd from fetching a missing
- *  import on its own. */
+/** The install's own bunfig: `[install] minimumReleaseAge` is how the cooldown reaches bun's
+ *  resolver, and `auto = "disable"` keeps bun from fetching a missing import on its own. */
 export function daemonBunfigFile(rootHome: string): string {
-  return join(proxyHome(rootHome), "bunfig.toml");
+  return join(proxyInstallDir(rootHome), "bunfig.toml");
 }
 
 function renderDaemonBunfig(cooldownSeconds: number): string {
@@ -382,7 +410,7 @@ interface FloatContext {
   nowMs: number;
 }
 
-interface ProxyFloatDeps {
+export interface ProxyFloatDeps {
   rootHome?: string;
   config?: ProjectConfig;
   /** Seconds; unset defers to env > config > built-in default. */
@@ -402,117 +430,268 @@ function floatContext(deps: ProxyFloatDeps): FloatContext {
   };
 }
 
-/** The manifest on disk against the one this build renders for `version`: a tree installed from
- *  any other manifest (an older build's shim dependencies, another version) is not this
- *  version's install. An unreadable file is a failed look, not a stale manifest. */
-function manifestLook(ctx: FloatContext, version: string): "current" | "stale" | "unproven" {
-  const read = fs.readTextResult(proxyManifestFile(ctx.rootHome));
-  if (read.kind === "unreadable") return "unproven";
-  if (read.kind === "absent") return "stale";
-  return read.text === renderProxyManifest(version) ? "current" : "stale";
+/** "unproven" is a look that FAILED (a file this process could not read). A string union rather
+ *  than a boolean so no call site can flatten it by truthiness. */
+type InstallLook = "resolves" | "missing" | "unproven";
+
+/**
+ * Whether `dir` is a complete install for `version` (null: the shims-only tree): this build's
+ * manifest for it, the proxy's own manifest at that version naming an entry file on disk, and
+ * every shim package present. The float verifies a staged tree with it before the swap, so for
+ * the tree in place it is a sanity read of a tree that already passed; health and the spawn read
+ * through floatedProxyEntry.
+ */
+function treeLook(dir: string, version: string | null): InstallLook {
+  const manifest = fs.readTextResult(join(dir, "package.json"));
+  if (manifest.kind === "unreadable") return "unproven";
+  if (manifest.kind !== "text" || manifest.text !== renderProxyManifest(version)) return "missing";
+  if (version !== null) {
+    const installed = installedProxyPackage(dir);
+    if (installed === null || installed.version !== version || !fs.exists(installed.entry)) {
+      return "missing";
+    }
+  }
+  return shimDependenciesInstalled(dir) ? "resolves" : "missing";
 }
 
-/** The three files an install reads or writes, as they were before it: a failed install puts them
- *  back, so the home still describes the install it holds (the previous version stays usable, and
- *  the next attempt judges freezing against the manifest its lock was resolved from). A file this
- *  process cannot read is left as it is. */
-function snapshotInstallFiles(rootHome: string): Array<() => void> {
-  const files = [proxyManifestFile(rootHome), daemonBunfigFile(rootHome), proxyLockFile(rootHome)];
-  return files.flatMap((path) => {
-    const before = fs.readTextResult(path);
-    if (before.kind === "unreadable") return [];
-    return [
-      before.kind === "absent"
-        ? (): void => void fs.rm(path, { force: true })
-        : (): void => fs.writeText(path, before.text, { secretKeys: [] }),
-    ];
-  });
+function installResolves(ctx: FloatContext, version: string): InstallLook {
+  return treeLook(proxyInstallDir(ctx.rootHome), version);
+}
+
+/** Every package the preload shims import, present in `dir`'s node_modules. */
+function shimDependenciesInstalled(dir: string): boolean {
+  return DAEMON_SHIM_DEPENDENCIES.every((name) =>
+    fs.exists(join(dir, "node_modules", name, "package.json")),
+  );
+}
+
+/** The version the tree in place holds, when it holds it complete (treeLook for the version its own
+ *  package names): the one truth for what runs. Null for no tree, an incomplete one, or one this
+ *  process cannot read. */
+function installedTreeVersion(dir: string): string | null {
+  const version = installedProxyPackage(dir)?.version ?? null;
+  if (version === null) return null;
+  return treeLook(dir, version) === "resolves" ? version : null;
+}
+
+/** The daemon's floated entry: the install tree in place, complete for the version its own package
+ *  names. Null is "nothing floated to run": no tree, or one not complete (the float gate ahead of
+ *  every start reinstalls it). The ONE verifier health and the spawn share; the record plays no
+ *  part, so a record the swap outran, or one this process could not write, never hides a runnable
+ *  tree. */
+export function floatedProxyEntry(
+  rootHome: string,
+): { version: string; entry: string; nodeModules: string } | null {
+  const dir = proxyInstallDir(rootHome);
+  const version = installedTreeVersion(dir);
+  if (version === null) return null;
+  const installed = installedProxyPackage(dir);
+  if (installed === null) return null;
+  return { version, entry: installed.entry, nodeModules: join(dir, "node_modules") };
+}
+
+/** A swap that died between its two renames left the tree aside: put it back before anything
+ *  judges the install dir, so every float entry runs this first (the looks that decide whether to
+ *  install at all read the tree in place, and a refusal path may never install). Then the record
+ *  follows the tree: one that names another version keeps its resolution time; none at all (a
+ *  write the swap outran) gets the tree's version with no known time, so the next verify look
+ *  re-checks; one this process cannot write is named and left. Debris goes last and best-effort: the stage of an interrupted attempt, and a
+ *  retired tree still beside a complete one (kept only until the record was written), neither of
+ *  which may stand between the tree and a record that agrees with it. */
+function recoverInterruptedSwap(rootHome: string): void {
+  const current = proxyInstallDir(rootHome);
+  const retired = retiredDir(rootHome);
+  if (!fs.exists(current) && fs.exists(retired)) fs.rename(retired, current);
+  const record = readResolvedVersionRecord(rootHome);
+  const inPlace = installedTreeVersion(current);
+  if (inPlace !== null && record?.version !== inPlace) {
+    if (recordResolution(rootHome, inPlace, record?.resolvedAtMs ?? 0)) {
+      logger.info(
+        record === null
+          ? `no record, but the install holds ${PROXY_PKG}@${inPlace}: the record now names it`
+          : `the record named ${PROXY_PKG}@${record.version} but the install holds ${inPlace}: the record now follows the install`,
+      );
+    }
+  }
+  removeDebris(stagingDir(rootHome));
+  removeDebris(retired);
+}
+
+/** Every record write the float makes, best effort: the tree in place is what runs whether or not
+ *  the record can say so (every reader takes the version from the tree, resolutionInPlace), so a
+ *  record this process cannot write is named and never stops the float. False when it failed. */
+function recordResolution(rootHome: string, version: string, atMs: number): boolean {
+  try {
+    writeResolvedVersionRecord(rootHome, version, atMs);
+    return true;
+  } catch (e) {
+    logger.warn(
+      `the install holds ${PROXY_PKG}@${version}, but could not write ${resolvedVersionFile(rootHome)}: ${errMessage(e)}; the install is the version that runs`,
+    );
+    return false;
+  }
+}
+
+/** The resolution as every float decision reads it: a complete tree in place IS the version, and
+ *  the record lends its time when it names that version (else the time is unknown, 0, so the next
+ *  look re-checks); with no complete tree, the record alone, which the looks then judge. */
+function resolutionInPlace(ctx: FloatContext): ResolvedVersionRecord | null {
+  const record = readResolvedVersionRecord(ctx.rootHome);
+  const inPlace = installedTreeVersion(proxyInstallDir(ctx.rootHome));
+  if (inPlace === null) return record;
+  return { version: inPlace, resolvedAtMs: record?.version === inPlace ? record.resolvedAtMs : 0 };
+}
+
+/** Best effort: a removal the OS refuses (an open handle on Windows) is debris the next float entry
+ *  sweeps; it never blocks the tree in place or its record. */
+function removeDebris(dir: string): void {
+  try {
+    fs.rm(dir, { recursive: true, force: true });
+  } catch (e) {
+    logger.warn(`could not remove ${dir} yet: ${errMessage(e)}`);
+  }
 }
 
 /**
- * Writes the manifest and the bunfig, then `bun install` in the proxy home; `version` null
- * installs the shims' packages alone. The lockfile is frozen when the manifest on disk, the one
- * the lock was resolved from, is already the one being installed (a reinstall of the recorded
- * version): the install then restores node_modules from the lock and the cache, offline if need
- * be, and never moves a transitive pin. A changed manifest resolves afresh and rewrites the lock.
+ * The transactional install. Everything happens in `install.next`: this build's manifest and
+ * bunfig, the lock of the tree in place when the manifest is unchanged (a reinstall of the
+ * recorded version, run `--frozen-lockfile`, so no transitive pin moves and the cache serves it
+ * offline), then `bun install`, then the same verification the readers apply. Only a tree that
+ * passed is renamed into place (never under a daemon still running from the previous tree,
+ * runningDaemon), the previous tree aside first; then the record is written, then the retired tree
+ * removed, then the other versions' caches. A failure at any step before the swap, a write
+ * included, removes the stage and leaves the tree in place untouched: the version it holds stays
+ * runnable, and the next attempt judges freezing against the manifest its lock was resolved from.
+ * `version` null builds the shims-only tree.
  */
 function installIntoProxyHome(
   ctx: FloatContext,
   version: string | null,
   cooldownSeconds: number,
-): number {
-  if (version !== null) dropSupersededCache(ctx, version);
-  const restore = snapshotInstallFiles(ctx.rootHome);
-  const frozen =
-    version !== null &&
-    manifestLook(ctx, version) === "current" &&
-    fs.exists(proxyLockFile(ctx.rootHome));
-  fs.writeText(proxyManifestFile(ctx.rootHome), renderProxyManifest(version), { secretKeys: [] });
-  fs.writeText(daemonBunfigFile(ctx.rootHome), renderDaemonBunfig(cooldownSeconds), {
-    secretKeys: [],
-  });
-  const result = ctx.runner(["install", ...(frozen ? ["--frozen-lockfile"] : [])], {
-    cwd: proxyHome(ctx.rootHome),
-    env: { BUN_BE_BUN: "1", BUN_INSTALL_CACHE_DIR: proxyBunCacheDir(ctx.rootHome) },
-  });
-  if (result.status !== 0) {
-    if (result.stderr.trim()) logger.warn(result.stderr.trimEnd());
-    for (const put of restore) put();
+): boolean {
+  const rootHome = ctx.rootHome;
+  const current = proxyInstallDir(rootHome);
+  const next = stagingDir(rootHome);
+  try {
+    recoverInterruptedSwap(rootHome);
+    fs.mkdir(next);
+    const manifest = renderProxyManifest(version);
+    const inPlace = fs.readTextResult(join(current, "package.json"));
+    const frozen =
+      inPlace.kind === "text" && inPlace.text === manifest && fs.exists(join(current, "bun.lock"));
+    if (frozen) fs.copyFile(join(current, "bun.lock"), join(next, "bun.lock"));
+    fs.writeText(join(next, "package.json"), manifest, { secretKeys: [] });
+    fs.writeText(join(next, "bunfig.toml"), renderDaemonBunfig(cooldownSeconds), {
+      secretKeys: [],
+    });
+    const result = ctx.runner(["install", ...(frozen ? ["--frozen-lockfile"] : [])], {
+      cwd: next,
+      env: { BUN_BE_BUN: "1", BUN_INSTALL_CACHE_DIR: installCacheDir(rootHome, version) },
+    });
+    if (result.status !== 0) {
+      if (result.stderr.trim()) logger.warn(result.stderr.trimEnd());
+      return false;
+    }
+    if (treeLook(next, version) !== "resolves") {
+      logger.warn(
+        `bun install reported success, but ${next} is not a complete install; not using it`,
+      );
+      return false;
+    }
+    const running = runningDaemon(rootHome);
+    if (running !== null) {
+      logger.warn(
+        `not swapping in the new install: a daemon is running from the one in place (${running}); stop it (\`agent stop\`) and start again`,
+      );
+      return false;
+    }
+    swapInstallDir(rootHome);
+    // The record follows the swap, and the retired tree stays beside the new one until it has: a
+    // record this process cannot write leaves the tree as the version that runs (every reader takes
+    // the version from the tree), and the next float entry rewrites the record from it.
+    const recorded = version === null || recordResolution(rootHome, version, ctx.nowMs);
+    if (recorded) removeDebris(retiredDir(rootHome));
+    pruneCaches(rootHome, installCacheDir(rootHome, version));
+    return true;
+  } catch (e) {
+    logger.warn(`could not install into ${next}: ${errMessage(e)}`);
+    return false;
+  } finally {
+    fs.rm(next, { recursive: true, force: true });
   }
-  return result.status;
 }
 
-/** Every package the preload shims import, installed in the proxy home. */
-function shimDependenciesInstalled(home: string): boolean {
-  return DAEMON_SHIM_DEPENDENCIES.every((name) =>
-    fs.exists(join(home, "node_modules", name, "package.json")),
-  );
+/** A daemon of this root home still running from the tree in place: on POSIX it would lazily import
+ *  from the new tree after a swap, on Windows the rename itself fails on its open handles, so the
+ *  swap waits until the daemon is gone (`agent stop`; `agent start` runs the floor gate before it
+ *  stops daemons and once more after, so a start that replaces the daemon lands the update in that
+ *  start). Judged by THIS root home's daemon locks, the liveness signal every stop path reads; a
+ *  lock this process cannot read counts as running, since the swap is the irreversible step. */
+function runningDaemon(rootHome: string): string | null {
+  for (const home of allDaemonHomes(rootHome)) {
+    const hold = daemonLockHold(home);
+    if (hold.kind === "held") return `pid ${hold.pid ?? "unknown"}, ${home}`;
+    if (hold.kind === "unreadable") return `an unreadable daemon.lock in ${home}`;
+  }
+  return null;
+}
+
+/** The retired tree is renamed aside and left there until the record is written (removeDebris in
+ *  installIntoProxyHome); a second rename that fails puts the old tree straight back, so the install
+ *  dir never stays empty. */
+function swapInstallDir(rootHome: string): void {
+  const current = proxyInstallDir(rootHome);
+  const next = stagingDir(rootHome);
+  const retired = retiredDir(rootHome);
+  const hadCurrent = fs.exists(current);
+  if (hadCurrent) fs.rename(current, retired);
+  try {
+    fs.rename(next, current);
+  } catch (e) {
+    if (hadCurrent) fs.rename(retired, current);
+    throw e;
+  }
+}
+
+/** Every other version's cache goes once an install completed: bun's caches are content-addressed
+ *  and keep every tarball they ever fetched, so a superseded version's would otherwise stay behind
+ *  for good. Best effort throughout: the install is already in place, so a cache the OS will not
+ *  remove is named and left, never a failed install. */
+function pruneCaches(rootHome: string, keep: string): void {
+  let entries: string[];
+  try {
+    entries = fs.readdir(proxyBunCacheDir(rootHome));
+  } catch {
+    return;
+  }
+  for (const name of entries) {
+    const dir = join(proxyBunCacheDir(rootHome), name);
+    if (dir === keep) continue;
+    try {
+      fs.rm(dir, { recursive: true, force: true });
+    } catch (e) {
+      logger.warn(`could not remove the superseded cache ${dir} yet: ${errMessage(e)}`);
+    }
+  }
 }
 
 /**
  * A daemon whose entry is a file of its own (COPILOT_API_ENTRY) skips the float, but its preload
  * shims still import the packages only an install puts in the proxy home: on a compiled install
  * nothing else holds them (a checkout resolves them from its own node_modules). Installs them
- * alone, once; the next real float's manifest supersedes this one.
+ * alone, once; the next real float's tree supersedes it.
  */
 export async function ensureShimDependencies(deps: ProxyFloatDeps = {}): Promise<void> {
   const ctx = floatContext(deps);
-  if (shimDependenciesInstalled(proxyHome(ctx.rootHome))) return;
+  recoverInterruptedSwap(ctx.rootHome);
+  if (shimDependenciesInstalled(proxyInstallDir(ctx.rootHome))) return;
   const cooldownSeconds = deps.cooldownSeconds ?? resolveMinimumReleaseAgeSeconds();
-  logger.info(`installing the daemon shims' dependencies into ${proxyHome(ctx.rootHome)}`);
-  if (installIntoProxyHome(ctx, null, cooldownSeconds) !== 0) {
+  logger.info(`installing the daemon shims' dependencies into ${proxyInstallDir(ctx.rootHome)}`);
+  if (!installIntoProxyHome(ctx, null, cooldownSeconds)) {
     throw new Error(
-      `could not install the daemon shims' dependencies into ${proxyHome(ctx.rootHome)} (offline?)`,
+      `could not install the daemon shims' dependencies into ${proxyInstallDir(ctx.rootHome)} (offline?)`,
     );
   }
-}
-
-/** The whole cache goes on a version change, not a prune: bun's cache is content-addressed and
- *  keeps every tarball it ever fetched, so the superseded proxy's tree would otherwise stay
- *  behind for good. */
-function dropSupersededCache(ctx: FloatContext, version: string): void {
-  const record = readResolvedVersionRecord(ctx.rootHome);
-  if (record === null || record.version === version) return;
-  fs.rm(proxyBunCacheDir(ctx.rootHome), { recursive: true, force: true });
-}
-
-/** "unproven" is a look that FAILED (a file this process could not read). A string union rather
- *  than a boolean so no call site can flatten it by truthiness. */
-type InstallLook = "resolves" | "missing" | "unproven";
-
-/** The proxy home holds `version` when its manifest is this build's manifest for it, the
- *  installed proxy's own manifest says that version and names an entry file on disk, and every
- *  shim dependency is installed: a half-installed tree would otherwise read as up to date and the
- *  daemon die at launch on a missing import. */
-function installResolves(ctx: FloatContext, version: string): InstallLook {
-  const manifest = manifestLook(ctx, version);
-  if (manifest !== "current") return manifest === "stale" ? "missing" : "unproven";
-  const home = proxyHome(ctx.rootHome);
-  const installed = installedProxyPackage(home);
-  if (installed === null || installed.version !== version || !fs.exists(installed.entry)) {
-    return "missing";
-  }
-  return shimDependenciesInstalled(home) ? "resolves" : "missing";
 }
 
 function warnInstallUnverified(version: string): void {
@@ -524,15 +703,18 @@ function warnInstallUnverified(version: string): void {
 /** The one notion of "a usable installed proxy" every keep and fallback path shares. An UNPROVEN
  *  look keeps the record too: the null arm feeds destructive recoveries, and a genuinely broken
  *  install still fails honestly at daemon launch. */
+/** The version a failed or refused float keeps: the tree in place (resolutionInPlace), or a record
+ *  whose tree could not be verified (an unreadable manifest keeps too, rather than reinstalling
+ *  over a possibly-working install). Null when nothing complete stands. */
 function usableRecord(ctx: FloatContext): ResolvedVersionRecord | null {
-  const record = readResolvedVersionRecord(ctx.rootHome);
-  if (record === null) return null;
-  const look = installResolves(ctx, record.version);
+  const resolution = resolutionInPlace(ctx);
+  if (resolution === null) return null;
+  const look = installResolves(ctx, resolution.version);
   if (look === "unproven") {
-    warnInstallUnverified(record.version);
-    return record;
+    warnInstallUnverified(resolution.version);
+    return resolution;
   }
-  return look === "resolves" ? record : null;
+  return look === "resolves" ? resolution : null;
 }
 
 export function removeProxyFloatArtifacts(
@@ -553,19 +735,13 @@ export function proxyFloatArtifactPaths(rootHome: string): string[] {
 // --- Float actions -----------------------------------------------------------------
 
 function recordFloatResolution(ctx: FloatContext, version: string): void {
-  writeResolvedVersionRecord(ctx.rootHome, version, ctx.nowMs);
+  recordResolution(ctx.rootHome, version, ctx.nowMs);
 }
 
-function logNowUsing(ctx: FloatContext): void {
-  const record = readResolvedVersionRecord(ctx.rootHome);
-  logger.success(`now using ${PROXY_PKG}@${record?.version ?? "unknown"}`);
-}
-
-/** On a failed install (false) the caller decides what is kept. */
+/** On a failed install (false) the caller decides what is kept; the install wrote the record. */
 function installVersion(ctx: FloatContext, version: string, cooldownSeconds: number): boolean {
-  if (installIntoProxyHome(ctx, version, cooldownSeconds) !== 0) return false;
-  recordFloatResolution(ctx, version);
-  logNowUsing(ctx);
+  if (!installIntoProxyHome(ctx, version, cooldownSeconds)) return false;
+  logger.success(`now using ${PROXY_PKG}@${version}`);
   return true;
 }
 
@@ -595,14 +771,14 @@ function warnPinnedLifecycleScripts(doc: ProxyRegistryDoc | null, version: strin
 }
 
 async function handlePinnedOverride(ctx: FloatContext, override: string): Promise<void> {
-  const record = readResolvedVersionRecord(ctx.rootHome);
   let target = override;
   let doc: ProxyRegistryDoc | null = null;
 
   if (isExactVersion(override)) {
-    // Only a PROVEN "resolves" earns the fast path; an unproven look falls through to the
-    // non-destructive re-warm.
-    if (record?.version === override && installResolves(ctx, override) === "resolves") {
+    // The tree in place is judged for the pin itself. Only a PROVEN "resolves" earns the fast
+    // path; an unproven look falls through to the non-destructive re-warm.
+    if (installResolves(ctx, override) === "resolves") {
+      recordFloatResolution(ctx, override);
       logger.success(`up to date: ${PROXY_PKG}@${override} pinned; no install`);
       return;
     }
@@ -615,11 +791,10 @@ async function handlePinnedOverride(ctx: FloatContext, override: string): Promis
     try {
       doc = await fetchRegistryDoc(ctx.fetchLike);
     } catch (e) {
-      if (usableRecord(ctx) !== null) {
+      const kept = usableRecord(ctx);
+      if (kept !== null) {
         logger.warn(
-          `could not resolve the '${override}' tag pin (${errMessage(
-            e,
-          )}); keeping ${PROXY_PKG}@${record?.version}`,
+          `could not resolve the '${override}' tag pin (${errMessage(e)}); keeping ${PROXY_PKG}@${kept.version}`,
         );
         return;
       }
@@ -641,8 +816,9 @@ async function handlePinnedOverride(ctx: FloatContext, override: string): Promis
   logger.info(`installing pinned ${PROXY_PKG}@${override} (cooldown bypassed)`);
   warnPinnedLifecycleScripts(doc, target);
   if (installVersion(ctx, target, 0)) return;
-  if (usableRecord(ctx) !== null) {
-    logger.warn(`pin failed for ${PROXY_PKG}@${override}; keeping ${PROXY_PKG}@${record?.version}`);
+  const kept = usableRecord(ctx);
+  if (kept !== null) {
+    logger.warn(`pin failed for ${PROXY_PKG}@${override}; keeping ${PROXY_PKG}@${kept.version}`);
     return;
   }
   throw new Error(
@@ -673,24 +849,25 @@ function handleRefused(
   cooldownSeconds: number,
   doc: ProxyRegistryDoc,
 ): void {
-  const record = readResolvedVersionRecord(ctx.rootHome);
-  if (record !== null && proxyVersionBoundsStatus(record.version, ctx.config).ok) {
-    const look = installResolves(ctx, record.version);
-    // An UNPROVEN look keeps too rather than reinstalling: the reinstall's failure arm is the
-    // loud refusal throw, and a failed look must not brick a possibly-working install.
-    if (look !== "missing") {
-      if (look === "unproven") warnInstallUnverified(record.version);
-      logger.warn(`${refusalMessage(sel)} Keeping ${PROXY_PKG}@${record.version}.`);
-      return;
-    }
-    if (
-      doc.releases.get(record.version)?.lifecycleScripts.length === 0 &&
-      installIntoProxyHome(ctx, record.version, cooldownSeconds) === 0
-    ) {
-      recordFloatResolution(ctx, record.version);
-      logger.warn(`${refusalMessage(sel)} Keeping ${PROXY_PKG}@${record.version}.`);
-      return;
-    }
+  // The tree in place, or a record whose tree could not be verified, is kept (usableRecord: a
+  // failed look must not brick a possibly-working install); a recorded version whose tree is
+  // gone is reinstalled, the reinstall's failure arm being the loud refusal throw. One resolution
+  // policy throughout (resolutionInPlace): a tree in place out of bounds never falls back to a
+  // record that lagged it.
+  const kept = usableRecord(ctx);
+  if (kept !== null && proxyVersionBoundsStatus(kept.version, ctx.config).ok) {
+    logger.warn(`${refusalMessage(sel)} Keeping ${PROXY_PKG}@${kept.version}.`);
+    return;
+  }
+  const inPlace = resolutionInPlace(ctx);
+  if (
+    inPlace !== null &&
+    proxyVersionBoundsStatus(inPlace.version, ctx.config).ok &&
+    doc.releases.get(inPlace.version)?.lifecycleScripts.length === 0 &&
+    installIntoProxyHome(ctx, inPlace.version, cooldownSeconds)
+  ) {
+    logger.warn(`${refusalMessage(sel)} Keeping ${PROXY_PKG}@${inPlace.version}.`);
+    return;
   }
   throw new Error(refusalMessage(sel));
 }
@@ -700,13 +877,15 @@ function handleResolved(
   sel: Extract<ProxySelection, { kind: "resolved" }>,
   cooldownSeconds: number,
 ): void {
-  const record = readResolvedVersionRecord(ctx.rootHome);
-  // Only a PROVEN "resolves" earns the fast path; an unproven look falls through to the
-  // non-destructive reinstall, whose failure arm keeps the record via usableRecord.
-  const recordedLook: InstallLook =
-    record?.version === sel.version ? installResolves(ctx, sel.version) : "missing";
-  if (record?.version === sel.version && recordedLook === "resolves") {
-    // Refresh the record's timestamp so proxyFloatVerifyStatus stays on its offline fast path.
+  const inPlace = resolutionInPlace(ctx);
+  // The tree in place is judged for the selected version itself, whatever the record names: the
+  // tree is the version that runs. Only a PROVEN "resolves" earns the fast path; an unproven look
+  // falls through to the non-destructive reinstall, whose failure arm keeps the record via
+  // usableRecord.
+  const recordedLook: InstallLook = installResolves(ctx, sel.version);
+  if (recordedLook === "resolves") {
+    // Refresh the record's timestamp (and its version, should it have lagged the tree) so
+    // proxyFloatVerifyStatus stays on its offline fast path.
     recordFloatResolution(ctx, sel.version);
     logger.success(`up to date: ${PROXY_PKG}@${sel.version} (${sel.reason}); no install`);
     return;
@@ -720,7 +899,7 @@ function handleResolved(
     );
   } else {
     logger.info(
-      `update needed: ${PROXY_PKG} ${record?.version ?? "none"} -> ${sel.version} (${sel.reason})`,
+      `update needed: ${PROXY_PKG} ${inPlace?.version ?? "none"} -> ${sel.version} (${sel.reason})`,
     );
   }
   if (installVersion(ctx, sel.version, cooldownSeconds)) return;
@@ -737,6 +916,7 @@ function handleResolved(
 
 export async function floatProxy(deps: ProxyFloatDeps = {}): Promise<void> {
   const ctx = floatContext(deps);
+  recoverInterruptedSwap(ctx.rootHome);
 
   // The cooldown is resolved only on the float path: a bad COPILOT_API_MIN_RELEASE_AGE must not
   // block a pin.
@@ -790,17 +970,17 @@ function installLookStatus(
   look: InstallLook,
   version: string,
 ): ProxyFloatVerifyStatus | null {
-  const home = proxyHome(ctx.rootHome);
+  const dir = proxyInstallDir(ctx.rootHome);
   if (look === "unproven") {
     return {
       upToDate: false,
-      message: `install unverified: could not verify ${PROXY_PKG}@${version} in ${home}; its manifest could not be read`,
+      message: `install unverified: could not verify ${PROXY_PKG}@${version} in ${dir}; its manifest could not be read`,
     };
   }
   if (look === "missing") {
     return {
       upToDate: false,
-      message: `install needed: ${PROXY_PKG}@${version} is not installed in ${home}`,
+      message: `install needed: ${PROXY_PKG}@${version} is not installed in ${dir}`,
     };
   }
   return null;
@@ -812,7 +992,7 @@ export async function proxyFloatVerifyStatus(
   deps: ProxyFloatDeps = {},
 ): Promise<ProxyFloatVerifyStatus> {
   const ctx = floatContext(deps);
-  const record = readResolvedVersionRecord(ctx.rootHome);
+  const record = resolutionInPlace(ctx);
 
   const override = resolveProxyVersionOverride();
   if (override) {

@@ -4,7 +4,12 @@
 import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { consola } from "consola";
-import { ensureShimDependencies, floatProxy, proxyFloatVerifyStatus } from "../proxy_float.ts";
+import {
+  ensureShimDependencies,
+  floatProxy,
+  type ProxyFloatDeps,
+  proxyFloatVerifyStatus,
+} from "../proxy_float.ts";
 import { colorEnabled, paintFor } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
@@ -111,22 +116,25 @@ export function entryProxyVersion(entry: CopilotApiEntry): string | null {
  * concurrent starts never re-warm the float's cache over each other, and BEFORE spawnConfiguredDaemon,
  * which runs the entry judged here. The float is best-effort (offline keeps what is cached), but the
  * floor is a hard contract: fail-closed, before disturbing any running daemon. A `COPILOT_API_ENTRY`
- * override skips both: it runs a file we did not resolve or version.
+ * override skips both: it runs a file we did not resolve or version. Because the gate runs ahead of
+ * the cleanup, the float never swaps under the daemon that is still running (proxy_float.ts
+ * runningDaemon): the caller runs the gate once more after the cleanup stopped it. `deps` are the
+ * float's seams (the registry fetch, the installer), for the tests.
  */
-export async function ensureProxyFloor(): Promise<RunnableEntry> {
+export async function ensureProxyFloor(deps: ProxyFloatDeps = {}): Promise<RunnableEntry> {
   const preflight = resolveCopilotApiEntry();
   if (preflight.kind === "file") {
     // The shims' packages come from the proxy home on a compiled install; a checkout resolves
     // them from its own node_modules, so it installs nothing for a file entry.
-    if (rootMode().kind === "compiled") await ensureShimDependencies();
+    if (rootMode().kind === "compiled") await ensureShimDependencies(deps);
     return preflight;
   }
 
-  const status = await proxyFloatVerifyStatus();
+  const status = await proxyFloatVerifyStatus(deps);
   if (!status.upToDate) {
     consola.info(status.message);
     try {
-      await floatProxy();
+      await floatProxy(deps);
     } catch (e) {
       consola.warn(`proxy float failed (${errMessage(e)}); checking what is already available`);
     }

@@ -1,22 +1,33 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { parse as parseToml } from "smol-toml";
 import { PROXY_CACHE_FIXTURE } from "../../scripts/warm-proxy-cache.ts";
 import { directHelperCommand } from "../../src/claude/config.ts";
 import { registryEntry } from "../../src/copilot_api/config_registry.ts";
+import { acquireDaemonLockForLife, daemonLockPath } from "../../src/copilot_api/daemon_lock.ts";
 import { CopilotEnvConfig } from "../../src/copilot_api/env_config.ts";
-import { CopilotApiPaths } from "../../src/copilot_api/paths.ts";
+import { allDaemonHomes, CopilotApiPaths } from "../../src/copilot_api/paths.ts";
 import {
   BUN_CLI_ENV,
   copilotApiArgv,
   resolveCopilotApiEntry,
 } from "../../src/copilot_api/process.ts";
 import { DAEMON_SHIM_DEPENDENCIES } from "../../src/copilot_api/shims.ts";
-import { PROXY_PACKAGE_NAME } from "../../src/copilot_api/version.ts";
+import { installedProxyPackage, PROXY_PACKAGE_NAME } from "../../src/copilot_api/version.ts";
 import {
   daemonBunfigFile,
   ensureShimDependencies,
   type FetchLike,
+  floatedProxyEntry,
   floatProxy,
   type InstallRunner,
   parseRegistryDoc,
@@ -24,6 +35,7 @@ import {
   proxyFloatSkips,
   proxyFloatVerifyStatus,
   proxyHome,
+  proxyInstallDir,
   proxyLockFile,
   proxyManifestFile,
   readResolvedVersionRecord,
@@ -35,9 +47,19 @@ import {
   selectProxyVersion,
   writeResolvedVersionRecord,
 } from "../../src/proxy_float.ts";
+import { releaseFileLock } from "../../src/utils/file_lock.ts";
 import type { ProjectConfig } from "../../src/utils/project_config.ts";
 import { MILLISECONDS_PER_DAY } from "../../src/utils/time.ts";
+import { plantProxyInstall } from "../helpers/daemon.ts";
 import { envSnapshot, isolateProxyHome } from "../helpers/env.ts";
+import { captureAllWrites } from "../helpers/output.ts";
+import {
+  docFetch,
+  fakeInstall,
+  installCalls,
+  NOW_MS,
+  registryDoc,
+} from "../helpers/proxy_float.ts";
 import { ROOT, runSync } from "../helpers/run.ts";
 import { afterEach, beforeEach, describe, expect, removeDir, test } from "../helpers/testing.ts";
 
@@ -45,7 +67,6 @@ import { afterEach, beforeEach, describe, expect, removeDir, test } from "../hel
 // proxyFloatVerifyStatus's offline fast path reads.
 
 const PROXY_PKG = PROXY_PACKAGE_NAME;
-const NOW_MS = Date.parse("2026-06-10T00:00:00.000Z");
 const WEEK_SECONDS = 604800;
 
 const CONFIG: ProjectConfig = { proxyMinVersion: "1.10.0", proxyMaxVersion: null };
@@ -56,45 +77,6 @@ const ENTRY_ENV = "COPILOT_API_ENTRY";
 
 let dir = "";
 const restoreEnv = envSnapshot([MIN_RELEASE_AGE_ENV, VERSION_ENV, ENTRY_ENV]);
-
-function isoDaysAgo(days: number): string {
-  return new Date(NOW_MS - days * MILLISECONDS_PER_DAY).toISOString();
-}
-
-/** A registry document: each version with its publish age in days before NOW_MS. */
-function registryDoc(
-  daysByVersion: Record<string, number>,
-  opts: {
-    scripts?: Record<string, string[]>;
-    hasInstallScript?: string[];
-    distTags?: Record<string, string>;
-  } = {},
-): unknown {
-  const versions: Record<string, unknown> = {};
-  const time: Record<string, string> = { created: isoDaysAgo(400), modified: isoDaysAgo(0) };
-  for (const [version, days] of Object.entries(daysByVersion)) {
-    const manifest: Record<string, unknown> = {};
-    const scriptNames = opts.scripts?.[version];
-    if (scriptNames) {
-      manifest.scripts = Object.fromEntries(scriptNames.map((name) => [name, "node evil.js"]));
-    }
-    if (opts.hasInstallScript?.includes(version)) manifest.hasInstallScript = true;
-    versions[version] = manifest;
-    time[version] = isoDaysAgo(days);
-  }
-  return { "dist-tags": opts.distTags ?? {}, versions: versions, time: time };
-}
-
-function docFetch(doc: unknown): { calls: string[]; fetchLike: FetchLike } {
-  const calls: string[] = [];
-  return {
-    calls,
-    fetchLike: (url) => {
-      calls.push(url);
-      return Promise.resolve(new Response(JSON.stringify(doc)));
-    },
-  };
-}
 
 function offlineFetch(): { calls: string[]; fetchLike: FetchLike } {
   const calls: string[] = [];
@@ -107,61 +89,26 @@ function offlineFetch(): { calls: string[]; fetchLike: FetchLike } {
   };
 }
 
-interface InstallCall {
-  args: string[];
-  cwd: string;
-  env: Record<string, string>;
-}
-
-/** What `bun install` leaves in a proxy home from the manifest on disk: the proxy package with
- *  its manifest and bin, every shim dependency, and the lockfile. */
-function materializeInstall(home: string): void {
-  const manifest = JSON.parse(readFileSync(join(home, "package.json"), "utf8")) as {
-    dependencies: Record<string, string>;
-  };
-  for (const [name, range] of Object.entries(manifest.dependencies)) {
-    const packageDir = join(home, "node_modules", ...name.split("/"));
-    mkdirSync(join(packageDir, "dist"), { recursive: true });
-    const version = name === PROXY_PKG ? range : "0.0.0";
-    writeFileSync(
-      join(packageDir, "package.json"),
-      JSON.stringify({ name, version, bin: { "copilot-api": "./dist/main.js" } }),
-    );
-    writeFileSync(join(packageDir, "dist", "main.js"), "");
-  }
-  writeFileSync(join(home, "bun.lock"), "{}\n");
-}
-
-/** A fake `bun install`: succeeds by materializing whatever the manifest on disk names (the way
- *  the real one populates node_modules from package.json), or fails as told (`failFirst`: the
- *  first call alone, the way an outage passes). */
-function fakeInstall(opts: { exit?: number; failFirst?: boolean } = {}): {
-  calls: InstallCall[];
-  runner: InstallRunner;
-} {
-  const calls: InstallCall[] = [];
-  const runner: InstallRunner = (args, options) => {
-    calls.push({ args: [...args], cwd: options.cwd, env: options.env });
-    if (opts.exit || (opts.failFirst && calls.length === 1)) {
-      return { status: opts.exit ?? 1, stderr: "boom" };
-    }
-    materializeInstall(options.cwd);
-    return { status: 0, stderr: "" };
-  };
-  return { calls, runner };
-}
-
 /** The artifact set a COMPLETED prior float of `version` leaves behind: the record and the
- *  install under this build's manifest. */
+ *  install tree under this build's manifest. */
 function seedFloat(version: string, atMs: number): void {
   writeResolvedVersionRecord(dir, version, atMs);
-  mkdirSync(proxyHome(dir), { recursive: true });
-  writeFileSync(proxyManifestFile(dir), renderProxyManifest(version));
-  materializeInstall(proxyHome(dir));
+  plantProxyInstall(dir, version);
 }
 
-function installCalls(calls: InstallCall[]): InstallCall[] {
-  return calls.filter((c) => c.args[0] === "install");
+/** The install tree as the daemon would read it: the proxy's manifest version, or null. */
+function installedVersion(): string | null {
+  return installedProxyPackage(proxyInstallDir(dir))?.version ?? null;
+}
+
+/** No stage or retired tree left in the proxy home: an attempt that did not complete leaves
+ *  nothing but what was there. */
+function expectNoDebris(): void {
+  expect(
+    readdirSync(proxyHome(dir))
+      .filter((name) => name.startsWith("install."))
+      .sort(),
+  ).toEqual([]);
 }
 
 /** The proxy version the manifest on disk names after a float. */
@@ -414,10 +361,10 @@ describe("floatProxy", () => {
 
     expect(install.calls).toEqual([
       {
-        // A first install has no lockfile to freeze: bun resolves and writes it.
+        // A first install has no lockfile to freeze: bun resolves and writes it, in the stage.
         args: ["install"],
-        cwd: proxyHome(dir),
-        env: { ...BUN_CLI_ENV, BUN_INSTALL_CACHE_DIR: proxyBunCacheDir(dir) },
+        cwd: join(proxyHome(dir), "install.next"),
+        env: { ...BUN_CLI_ENV, BUN_INSTALL_CACHE_DIR: join(proxyBunCacheDir(dir), "1.10.30") },
       },
     ]);
     // The manifest: the proxy at the EXACT version, and every shim dependency at this build's
@@ -469,12 +416,13 @@ describe("floatProxy", () => {
     const rows: { name: string; damage: () => void; args: string[] }[] = [
       {
         name: "node_modules gone",
-        damage: () => rmSync(join(proxyHome(dir), "node_modules"), { recursive: true }),
+        damage: () => rmSync(join(proxyInstallDir(dir), "node_modules"), { recursive: true }),
         args: ["install", "--frozen-lockfile"],
       },
       {
         name: "a shim dependency gone",
-        damage: () => rmSync(join(proxyHome(dir), "node_modules", "valibot"), { recursive: true }),
+        damage: () =>
+          rmSync(join(proxyInstallDir(dir), "node_modules", "valibot"), { recursive: true }),
         args: ["install", "--frozen-lockfile"],
       },
       {
@@ -530,18 +478,197 @@ describe("floatProxy", () => {
 
   test("a version change resolves afresh and drops the superseded version's cache", async () => {
     seedFloat("1.10.29", NOW_MS - 30 * MILLISECONDS_PER_DAY);
-    const staleTarball = join(proxyBunCacheDir(dir), "old.tgz");
-    mkdirSync(proxyBunCacheDir(dir), { recursive: true });
+    // One cache per installed version: the superseded one goes once the new install completed.
+    const staleTarball = join(proxyBunCacheDir(dir), "1.10.29", "old.tgz");
+    mkdirSync(join(proxyBunCacheDir(dir), "1.10.29"), { recursive: true });
     writeFileSync(staleTarball, "");
     const { fetchLike } = docFetch(registryDoc({ "1.10.29": 40, "1.10.30": 8 }));
     const install = fakeInstall();
 
     await floatProxy(deps(fetchLike, install.runner, WEEK_SECONDS));
 
-    // Never frozen: the manifest changed, so the lock must follow it.
+    // Never frozen: the manifest changed, so the lock must follow it; the install ran in the
+    // stage, against its own version's cache.
     expect(installCalls(install.calls).map((c) => c.args)).toEqual([["install"]]);
+    expect(install.calls[0]?.cwd).toBe(join(proxyHome(dir), "install.next"));
+    expect(install.calls[0]?.env.BUN_INSTALL_CACHE_DIR).toBe(
+      join(proxyBunCacheDir(dir), "1.10.30"),
+    );
     expect(manifestProxyVersion()).toBe("1.10.30");
+    expect(installedVersion()).toBe("1.10.30");
     expect(existsSync(staleTarball)).toBe(false);
+    expect(readResolvedVersionRecord(dir)?.version).toBe("1.10.30");
+    expectNoDebris();
+  });
+
+  // The transaction's other two failure arms. The install is built beside the tree in place and
+  // swapped in only once it passed the readers' own verification, so a bun that reports success
+  // over an incomplete tree, or a write that fails before bun ran, leaves the previous version
+  // exactly as it was, runnable, with no stage behind and nothing for the next attempt to freeze
+  // against but the manifest the tree in place was resolved from.
+  test("an install bun calls done but incomplete, or a stage that cannot be written, is never swapped in", async () => {
+    const { fetchLike } = docFetch(registryDoc({ "1.10.29": 40, "1.10.30": 8 }));
+    seedFloat("1.10.29", NOW_MS - 30 * MILLISECONDS_PER_DAY);
+    const incomplete = fakeInstall({ incomplete: true });
+    await floatProxy(deps(fetchLike, incomplete.runner, WEEK_SECONDS));
+    expect(installCalls(incomplete.calls)).toHaveLength(1);
+    expect(installedVersion()).toBe("1.10.29");
+    expect(readResolvedVersionRecord(dir)?.version).toBe("1.10.29");
+    expectNoDebris();
+    // The retry is a fresh resolve, never frozen against the tree in place.
+    const complete = fakeInstall();
+    await floatProxy(deps(fetchLike, complete.runner, WEEK_SECONDS));
+    expect(installCalls(complete.calls).map((c) => c.args)).toEqual([["install"]]);
+    expect(installedVersion()).toBe("1.10.30");
+
+    if (process.platform !== "win32" && process.getuid?.() !== 0) {
+      // A superseded cache the OS will not remove: the install already completed, so the record
+      // moves with it and the cache is left, named.
+      dir = removeDir(dir);
+      dir = isolateProxyHome("copilot-float-");
+      seedFloat("1.10.29", NOW_MS - 30 * MILLISECONDS_PER_DAY);
+      const heldCache = join(proxyBunCacheDir(dir), "1.10.29");
+      mkdirSync(heldCache, { recursive: true });
+      writeFileSync(join(heldCache, "old.tgz"), "");
+      chmodSync(heldCache, 0o500);
+      try {
+        await floatProxy(deps(fetchLike, fakeInstall().runner, WEEK_SECONDS));
+      } finally {
+        chmodSync(heldCache, 0o700);
+      }
+      expect(installedVersion()).toBe("1.10.30");
+      expect(readResolvedVersionRecord(dir)?.version).toBe("1.10.30");
+      expect(existsSync(join(heldCache, "old.tgz"))).toBe(true);
+
+      // A proxy home that refuses the stage: the write fails before bun ever runs.
+      dir = removeDir(dir);
+      dir = isolateProxyHome("copilot-float-");
+      seedFloat("1.10.29", NOW_MS - 30 * MILLISECONDS_PER_DAY);
+      chmodSync(proxyHome(dir), 0o500);
+      try {
+        const refused = fakeInstall();
+        await floatProxy(deps(fetchLike, refused.runner, WEEK_SECONDS));
+        expect(refused.calls).toEqual([]);
+      } finally {
+        chmodSync(proxyHome(dir), 0o700);
+      }
+      expect(installedVersion()).toBe("1.10.29");
+      expect(readResolvedVersionRecord(dir)?.version).toBe("1.10.29");
+      expectNoDebris();
+    }
+  });
+
+  // A float that died between the swap's two renames left the complete previous tree aside as
+  // install.prev and nothing at install: the next float puts it back before judging anything, so
+  // an up-to-date tree installs nothing again, and a refusal that never installs still finds it.
+  test("a swap interrupted between its renames is put back before the float judges the tree", async () => {
+    seedFloat("1.10.29", NOW_MS - 30 * MILLISECONDS_PER_DAY);
+    renameSync(proxyInstallDir(dir), join(proxyHome(dir), "install.prev"));
+    mkdirSync(join(proxyHome(dir), "install.next"));
+    const { fetchLike } = docFetch(registryDoc({ "1.10.29": 40 }));
+    const install = fakeInstall();
+
+    await floatProxy(deps(fetchLike, install.runner, WEEK_SECONDS));
+
+    expect(install.calls).toEqual([]);
+    expect(installedVersion()).toBe("1.10.29");
+    expect(readResolvedVersionRecord(dir)?.version).toBe("1.10.29");
+    expectNoDebris();
+  });
+
+  // The install tree is the one truth for the version that runs; the record follows it. A record
+  // that cannot be written (here, a directory in its place) after the swap leaves the new tree
+  // as the entry, the retired tree beside it, and a warning naming the record; the next float
+  // entry, offline here so the registry plays no part, writes the record from the tree (its
+  // resolution time unknown, so the next verify look re-checks), keeps that version through the
+  // offline arm instead of installing the floor, and sweeps the retired tree.
+  test("a record the swap could not write never hides the installed tree, and the next float writes it", async () => {
+    seedFloat("1.10.29", NOW_MS - 30 * MILLISECONDS_PER_DAY);
+    const { fetchLike } = docFetch(registryDoc({ "1.10.29": 40, "1.10.30": 8 }));
+    rmSync(resolvedVersionFile(dir));
+    mkdirSync(resolvedVersionFile(dir));
+    const install = fakeInstall();
+    const said = await captureAllWrites(() =>
+      floatProxy(deps(fetchLike, install.runner, WEEK_SECONDS)),
+    );
+    expect(said).toContain(`could not write ${resolvedVersionFile(dir)}`);
+    expect(installCalls(install.calls)).toHaveLength(1);
+    expect(installedVersion()).toBe("1.10.30");
+    expect(floatedProxyEntry(dir)?.version).toBe("1.10.30");
+    expect(existsSync(join(proxyHome(dir), "install.prev"))).toBe(true);
+
+    rmSync(resolvedVersionFile(dir), { recursive: true });
+    const again = fakeInstall();
+    await floatProxy(deps(offlineFetch().fetchLike, again.runner, WEEK_SECONDS));
+    expect(again.calls).toEqual([]);
+    expect(readResolvedVersionRecord(dir)).toEqual({ version: "1.10.30", resolvedAtMs: 0 });
+    expectNoDebris();
+  });
+
+  // A float that died after the swap's second rename and before the record: the new tree is in
+  // place, the retired one beside it, the record still naming the old version. The tree is the
+  // entry at once, and the next float entry (here offline, so the registry plays no part) sweeps
+  // the retired tree and rewrites the record from the tree, keeping its resolution time.
+  test("a crash after the swap leaves the installed tree as the entry, and the next entry rewrites the record from it", async () => {
+    seedFloat("1.10.29", NOW_MS - 30 * MILLISECONDS_PER_DAY);
+    renameSync(proxyInstallDir(dir), join(proxyHome(dir), "install.prev"));
+    plantProxyInstall(dir, "1.10.30");
+    expect(floatedProxyEntry(dir)?.version).toBe("1.10.30");
+    expect(readResolvedVersionRecord(dir)?.version).toBe("1.10.29");
+
+    // A retired tree the OS will not remove (POSIX, non-root: a directory without write permission)
+    // never stands between the tree and its record: the record is rewritten, the debris named.
+    const posix = process.platform !== "win32" && process.getuid?.() !== 0;
+    if (posix) chmodSync(join(proxyHome(dir), "install.prev"), 0o500);
+    const install = fakeInstall();
+    try {
+      await floatProxy(deps(offlineFetch().fetchLike, install.runner, WEEK_SECONDS));
+    } finally {
+      if (posix) chmodSync(join(proxyHome(dir), "install.prev"), 0o700);
+    }
+    expect(install.calls).toEqual([]);
+    expect(readResolvedVersionRecord(dir)).toEqual({
+      version: "1.10.30",
+      resolvedAtMs: NOW_MS - 30 * MILLISECONDS_PER_DAY,
+    });
+    expect(installedVersion()).toBe("1.10.30");
+    if (posix) {
+      expect(existsSync(join(proxyHome(dir), "install.prev"))).toBe(true);
+      await floatProxy(deps(offlineFetch().fetchLike, install.runner, WEEK_SECONDS));
+      expect(install.calls).toEqual([]);
+    }
+    expectNoDebris();
+  });
+
+  // A daemon still running from the tree in place (its home's daemon.lock held, here by the test
+  // process) would import from the new tree on POSIX, and on Windows the rename under its open
+  // handles fails: the new tree is built and verified, and not swapped in until the daemon is
+  // gone. The float's own rule, not the start order's: `agent start` runs the gate before it
+  // stops daemons and once more after, so a replacing start lands the update in that start.
+  test("a running daemon of this root home keeps the swap off until it is stopped", async () => {
+    seedFloat("1.10.29", NOW_MS - 30 * MILLISECONDS_PER_DAY);
+    const { fetchLike } = docFetch(registryDoc({ "1.10.29": 40, "1.10.30": 8 }));
+    const home = allDaemonHomes()[0] as string;
+    mkdirSync(home, { recursive: true });
+    expect(acquireDaemonLockForLife(home, { waitMs: 0 })).toBe(true);
+    try {
+      const install = fakeInstall();
+      const said = await captureAllWrites(() =>
+        floatProxy(deps(fetchLike, install.runner, WEEK_SECONDS)),
+      );
+      expect(installCalls(install.calls)).toHaveLength(1);
+      expect(said).toContain(
+        `a daemon is running from the one in place (pid ${process.pid}, ${home})`,
+      );
+      expect(installedVersion()).toBe("1.10.29");
+      expect(readResolvedVersionRecord(dir)?.version).toBe("1.10.29");
+      expectNoDebris();
+    } finally {
+      releaseFileLock(daemonLockPath(home));
+    }
+    // Stopped: the next float swaps.
+    await floatProxy(deps(fetchLike, fakeInstall().runner, WEEK_SECONDS));
+    expect(installedVersion()).toBe("1.10.30");
     expect(readResolvedVersionRecord(dir)?.version).toBe("1.10.30");
   });
 
@@ -578,6 +705,33 @@ describe("floatProxy", () => {
       install: { minimumReleaseAge: WEEK_SECONDS },
     });
     expect(readResolvedVersionRecord(dir)).toEqual({ version: "1.10.29", resolvedAtMs: NOW_MS });
+  });
+
+  // The tree in place is the resolution the refusal judges, never a record that lagged it: a
+  // complete tree above the ceiling with a stale record naming an in-bounds version is refused
+  // outright (the record follows the tree at entry), not "kept" by reinstalling the record's
+  // version.
+  test("a refused target never reinstalls a stale record under a tree in place that is out of bounds", async () => {
+    writeResolvedVersionRecord(dir, "1.10.29", NOW_MS - 30 * MILLISECONDS_PER_DAY);
+    plantProxyInstall(dir, "1.10.31");
+    const { fetchLike } = docFetch(
+      registryDoc(
+        { "1.10.29": 40, "1.10.30": 8, "1.10.31": 8 },
+        { scripts: { "1.10.30": ["install"] } },
+      ),
+    );
+    const install = fakeInstall();
+    const ceiling: ProjectConfig = { ...CONFIG, proxyMaxVersion: "1.10.30" };
+
+    await expect(
+      floatProxy({ ...deps(fetchLike, install.runner, WEEK_SECONDS), config: ceiling }),
+    ).rejects.toThrow("lifecycle scripts");
+
+    expect(install.calls).toEqual([]);
+    expect(readResolvedVersionRecord(dir)).toEqual({
+      version: "1.10.31",
+      resolvedAtMs: NOW_MS - 30 * MILLISECONDS_PER_DAY,
+    });
   });
 
   test("a lifecycle-scripted target is refused outright with nothing usable on record: fresh, cold scripted, or cold unlisted", async () => {
@@ -680,7 +834,7 @@ describe("floatProxy", () => {
       deps(offlineFetch().fetchLike, fakeInstall().runner, WEEK_SECONDS),
     );
     expect(missing.upToDate).toBe(false);
-    expect(missing.message).toContain(`is not installed in ${proxyHome(dir)}`);
+    expect(missing.message).toContain(`is not installed in ${proxyInstallDir(dir)}`);
   });
 
   test("a failed install below the floor throws", async () => {

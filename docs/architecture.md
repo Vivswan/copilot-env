@@ -148,19 +148,18 @@ flowchart LR
   cache[("~/.local/share/copilot-env/bun/cache<br>bun's download cache for the proxy home")]
   record[("~/.local/share/copilot-env/proxy/resolved-version.json")]
   pcfg[("copilot-env.config, bunfig.toml and package.json, embedded in the binary: PROXY_MIN_VERSION, PROXY_MAX_VERSION, the default cooldown, the shims' dependency ranges")]
-  phome[("~/.local/share/copilot-env/proxy: package.json, bun.lock, bunfig.toml, node_modules<br>the proxy at the resolved version plus the shims' dependencies; the lock pins the transitive tree; [install] minimumReleaseAge is the cooldown")]
-  daemonproc[["the daemon: process.execPath run --no-env-file --no-install --preload ... node_modules/@jeffreycao/copilot-api/dist/main.js start, BUN_BE_BUN=1, cwd and NODE_PATH in the proxy home, COPILOT_API_HOME={the profile's daemon home}"]]
+  phome[("~/.local/share/copilot-env/proxy/install: package.json, bun.lock, bunfig.toml, node_modules<br>the proxy at the resolved version plus the shims' dependencies; the lock pins the transitive tree; [install] minimumReleaseAge is the cooldown; built in install.next, verified, swapped in by rename")]
+  daemonproc[["the daemon: process.execPath run --no-env-file --no-install --preload {proxy home}/daemon_preload.ts {proxy home}/install/node_modules/@jeffreycao/copilot-api/dist/main.js start, BUN_BE_BUN=1, cwd {proxy home}, NODE_PATH {proxy home}/install/node_modules, COPILOT_API_HOME={the profile's daemon home}"]]
   registry -->|"reads versions and publish times"| float
   prefs -->|"reads proxy-version, release-cooldown"| float
   pcfg -->|"reads the version bounds, the default cooldown, and the dependency ranges"| float
   shims -->|"the dependencies every shim imports"| float
-  float -->|"writes package.json and bunfig.toml, then bun install writes the lock and node_modules"| phome
-  float -->|"BUN_INSTALL_CACHE_DIR"| cache
-  float -->|"writes the version and the time"| record
-  record -->|"reads the daemon's version"| spawn
-  phome -->|"reads the installed package's bin"| spawn
+  float -->|"stages package.json and bunfig.toml, bun install writes the lock and node_modules, the verified tree is swapped in"| phome
+  float -->|"BUN_INSTALL_CACHE_DIR, one dir per version"| cache
+  float -->|"writes the version and the time, after the swap; the record follows the tree at every float entry"| record
+  phome -->|"reads the installed package's version and bin, through the float's own verifier (floatedProxyEntry)"| spawn
   shims -->|"the subset DaemonSpec derives"| spawn
-  spawn -->|"--preload, in order"| preloads
+  spawn -->|"writes daemon_preload.ts in the proxy home, one import per shim in load order, and passes it as the one --preload (daemonPreloadFile, renderDaemonPreload)"| preloads
   spawn -->|"launchDaemon(): COPILOT_ENV_ROOT_HOME, COPILOT_ENV_DAEMON_KEEP_PORT"| daemonproc
   preloads -->|"run inside it before the package's entry"| daemonproc
 ```

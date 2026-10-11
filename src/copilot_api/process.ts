@@ -3,13 +3,14 @@ import { closeSync, openSync } from "node:fs";
 import { devNull } from "node:os";
 import { join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
+import { pathToFileURL } from "node:url";
 import { consola } from "consola";
-import { proxyHome, readResolvedVersionRecord } from "../proxy_float.ts";
+import { floatedProxyEntry, proxyHome, proxyInstallDir } from "../proxy_float.ts";
 import { runPowershell } from "../utils/app_scan.ts";
 import { runCaptured } from "../utils/command.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { pidAlive } from "../utils/pid.ts";
-import { PROJECT_ROOT } from "../utils/root.ts";
+import { escapeRegExp } from "../utils/regexp.ts";
 import { terminalWidth, wrapMessage } from "../utils/table.ts";
 import { clearDeadDaemonLock } from "./daemon_lock.ts";
 import {
@@ -22,26 +23,27 @@ import { type DaemonShimFile, shimPath } from "./shims.ts";
 import { installedProxyPackage, PROXY_PACKAGE_NAME } from "./version.ts";
 
 /**
- * Every form carries the `proxyHome` it was resolved against: the daemon's cwd, and where its
- * NODE_PATH points the preload shims' imports (src/proxy_float.ts installs them there), so the
- * argv and the environment come from one resolution.
+ * Every form carries what the spawn derives from the same resolution as the entry: `proxyHome`,
+ * the daemon's cwd, and `nodeModules`, where NODE_PATH points the preload shims' imports (the
+ * install tree src/proxy_float.ts verified and swapped in), so the argv and the environment can
+ * never come from two resolutions.
  */
+interface EntryHome {
+  readonly proxyHome: string;
+  readonly nodeModules: string;
+}
+
 export type CopilotApiEntry =
   /** The `COPILOT_API_ENTRY` override: run this file, resolve nothing. */
-  | { readonly kind: "file"; readonly path: string; readonly proxyHome: string }
-  /** The float's recorded version, installed in the proxy home. */
-  | {
-      readonly kind: "floated";
-      readonly version: string;
-      readonly path: string;
-      readonly proxyHome: string;
-    }
+  | ({ readonly kind: "file"; readonly path: string } & EntryHome)
+  /** The float's recorded version, installed complete in the proxy home. */
+  | ({ readonly kind: "floated"; readonly version: string; readonly path: string } & EntryHome)
   /** The checkout's own node_modules copy (bun install puts it there), with no float record to
    *  pin a version; a compiled install has no such copy. */
-  | { readonly kind: "package"; readonly path: string; readonly proxyHome: string }
+  | ({ readonly kind: "package"; readonly path: string } & EntryHome)
   /** Nothing to run: no record whose install is present, no checkout copy. The floor gate
    *  (judgeProxyFloor in launch.ts) refuses it before any spawn. */
-  | { readonly kind: "unresolved"; readonly proxyHome: string };
+  | ({ readonly kind: "unresolved" } & EntryHome);
 
 /** An entry the daemon can run: what the floor gate hands to the spawn. */
 export type RunnableEntry = Exclude<CopilotApiEntry, { kind: "unresolved" }>;
@@ -54,20 +56,20 @@ export type RunnableEntry = Exclude<CopilotApiEntry, { kind: "unresolved" }>;
  */
 export function resolveCopilotApiEntry(): CopilotApiEntry {
   const rootHome = resolveRootHome();
-  const home = proxyHome(rootHome);
+  const home: EntryHome = {
+    proxyHome: proxyHome(rootHome),
+    nodeModules: join(proxyInstallDir(rootHome), "node_modules"),
+  };
   // Resolved against the CALLER's cwd here: the daemon's own cwd is the proxy home.
   const override = process.env.COPILOT_API_ENTRY?.trim();
-  if (override) return { kind: "file", path: resolve(override), proxyHome: home };
-  const record = readResolvedVersionRecord(rootHome);
-  if (record !== null) {
-    const installed = installedProxyPackage(home);
-    if (installed !== null && installed.version === record.version) {
-      return { kind: "floated", version: record.version, path: installed.entry, proxyHome: home };
-    }
+  if (override) return { kind: "file", path: resolve(override), ...home };
+  const floated = floatedProxyEntry(rootHome);
+  if (floated !== null) {
+    return { kind: "floated", version: floated.version, path: floated.entry, ...home };
   }
   const checkout = installedProxyPackage();
-  if (checkout !== null) return { kind: "package", path: checkout.entry, proxyHome: home };
-  return { kind: "unresolved", proxyHome: home };
+  if (checkout !== null) return { kind: "package", path: checkout.entry, ...home };
+  return { kind: "unresolved", ...home };
 }
 
 /** `run` first, the runtime flags after it (bun reads them nowhere before `run`). `--no-env-file`
@@ -127,28 +129,25 @@ const DAEMON_CMDLINE_PATTERN =
  *  `COPILOT-API` on disk is judged here as it was prefiltered there. */
 const DAEMON_CMDLINE_RE = new RegExp(DAEMON_CMDLINE_PATTERN, "i");
 
-/** What only OUR spawn puts on a daemon's command line. Under deno a `deno run ... copilot-api start`
- *  was ours by construction; under bun any tool may run the same package from its own node_modules,
- *  so the shape alone no longer identifies the daemon.
- *    preloadRoots -> every `--preload` the spawn passes lives under the install root (a checkout or
- *                    `<top>/current`), where the shims are
- *    entryRoots   -> the entry is the package's own directory in the proxy home's install, or in
- *                    the checkout's node_modules */
+/** What only OUR spawn puts on a daemon's command line, and only for THIS root home: any tool may
+ *  run the same package from its own node_modules, and every test suite's scratch root home shares
+ *  one checkout, so neither the shape nor a shim path under the checkout tells this root home's
+ *  daemon from a sibling suite's decoy or a developer's real one.
+ *    preloadRoots -> the one `--preload` the spawn passes is the preload file it wrote under this
+ *                    root home's proxy home (daemonPreloadFile), whatever the entry kind
+ *    entryRoots   -> the entry is the package's own directory in this proxy home's install */
 export interface DaemonOwnership {
   preloadRoots: readonly string[];
   entryRoots: readonly string[];
 }
 
-/** Resolved per scan, never at module load: the proxy home follows COPILOT_API_HOME. Exported for the
- *  tests' fixtures. */
-export function daemonOwnership(): DaemonOwnership {
+/** Resolved per scan, never at module load: the proxy home follows COPILOT_API_HOME. */
+function daemonOwnership(): DaemonOwnership {
+  const rootHome = resolveRootHome();
   const packageDir = ["node_modules", ...PROXY_PACKAGE_NAME.split("/")];
   return {
-    preloadRoots: [PROJECT_ROOT],
-    entryRoots: [
-      join(proxyHome(resolveRootHome()), ...packageDir),
-      join(PROJECT_ROOT, ...packageDir),
-    ],
+    preloadRoots: [proxyHome(rootHome)],
+    entryRoots: [join(proxyInstallDir(rootHome), ...packageDir)],
   };
 }
 
@@ -159,15 +158,12 @@ function pathSpelling(path: string): string {
   return process.platform === "win32" ? slashed.toLowerCase() : slashed;
 }
 
-function escapeRegExp(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
 /**
  * On a command line the signature already matched, read as text rather than tokens: ps flattens a
  * spaced path into several tokens, and the roots are the one thing known to be verbatim in it.
- *   `--preload <root>/...`            -> a shim of this install, which only our spawn passes
- *   `<entryRoot>/<no space>  start`   -> the entry under the proxy home's or the checkout's copy
+ *   `--preload <root>/...`            -> the preload file under this root home's proxy home, which
+ *                                        only our spawn writes and passes
+ *   `<entryRoot>/<no space>  start`   -> the entry under this proxy home's install
  * A double quote may open either path (the Windows CommandLine form).
  */
 function isOwnedInvocation(command: string, owned: DaemonOwnership): boolean {
@@ -489,8 +485,8 @@ export type DaemonCredential =
 export interface DaemonSpec {
   port: number;
   logFile: string;
-  /** Pinned into COPILOT_API_HOME on EVERY spawn: since the data-home rename the npm package's own
-   *  default no longer matches ours, so an unpinned daemon would split its files from the wrapper's. */
+  /** Pinned into COPILOT_API_HOME on EVERY spawn: the npm package's own default home is not ours, so
+   *  an unpinned daemon would split its files from the wrapper's. */
   home: string;
   /** Extra daemon environment the launch pipeline assembles (sqlite path, root home). */
   env: Record<string, string>;
@@ -507,9 +503,21 @@ export interface DaemonSpec {
   entry: RunnableEntry;
 }
 
+/**
+ * The daemon's one `--preload`: a file in the proxy home that imports this build's shims. The argv
+ * then names the root home for every entry kind, which is the mark daemonOwnership reads (a shim
+ * path under the checkout would name every scratch root home's daemon alike), while the shim set
+ * still derives from the spec. launchDaemon writes it before each spawn; the start lock covers the
+ * spawn through readiness, so no second start rewrites it under a daemon still booting.
+ */
+export function daemonPreloadFile(proxyHome: string): string {
+  return join(proxyHome, "daemon_preload.ts");
+}
+
 /** Every shim is a RUNTIME shim touching none of copilot-api's files, so none of them pins the floated
- *  proxy version. */
-function daemonPreloadFlags(spec: DaemonSpec): string[] {
+ *  proxy version. One line of imports: a module's imports evaluate in order, so this IS the preload
+ *  order; file URLs, the one spelling an import accepts on every platform. */
+export function renderDaemonPreload(spec: DaemonSpec): string {
   // FIRST, ALWAYS: the liveness lock (`<home>/daemon.lock`, src/copilot_api/daemon_lock.ts) must be held
   // before anything else touches the home.
   const shims: DaemonShimFile[] = ["daemon_lock_preload.ts"];
@@ -522,7 +530,10 @@ function daemonPreloadFlags(spec: DaemonSpec): string[] {
   if (spec.credential.kind === "pat") shims.push("pat_passthrough_preload.ts");
   if (spec.idleWatchdog) shims.push("idle_watchdog_preload.ts");
   if (spec.muteProxyLogs) shims.push("log_mute_preload.ts");
-  return shims.flatMap((shim) => ["--preload", shimPath(shim)]);
+  const imports = shims.map(
+    (shim) => `import ${JSON.stringify(pathToFileURL(shimPath(shim)).href)};`,
+  );
+  return `${imports.join(" ")}\n`;
 }
 
 /**
@@ -567,7 +578,7 @@ export function daemonEnvironment(spec: DaemonSpec, base: NodeJS.ProcessEnv): No
   const env: NodeJS.ProcessEnv = { ...base, ...BUN_CLI_ENV, ...spec.env };
   // The preload shims sit beside the binary, where no node_modules is: their imports resolve from
   // the proxy home's install. Set, never appended: an inherited NODE_PATH could shadow it.
-  env.NODE_PATH = join(spec.entry.proxyHome, "node_modules");
+  env.NODE_PATH = spec.entry.nodeModules;
   env.COPILOT_API_HOME = spec.home;
   applyCredentialEnv(env, spec.credential);
   // copilot-api's own host selectors (COPILOT_API_ENTERPRISE_URL, COPILOT_API_OAUTH_APP=opencode)
@@ -585,7 +596,7 @@ export function daemonEnvironment(spec: DaemonSpec, base: NodeJS.ProcessEnv): No
 export function daemonArgv(spec: DaemonSpec): string[] {
   return copilotApiArgv(
     ["start", "--verbose", "--port", String(spec.port)],
-    daemonPreloadFlags(spec),
+    ["--preload", daemonPreloadFile(spec.entry.proxyHome)],
     spec.entry,
   );
 }
@@ -602,6 +613,9 @@ export function launchDaemon(spec: DaemonSpec): number {
   // take a running daemon's cwd with it. Created here because the file entry may run before any
   // float made it.
   fs.mkdir(spec.entry.proxyHome);
+  fs.writeText(daemonPreloadFile(spec.entry.proxyHome), renderDaemonPreload(spec), {
+    secretKeys: [],
+  });
   const proc = spawn(process.execPath, daemonArgv(spec), {
     cwd: spec.entry.proxyHome,
     stdio: [devnull, logFd, logFd],

@@ -506,12 +506,12 @@ test("the exclusion set end-to-end: the default's and another profile's tracked 
 /** An inert machine-wide scan: no orphans, so only the tracked/holder stops can act. */
 const NO_ORPHANS = (): Promise<number[]> => Promise.resolve([]);
 
-function cleanupUnderLock(
+async function cleanupUnderLock(
   profile: Profile,
   state: CopilotEnvRunState,
   listPids?: (myPid: number, myPpid: number) => Promise<number[]>,
 ): Promise<void> {
-  return withStartLock(() => cleanupExistingProxies(profile, state, listPids));
+  await withStartLock(() => cleanupExistingProxies(profile, state, listPids));
 }
 
 // --- planCleanup: the enumerated decision source (executed live, narrated by --dry-run) --
@@ -1480,13 +1480,13 @@ describe("unproven tracked-pid identity scans", () => {
       try {
         writeRunState({ pid: child.pid, port: 4141 });
         let calls = 0;
-        const out = await captureAllWrites(() =>
-          withStartLock(() =>
+        const out = await captureAllWrites(async () => {
+          await withStartLock(() =>
             cleanupExistingProxies(null, new CopilotEnvRunState(), NO_ORPHANS, () =>
               Promise.resolve(++calls === 1 ? ("yes" as const) : row.verdict),
             ),
-          ),
-        );
+          );
+        });
         const exitDeadline = Date.now() + 10_000;
         if (row.stopped) await until(() => !pidAlive(child.pid) || Date.now() > exitDeadline);
         expect({
@@ -1529,13 +1529,13 @@ describe("unproven tracked-pid identity scans", () => {
       try {
         await until(() => existsSync(ready));
         writeRunState({ pid: child.pid, port: 4141 });
-        await captureAllWrites(() =>
-          withStartLock(() =>
+        await captureAllWrites(async () => {
+          await withStartLock(() =>
             cleanupExistingProxies(null, new CopilotEnvRunState(), NO_ORPHANS, () =>
               Promise.resolve("yes" as const),
             ),
-          ),
-        );
+          );
+        });
         // SIGKILLed: the owner-blind default classifier reads this inert child as "no" and
         // would refuse the escalation, so only the injected seam ends it.
         await until(() => !pidAlive(child.pid));

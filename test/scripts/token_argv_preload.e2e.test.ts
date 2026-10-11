@@ -5,7 +5,7 @@ import { ROOT } from "../helpers/run.ts";
 import { expect, test } from "../helpers/testing.ts";
 
 // The shim runs here as a real `--preload` subprocess, the way launchDaemon loads it. Production
-// also orders it before the PAT shim, which reads the token from argv (daemonPreloadFlags in
+// also orders it before the PAT shim, which reads the token from argv (renderDaemonPreload in
 // src/copilot_api/process.ts); these runs preload it alone.
 const SHIM = join(ROOT, "src", "scripts", "token_argv_preload.ts");
 const ENV_KEY = DAEMON_GH_TOKEN_ENV;

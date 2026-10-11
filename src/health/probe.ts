@@ -44,8 +44,8 @@ import type { Profile, ProfileName } from "../copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../copilot_api/run_state.ts";
 import { installedProxyVersion, proxyVersionBoundsStatus } from "../copilot_api/version.ts";
 import {
+  floatedProxyEntry,
   proxyFloatSkips,
-  proxyHome,
   readResolvedVersionRecord,
   resolveMinimumReleaseAgeSeconds,
 } from "../proxy_float.ts";
@@ -488,17 +488,21 @@ export async function gatherFacts(
         };
         const rootHome = resolveRootHome();
         const record = readResolvedVersionRecord(rootHome);
+        // The float's own verifier: the install tree is the version that runs, so health never
+        // calls installed a tree the daemon could not run from, and never hides one the record
+        // outran (a record alone, its tree gone, is recorded and not installed).
+        const floated = floatedProxyEntry(rootHome);
         const resolved =
-          record === null
-            ? null
-            : {
-                ...record,
-                installed: installedProxyVersion(proxyHome(rootHome)) === record.version,
-              };
+          floated !== null
+            ? { version: floated.version, resolvedAtMs: record?.resolvedAtMs ?? 0, installed: true }
+            : record === null
+              ? null
+              : { ...record, installed: false };
         // The version that would actually RUN, in the daemon entry's own precedence: the float's
-        // recorded resolution, else the range package.json pins, read off the installed copy in
-        // node_modules. Judging bounds on anything else would grade a copy the daemon never loads.
-        const version = resolved?.version ?? installedProxyVersion(PROJECT_ROOT);
+        // install tree, else the range package.json pins, read off the installed copy in
+        // node_modules. Judging bounds on anything else (a record whose tree is gone) would grade a
+        // copy the daemon never loads.
+        const version = floated?.version ?? installedProxyVersion(PROJECT_ROOT);
         // A bad COPILOT_API_MIN_RELEASE_AGE / cooldown setting must not crash health.
         let cooldownSeconds: number | null = null;
         try {

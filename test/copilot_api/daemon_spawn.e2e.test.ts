@@ -1,6 +1,10 @@
-import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join, parse, resolve } from "node:path";
-import { DRAIN_DEADLINE_MS } from "../../src/copilot_api/daemon_shutdown.ts";
+import { pathToFileURL } from "node:url";
+import {
+  DRAIN_DEADLINE_MS,
+  LATE_LISTENER_GRACE_MS,
+} from "../../src/copilot_api/daemon_shutdown.ts";
 import {
   DAEMON_CLIENT_HEADERS_ENV,
   DAEMON_COPILOT_HOST_ENV,
@@ -16,19 +20,27 @@ import {
   daemonArgv,
   daemonEnvironment,
   daemonPidsFromRows,
+  daemonPreloadFile,
   isDaemonCommandLine,
   isDaemonProcess,
   launchDaemon,
   noProxyWithLoopback,
   parseProcessRows,
   type RunnableEntry,
+  renderDaemonPreload,
   resolveCopilotApiEntry,
 } from "../../src/copilot_api/process.ts";
-import { installedProxyPackage, PROXY_PACKAGE_NAME } from "../../src/copilot_api/version.ts";
-import { proxyHome, writeResolvedVersionRecord } from "../../src/proxy_float.ts";
+import { installedProxyPackage } from "../../src/copilot_api/version.ts";
+import { proxyHome, proxyInstallDir, writeResolvedVersionRecord } from "../../src/proxy_float.ts";
 import { pidAlive } from "../../src/utils/pid.ts";
 import { INSTALLED_BINARY_POSIX } from "../../src/utils/targets.ts";
-import { FAKE_DAEMON_CREDENTIAL, FAKE_DAEMON_HOST, until } from "../helpers/daemon.ts";
+import {
+  FAKE_DAEMON_CREDENTIAL,
+  FAKE_DAEMON_HOST,
+  fakeProxyEntry,
+  plantProxyInstall,
+  until,
+} from "../helpers/daemon.ts";
 import { envSnapshot, isolateProxyHome } from "../helpers/env.ts";
 import {
   bunRunArgs,
@@ -74,27 +86,24 @@ const BASE: DaemonSpec = {
   idleWatchdog: false,
   muteProxyLogs: false,
   copilotHost: FAKE_DAEMON_HOST,
-  entry: { kind: "file", path: FAKE, proxyHome: "/the/root/home/proxy" },
+  entry: {
+    kind: "file",
+    path: FAKE,
+    proxyHome: "/the/root/home/proxy",
+    nodeModules: "/the/root/home/proxy/install/node_modules",
+  },
 };
 
+/** The shims the daemon's one preload file imports, in load order, by file name. */
 function preloads(spec: DaemonSpec): string[] {
-  const argv = daemonArgv(spec);
-  return argv
-    .filter((_path, i) => argv[i - 1] === "--preload")
-    .map((path) => path.split(/[\\/]/).at(-1) as string);
+  return [...renderDaemonPreload(spec).matchAll(/import "([^"]+)";/g)].map(
+    (m) => (m[1] as string).split("/").at(-1) as string,
+  );
 }
 
-/** A proxy installed in the isolated root home's proxy home at `version`, as a float leaves it:
- *  the package's manifest and the bin it names. */
+/** A complete install of `version` in the isolated root home's proxy home; the proxy's entry path. */
 function plantInstalledProxy(version: string): string {
-  const packageDir = join(proxyHome(dir), "node_modules", ...PROXY_PACKAGE_NAME.split("/"));
-  mkdirSync(join(packageDir, "dist"), { recursive: true });
-  writeFileSync(
-    join(packageDir, "package.json"),
-    JSON.stringify({ name: PROXY_PACKAGE_NAME, version, bin: { "copilot-api": "./dist/main.js" } }),
-  );
-  writeFileSync(join(packageDir, "dist", "main.js"), "");
-  return join(packageDir, "dist", "main.js");
+  return plantProxyInstall(dir, version);
 }
 
 const CLI_HEADERS = daemonClientHeaders("codex_exec/1", "copilot-developer-cli");
@@ -118,6 +127,15 @@ test("the preload set and its environment derive from the spec, in load order", 
     COPILOT_API_ENTERPRISE_URL: "ghe.example",
     COPILOT_API_OAUTH_APP: "opencode",
   };
+  // The file's one line, as bun reads it: file URLs, which an import accepts on every platform.
+  expect(renderDaemonPreload(BASE)).toBe(
+    `${base
+      .map(
+        (shim) =>
+          `import ${JSON.stringify(pathToFileURL(join(ROOT, "src", "scripts", shim)).href)};`,
+      )
+      .join(" ")}\n`,
+  );
   // Our own environment already carries both credential keys (an earlier launch in this shell):
   // the credential environment is always set from the spec, so a stale value can never leak in.
   const stale = {
@@ -198,7 +216,7 @@ test("the preload set and its environment derive from the spec, in load order", 
             NODE_EXTRA_CA_CERTS: "/etc/corp.pem",
             HTTPS_PROXY: "http://corp:3128",
             COPILOT_API_HOME: "/profiles/work",
-            NODE_PATH: join("/the/root/home/proxy", "node_modules"),
+            NODE_PATH: "/the/root/home/proxy/install/node_modules",
             BUN_BE_BUN: "1",
           },
         },
@@ -236,6 +254,11 @@ test("the preload set and its environment derive from the spec, in load order", 
       spec: row.spec,
       preloads: row.preloads,
     });
+    // The argv carries that one file, under the entry's proxy home: the root-home mark the scan
+    // reads, whatever the entry kind.
+    expect(daemonArgv(spec).filter((_flag, i, argv) => argv[i - 1] === "--preload")).toEqual([
+      daemonPreloadFile(spec.entry.proxyHome),
+    ]);
     for (const { inherited, keys } of row.env ?? []) {
       const env = daemonEnvironment(spec, inherited);
       const seen = Object.fromEntries(Object.keys(keys).map((k) => [k, env[k]]));
@@ -253,46 +276,53 @@ test("the preload set and its environment derive from the spec, in load order", 
 // every start is what reinstalls it, and the checkout copy is the fallback until then.
 test("resolveCopilotApiEntry: the float's record runs its installed bin; an override always wins", () => {
   delete process.env.COPILOT_API_ENTRY;
-  const home = proxyHome(dir);
+  const home = {
+    proxyHome: proxyHome(dir),
+    nodeModules: join(proxyInstallDir(dir), "node_modules"),
+  };
   const checkout = installedProxyPackage();
   if (checkout === null) throw new Error("the checkout has no installed proxy (bun install)");
 
   // No record: the checkout's own copy.
-  expect(resolveCopilotApiEntry()).toEqual({
-    kind: "package",
-    path: checkout.entry,
-    proxyHome: home,
-  });
+  expect(resolveCopilotApiEntry()).toEqual({ kind: "package", path: checkout.entry, ...home });
 
-  // A record whose version the proxy home does not hold: still the checkout copy.
+  // A record with no install tree: still the checkout copy.
   writeResolvedVersionRecord(dir, "1.14.30", Date.now());
+  expect(resolveCopilotApiEntry()).toEqual({ kind: "package", path: checkout.entry, ...home });
+  // The install tree is the version that runs, whatever the record names: a tree complete for
+  // another version is the floated entry at that version (the float makes the record follow).
+  const older = plantInstalledProxy("1.14.29");
   expect(resolveCopilotApiEntry()).toEqual({
-    kind: "package",
-    path: checkout.entry,
-    proxyHome: home,
+    kind: "floated",
+    version: "1.14.29",
+    path: older,
+    ...home,
   });
-  plantInstalledProxy("1.14.29");
+  // A tree missing its entry file: the float's verifier refuses it, so the spawn never names a
+  // file that is not there.
+  const bin = plantInstalledProxy("1.14.30");
+  rmSync(bin);
   expect(resolveCopilotApiEntry().kind).toBe("package");
 
-  // The recorded version installed: run exactly its bin, as the package names it.
-  const bin = plantInstalledProxy("1.14.30");
+  // The tree installed complete: run exactly its bin, as the package names it.
+  plantInstalledProxy("1.14.30");
   expect(resolveCopilotApiEntry()).toEqual({
     kind: "floated",
     version: "1.14.30",
     path: bin,
-    proxyHome: home,
+    ...home,
   });
 
   // The override runs that file whether or not a float resolved, so the CI fake is never
   // shadowed by a real install; a relative spelling resolves against the CALLER's cwd here,
   // because the daemon's own cwd is the proxy home.
   process.env.COPILOT_API_ENTRY = FAKE;
-  expect(resolveCopilotApiEntry()).toEqual({ kind: "file", path: FAKE, proxyHome: home });
+  expect(resolveCopilotApiEntry()).toEqual({ kind: "file", path: FAKE, ...home });
   process.env.COPILOT_API_ENTRY = "./test/copilot-api-fake.mjs";
   expect(resolveCopilotApiEntry()).toEqual({
     kind: "file",
     path: resolve("./test/copilot-api-fake.mjs"),
-    proxyHome: home,
+    ...home,
   });
 });
 
@@ -319,7 +349,12 @@ test("launchDaemon spawns process.execPath as a bun CLI with the proxy home as c
     ...BASE,
     home: dir,
     logFile,
-    entry: { kind: "file", path: entryFile, proxyHome: home },
+    entry: {
+      kind: "file",
+      path: entryFile,
+      proxyHome: home,
+      nodeModules: join(home, "install", "node_modules"),
+    },
   });
   try {
     expect(pid).toBeGreaterThan(0);
@@ -340,7 +375,7 @@ test("launchDaemon spawns process.execPath as a bun CLI with the proxy home as c
     // realpath both sides: the OS tmpdir may be a symlink, and bun canonicalizes its execPath.
     expect(realpathSync(reported.execPath)).toBe(realpathSync(process.execPath));
     expect(realpathSync(reported.cwd)).toBe(realpathSync(home));
-    expect(reported.nodePath).toBe(join(home, "node_modules"));
+    expect(reported.nodePath).toBe(join(home, "install", "node_modules"));
     expect(reported.beBun).toBe("1");
     expect(reported.dotenv).toBeNull();
   } finally {
@@ -407,12 +442,13 @@ test("parseProcessRows splits pid and ucomm off, keeping the command line verbat
 
 test("daemonPidsFromRows preserves a FAILED scan as unproven, never a confident empty list", () => {
   const self = { pid: 111, ucomm: "bun", command: "bun test" };
-  // Ours by its preload under this checkout, the mark the scan reads with the real roots.
+  // Ours by its preload file under this root home's proxy home, the mark the scan reads with the
+  // real roots.
   const daemon = {
     pid: 222,
     ucomm: "bun",
     command:
-      `/home/me/.bun/bin/bun run --preload ${join(ROOT, "src", "scripts", "daemon_lock_preload.ts")} ` +
+      `/home/me/.bun/bin/bun run --preload ${daemonPreloadFile(proxyHome(dir))} ` +
       "/x/node_modules/@jeffreycao/copilot-api/dist/main.js start",
   };
   // The scan's control is the calling process: a readable `ps -U <uid>` always contains it, so rows
@@ -456,20 +492,41 @@ test("the sweep signature matches every real daemon shape, straight from daemonA
   plantInstalledProxy("1.14.30");
   const floated = { ...BASE, entry: resolveCopilotApiEntry() as RunnableEntry };
   expect(floated.entry.kind).toBe("floated");
-  // The installed binary's daemon and a checkout's alike.
+  // The installed binary's daemon and a checkout's alike, and every entry kind: the one preload
+  // file under this root home's proxy home marks them all.
   expect(isDaemonProcess(daemonRow(floated, "copilot-env"))).toBe(true);
   expect(isDaemonProcess(daemonRow(floated))).toBe(true);
-  expect(isDaemonProcess(daemonRow(BASE))).toBe(true);
-  expect(isDaemonProcess(daemonRow({ ...BASE, idleWatchdog: true, muteProxyLogs: true }))).toBe(
+  const file = { ...BASE, entry: fakeProxyEntry() };
+  expect(isDaemonProcess(daemonRow(file))).toBe(true);
+  expect(isDaemonProcess(daemonRow({ ...file, idleWatchdog: true, muteProxyLogs: true }))).toBe(
     true,
   );
+  const checkout = installedProxyPackage();
+  if (checkout === null) throw new Error("the checkout has no installed proxy (bun install)");
+  const pkg = {
+    ...BASE,
+    entry: { ...fakeProxyEntry(), kind: "package" as const, path: checkout.entry },
+  };
+  expect(isDaemonProcess(daemonRow(pkg))).toBe(true);
+  // The same spawn from ANOTHER root home (a sibling test file's scratch home, a developer's real
+  // one beside a suite's): daemon-shaped, marked, and not ours, so no sweep crosses root homes.
+  const elsewhere = {
+    ...BASE,
+    entry: {
+      ...fakeProxyEntry(),
+      proxyHome: "/elsewhere/proxy",
+      nodeModules: "/elsewhere/proxy/install/node_modules",
+    },
+  };
+  expect(isDaemonProcess(daemonRow(elsewhere))).toBe(false);
+  expect(isDaemonProcess(daemonRow(elsewhere, "copilot-env"))).toBe(false);
 
   // ps flattens a SPACED path, but both fragments still carry slashes; missing this daemon would
   // make proxyStatus read it as down and `agent stop` skip it.
   const spacedInstall: DaemonOwnership = {
-    preloadRoots: ["/Users/John Smith/.copilot-env/current"],
+    preloadRoots: ["/Users/John Smith/.local/share/copilot-env/proxy"],
     entryRoots: [
-      "/Users/John Smith/.local/share/copilot-env/proxy/node_modules/@jeffreycao/copilot-api",
+      "/Users/John Smith/.local/share/copilot-env/proxy/install/node_modules/@jeffreycao/copilot-api",
     ],
   };
   expect(
@@ -479,8 +536,8 @@ test("the sweep signature matches every real daemon shape, straight from daemonA
         ucomm: "copilot-env",
         command:
           "/Users/John Smith/.copilot-env/current/bin/copilot-env run --no-env-file --no-install " +
-          "--preload /Users/John Smith/.copilot-env/current/src/scripts/daemon_lock_preload.ts " +
-          "/Users/John Smith/.local/share/copilot-env/proxy/node_modules/@jeffreycao/copilot-api/dist/main.js " +
+          "--preload /Users/John Smith/.local/share/copilot-env/proxy/daemon_preload.ts " +
+          "/Users/John Smith/.local/share/copilot-env/proxy/install/node_modules/@jeffreycao/copilot-api/dist/main.js " +
           "start --verbose --port 4141",
       },
       spacedInstall,
@@ -488,7 +545,7 @@ test("the sweep signature matches every real daemon shape, straight from daemonA
   ).toBe(true);
   // The same package run by another tool from its own node_modules: daemon-shaped, and not ours.
   // Under deno a copilot-api run was ours by construction; under bun only our spawn's marks say so:
-  // a --preload under the install root, or an entry in the proxy home's or the checkout's copy.
+  // the preload file under this root home's proxy home, or an entry in this proxy home's install.
   expect(
     isDaemonProcess({
       pid: 1,
@@ -514,9 +571,9 @@ test("the Windows CommandLine mirror matches the image-quoted daemon shapes, own
   // Roots in the OS's own spelling: the quoted paths below must be read as theirs through quotes,
   // backslashes, and case.
   const windowsInstall: DaemonOwnership = {
-    preloadRoots: ["C:\\Users\\John Smith\\.copilot-env\\current", "C:\\repo"],
+    preloadRoots: ["C:\\Users\\John Smith\\AppData\\Local\\copilot-env\\proxy"],
     entryRoots: [
-      "C:\\Users\\John Smith\\AppData\\Local\\copilot-env\\proxy\\node_modules\\@jeffreycao\\copilot-api",
+      "C:\\Users\\John Smith\\AppData\\Local\\copilot-env\\proxy\\install\\node_modules\\@jeffreycao\\copilot-api",
       "C:\\x\\node_modules\\@x\\copilot-api",
     ],
   };
@@ -524,7 +581,7 @@ test("the Windows CommandLine mirror matches the image-quoted daemon shapes, own
   expect(
     isDaemonCommandLine(
       '"C:\\Users\\John Smith\\.copilot-env\\current\\bin\\copilot-env.exe" run --no-env-file --no-install ' +
-        '"C:\\Users\\John Smith\\AppData\\Local\\copilot-env\\proxy\\node_modules\\@jeffreycao\\copilot-api\\dist\\main.js" ' +
+        '"C:\\Users\\John Smith\\AppData\\Local\\copilot-env\\proxy\\install\\node_modules\\@jeffreycao\\copilot-api\\dist\\main.js" ' +
         "start --verbose --port 4141",
       windowsInstall,
     ),
@@ -541,7 +598,7 @@ test("the Windows CommandLine mirror matches the image-quoted daemon shapes, own
   // it would make `agent stop` skip it.
   expect(
     isDaemonCommandLine(
-      '"C:\\Program Files\\Bun\\bun.exe" run --preload "C:\\repo\\src\\scripts\\daemon_lock_preload.ts" "C:\\tmp\\copilot-api fake.mjs" start --port 4141',
+      '"C:\\Program Files\\Bun\\bun.exe" run --preload "C:\\Users\\John Smith\\AppData\\Local\\copilot-env\\proxy\\daemon_preload.ts" "C:\\tmp\\copilot-api fake.mjs" start --port 4141',
       windowsInstall,
     ),
   ).toBe(true);
@@ -692,8 +749,9 @@ test.skipIf(process.platform === "win32")(
     // Windows has no deliverable SIGTERM, so the drain is a POSIX contract. The request must be
     // genuinely mid-flight when the signal lands: the handler parks until this process writes the
     // release, which happens only after the child reports the signal arrived. The LATE listener is
-    // copilot-api's own shape, `process.once("SIGTERM", () => process.exit(0))` registered after the
-    // preload: run in the same emit it would sever the response, so it runs after the drain.
+    // copilot-api's own shape, registered after the preload: an async cleanup, then its own exit.
+    // Run in the same emit it would sever the response, so it runs after the drain, and its cleanup
+    // must still finish before the process is gone.
     dir = tempDir("copilot-sigterm-");
     const target = join(dir, "serving.ts");
     const release = join(dir, "release");
@@ -710,7 +768,9 @@ test.skipIf(process.platform === "win32")(
         "process.on('SIGTERM', () => console.log('SIGNALLED'));\n" +
         "installInferenceObserver();\n" +
         "installTerminationHandler();\n" +
-        "process.once('SIGTERM', () => { console.log('LATE'); process.exit(0); });\n" +
+        "process.once('SIGTERM', async () => { console.log('LATE'); await new Promise((r) => setTimeout(r, 50)); console.log('CLEANED'); process.exit(0); });\n" +
+        // The other signal's late listener: a SIGTERM must not replay it.
+        "process.once('SIGINT', () => console.log('WRONG-SIGNAL'));\n" +
         "const parked = async () => {\n" +
         "  console.log('SERVING');\n" +
         "  while (!existsSync(release)) await new Promise((r) => setTimeout(r, 20));\n" +
@@ -776,10 +836,12 @@ test.skipIf(process.platform === "win32")(
       expect(child.signalCode).toBeNull();
       await pump;
       // Drained through the shared path, not severed by the runtime's default terminate (which
-      // runs no exit handlers), and the late listener ran only once the response was out.
-      expect(stdout).toContain("DRAINED");
-      expect(stdout.indexOf("LATE")).toBeGreaterThan(stdout.indexOf("SERVING"));
-      expect(stdout).toContain("LATE");
+      // runs no exit handlers); the late listener ran only once the response was out, and its
+      // cleanup finished before the exit hook.
+      const order = ["SERVING", "LATE", "CLEANED", "DRAINED"].map((line) => stdout.indexOf(line));
+      expect(order).toEqual([...order].sort((a, b) => a - b));
+      expect(order.every((at) => at >= 0)).toBe(true);
+      expect(stdout).not.toContain("WRONG-SIGNAL");
     } finally {
       // An assertion that threw before the request was consumed would otherwise hold the
       // connection -- and the child -- open.
@@ -792,9 +854,10 @@ test.skipIf(process.platform === "win32")(
   },
 );
 
-// The escalating teardowns SIGKILL after the shared grace, so the drain deadline must finish first
-// or they sever the responses the drain protects. The daemon-side module keeps its own literal
-// because it loads inside the daemon, where a CLI import does not belong.
-test("the drain deadline fits inside the SIGKILL grace", () => {
-  expect(DRAIN_DEADLINE_MS).toBeLessThan(DAEMON_SIGKILL_GRACE_MS);
+// The escalating teardowns SIGKILL after the shared grace, so the drain deadline and the late
+// listeners' grace must finish first or they sever the responses the drain protects. The
+// daemon-side module keeps its own literal because it loads inside the daemon, where a CLI import
+// does not belong.
+test("the drain deadline and the late listeners' grace fit inside the SIGKILL grace", () => {
+  expect(DRAIN_DEADLINE_MS + LATE_LISTENER_GRACE_MS).toBeLessThan(DAEMON_SIGKILL_GRACE_MS);
 });

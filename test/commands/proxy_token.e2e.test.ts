@@ -213,6 +213,9 @@ function isolatedEnv(home: string): Record<string, string> {
 /** A daemon proxyStatus corroborates: a real bun process running a copilot-api-named entry with the
  *  `start` subcommand, plus a listening loopback port recorded in run state. */
 async function stageDecoyDaemon(home: string): Promise<{ teardown: () => Promise<void> }> {
+  // Set BEFORE the decoy spawns: its root-home mark (the preload file under the proxy home) and
+  // writeRunState's store both resolve from the env, and the CLI under test reads the same home.
+  process.env.COPILOT_API_HOME = home;
   const decoy = join(home, "copilot-api-decoy.mjs");
   writeFileSync(decoy, "setTimeout(() => {}, 30_000);\n");
   const daemon = spawnDaemonShapedChild(decoy);
@@ -230,7 +233,6 @@ async function stageDecoyDaemon(home: string): Promise<{ teardown: () => Promise
       });
     },
   );
-  process.env.COPILOT_API_HOME = home; // writeRunState resolves the store from the env
   writeRunState({ pid: daemon.pid, port });
   return {
     teardown: async () => {

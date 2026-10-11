@@ -3,7 +3,9 @@
 //   the server handle      -> from the Bun.serve wrap in inference_activity.ts, the only place in
 //                             the process that sees it
 //   importing this module  -> installs nothing; daemon_runtime_preload.ts arms the handler
-import { deadline } from "@std/async";
+//
+// No @std/async here: this module's packages install into the proxy home (DAEMON_SHIM_DEPENDENCIES),
+// and a JSR package would need that home to carry the @jsr registry scope the checkout has.
 
 /** Structural on purpose: the handle is recorded by shape rather than by matching Bun's full
  *  Server type. `stop()` without the force flag stops listening and resolves once the in-flight
@@ -17,6 +19,11 @@ interface DrainableServer {
  *  escalating teardown (start --force, uninstall, de-auth, profile <name> del) SIGKILLs after a 2000ms
  *  grace, so this must sit under that. */
 export const DRAIN_DEADLINE_MS = 1_500;
+
+/** After the drain, a held-back listener that exits on its own (copilot-api's, once its async
+ *  cleanups settle) gets this long before the daemon exits anyway. The drain and this together
+ *  stay under the 2000ms SIGKILL grace. */
+export const LATE_LISTENER_GRACE_MS = 300;
 
 const SIGNALS = ["SIGTERM", "SIGINT"] as const;
 type Signal = (typeof SIGNALS)[number];
@@ -51,33 +58,49 @@ export function resetDaemonShutdownForTests(): void {
   deferredListeners.length = 0;
 }
 
-/** The held-back listeners run in registration order with the exit after them: one that exits
- *  itself (copilot-api's) ends the process with its cleanups done, and the exit's own hooks run
- *  whichever way. */
-function exitAfterDeferredListeners(code: number): never {
-  for (const { signal, listener } of deferredListeners.splice(0)) {
+/** The timer is cleared on the fast path so it can never hold the process open past the drain. */
+function withDeadline(promise: Promise<unknown>, ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    const settled = (): void => {
+      clearTimeout(timer);
+      resolve();
+    };
+    promise.then(settled, settled);
+  });
+}
+
+/** The held-back listeners of the signal that arrived run in registration order (a shutdown no
+ *  signal started, the idle watchdog's, replays none). copilot-api's awaits its cleanups and then
+ *  exits itself, and an exit from here in the same tick would cut those short and skip its exit
+ *  hook (which stands down once a cleanup is under way), so with any listener replayed the exit
+ *  waits its grace; with none, nothing is owed and the exit is immediate. */
+function exitAfterDeferredListeners(code: number, arrived: Signal | null): void {
+  const held = arrived === null ? [] : deferredListeners.filter((d) => d.signal === arrived);
+  for (const { signal, listener } of held) {
     try {
       listener(signal);
     } catch {
       // a failing late listener must not keep the daemon alive
     }
   }
-  process.exit(code);
+  if (held.length === 0) process.exit(code);
+  setTimeout(() => process.exit(code), LATE_LISTENER_GRACE_MS);
 }
 
-/** Never resolves: the process is gone by then. */
-export function shutdownDaemon(code = 0): Promise<void> {
+/** Resolves once the exit is under way (at once, or after the late listeners' grace): nothing a
+ *  caller does after it can still land. `arrived` is the signal that started it, if one did. */
+export function shutdownDaemon(code = 0, arrived: Signal | null = null): Promise<void> {
   if (shuttingDown !== null) return shuttingDown;
   const server = daemonServer;
   const drained =
     server === null
       ? Promise.resolve()
-      : deadline(
+      : withDeadline(
           Promise.resolve().then(() => server.stop()),
           DRAIN_DEADLINE_MS,
         );
-  const exit = (): never => exitAfterDeferredListeners(code);
-  shuttingDown = drained.then(exit, exit);
+  shuttingDown = drained.then(() => exitAfterDeferredListeners(code, arrived));
   return shuttingDown;
 }
 
@@ -90,11 +113,9 @@ export function installTerminationHandler(): void {
   if (process.platform === "win32") return;
   for (const signal of SIGNALS) {
     process.on(signal, () => {
-      void shutdownDaemon(0);
+      void shutdownDaemon(0, signal);
     });
   }
-  // From here on, every registration for these two signals is deferred past the drain; anything
-  // else reaches the runtime untouched.
   for (const method of REGISTRARS) {
     const register = process[method].bind(process) as (
       event: string | symbol,

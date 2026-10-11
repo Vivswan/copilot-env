@@ -28,7 +28,6 @@ const NOT_KEYS = new Set([
   "claude.live",
   "codex.live",
   "proxy.package",
-  "proxy.sidecar",
   "proxy.resolved",
 ]);
 

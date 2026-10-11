@@ -1,40 +1,36 @@
-// bun:test's surface over @std/testing/bdd and @std/expect, so runner policy (the per-test
-// deadline, the sanitizer settings, the agent-state sandbox) lives in one place.
-//   sanitizers        -> off: the deadline race leaves a timed-out body's ops pending, which
-//                        the op sanitizer would misreport as the failure
+// bun:test's surface with the suite's runner policy in one place: the per-test deadline, the
+// per-file temp root, and the agent-state sandbox.
 //   abort signal      -> child processes only; in-process work an abandoned body keeps doing
 //                        still lands (the per-file temp-dir harnesses absorb it)
 //   runSync in flight -> cannot be interrupted: spawnSync blocks the thread the deadline timer
 //                        runs on (RunOptions.timeoutMs)
+
+import { afterAll, it } from "bun:test";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { lstatSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join } from "node:path";
-import { it } from "@std/testing/bdd";
+import { dirname, join } from "node:path";
+import { abortable } from "@std/async";
 import { CLAUDE_DESKTOP_DIR_ENV } from "../../src/claude/desktop_library.ts";
 import { CI_NO_LIVE_LOOKUPS_ENV } from "../../src/codex/user_agent.ts";
 import { CI_PS_DOCUMENTS_DIR_ENV, CI_RC_DIR_ENV } from "../../src/shell/integration.ts";
-import { sleepSync } from "../../src/utils/time.ts";
 
-export { expect } from "@std/expect";
-export { afterEach, beforeEach, describe } from "@std/testing/bdd";
+export { afterEach, beforeEach, describe, expect } from "bun:test";
 
 // --- the temp root -----------------------------------------------------------------
 //
-// `deno test` evaluates each test file in its own isolate, so this module mints one root per
-// file and removes it on unload (a failed run unloads too): a fixture a test abandons goes with
-// the root instead of staying in the OS tmpdir. tempDir is the one way to a temp directory;
-// reaching mkdtemp, makeTempDir, or os.tmpdir elsewhere under test/ is a lint error
-// (test/lint/no_unmanaged_temp_dir.ts).
+// scripts/run_tests.ts runs each test file in its own process, so this module mints one root per
+// process and removes it when the file is done (a failed run too): a fixture a test abandons goes
+// with the root instead of staying in the OS tmpdir. tempDir is the one way to a temp directory;
+// reaching mkdtemp or os.tmpdir elsewhere under test/ is a lint error.
 
 /**
- * A child that loads this module mints its own root INSIDE the root of the isolate that spawned
- * it (test/helpers/run.ts sets this on every child), so a child killed before its own unload
- * leaves nothing the parent's removal misses. It travels to children only: the isolates share
- * this process's environment, and the next one would nest under a root already gone.
+ * A child that loads this module mints its own root INSIDE the root of the process that spawned
+ * it (test/helpers/run.ts sets this on every child), so a child killed before its own teardown
+ * leaves nothing the parent's removal misses.
  */
 export const TEST_ROOT_ENV = "COPILOT_ENV_TEST_ROOT";
-/** This isolate's root; the spawn helpers hand it to children under TEST_ROOT_ENV. */
+/** This process's root; the spawn helpers hand it to children under TEST_ROOT_ENV. */
 export const ISOLATE_ROOT = mkdtempSync(
   join(process.env[TEST_ROOT_ENV] ?? tmpdir(), "copilot-env-suite-"),
 );
@@ -50,17 +46,17 @@ export function tempDir(prefix: string): string {
 }
 
 /**
- * Success is the path being GONE (lstat says ENOENT), never rmSync returning. Two transient
- * failures retry with backoff, as renameWithRetry does (src/utils/report_write.ts); the last
+ * Success is the path being GONE (lstat says ENOENT), never rmSync returning. A transient
+ * failure retries after a pause, as renameWithRetry does (src/utils/fs_disk.ts); the last
  * attempt throws.
- *   an entry a live child renamed away mid-walk (deno cache temp files)  -> `force` reads it as
- *                                                                          removed; the walk stops early
- *   Windows holding a handle briefly past process death                  -> EPERM/EBUSY, tree present
+ *   an entry a live child renamed away mid-walk (a cache's temp files)  -> `force` reads it as
+ *                                                                        removed; the walk stops early
+ *   Windows holding a handle briefly past process death                -> EPERM/EBUSY, tree present
  */
 export function removeDir(dir: string): "" {
   if (!dir) return "";
   const maxRetries = 9;
-  for (let i = 0;; i++) {
+  for (let i = 0; ; i++) {
     let failure: Error | undefined;
     try {
       rmSync(dir, { recursive: true, force: true });
@@ -73,7 +69,7 @@ export function removeDir(dir: string): "" {
     }
     if (isGone(dir)) return "";
     if (i >= maxRetries) throw failure ?? new Error(`${dir} still exists after removal`);
-    sleepSync(300);
+    Bun.sleepSync(300);
   }
 }
 
@@ -89,46 +85,29 @@ function isGone(path: string): boolean {
   }
 }
 
-// A root that survives fails the run (an uncaught error here is a test failure): it is
-// exactly the leak this file exists to prevent, so it is never a green run's footnote.
-globalThis.addEventListener("unload", () => {
+/**
+ * A root that survives fails the run: it is exactly the leak this file exists to prevent, so it
+ * is never a green run's footnote. `bun test` emits no `exit` event, and bun:test's hooks throw
+ * outside the runner (the bench and the usage scripts load this module under `bun run`), so the
+ * runner's own hook is tried first.
+ *   under `bun test`  -> afterAll: a throw there is a failed test
+ *   under `bun run`   -> the process's exit event
+ */
+function onTeardown(teardown: () => void): void {
+  try {
+    afterAll(teardown);
+  } catch {
+    process.on("exit", teardown);
+  }
+}
+
+onTeardown(() => {
   removeDir(ISOLATE_ROOT);
 });
 
-// A child under a fixture HOME with no pin derives a FRESH module cache from that HOME and fills
-// it by download (8-14 MB per fixture), so this process pins its own cache once and every deno
-// child inherits it (test/helpers/run.ts keeps the pin unless a caller names an absolute one).
-// The isolates share one process environment, so the pin outlives the isolate that set it.
-//   DENO_DIR absolute  -> kept as is
-//   DENO_DIR empty     -> deno reads it as unset; replaced by the default `deno info` reports
-//   DENO_DIR relative  -> would resolve against each child's own cwd; `deno info` resolves it
-//                         against THIS process's cwd and that absolute path is pinned
-const inheritedDenoDir = process.env.DENO_DIR ?? "";
-export const PINNED_DENO_DIR = isAbsolute(inheritedDenoDir) ? inheritedDenoDir : hostDenoDir();
-process.env.DENO_DIR = PINNED_DENO_DIR;
-
-/** Where this deno resolves its cache -- asked, not derived, because the default is
- *  platform-specific and deno's to define. */
-function hostDenoDir(): string {
-  // The one child made outside test/helpers/run.ts: it runs at module load, before any test
-  // body exists to be abandoned, so abort teardown has nothing to register.
-  const info = new Deno.Command(Deno.execPath(), {
-    args: ["info", "--json"],
-    stdout: "piped",
-    stderr: "piped",
-  }).outputSync();
-  const decoder = new TextDecoder();
-  if (!info.success) throw new Error(`deno info failed: ${decoder.decode(info.stderr)}`);
-  const { denoDir } = JSON.parse(decoder.decode(info.stdout)) as { denoDir?: unknown };
-  if (typeof denoDir !== "string" || denoDir === "") {
-    throw new Error("deno info reported no denoDir");
-  }
-  return denoDir;
-}
-
 // --- the suite-wide agent-state sandbox ---------------------------------------
 //
-// Every env var that steers a real agent-state path is repointed under the isolate's root, so a
+// Every env var that steers a real agent-state path is repointed under the process's root, so a
 // test with no harness of its own still cannot touch the developer's `~/.codex`, `~/.claude`,
 // `~/.claude.json`, copilot-api home, or shell rc files. HOME stays REAL: each path has its own
 // override, which is what makes it redirectable without HOME.
@@ -152,10 +131,13 @@ process.env[CLAUDE_DESKTOP_DIR_ENV] = join(SANDBOX_HOME, "claude-desktop");
 // The live-lookup seam (installed codex version, npm codex-version query, catalog probe) reads
 // "unavailable" under the suite, so no test depends on the developer's network or codex install.
 // Not NODE_ENV=test: consola reads that as a test run and silences the info output the logger
-// tests assert on.
+// tests assert on (scripts/run_tests.ts keeps bun's own NODE_ENV=test off the test process).
 process.env[CI_NO_LIVE_LOOKUPS_ENV] = "1";
 
 const DEFAULT_TIMEOUT_MS = 15_000;
+/** bun's own per-test timeout sits this far behind the deadline race, so the race always loses
+ *  first and the abort signal fires; bun's is the backstop for a body it cannot reach. */
+const RUNNER_TIMEOUT_MARGIN_MS = 5_000;
 
 type TestBody = () => void | Promise<void>;
 
@@ -189,19 +171,14 @@ export function testAbortSignal(): AbortSignal | undefined {
 function withDeadline(name: string, fn: TestBody, timeoutMs: number): () => Promise<void> {
   return async () => {
     const abort = new AbortController();
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const deadline = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => {
-        const expired = new Error(`test "${name}" timed out after ${timeoutMs}ms`);
-        abort.abort(expired);
-        reject(expired);
-      }, timeoutMs);
-    });
+    const timer = setTimeout(() => {
+      abort.abort(new Error(`test "${name}" timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
     try {
-      await Promise.race([
+      await abortable(
         TEST_ABORT.run(abort.signal, () => Promise.resolve().then(fn)),
-        deadline,
-      ]);
+        abort.signal,
+      );
     } finally {
       clearTimeout(timer);
       abort.abort(new Error(`test "${name}" has already finished`));
@@ -209,15 +186,17 @@ function withDeadline(name: string, fn: TestBody, timeoutMs: number): () => Prom
   };
 }
 
-function register(base: typeof it | typeof it.skip): RegisterTest {
+function register(base: typeof it | ReturnType<typeof it.skipIf>): RegisterTest {
   return (name, fn, timeoutMs = DEFAULT_TIMEOUT_MS) => {
-    base(name, { sanitizeOps: false, sanitizeResources: false }, withDeadline(name, fn, timeoutMs));
+    base(name, withDeadline(name, fn, timeoutMs), {
+      timeout: timeoutMs + RUNNER_TIMEOUT_MARGIN_MS,
+    });
   };
 }
 
 export const test: TestApi = Object.assign(register(it), {
   skipIf(condition: boolean): RegisterTest {
-    return condition ? register(it.skip) : register(it);
+    return register(it.skipIf(condition));
   },
 });
 
@@ -232,7 +211,7 @@ export function outcomeOf<T>(fn: () => T): Outcome<T> {
   }
 }
 
-/** Deno honors a runtime `process.env.TZ` on unix only; on Windows the zone comes from the OS.
+/** A runtime `process.env.TZ` is honored on unix only; on Windows the zone comes from the OS.
  *  Guards one test, test/utils/time.test.ts's "the DEFAULT zone honors the process TZ"; every other day
  *  computation names its IANA zone instead. */
-export const TZ_PINNABLE = Deno.build.os !== "windows";
+export const TZ_PINNABLE = process.platform !== "win32";

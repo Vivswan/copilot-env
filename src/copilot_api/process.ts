@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { closeSync, openSync } from "node:fs";
 import { devNull } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { consola } from "consola";
 import { proxyHome, readResolvedVersionRecord } from "../proxy_float.ts";
@@ -55,8 +55,9 @@ export type RunnableEntry = Exclude<CopilotApiEntry, { kind: "unresolved" }>;
 export function resolveCopilotApiEntry(): CopilotApiEntry {
   const rootHome = resolveRootHome();
   const home = proxyHome(rootHome);
+  // Resolved against the CALLER's cwd here: the daemon's own cwd is the proxy home.
   const override = process.env.COPILOT_API_ENTRY?.trim();
-  if (override) return { kind: "file", path: override, proxyHome: home };
+  if (override) return { kind: "file", path: resolve(override), proxyHome: home };
   const record = readResolvedVersionRecord(rootHome);
   if (record !== null) {
     const installed = installedProxyPackage(home);
@@ -507,8 +508,8 @@ export interface DaemonSpec {
 }
 
 /** Every shim is a RUNTIME shim touching none of copilot-api's files, so none of them pins the floated
- *  proxy version. Exported for the spawn tests, which run the shims the way the daemon loads them. */
-export function daemonPreloadFlags(spec: DaemonSpec): string[] {
+ *  proxy version. */
+function daemonPreloadFlags(spec: DaemonSpec): string[] {
   // FIRST, ALWAYS: the liveness lock (`<home>/daemon.lock`, src/copilot_api/daemon_lock.ts) must be held
   // before anything else touches the home.
   const shims: DaemonShimFile[] = ["daemon_lock_preload.ts"];

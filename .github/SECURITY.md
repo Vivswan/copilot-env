@@ -43,7 +43,7 @@ Both files are written `0600` on POSIX; on Windows they rely on the profile dire
 - The proxy floats, but by default adopts only releases public for at least 7 days (`release-cooldown` key or `COPILOT_API_MIN_RELEASE_AGE` changes the window).
 - A pin (`proxy-version` key or `COPILOT_API_VERSION`) bypasses the cooldown and installs that version.
 - The float stays inside the version floor and ceiling in `copilot-env.config`; `agent start` refuses a proxy below the floor however it was installed.
-- Every other dependency is pinned by the committed `bun.lock`.
+- The CLI's own dependencies are pinned by the committed `bun.lock`; the proxy's install in the data home resolves under the same release-age floor into a lockfile of its own.
 
 **Releases, not a registry**
 

@@ -15,6 +15,7 @@ import { DAEMON_SHIM_DEPENDENCIES } from "../../src/copilot_api/shims.ts";
 import { PROXY_PACKAGE_NAME } from "../../src/copilot_api/version.ts";
 import {
   daemonBunfigFile,
+  ensureShimDependencies,
   type FetchLike,
   floatProxy,
   type InstallRunner,
@@ -132,17 +133,20 @@ function materializeInstall(home: string): void {
 }
 
 /** A fake `bun install`: succeeds by materializing whatever the manifest on disk names (the way
- *  the real one populates node_modules from package.json), or fails as told. */
-function fakeInstall(opts: { exit?: number } = {}): {
+ *  the real one populates node_modules from package.json), or fails as told (`failFirst`: the
+ *  first call alone, the way an outage passes). */
+function fakeInstall(opts: { exit?: number; failFirst?: boolean } = {}): {
   calls: InstallCall[];
   runner: InstallRunner;
 } {
   const calls: InstallCall[] = [];
   const runner: InstallRunner = (args, options) => {
     calls.push({ args: [...args], cwd: options.cwd, env: options.env });
-    if (opts.exit) return { status: opts.exit, stdout: "", stderr: "boom" };
+    if (opts.exit || (opts.failFirst && calls.length === 1)) {
+      return { status: opts.exit ?? 1, stderr: "boom" };
+    }
     materializeInstall(options.cwd);
-    return { status: 0, stdout: "", stderr: "" };
+    return { status: 0, stderr: "" };
   };
   return { calls, runner };
 }
@@ -502,6 +506,28 @@ describe("floatProxy", () => {
     }
   });
 
+  // The bug this pins: the manifest for B was written before bun ran and stayed when bun failed,
+  // so the next attempt read B as current and froze the lockfile resolved from A (which bun
+  // rejects for good), and the still-installed A no longer read as usable.
+  test("a failed version change leaves the installed version usable and the retry unfrozen", async () => {
+    seedFloat("1.10.29", NOW_MS - 30 * MILLISECONDS_PER_DAY);
+    const lockBefore = readFileSync(proxyLockFile(dir), "utf8");
+    const { fetchLike } = docFetch(registryDoc({ "1.10.29": 40, "1.10.30": 8 }));
+    const install = fakeInstall({ failFirst: true });
+
+    // The failed update keeps A: the record, and the home still describing A's install.
+    await floatProxy(deps(fetchLike, install.runner, WEEK_SECONDS));
+    expect(readResolvedVersionRecord(dir)?.version).toBe("1.10.29");
+    expect(manifestProxyVersion()).toBe("1.10.29");
+    expect(readFileSync(proxyLockFile(dir), "utf8")).toBe(lockBefore);
+
+    // The retry resolves afresh (never frozen against A's lock) and lands B.
+    await floatProxy(deps(fetchLike, install.runner, WEEK_SECONDS));
+    expect(installCalls(install.calls).map((c) => c.args)).toEqual([["install"], ["install"]]);
+    expect(readResolvedVersionRecord(dir)?.version).toBe("1.10.30");
+    expect(manifestProxyVersion()).toBe("1.10.30");
+  });
+
   test("a version change resolves afresh and drops the superseded version's cache", async () => {
     seedFloat("1.10.29", NOW_MS - 30 * MILLISECONDS_PER_DAY);
     const staleTarball = join(proxyBunCacheDir(dir), "old.tgz");
@@ -718,6 +744,37 @@ describe("floatProxy", () => {
   });
 });
 
+// A COPILOT_API_ENTRY daemon on a compiled install: the float never runs for it, yet its preload
+// shims import packages only an install puts beside the binary's proxy home.
+describe("ensureShimDependencies", () => {
+  test("installs the shims' packages alone when the proxy home lacks them, and is a no-op once there", async () => {
+    const install = fakeInstall();
+    await ensureShimDependencies(deps(offlineFetch().fetchLike, install.runner, WEEK_SECONDS));
+    expect(install.calls.map((c) => c.args)).toEqual([["install"]]);
+    const manifest = JSON.parse(readFileSync(proxyManifestFile(dir), "utf8")) as {
+      dependencies: Record<string, string>;
+    };
+    expect(Object.keys(manifest.dependencies).sort()).toEqual([...DAEMON_SHIM_DEPENDENCIES].sort());
+    expect(readResolvedVersionRecord(dir)).toBeNull(); // no proxy was resolved
+
+    await ensureShimDependencies(deps(offlineFetch().fetchLike, install.runner, WEEK_SECONDS));
+    expect(install.calls).toHaveLength(1);
+
+    // A real float afterwards supersedes the shims-only manifest with the proxy's.
+    await floatProxy(
+      deps(docFetch(registryDoc({ "1.10.30": 8 })).fetchLike, install.runner, WEEK_SECONDS),
+    );
+    expect(manifestProxyVersion()).toBe("1.10.30");
+    expect(install.calls.map((c) => c.args)).toEqual([["install"], ["install"]]);
+  });
+
+  test("a failed install throws rather than leaving a daemon to die at module load", async () => {
+    await expect(
+      ensureShimDependencies(deps(offlineFetch().fetchLike, fakeInstall({ exit: 1 }).runner, 0)),
+    ).rejects.toThrow("shims' dependencies");
+  });
+});
+
 describe("resolved-version record", () => {
   test("absent, malformed, or ill-shaped records read as null", () => {
     expect(readResolvedVersionRecord(dir)).toBeNull();
@@ -901,12 +958,12 @@ describe("the floated spawn executes", () => {
       expect(entry.version).toBe(record.version);
 
       // Merged over our own environment, as daemonEnvironment does in production: a child
-      // stripped of PATH/HOME would test something the daemon never does. NODE_PATH points at the
-      // fixture's install alone, so a shim import the float did not install cannot be answered by
-      // the checkout's node_modules.
+      // stripped of PATH/HOME would test something the daemon never does. The proxy's own graph
+      // resolves from the install; that the shims resolve from the proxy home alone is the
+      // installer smoke's proof (a compiled install has no checkout node_modules to fall back on).
       const result = runSync(process.execPath, copilotApiArgv(["--help"], [], entry), {
         cwd: entry.proxyHome,
-        env: { ...process.env, ...BUN_CLI_ENV, NODE_PATH: join(entry.proxyHome, "node_modules") },
+        env: { ...process.env, ...BUN_CLI_ENV },
         timeoutMs: 120_000,
       });
       const output = `${result.stdout}${result.stderr}`;

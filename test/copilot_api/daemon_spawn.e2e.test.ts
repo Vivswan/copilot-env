@@ -1,5 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { join, parse } from "node:path";
+import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { join, parse, resolve } from "node:path";
 import { DRAIN_DEADLINE_MS } from "../../src/copilot_api/daemon_shutdown.ts";
 import {
   DAEMON_CLIENT_HEADERS_ENV,
@@ -7,9 +7,7 @@ import {
   daemonClientHeaders,
 } from "../../src/copilot_api/integration_identity.ts";
 import {
-  BUN_CLI_ENV,
   classifyPidFromScan,
-  copilotApiArgv,
   DAEMON_GH_TOKEN_ENV,
   DAEMON_RUNTIMES,
   DAEMON_SIGKILL_GRACE_MS,
@@ -250,31 +248,6 @@ test("the preload set and its environment derive from the spec, in load order", 
   }
 });
 
-// The runtime flags and the environment are one contract: `--no-env-file` and `--no-install`
-// sit between `run` and the first `--preload` (bun reads them nowhere before `run`), the entry is
-// the installed package's own bin, and the environment makes a compiled binary a bun CLI.
-test("the daemon argv runs the entry as a bun CLI, every preload between run and the entry", () => {
-  const argv = daemonArgv({ ...BASE, port: 4242 });
-  expect(argv.slice(0, 3)).toEqual(["run", "--no-env-file", "--no-install"]);
-  expect(argv.slice(3, 3 + 2 * preloads(BASE).length).filter((_a, i) => i % 2 === 0)).toEqual(
-    preloads(BASE).map(() => "--preload"),
-  );
-  expect(argv.slice(-5)).toEqual([FAKE, "start", "--verbose", "--port", "4242"]);
-  // No flag follows the entry: everything after it is the proxy's own argv.
-  const entryAt = argv.indexOf(FAKE);
-  expect(argv.slice(entryAt + 1).some((a) => a.startsWith("--preload"))).toBe(false);
-  expect(daemonEnvironment(BASE, {})).toMatchObject(BUN_CLI_ENV);
-  // Any proxy subcommand rides the same entry and flags.
-  expect(copilotApiArgv(["debug", "models"], [], BASE.entry)).toEqual([
-    "run",
-    "--no-env-file",
-    "--no-install",
-    FAKE,
-    "debug",
-    "models",
-  ]);
-});
-
 // (record, the proxy home's install, the checkout's copy) -> the entry kind and the file run. A
 // record whose install is gone must never name a file that is not there; the float gate ahead of
 // every start is what reinstalls it, and the checkout copy is the fallback until then.
@@ -311,9 +284,16 @@ test("resolveCopilotApiEntry: the float's record runs its installed bin; an over
   });
 
   // The override runs that file whether or not a float resolved, so the CI fake is never
-  // shadowed by a real install.
+  // shadowed by a real install; a relative spelling resolves against the CALLER's cwd here,
+  // because the daemon's own cwd is the proxy home.
   process.env.COPILOT_API_ENTRY = FAKE;
   expect(resolveCopilotApiEntry()).toEqual({ kind: "file", path: FAKE, proxyHome: home });
+  process.env.COPILOT_API_ENTRY = "./test/copilot-api-fake.mjs";
+  expect(resolveCopilotApiEntry()).toEqual({
+    kind: "file",
+    path: resolve("./test/copilot-api-fake.mjs"),
+    proxyHome: home,
+  });
 });
 
 // --- the launched binary ---------------------------------------------------------------
@@ -321,17 +301,20 @@ test("resolveCopilotApiEntry: the float's record runs its installed bin; an over
 // The daemon is the running executable as a bun CLI, in the proxy home, resolving the shims'
 // imports from there: a compiled binary spawning itself without BUN_BE_BUN would re-run the CLI,
 // and a cwd left to the caller would land bun's own discovery (bunfig, package.json) on a
-// stranger's files.
-test("launchDaemon spawns process.execPath as a bun CLI with the proxy home as cwd and NODE_PATH", async () => {
+// stranger's files. A `.env` in that cwd is what bun autoloads, so one with a sentinel sits there:
+// the daemon must not see it.
+test("launchDaemon spawns process.execPath as a bun CLI with the proxy home as cwd and NODE_PATH, loading no .env", async () => {
   const entryFile = join(dir, "report-runtime.ts");
   writeFileSync(
     entryFile,
     "console.log('RUNTIME:' + JSON.stringify({ execPath: process.execPath, cwd: process.cwd(), " +
-      "nodePath: process.env.NODE_PATH, beBun: process.env.BUN_BE_BUN }));\n",
+      "nodePath: process.env.NODE_PATH, beBun: process.env.BUN_BE_BUN, " +
+      "dotenv: process.env.COPILOT_ENV_TEST_DOTENV_SENTINEL ?? null }));\n",
   );
   const logFile = join(dir, "spawn.log");
   const home = proxyHome(dir);
-  expect(existsSync(home)).toBe(false); // created by the spawn, not assumed
+  mkdirSync(home, { recursive: true });
+  writeFileSync(join(home, ".env"), "COPILOT_ENV_TEST_DOTENV_SENTINEL=leaked\n");
   const pid = launchDaemon({
     ...BASE,
     home: dir,
@@ -352,12 +335,14 @@ test("launchDaemon spawns process.execPath as a bun CLI with the proxy home as c
       cwd: string;
       nodePath: string;
       beBun: string;
+      dotenv: string | null;
     };
     // realpath both sides: the OS tmpdir may be a symlink, and bun canonicalizes its execPath.
     expect(realpathSync(reported.execPath)).toBe(realpathSync(process.execPath));
     expect(realpathSync(reported.cwd)).toBe(realpathSync(home));
     expect(reported.nodePath).toBe(join(home, "node_modules"));
     expect(reported.beBun).toBe("1");
+    expect(reported.dotenv).toBeNull();
   } finally {
     // On Windows the isolate root's removal would race a still-running child, so wait until the
     // pid is genuinely gone.
@@ -702,11 +687,13 @@ test("a wedged drain still exits: the deadline is what keeps `agent stop` able t
 });
 
 test.skipIf(process.platform === "win32")(
-  "SIGTERM drains an IN-FLIGHT request before the daemon exits",
+  "SIGTERM drains an IN-FLIGHT request before the daemon exits, the proxy's own exit held back",
   async () => {
     // Windows has no deliverable SIGTERM, so the drain is a POSIX contract. The request must be
     // genuinely mid-flight when the signal lands: the handler parks until this process writes the
-    // release, which happens only after the child reports the signal arrived.
+    // release, which happens only after the child reports the signal arrived. The LATE listener is
+    // copilot-api's own shape, `process.once("SIGTERM", () => process.exit(0))` registered after the
+    // preload: run in the same emit it would sever the response, so it runs after the drain.
     dir = tempDir("copilot-sigterm-");
     const target = join(dir, "serving.ts");
     const release = join(dir, "release");
@@ -718,11 +705,12 @@ test.skipIf(process.platform === "win32")(
           join(ROOT, "src", "copilot_api", "inference_activity.ts"),
         )};\n` +
         `const release = ${CHILD_VALUES}.release;\n` +
+        // Registered BEFORE the handler, so it runs in the signal's own emit and the parent learns
+        // the signal was delivered while the drain is under way.
+        "process.on('SIGTERM', () => console.log('SIGNALLED'));\n" +
         "installInferenceObserver();\n" +
         "installTerminationHandler();\n" +
-        // A second listener, so the parent learns the signal was delivered. It runs AFTER
-        // the handler installed above, which starts the drain synchronously.
-        "process.on('SIGTERM', () => console.log('SIGNALLED'));\n" +
+        "process.once('SIGTERM', () => { console.log('LATE'); process.exit(0); });\n" +
         "const parked = async () => {\n" +
         "  console.log('SERVING');\n" +
         "  while (!existsSync(release)) await new Promise((r) => setTimeout(r, 20));\n" +
@@ -787,9 +775,11 @@ test.skipIf(process.platform === "win32")(
       expect(await child.exited).toBe(0);
       expect(child.signalCode).toBeNull();
       await pump;
-      // Drained through the shared path (a process.exit after stop()), not severed by the
-      // runtime's default terminate, which runs no exit handlers.
+      // Drained through the shared path, not severed by the runtime's default terminate (which
+      // runs no exit handlers), and the late listener ran only once the response was out.
       expect(stdout).toContain("DRAINED");
+      expect(stdout.indexOf("LATE")).toBeGreaterThan(stdout.indexOf("SERVING"));
+      expect(stdout).toContain("LATE");
     } finally {
       // An assertion that threw before the request was consumed would otherwise hold the
       // connection -- and the child -- open.

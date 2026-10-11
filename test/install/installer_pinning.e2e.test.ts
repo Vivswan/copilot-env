@@ -8,7 +8,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { join, parse, posix } from "node:path";
+import { join, parse, posix, relative, sep } from "node:path";
 import { compiledHealthFailures } from "../../.github/scripts/installer-smoke.ts";
 import { INSTALLER_PINS } from "../../.github/scripts/release-assets.ts";
 import { DAEMON_SHIM_DEPENDENCIES } from "../../src/copilot_api/shims.ts";
@@ -28,6 +28,7 @@ import {
   releaseAssetName,
 } from "../../src/utils/targets.ts";
 import { ROOT, runScript, runSync } from "../helpers/run.ts";
+import { moduleSpecifiers, parseModule, resolveRelative, visit } from "../helpers/syntax.ts";
 import { describe, expect, removeDir, tempDir, test } from "../helpers/testing.ts";
 import { tsFilesUnder as srcFiles } from "../helpers/tree.ts";
 
@@ -180,21 +181,7 @@ describe("the materialized files are the shims' import closure", () => {
   // imports reach must be materialized beside them or the daemon dies at module load.
   //   in the closure, not in MATERIALIZED_ASSET_FILES  -> broken daemon on every install
   //   in MATERIALIZED_ASSET_FILES, not in the closure  -> dead weight nothing imports
-  const importRe = /(?:import|export)[^"']*?["'](\.[^"']+\.ts)["']/g;
-  /** A runtime import of a package (not relative, not a runtime module); `import type` is erased. */
-  const bareImportRe = /(?:^|\n)\s*(?:import|export)\s(?!type\s)[^"';]*?["']([^."'][^"']*)["']/g;
-
-  function bareImports(files: Iterable<string>): string[] {
-    const names = new Set<string>();
-    for (const rel of files) {
-      for (const match of readFileSync(join(ROOT, rel), "utf8").matchAll(bareImportRe)) {
-        const name = match[1] ?? "";
-        if (!name.startsWith("node:") && !name.startsWith("bun:")) names.add(name);
-      }
-    }
-    return [...names].sort();
-  }
-
+  /** Every specifier, type-only included: the closure materializes what the files name. */
   function localImportClosure(seeds: string[]): Set<string> {
     const seen = new Set<string>();
     const queue = [...seeds];
@@ -202,12 +189,38 @@ describe("the materialized files are the shims' import closure", () => {
       const rel = queue.pop() as string;
       if (seen.has(rel)) continue;
       seen.add(rel);
-      const text = readFileSync(join(ROOT, rel), "utf8");
-      for (const match of text.matchAll(importRe)) {
-        queue.push(posix.normalize(posix.join(posix.dirname(rel), match[1] ?? "")));
+      const path = join(ROOT, rel);
+      for (const specifier of moduleSpecifiers(parseModule(path))) {
+        const target = resolveRelative(path, specifier);
+        if (target !== null) queue.push(relative(ROOT, target).split(sep).join(posix.sep));
       }
     }
     return seen;
+  }
+
+  /** The packages the files import at run time: bare specifiers of value imports and re-exports
+   *  (a type-only statement is erased), the runtime's own `node:` and `bun:` modules aside. */
+  function bareImports(files: Iterable<string>): string[] {
+    const names = new Set<string>();
+    const consider = (specifier: string): void => {
+      const local = specifier.startsWith("./") || specifier.startsWith("../");
+      if (local || specifier.startsWith("node:") || specifier.startsWith("bun:")) return;
+      names.add(specifier);
+    };
+    for (const rel of files) {
+      visit(parseModule(join(ROOT, rel)).program, {
+        ImportDeclaration(node) {
+          if (node.importKind !== "type") consider(node.source.value);
+        },
+        ExportNamedDeclaration(node) {
+          if (node.source !== null && node.exportKind !== "type") consider(node.source.value);
+        },
+        ExportAllDeclaration(node) {
+          if (node.exportKind !== "type") consider(node.source.value);
+        },
+      });
+    }
+    return [...names].sort();
   }
 
   test("MATERIALIZED_ASSET_FILES is exactly the closure outside the materialized dirs", () => {

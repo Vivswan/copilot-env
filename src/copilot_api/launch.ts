@@ -4,7 +4,7 @@
 import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { consola } from "consola";
-import { floatProxy, proxyFloatVerifyStatus } from "../proxy_float.ts";
+import { ensureShimDependencies, floatProxy, proxyFloatVerifyStatus } from "../proxy_float.ts";
 import { colorEnabled, paintFor } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
@@ -13,6 +13,7 @@ import * as fs from "../utils/fs_facade.ts";
 import { isRecord } from "../utils/json.ts";
 import { pidAlive } from "../utils/pid.ts";
 import { type ProjectConfig, readProjectConfig } from "../utils/project_config.ts";
+import { rootMode } from "../utils/root.ts";
 import { formatTable, terminalWidth } from "../utils/table.ts";
 import { CopilotAdminClient } from "./admin.ts";
 import { CopilotApiConfig, ensureDict } from "./config.ts";
@@ -114,7 +115,12 @@ export function entryProxyVersion(entry: CopilotApiEntry): string | null {
  */
 export async function ensureProxyFloor(): Promise<RunnableEntry> {
   const preflight = resolveCopilotApiEntry();
-  if (preflight.kind === "file") return preflight;
+  if (preflight.kind === "file") {
+    // The shims' packages come from the proxy home on a compiled install; a checkout resolves
+    // them from its own node_modules, so it installs nothing for a file entry.
+    if (rootMode().kind === "compiled") await ensureShimDependencies();
+    return preflight;
+  }
 
   const status = await proxyFloatVerifyStatus();
   if (!status.upToDate) {

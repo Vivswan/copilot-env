@@ -273,10 +273,9 @@ export function probeFileLock(
 }
 
 /** A leftover (probeFileLock's `free`) is unlinked and true comes back; a holder, an absent file,
- *  and a marker this process cannot read are left alone. For a process that can signal to clear
- *  the way for one that cannot: the daemon's own acquire (src/copilot_api/daemon_lock.ts) runs
- *  under a permission set that reads every pid as alive, so the CLI clears a dead daemon's
- *  leftover before the spawn. */
+ *  and a marker this process cannot read are left alone. The CLI clears a dead daemon's leftover
+ *  before the spawn (src/copilot_api/daemon_lock.ts), so the daemon's own acquire finds the way
+ *  clear even where its token cannot judge the pid (EPERM reads as alive). */
 export function removeLeftoverLock(lockPath: string): boolean {
   if (probeFileLock(lockPath).kind !== "free") return false;
   removeMarkerWithRetry(lockPath);

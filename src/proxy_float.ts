@@ -33,7 +33,7 @@ import { readTextOrNull } from "./utils/fs.ts";
 import * as fs from "./utils/fs_facade.ts";
 import { type ConsolaCreateOptions, wrapToTerminal } from "./utils/logger.ts";
 import { type ProjectConfig, readProjectConfig } from "./utils/project_config.ts";
-import { pickAgedVersion, versionLessThan } from "./utils/semver.ts";
+import { pickAgedVersion, toSemverString, versionLessThan } from "./utils/semver.ts";
 import { SECONDS_PER_DAY } from "./utils/time.ts";
 import { stringify as stringifyToml } from "./utils/toml.ts";
 import { packageDependencies } from "./utils/version.ts";
@@ -41,7 +41,12 @@ import { packageDependencies } from "./utils/version.ts";
 const PROXY_PKG = PROXY_PACKAGE_NAME;
 const PROXY_VERSION_ENV = "COPILOT_API_VERSION";
 const MIN_RELEASE_AGE_ENV = "COPILOT_API_MIN_RELEASE_AGE";
-const SEMVER_RE = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/;
+
+/** One published version, spelled canonically: what a record holds and what an exact pin is. A
+ *  `v` prefix or a ragged core is a tag or a typo, never silently normalized into a version. */
+function isExactVersion(value: string): boolean {
+  return toSemverString(value) === value;
+}
 
 /** The full document: its `time` map carries the publish times the cooldown needs; the abbreviated
  *  install doc lacks it. */
@@ -247,7 +252,7 @@ interface ResolvedVersionRecord {
 }
 
 const RECORD_SCHEMA = v.object({
-  version: v.pipe(v.string(), v.regex(SEMVER_RE)),
+  version: v.pipe(v.string(), v.check(isExactVersion)),
   resolved_at_ms: v.pipe(v.number(), v.finite(), v.minValue(0)),
 });
 
@@ -292,12 +297,13 @@ function renderDaemonBunfig(cooldownSeconds: number): string {
   });
 }
 
-/** The proxy home's package.json: the proxy at one EXACT version, plus the preload shims'
+/** The proxy home's package.json: the proxy at one EXACT version (none for a daemon whose entry
+ *  is a file of its own, which still needs the shims' packages), plus the preload shims'
  *  dependencies at this build's ranges (`dependencies` is the test seam; the default is the
  *  embedded manifest's). An aliased entry (`"semver": "npm:@jsr/std__semver@^1"`) is taken as
  *  written: the alias is the name the shims import. */
 export function renderProxyManifest(
-  version: string,
+  version: string | null,
   dependencies: Record<string, string> = packageDependencies(),
 ): string {
   const shimDependencies: Record<string, string> = {};
@@ -313,7 +319,7 @@ export function renderProxyManifest(
   const manifest = {
     name: "copilot-env-proxy",
     private: true,
-    dependencies: { [PROXY_PKG]: version, ...shimDependencies },
+    dependencies: { ...(version === null ? {} : { [PROXY_PKG]: version }), ...shimDependencies },
   };
   return `${JSON.stringify(manifest, null, 2)}\n`;
 }
@@ -343,13 +349,9 @@ export function writeResolvedVersionRecord(rootHome: string, version: string, no
 
 // --- bun install ------------------------------------------------------------------
 
-/** `launchFailed` marks a spawn that never completed (the same mark as runCaptured in
- *  src/utils/command.ts), so a failed look never reads as bun's own verdict. */
 interface InstallRunResult {
   status: number;
-  stdout: string;
   stderr: string;
-  launchFailed?: true;
 }
 
 /** Runs the bun CLI the running binary carries (`BUN_BE_BUN=1` makes a compiled binary one;
@@ -369,13 +371,7 @@ function defaultInstallRunner(
     env: { ...process.env, ...options.env },
     stdio: ["ignore", "pipe", "pipe"],
   });
-  return {
-    status: result.status ?? 1,
-    stdout: result.stdout?.toString() ?? "",
-    stderr: result.stderr?.toString() ?? "",
-    // A spawn error or a null status (killed): bun itself never answered.
-    ...(result.error || result.status === null ? { launchFailed: true as const } : {}),
-  };
+  return { status: result.status ?? 1, stderr: result.stderr?.toString() ?? "" };
 }
 
 interface FloatContext {
@@ -416,16 +412,41 @@ function manifestLook(ctx: FloatContext, version: string): "current" | "stale" |
   return read.text === renderProxyManifest(version) ? "current" : "stale";
 }
 
+/** The three files an install reads or writes, as they were before it: a failed install puts them
+ *  back, so the home still describes the install it holds (the previous version stays usable, and
+ *  the next attempt judges freezing against the manifest its lock was resolved from). A file this
+ *  process cannot read is left as it is. */
+function snapshotInstallFiles(rootHome: string): Array<() => void> {
+  const files = [proxyManifestFile(rootHome), daemonBunfigFile(rootHome), proxyLockFile(rootHome)];
+  return files.flatMap((path) => {
+    const before = fs.readTextResult(path);
+    if (before.kind === "unreadable") return [];
+    return [
+      before.kind === "absent"
+        ? (): void => void fs.rm(path, { force: true })
+        : (): void => fs.writeText(path, before.text, { secretKeys: [] }),
+    ];
+  });
+}
+
 /**
- * Writes the manifest and the bunfig, then `bun install` in the proxy home. The lockfile is
- * frozen whenever the manifest it was resolved from is the one being installed again (a re-warm
- * of the recorded version): the install then restores node_modules from the lock and the cache,
- * offline if need be, and never moves a transitive pin. A changed manifest resolves afresh and
- * rewrites the lock.
+ * Writes the manifest and the bunfig, then `bun install` in the proxy home; `version` null
+ * installs the shims' packages alone. The lockfile is frozen when the manifest on disk, the one
+ * the lock was resolved from, is already the one being installed (a reinstall of the recorded
+ * version): the install then restores node_modules from the lock and the cache, offline if need
+ * be, and never moves a transitive pin. A changed manifest resolves afresh and rewrites the lock.
  */
-function installIntoProxyHome(ctx: FloatContext, version: string, cooldownSeconds: number): number {
-  dropSupersededCache(ctx, version);
-  const frozen = manifestLook(ctx, version) === "current" && fs.exists(proxyLockFile(ctx.rootHome));
+function installIntoProxyHome(
+  ctx: FloatContext,
+  version: string | null,
+  cooldownSeconds: number,
+): number {
+  if (version !== null) dropSupersededCache(ctx, version);
+  const restore = snapshotInstallFiles(ctx.rootHome);
+  const frozen =
+    version !== null &&
+    manifestLook(ctx, version) === "current" &&
+    fs.exists(proxyLockFile(ctx.rootHome));
   fs.writeText(proxyManifestFile(ctx.rootHome), renderProxyManifest(version), { secretKeys: [] });
   fs.writeText(daemonBunfigFile(ctx.rootHome), renderDaemonBunfig(cooldownSeconds), {
     secretKeys: [],
@@ -434,8 +455,36 @@ function installIntoProxyHome(ctx: FloatContext, version: string, cooldownSecond
     cwd: proxyHome(ctx.rootHome),
     env: { BUN_BE_BUN: "1", BUN_INSTALL_CACHE_DIR: proxyBunCacheDir(ctx.rootHome) },
   });
-  if (result.status !== 0 && result.stderr.trim()) logger.warn(result.stderr.trimEnd());
+  if (result.status !== 0) {
+    if (result.stderr.trim()) logger.warn(result.stderr.trimEnd());
+    for (const put of restore) put();
+  }
   return result.status;
+}
+
+/** Every package the preload shims import, installed in the proxy home. */
+function shimDependenciesInstalled(home: string): boolean {
+  return DAEMON_SHIM_DEPENDENCIES.every((name) =>
+    fs.exists(join(home, "node_modules", name, "package.json")),
+  );
+}
+
+/**
+ * A daemon whose entry is a file of its own (COPILOT_API_ENTRY) skips the float, but its preload
+ * shims still import the packages only an install puts in the proxy home: on a compiled install
+ * nothing else holds them (a checkout resolves them from its own node_modules). Installs them
+ * alone, once; the next real float's manifest supersedes this one.
+ */
+export async function ensureShimDependencies(deps: ProxyFloatDeps = {}): Promise<void> {
+  const ctx = floatContext(deps);
+  if (shimDependenciesInstalled(proxyHome(ctx.rootHome))) return;
+  const cooldownSeconds = deps.cooldownSeconds ?? resolveMinimumReleaseAgeSeconds();
+  logger.info(`installing the daemon shims' dependencies into ${proxyHome(ctx.rootHome)}`);
+  if (installIntoProxyHome(ctx, null, cooldownSeconds) !== 0) {
+    throw new Error(
+      `could not install the daemon shims' dependencies into ${proxyHome(ctx.rootHome)} (offline?)`,
+    );
+  }
 }
 
 /** The whole cache goes on a version change, not a prune: bun's cache is content-addressed and
@@ -463,10 +512,7 @@ function installResolves(ctx: FloatContext, version: string): InstallLook {
   if (installed === null || installed.version !== version || !fs.exists(installed.entry)) {
     return "missing";
   }
-  for (const name of DAEMON_SHIM_DEPENDENCIES) {
-    if (!fs.exists(join(home, "node_modules", name, "package.json"))) return "missing";
-  }
-  return "resolves";
+  return shimDependenciesInstalled(home) ? "resolves" : "missing";
 }
 
 function warnInstallUnverified(version: string): void {
@@ -553,7 +599,7 @@ async function handlePinnedOverride(ctx: FloatContext, override: string): Promis
   let target = override;
   let doc: ProxyRegistryDoc | null = null;
 
-  if (SEMVER_RE.test(override)) {
+  if (isExactVersion(override)) {
     // Only a PROVEN "resolves" earns the fast path; an unproven look falls through to the
     // non-destructive re-warm.
     if (record?.version === override && installResolves(ctx, override) === "resolves") {
@@ -770,7 +816,7 @@ export async function proxyFloatVerifyStatus(
 
   const override = resolveProxyVersionOverride();
   if (override) {
-    if (!SEMVER_RE.test(override)) {
+    if (!isExactVersion(override)) {
       return {
         upToDate: false,
         message: `update needed: ${PROXY_VERSION_ENV}=${override} is a tag pin; it re-resolves on every float`,

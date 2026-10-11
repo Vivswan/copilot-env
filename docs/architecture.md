@@ -141,7 +141,7 @@ Demonstrated by: [test/copilot_api/profiles.e2e.test.ts](../test/copilot_api/pro
 flowchart LR
   registry[["GET https://registry.npmjs.org/@jeffreycao%2Fcopilot-api"]]
   prefs[("~/.local/share/copilot-env/state.json (global and profiles.<name>: the settings)")]
-  float["src/proxy_float.ts<br>floatProxy() selectProxyVersion() renderProxyManifest() renderDaemonBunfig() writeResolvedVersionRecord() readResolvedVersionRecord()"]
+  float["src/proxy_float.ts<br>floatProxy() ensureShimDependencies() selectProxyVersion() renderProxyManifest() writeResolvedVersionRecord() readResolvedVersionRecord()"]
   shims["src/copilot_api/shims.ts<br>DAEMON_SHIM_FILES DAEMON_SHIM_DEPENDENCIES shimPath()"]
   spawn["src/copilot_api/process.ts<br>DaemonSpec resolveCopilotApiEntry() daemonArgv() daemonEnvironment() launchDaemon()"]
   preloads["src/scripts/daemon_lock_preload.ts<br>src/scripts/token_argv_preload.ts<br>src/scripts/daemon_runtime_preload.ts<br>src/scripts/copilot_host_preload.ts<br>src/scripts/client_headers_preload.ts<br>src/scripts/pat_passthrough_preload.ts<br>src/scripts/idle_watchdog_preload.ts<br>src/scripts/log_mute_preload.ts"]
@@ -167,7 +167,7 @@ flowchart LR
 
 - **The daemon runs from the binary itself:** `process.execPath` spawned as a bun CLI (`BUN_BE_BUN=1` in the child's environment; without it a compiled binary would re-run its own entry). A checkout's execPath is bun already. Nothing else is downloaded.
 - **We never patch the package:** every shim wraps a runtime seam (`globalThis.fetch`, `Bun.serve`, `fs.createWriteStream`, `process.argv`) and touches none of copilot-api's files, so none of them pins the floated version. One seam has no bun form: the /responses WebSocket handshake (copilot-api's `WebSocket` from bun's built-in undici is the native class), which runs under the proxy's own identity.
-- **`--no-install` at spawn gives no second chance,** which is why the float installs the shims' dependencies beside the proxy; every spawn carries the token, host, and client-header shims, since a launch without a credential is refused.
+- **`--no-install` at spawn gives no second chance,** which is why the float installs the shims' dependencies beside the proxy (and a compiled install running a `COPILOT_API_ENTRY` file installs them alone); every spawn carries the token, host, and client-header shims, since a launch without a credential is refused.
 - **The secret-carrying shims stay import-free** (`biome/no_shim_imports.grit`): a runtime import would drag CLI modules into the daemon process.
 
 Demonstrated by: [test/copilot_api/proxy_float.e2e.test.ts](../test/copilot_api/proxy_float.e2e.test.ts), [test/copilot_api/daemon_spawn.e2e.test.ts](../test/copilot_api/daemon_spawn.e2e.test.ts), [test/copilot_api/daemon_env_keys.test.ts](../test/copilot_api/daemon_env_keys.test.ts).

@@ -559,8 +559,8 @@ test("uninstall's dry run and live run land ONE resolved plan", async () => {
   ledger.record("claudeDesktop", join(library, "gone.json"));
   // The float's own artifacts, the record and bun's cache, go through the plan's list ahead of the
   // home sweep, so each is named.
-  const elsewhere = proxyBunCacheDir(proxyHome);
-  mkdirSync(elsewhere, { recursive: true });
+  const bunCache = proxyBunCacheDir(proxyHome);
+  mkdirSync(bunCache, { recursive: true });
   writeResolvedVersionRecord(proxyHome, "1.10.30", Date.now());
   // A wired rc / PowerShell profile on a scratch home, resolved by the REAL shell resolver: the
   // plan must name the concrete file.
@@ -598,7 +598,7 @@ test("uninstall's dry run and live run land ONE resolved plan", async () => {
   const named = new Set(changes.map((c) => c.path));
   expect(readFileSync(rc, "utf8")).toContain(SHELL_MARKER);
   expect(existsSync(join(library, "ours.json"))).toBe(true);
-  expect(existsSync(elsewhere)).toBe(true);
+  expect(existsSync(bunCache)).toBe(true);
   // Planted AFTER planning: a LISTED owned Desktop entry attributed to the profile the
   // profile step deletes. Neither that step nor the Desktop sweep may take a path the
   // dry run never named.
@@ -637,7 +637,7 @@ test("uninstall's dry run and live run land ONE resolved plan", async () => {
 
   expect(existsSync(join(library, "late.json"))).toBe(true);
   expect(existsSync(join(library, "ours.json"))).toBe(false);
-  expect(existsSync(elsewhere)).toBe(false);
+  expect(existsSync(bunCache)).toBe(false);
   // The live row and the stale claim's row went; the late row stayed (the ledger itself
   // lives in the root home the uninstall deleted, so the rows are the observable).
   const meta = JSON.parse(readFileSync(join(library, "_meta.json"), "utf8")) as {

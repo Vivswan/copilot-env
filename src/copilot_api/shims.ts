@@ -4,7 +4,7 @@
 import { join } from "node:path";
 import { PROJECT_ROOT } from "../utils/root.ts";
 
-export const DAEMON_SHIM_FILES = [
+const DAEMON_SHIM_FILES = [
   "daemon_lock_preload.ts",
   "token_argv_preload.ts",
   "daemon_runtime_preload.ts",
@@ -22,6 +22,7 @@ export type DaemonShimFile = (typeof DAEMON_SHIM_FILES)[number];
  *  installs these into the proxy home at this build's ranges and the daemon resolves them from
  *  there through NODE_PATH. test/install/installer_pinning.e2e.test.ts pins the list to the closure. */
 export const DAEMON_SHIM_DEPENDENCIES = [
+  "@std/async",
   "consola",
   "string-width",
   "valibot",

@@ -355,8 +355,10 @@ test("a COPILOT_API_ENTRY override runs that file under the generated config, ne
     ...BASE,
     entry: { kind: "file", path: fake, configFile: daemonConfigFile(dir) },
   });
-  // `--cached-only` is about resolving a package; a file entry must never carry it.
+  // `--cached-only` is about resolving a package; a file entry must never carry it. Its imports
+  // resolve from the checkout's node_modules instead, so a fixture never reaches the network.
   expect(argv).not.toContain("--cached-only");
+  expect(argv).toContain("--node-modules-dir=manual");
   expect(argv).not.toContain(PROXY_PACKAGE_NAME);
   expect(argv.slice(-5)).toEqual([fake, "start", "--verbose", "--port", "4141"]);
 });

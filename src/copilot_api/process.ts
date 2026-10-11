@@ -121,6 +121,10 @@ export function copilotApiArgv(
     // entry runs only on what an earlier float left in the sidecar's cache.
     ...(entry.kind === "file" ? [] : ["--cached-only"]),
     ...(entry.kind === "floated" ? ["--node-modules-dir=none"] : []),
+    // A file entry (the test fixtures' fake proxy, a COPILOT_API_ENTRY override) runs from a checkout
+    // whose node_modules already holds the shims' dependencies, so the sidecar resolves bare and
+    // npm: imports there instead of downloading them. Phase two retires this with the deno path.
+    ...(entry.kind === "file" ? ["--node-modules-dir=manual"] : []),
     ...PROXY_PERMISSIONS,
     // FIRST, on every spawn: the proxy's dependency tree probes /proc at module load, which deno's node
     // compat turns into a thrown NotCapable instead of node's documented `false`, so on Linux the proxy

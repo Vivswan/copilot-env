@@ -8,8 +8,8 @@
 //   float resolves + installs a version -> daemon spawns under the production permission set
 //   with its `--preload` shims -> runs with the passed token, which upstream rejects
 //
-// On a developer machine: deno task test:docker --floated-lifecycle
-import { type Dirent, readdirSync } from "node:fs";
+// On a developer machine: bun run test:docker --floated-lifecycle
+import { type Dirent, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { isDir } from "../../src/utils/fs.ts";
 import { cli, fail, requireDisposableHome, runnerOs } from "./smoke-support.ts";
@@ -63,7 +63,7 @@ function findProxyLog(dir: string): string | null {
 
 if (import.meta.main) {
   requireDisposableHome("floated-smoke.ts", "floats a real proxy into", "--floated-lifecycle");
-  const home = Deno.env.get("HOME") ?? fail("HOME is unset");
+  const home = process.env.HOME ?? fail("HOME is unset");
 
   // A fake credential: the daemon spawns and fails upstream auth, so `start` is expected to exit
   // nonzero. The assertions are on what it got through first, so the exit code alone tells us
@@ -77,7 +77,7 @@ if (import.meta.main) {
   console.log(startOutput);
 
   const proxyLogPath = findProxyLog(join(home, ".local", "share", "copilot-env"));
-  const proxyLog = proxyLogPath === null ? null : Deno.readTextFileSync(proxyLogPath);
+  const proxyLog = proxyLogPath === null ? null : readFileSync(proxyLogPath, "utf8");
   if (proxyLog !== null) {
     console.log("--- proxy log ---");
     console.log(proxyLog);

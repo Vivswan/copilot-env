@@ -3,14 +3,14 @@
   "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
   "postCreateCommand": "bash scripts/setup-env.sh",
   "containerEnv": {
-    "DENO_INSTALL": "/home/vscode/.deno"
+    "BUN_INSTALL": "/home/vscode/.bun"
   },
   "remoteEnv": {
-    "PATH": "${containerEnv:DENO_INSTALL}/bin:${containerEnv:PATH}"
+    "PATH": "${containerEnv:BUN_INSTALL}/bin:${containerEnv:PATH}"
   },
   "customizations": {
     "vscode": {
-      "extensions": ["denoland.vscode-deno"]
+      "extensions": ["oven.bun-vscode"]
     }
   }
 }

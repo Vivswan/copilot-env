@@ -1,6 +1,10 @@
 // Record the `agent cost --json` goldens from the OLD cli (a detached worktree of
 // PRE_INDEX_COMMIT). Nothing is written unless every entry validates against the current run.
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+// The old cli is a deno checkout, so it runs under the `deno` on PATH (the sidecar the daemon
+// needs anyway); this script and the current cli run under bun.
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { FIXTURES_DIR } from "../../test/helpers/usage_fixtures.ts";
 import {
@@ -25,14 +29,15 @@ import {
 import { stableStringify } from "../../src/utils/json.ts";
 
 function usage(): string {
-  return `Usage: deno task usage:goldens [--out DIR]
+  return `Usage: bun run usage:goldens [--out DIR]
 
 Records test/fixtures/usage/<name>.json (the old cli's payload) and <name>.recording.json
 for every entry of the golden matrix. Nothing is written unless every entry passes: the old
 cli read both sources, and the current implementation printed the same payload (plus exactly
-the planted lines' usage for the split case). The old code runs from a detached git worktree
-of ${PRE_INDEX_COMMIT.slice(0, 7)} that this script creates, installs (deno ci), and removes.
-The child runs with TZ=UTC, which deno honors on unix only; a Windows host must run in UTC.
+the planted lines' usage for the split case). The old code is a deno checkout: it runs from a
+detached git worktree of ${PRE_INDEX_COMMIT.slice(0, 7)} that this script creates, installs
+(deno ci, with the deno on PATH), and removes. The child runs with TZ=UTC, which deno honors
+on unix only; a Windows host must run in UTC.
 
   --out DIR   where the goldens go (default ${FIXTURES_DIR})`;
 }
@@ -46,7 +51,7 @@ function parseArgs(argv: string[]): { out: string } {
       case "--help":
       case "-h":
         console.log(usage());
-        Deno.exit(0);
+        process.exit(0);
         break;
       case "--out":
         if (value === undefined) throw new Error("--out needs a directory");
@@ -67,25 +72,26 @@ function run(
   argv: string[],
   opts: { cwd?: string; env?: Record<string, string> } = {},
 ): string {
-  const out = new Deno.Command(cmd, {
-    args: argv,
+  const out = spawnSync(cmd, argv, {
     cwd: opts.cwd,
     env: opts.env,
-    stdin: "null",
-    stdout: "piped",
-    stderr: "piped",
-  }).outputSync();
-  const text = new TextDecoder();
-  if (out.code !== 0) throw new Error(`${what} exited ${out.code}:\n${text.decode(out.stderr)}`);
-  return text.decode(out.stdout);
+    stdio: ["ignore", "pipe", "pipe"],
+    encoding: "utf8",
+  });
+  if (out.error !== undefined) throw new Error(`${what} did not run: ${out.error.message}`);
+  if (out.status !== 0) throw new Error(`${what} exited ${out.status}:\n${out.stderr}`);
+  return out.stdout;
 }
 
-/** This process's deno cache directory, for the child to share instead of fetching the
- *  old checkout's dependencies again under the tree's HOME. */
+const DENO = "deno";
+const denoEnv = { ...process.env, DENO_NO_UPDATE_CHECK: "1" };
+
+/** The PATH deno's cache directory, for the old cli to share: its runs get the tree's HOME,
+ *  and an unpinned cache would fetch the old checkout's dependencies into the measured tree. */
 function denoDir(): string {
-  const fromEnv = Deno.env.get("DENO_DIR");
+  const fromEnv = process.env.DENO_DIR;
   if (fromEnv !== undefined && fromEnv !== "") return fromEnv;
-  const parsed = JSON.parse(run("deno info", Deno.execPath(), ["info", "--json"])) as {
+  const parsed = JSON.parse(run("deno info", DENO, ["info", "--json"], { env: denoEnv })) as {
     denoDir?: unknown;
   };
   if (typeof parsed.denoDir !== "string") throw new Error("deno info reported no denoDir");
@@ -101,12 +107,12 @@ function runOldCostJson(
 ): { payload: Record<string, unknown>; note: unknown } {
   const stdout = run(
     "the old cli",
-    Deno.execPath(),
+    DENO,
     ["run", "-P=cli", "src/cli.ts", ...GOLDEN_COST_ARGS],
     {
       cwd: old,
       env: {
-        ...Deno.env.toObject(),
+        ...denoEnv,
         ...usageTreeEnv(root),
         COPILOT_ENV_ROOT_HOME: "",
         TZ: GOLDEN_TIME_ZONE,
@@ -168,12 +174,12 @@ async function main(args: { out: string }): Promise<void> {
       "this host cannot pin the per-day split to UTC (a Windows host must itself run in UTC)",
     );
   }
-  const scratch = await Deno.makeTempDir({ prefix: "usage-goldens-" });
+  const scratch = mkdtempSync(path.join(tmpdir(), "usage-goldens-"));
   // The worktree gets its own directory, never one inside the scratch: only git removes it.
-  const worktree = await Deno.makeTempDir({ prefix: "usage-goldens-old-" });
+  const worktree = mkdtempSync(path.join(tmpdir(), "usage-goldens-old-"));
   try {
     run("git worktree add", "git", ["worktree", "add", "--detach", worktree, PRE_INDEX_COMMIT]);
-    run("deno ci", Deno.execPath(), ["ci"], { cwd: worktree });
+    run("deno ci", DENO, ["ci"], { cwd: worktree, env: denoEnv });
     const cache = denoDir();
     const recorded: Recorded[] = [];
     for (const entry of GOLDEN_MATRIX) {
@@ -199,8 +205,8 @@ async function main(args: { out: string }): Promise<void> {
 }
 
 try {
-  await main(parseArgs(Deno.args));
+  await main(parseArgs(process.argv.slice(2)));
 } catch (e) {
   console.error(e instanceof Error ? e.message : String(e));
-  Deno.exit(1);
+  process.exit(1);
 }

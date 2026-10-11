@@ -337,8 +337,8 @@ function verifyCompiledHealth(launcher: string): void {
  * A compiled binary is not a deno CLI, so a daemon spawn that resolves no deno starts nothing.
  * Offline.
  *
- *   provisioned copy planted       -> passes on a runner image with no PATH deno; the
- *                                     PATH-vs-provisioned precedence is test/copilot_api/sidecar.test.ts's
+ *   provisioned copy planted       -> a copy of the runner's PATH deno (this process is bun);
+ *                                     the PATH-vs-provisioned precedence is test/copilot_api/sidecar.test.ts's
  *   nothing under the daemon home  -> generating the daemon config is part of the proof
  */
 function verifySidecarDaemonSpawn(launcher: string): void {
@@ -348,8 +348,13 @@ function verifySidecarDaemonSpawn(launcher: string): void {
   delete process.env[SIDECAR_DENO_ENV];
   const rootHome = resolveRootHome();
   const sidecar = sidecarBinPath(rootHome, readDvmrcPin());
+  const pathDeno = commandPath("deno");
+  if (pathDeno === null) {
+    console.error("::error::no deno on PATH to plant as the sidecar");
+    process.exit(1);
+  }
   mkdirSync(dirname(sidecar), { recursive: true });
-  copyFileSync(process.execPath, sidecar);
+  copyFileSync(pathDeno, sidecar);
   if (!isWindows) {
     chmodSync(sidecar, 0o755);
   }

@@ -35,7 +35,7 @@ const COMMENT_FILE = "comment.md";
 const VERDICT_FILE = "verdict";
 const COMMENT_OUTPUT = "comment";
 
-const COST_ARGS = ["-P=cli", "src/cli.ts", "cost", "--json", "--per-day"];
+const COST_ARGS = ["run", "src/cli.ts", "cost", "--json", "--per-day"];
 
 /** The one top-level key that describes the run, not the cost; dropped before the comparison. */
 const RUNTIME_KEY = "runtime";
@@ -52,7 +52,7 @@ const FAILURE_SUMMARY_BYTES = 8 * 1024;
 const DEFAULT_TREE_MB = 1024;
 const DEFAULT_SEED = 1;
 const DEFAULT_FIXTURES_SCRIPT = "scripts/usage/fixtures.ts";
-/** A child that outlives this has wedged; `deno ci` and a 1 GB scan both finish well inside. */
+/** A child that outlives this has wedged; `bun install` and a 1 GB scan both finish well inside. */
 const DEFAULT_CHILD_TIMEOUT_MS = 20 * 60 * 1000;
 
 const REPO_ROOT = resolve(fileURLToPath(new URL("../../", import.meta.url)));
@@ -222,8 +222,8 @@ export interface RunOptions {
 }
 
 /**
- * Deno.Command with clearEnv, not node:child_process: deno's polyfill MERGES `env` into the
- * parent's. The kill is manual because Deno's own `signal` option only SIGTERMs.
+ * Bun.spawn: a given `env` IS the child's environment (nothing of the parent's leaks in), and
+ * the kill is manual because the timeout must SIGKILL, not SIGTERM.
  */
 export async function run(
   command: string,
@@ -231,15 +231,13 @@ export async function run(
   opts: RunOptions,
 ): Promise<RunResult> {
   // Spawn first: a missing executable throws here, synchronously, with nothing yet to clean up.
-  const child = new Deno.Command(command, {
-    args: [...args],
+  const child = Bun.spawn([command, ...args], {
     cwd: opts.cwd ?? REPO_ROOT,
     env: opts.env,
-    clearEnv: true,
-    stdin: "null",
-    stdout: "piped",
-    stderr: "piped",
-  }).spawn();
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
+  });
   const timeoutMs = opts.timeoutMs ?? DEFAULT_CHILD_TIMEOUT_MS;
   const timeout = new AbortController();
   const timer = setTimeout(
@@ -258,9 +256,15 @@ export async function run(
   };
   if (signal.aborted) kill();
   else signal.addEventListener("abort", kill, { once: true });
-  let output: Deno.CommandOutput;
+  let stdout: string;
+  let stderr: string;
+  let status: number;
   try {
-    output = await child.output();
+    [stdout, stderr, status] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
   } finally {
     clearTimeout(timer);
     signal.removeEventListener("abort", kill);
@@ -268,12 +272,7 @@ export async function run(
   if (signal.aborted) {
     throw new Error(`${command} ${args.join(" ")} was killed: ${String(signal.reason)}`);
   }
-  const decoder = new TextDecoder();
-  return {
-    status: output.code,
-    stdout: decoder.decode(output.stdout),
-    stderr: decoder.decode(output.stderr),
-  };
+  return { status, stdout, stderr };
 }
 
 async function mustRun(
@@ -301,13 +300,11 @@ export function childEnv(extra: Record<string, string>): Record<string, string> 
   return { ...env, ...extra };
 }
 
-/** The environment for the setup commands (git, deno ci, deno info): the runner's own homes. */
+/** The environment for the setup commands (git, bun install): the runner's own home. */
 function setupEnv(): Record<string, string> {
-  const extra: Record<string, string> = { DENO_NO_UPDATE_CHECK: "1" };
-  for (const name of ["HOME", "DENO_DIR"]) {
-    const value = process.env[name];
-    if (value !== undefined) extra[name] = value;
-  }
+  const extra: Record<string, string> = {};
+  const home = process.env.HOME;
+  if (home !== undefined) extra.HOME = home;
   return childEnv(extra);
 }
 
@@ -332,33 +329,15 @@ function shortSha(sha: string): string {
   return sha.slice(0, 7);
 }
 
-/** The deno cache dir, pinned explicitly because the measured runs get a fresh HOME. */
-async function denoDir(): Promise<string> {
-  const result = await mustRun("deno", ["info", "--json"], { env: setupEnv() });
-  const info: unknown = JSON.parse(result.stdout);
-  if (
-    typeof info !== "object" || info === null || !("denoDir" in info) ||
-    typeof info.denoDir !== "string"
-  ) {
-    throw new Error("deno info --json did not report denoDir");
-  }
-  return info.denoDir;
-}
-
-/** `deno run` pinned to a checkout's own deno.json: deno otherwise looks for the config from
- *  the SCRIPT's directory, so a fixtures script outside the checkout would find none. */
-function denoRun(checkoutDir: string): string[] {
-  return ["run", "--config", join(checkoutDir, "deno.json")];
-}
-
+/** `cache` is bun's transpiler cache, pinned explicitly because the measured runs get a fresh
+ *  HOME and the default lives under it. */
 function treeEnv(treeHome: string, copilotEnvHome: string, cache: string): Record<string, string> {
   return childEnv({
     HOME: treeHome,
     CODEX_HOME: join(treeHome, ".codex"),
     CLAUDE_CONFIG_DIR: join(treeHome, ".claude"),
     COPILOT_API_HOME: copilotEnvHome,
-    DENO_DIR: cache,
-    DENO_NO_UPDATE_CHECK: "1",
+    BUN_RUNTIME_TRANSPILER_CACHE_PATH: cache,
   });
 }
 
@@ -413,9 +392,7 @@ function parseTreeSummary(line: string): TreeSummary {
 async function generateTree(opts: MeasureOptions, treeHome: string): Promise<TreeSummary> {
   const script = resolve(REPO_ROOT, opts.fixturesScript);
   if (!existsSync(script)) throw new Error(`fixtures script not found: ${script}`);
-  const result = await mustRun("deno", [
-    ...denoRun(REPO_ROOT),
-    "-P=test",
+  const result = await mustRun("bun", [
     script,
     "--out",
     treeHome,
@@ -497,10 +474,7 @@ function treeDigest(root: string): string {
 
 /** Whether the checkout's `cost` command knows NO_INDEX_FLAG; a failing --help is an error. */
 async function supportsNoIndex(dir: string, env: Record<string, string>): Promise<boolean> {
-  const help = await mustRun("deno", [...denoRun(dir), "-P=cli", "src/cli.ts", "cost", "--help"], {
-    cwd: dir,
-    env,
-  });
+  const help = await mustRun("bun", ["run", "src/cli.ts", "cost", "--help"], { cwd: dir, env });
   return help.stdout.includes(NO_INDEX_FLAG);
 }
 
@@ -515,10 +489,7 @@ async function measure(
   env: Record<string, string>,
 ): Promise<Measurement> {
   const started = performance.now();
-  const result = await mustRun("deno", [...denoRun(checkout.dir), ...COST_ARGS, ...args], {
-    cwd: checkout.dir,
-    env,
-  });
+  const result = await mustRun("bun", [...COST_ARGS, ...args], { cwd: checkout.dir, env });
   const ms = Math.round(performance.now() - started);
   if (result.stdout.trim() === "") {
     throw new Error(`${checkout.label}: cost --json printed nothing\n${result.stderr.trimEnd()}`);
@@ -814,7 +785,7 @@ async function measureWindow(bench: Bench, window: Window): Promise<WindowResult
 
   // Untimed priming of BOTH checkouts in throwaway homes: the timed runs then find the tree
   // in the OS file cache and each checkout's modules already emitted, so neither side pays
-  // for the disk or for deno's first-run work.
+  // for the disk or for bun's first-run transpile.
   console.log(`${window.label}: priming`);
   await measure(base, window.args, env(bench.freshHome("prime-base")));
   await measure(head, window.args, env(bench.freshHome("prime-head")));
@@ -994,9 +965,8 @@ async function runMeasure(opts: MeasureOptions): Promise<void> {
   try {
     const baseSha = await resolveCommit(opts.base);
     const measuredSha = (await git(["rev-parse", "HEAD"])).stdout.trim();
-    const cache = await denoDir();
-
     const scratch = mkdtempSync(join(tmpdir(), "cost-metrics-"));
+    const cache = join(scratch, "transpiler-cache");
     teardown.push({
       what: "remove scratch",
       run: () => rmSync(scratch, { recursive: true, force: true }),
@@ -1014,7 +984,7 @@ async function runMeasure(opts: MeasureOptions): Promise<void> {
         await git(["worktree", "remove", "--force", baseDir]);
       },
     });
-    await mustRun("deno", ["ci"], { cwd: baseDir, env: setupEnv() });
+    await mustRun("bun", ["install", "--frozen-lockfile"], { cwd: baseDir, env: setupEnv() });
 
     console.log(`generating a ${opts.mb} MB tree (seed ${opts.seed}) into ${treeHome}`);
     const tree = await generateTree(opts, treeHome);

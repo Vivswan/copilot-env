@@ -2,13 +2,13 @@
 // script the moment one is added. A missing tool is a no-op with a hint, so commits on machines
 // without it still go through.
 //
-//   deno task lint:sh -> shellcheck
-//   deno task lint:ps -> PSScriptAnalyzer; severity and rule exclusions live in
-//                        PSScriptAnalyzerSettings.psd1
-import { relative, resolve } from "node:path";
+//   bun run lint:sh -> shellcheck
+//   bun run lint:ps -> PSScriptAnalyzer; severity and rule exclusions live in
+//                      PSScriptAnalyzerSettings.psd1
+import { spawnSync } from "node:child_process";
+import { type Dirent, readdirSync } from "node:fs";
+import { join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { walkSync } from "@std/fs/walk";
-import { escapeRegExp } from "../src/utils/regexp.ts";
 
 export type LintKind = "sh" | "ps";
 
@@ -23,45 +23,51 @@ const DISCOVERY: Record<LintKind, { suffixes: string[]; always: string[] }> = {
   ps: { suffixes: [".ps1"], always: [] },
 };
 
-/** The walk's `skip` pattern: a directory whose path below `root` ends in an excluded name,
- *  either separator (the walk spells Windows paths with backslashes). Anchored under the
- *  resolved root because the walk judges the root itself by the same pattern, and a checkout
- *  named `node_modules` must still be linted. */
-function excludedDirs(root: string): RegExp {
-  const sep = "[\\\\/]";
-  const names = EXCLUDED_DIR_NAMES.map((name) => escapeRegExp(name).replace("/", sep)).join("|");
-  return new RegExp(`^${escapeRegExp(root)}${sep}(.*${sep})?(${names})$`, "i");
+/** Whether the directory at the root-relative posix path `rel` is excluded: its path ends in
+ *  one of the names. Judged below the root only, so a checkout named `node_modules` is still
+ *  linted. */
+function excludedDir(rel: string): boolean {
+  const lower = rel.toLowerCase();
+  return EXCLUDED_DIR_NAMES.some((name) => lower === name || lower.endsWith(`/${name}`));
 }
 
 /** Regular files (never symlinks, FIFOs or sockets) under `root` as sorted repo-relative posix
- *  paths. `skip` prunes excluded directories before the walk enters them (node's recursive
- *  readdir has no prune and walks node_modules whole; its glob skips dotfiles). Suffixes match
+ *  paths. Excluded directories are pruned before the walk enters them (node's recursive readdir
+ *  has no prune and walks node_modules whole; Bun.Glob skips dotfiles). Suffixes match
  *  case-insensitively, as Windows filesystems do. Exported for test/shell/lint_shell.test.ts. */
 export function discoverLintTargets(root: string, kind: LintKind): string[] {
   const { suffixes, always } = DISCOVERY[kind];
-  // Resolved once: the walk spells entry paths from the root it is given, and the pattern must
-  // match them, so a relative `.` or a forward-slash Windows root would otherwise never prune.
   const base = resolve(root);
-  const walk = walkSync(base, {
-    includeDirs: false,
-    includeSymlinks: false,
-    skip: [excludedDirs(base)],
-  });
-  const found = [...walk]
-    .filter((entry) => entry.isFile && suffixes.some((s) => entry.name.toLowerCase().endsWith(s)))
-    .map((entry) => relative(base, entry.path).replaceAll("\\", "/"));
+  const found: string[] = [];
+  const walk = (dir: string): void => {
+    let entries: Dirent[];
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const path = join(dir, entry.name);
+      const rel = relative(base, path).replaceAll("\\", "/");
+      if (entry.isDirectory()) {
+        if (!excludedDir(rel)) walk(path);
+      } else if (entry.isFile() && suffixes.some((s) => entry.name.toLowerCase().endsWith(s))) {
+        found.push(rel);
+      }
+    }
+  };
+  walk(base);
   return [...found, ...always].sort();
 }
 
-/** The tool's exit code, or null when the tool is not installed (spawn NotFound). */
+/** The tool's exit code, or null when the tool is not installed (spawn ENOENT). */
 function runTool(command: string, args: string[], cwd: string): number | null {
-  try {
-    return new Deno.Command(command, { args, cwd, stdout: "inherit", stderr: "inherit" })
-      .outputSync().code;
-  } catch (error) {
-    if (error instanceof Deno.errors.NotFound) return null;
-    throw error;
+  const result = spawnSync(command, args, { cwd, stdio: "inherit" });
+  if (result.error !== undefined) {
+    if ((result.error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw result.error;
   }
+  return result.status ?? 1;
 }
 
 function lintShell(root: string): number {
@@ -104,9 +110,9 @@ function lintPowerShell(root: string): number {
 
 if (import.meta.main) {
   const root = fileURLToPath(new URL("..", import.meta.url));
-  const kind = Deno.args[0];
-  if (kind === "sh") Deno.exit(lintShell(root));
-  if (kind === "ps") Deno.exit(lintPowerShell(root));
+  const kind = process.argv[2];
+  if (kind === "sh") process.exit(lintShell(root));
+  if (kind === "ps") process.exit(lintPowerShell(root));
   console.error("usage: lint_shell.ts sh|ps");
-  Deno.exit(2);
+  process.exit(2);
 }

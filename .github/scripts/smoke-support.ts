@@ -1,6 +1,7 @@
 // Shared by the two daemon smokes (lifecycle-smoke.ts, floated-smoke.ts): the
-// disposable-HOME guard, the `::error::` failure exit, and the `agent` CLI spawn
-// under the production permission set.
+// disposable-HOME guard, the `::error::` failure exit, and the `agent` CLI spawn.
+import { spawnSync } from "node:child_process";
+import { writeSync } from "node:fs";
 import { isFile } from "../../src/utils/fs.ts";
 
 /** The files whose presence marks a container: docker's and podman's. */
@@ -22,24 +23,30 @@ export function homeIsDisposable(
  *  mutate (or float a real proxy into) whatever HOME they run in. `dockerFlag` names
  *  the test:docker mode that gives a developer machine a throwaway HOME. */
 export function requireDisposableHome(script: string, what: string, dockerFlag: string): void {
-  if (homeIsDisposable(Deno.env.get("GITHUB_ACTIONS"), isFile)) return;
+  if (homeIsDisposable(process.env.GITHUB_ACTIONS, isFile)) return;
   console.error(
-    `::error::${script} ${what} the HOME it runs in; use 'deno task test:docker ${dockerFlag}' on a developer machine`,
+    `::error::${script} ${what} the HOME it runs in; use 'bun run test:docker ${dockerFlag}' on a developer machine`,
   );
-  Deno.exit(1);
+  process.exit(1);
 }
 
-/** The OS name for the smoke's messages: the runner's label in CI, deno's elsewhere. */
+/** The OS name for the smoke's messages: the runner's label in CI, the platform elsewhere. */
 export function runnerOs(): string {
-  return Deno.env.get("RUNNER_OS") ?? Deno.build.os;
+  return process.env.RUNNER_OS ?? process.platform;
 }
 
 export function fail(message: string): never {
   console.error(`::error::${message}`);
-  Deno.exit(1);
+  process.exit(1);
 }
 
 type Stream = "inherit" | "piped" | "null";
+
+const STDIO: Record<Stream, "inherit" | "pipe" | "ignore"> = {
+  inherit: "inherit",
+  piped: "pipe",
+  null: "ignore",
+};
 
 export interface CliResult {
   code: number;
@@ -48,22 +55,20 @@ export interface CliResult {
   stderr: string;
 }
 
-/** `deno run -P=cli src/cli.ts <args>`: the set production runs under (bin/agent uses
- *  it), NOT the broader test set, so a permission the CLI needs and the set forgets
- *  fails in the smoke. Each stream is inherited unless the caller pipes or drops it. */
+/** `bun run src/cli.ts <args>`, the checkout launcher's own spawn (bin/agent), `bun` resolved
+ *  by NAME through PATH. Each stream is inherited unless the caller pipes or drops it. */
 export function cli(args: string[], io: { stdout?: Stream; stderr?: Stream } = {}): CliResult {
   const stdout = io.stdout ?? "inherit";
   const stderr = io.stderr ?? "inherit";
-  const out = new Deno.Command("deno", {
-    args: ["run", "-P=cli", "src/cli.ts", ...args],
-    stdout,
-    stderr,
-  }).outputSync();
-  const decoder = new TextDecoder();
+  const out = spawnSync("bun", ["run", "src/cli.ts", ...args], {
+    stdio: ["inherit", STDIO[stdout], STDIO[stderr]],
+    encoding: "utf8",
+  });
+  if (out.error !== undefined) throw out.error;
   return {
-    code: out.code,
-    stdout: stdout === "piped" ? decoder.decode(out.stdout) : "",
-    stderr: stderr === "piped" ? decoder.decode(out.stderr) : "",
+    code: out.status ?? 1,
+    stdout: stdout === "piped" ? out.stdout : "",
+    stderr: stderr === "piped" ? out.stderr : "",
   };
 }
 
@@ -72,8 +77,8 @@ export function cli(args: string[], io: { stdout?: Stream; stderr?: Stream } = {
 export function cliOrExit(args: string[], io: { stdout?: Stream } = {}): string {
   const result = cli(args, io);
   if (result.code !== 0) {
-    Deno.stdout.writeSync(new TextEncoder().encode(result.stdout));
-    Deno.exit(result.code);
+    writeSync(1, result.stdout);
+    process.exit(result.code);
   }
   return result.stdout;
 }

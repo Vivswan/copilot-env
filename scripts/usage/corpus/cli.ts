@@ -9,21 +9,21 @@ interface Args {
 }
 
 function usage(): string {
-  return `Usage: deno task usage:corpus -- --out <dir> [--real]
+  return `Usage: bun run usage:corpus --out <dir> [--real]
 
 Runs the installed claude and codex CLIs (both required) through five scripted turns each
 against the fake inference backend, under a throwaway HOME kept at <dir>/home, then writes
 scrubbed copies to <dir>/claude/projects and <dir>/codex/sessions. The last stdout line is
 one JSON object with at least {"files":N,"lines":N,"usageLines":{"claude":N,"codex":N}};
-everything else goes to stderr (deno's own task banner echoes the argv; 'deno task --quiet'
-silences it). <dir> must not exist yet or must be empty. --real skips the fake and uses the
+everything else goes to stderr (bun's own run banner included; 'bun run --silent' drops it).
+<dir> must not exist yet or must be empty. --real skips the fake and uses the
 credentials the environment already has: it SPENDS REAL TOKENS.`;
 }
 
 export function die(message: string): never {
   console.error(`usage_corpus: ${message}`);
   console.error(usage());
-  Deno.exit(2);
+  process.exit(2);
 }
 
 export function parseArgs(argv: string[]): Args {
@@ -31,14 +31,14 @@ export function parseArgs(argv: string[]): Args {
   let real = false;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
-    if (arg === "--") continue; // `deno task x -- --out d` forwards the separator itself
+    if (arg === "--") continue; // `bun run x -- --out d` forwards the separator itself
     if (arg === "--out") {
       out = argv[++i];
       if (out === undefined) die("--out needs a directory");
     } else if (arg === "--real") real = true;
     else if (arg === "--help" || arg === "-h") {
       console.log(usage());
-      Deno.exit(0);
+      process.exit(0);
     } else die("unknown argument (only --out <dir>, --real and --help are accepted)");
   }
   if (out === undefined) die("--out is required");

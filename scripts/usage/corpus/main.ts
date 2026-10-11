@@ -60,12 +60,12 @@ function stripLogins(home: string): string[] {
   return failures;
 }
 
-function terminationSignals(): Deno.Signal[] {
-  return Deno.build.os === "windows" ? ["SIGINT", "SIGBREAK"] : ["SIGINT", "SIGTERM"];
+function terminationSignals(): NodeJS.Signals[] {
+  return process.platform === "win32" ? ["SIGINT", "SIGBREAK"] : ["SIGINT", "SIGTERM"];
 }
 
 export async function main(): Promise<void> {
-  const args = parseArgs(Deno.args);
+  const args = parseArgs(process.argv.slice(2));
   ensureEmptyOut(args.out);
   const failures: string[] = [];
   const trace: TracedRequest[] = [];
@@ -98,7 +98,7 @@ export async function main(): Promise<void> {
       // One line, last on stdout: the consumer reads it with `tail -n 1 | jq`.
       console.log(JSON.stringify(summary));
     }
-    Deno.exit(failures.length > 0 && code === 0 ? 1 : code);
+    process.exit(failures.length > 0 && code === 0 ? 1 : code);
   };
   const stop = (label: string): void => {
     failures.push(label);
@@ -112,7 +112,7 @@ export async function main(): Promise<void> {
       finalize(130);
     });
   };
-  for (const signal of signals) Deno.addSignalListener(signal, onSignal);
+  for (const signal of signals) process.on(signal, onSignal);
   // Terminal: the deadline kills everything, prints the one summary line and exits 1.
   const totalTimer = setTimeout(() => {
     failures.push("deadline");
@@ -192,7 +192,7 @@ export async function main(): Promise<void> {
   } finally {
     clearTimeout(totalTimer);
     if (!(await registry.killAll())) failures.push("a CLI child did not exit after the kill");
-    for (const signal of signals) Deno.removeSignalListener(signal, onSignal);
+    for (const signal of signals) process.off(signal, onSignal);
   }
   finalize(0);
 }

@@ -1,7 +1,7 @@
 // `agent cost` over a seeded tree, three ways: every file parsed, a cold index, a warm index.
-// Sized by COPILOT_ENV_USAGE_FIXTURE_MB (30 MiB unset); `deno task bench`.
-import { rmSync } from "node:fs";
+// Sized by COPILOT_ENV_USAGE_FIXTURE_MB (30 MiB unset); `bun run bench`.
 import { join } from "node:path";
+import { bench, run } from "mitata";
 import { tempDir } from "../test/helpers/testing.ts";
 import { generateUsageTree } from "../test/helpers/usage_fixtures.ts";
 import { runCurrentCost } from "../test/helpers/usage_goldens.ts";
@@ -19,18 +19,20 @@ await generateUsageTree({ root, mb: MB, seed: 1 });
 const warmHome = join(homes, "warm");
 await runCurrentCost(root, { copilotApiHome: warmHome });
 
-Deno.bench(`${MB} MiB tree: --no-index`, async () => {
+bench(`${MB} MiB tree: --no-index`, async () => {
   await runCurrentCost(root, { noIndex: true });
 });
 
-Deno.bench(`${MB} MiB tree: cold index`, async (b) => {
-  const home = join(homes, "cold");
-  rmSync(home, { recursive: true, force: true });
-  b.start();
-  await runCurrentCost(root, { copilotApiHome: home });
-  b.end();
+// A home no run has indexed yet, every time: mitata's computed parameters recompute on no
+// promised schedule, so the fresh path is taken inside the timed call (an empty directory's
+// cost is nothing next to the index build).
+let cold = 0;
+bench(`${MB} MiB tree: cold index`, async () => {
+  await runCurrentCost(root, { copilotApiHome: join(homes, "cold", String(cold++)) });
 });
 
-Deno.bench(`${MB} MiB tree: warm index`, { baseline: true }, async () => {
+bench(`${MB} MiB tree: warm index`, async () => {
   await runCurrentCost(root, { copilotApiHome: warmHome });
-});
+}).baseline(true);
+
+await run();

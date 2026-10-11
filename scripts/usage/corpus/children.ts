@@ -100,7 +100,7 @@ class ChildRegistry {
       env: opts.env,
       cwd: opts.cwd,
       stdio: ["ignore", "pipe", "pipe"],
-      detached: Deno.build.os !== "windows",
+      detached: process.platform !== "win32",
       windowsHide: true,
     });
     this.live.add(child);
@@ -112,7 +112,7 @@ class ChildRegistry {
   /** Signal the whole tree rooted at `pid` (the process group on POSIX). True when the signal
    *  landed or nothing was left to signal; false when the tree may still be there. */
   signalTree(pid: number): boolean {
-    if (Deno.build.os === "windows") {
+    if (process.platform === "win32") {
       // Bounded like the close wait; exit 128 is taskkill's "no such process".
       const result = spawnSync("taskkill", ["/pid", String(pid), "/t", "/f"], {
         stdio: "ignore",

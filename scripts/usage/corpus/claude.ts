@@ -50,7 +50,7 @@ export async function recordClaude(
     // --real: a file-backed login lives in the (possibly overridden) config dir, so carry it
     // into the throwaway one.
     const credentials = join(
-      Deno.env.get("CLAUDE_CONFIG_DIR") ?? join(homedir(), ".claude"),
+      process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"),
       ".credentials.json",
     );
     if (existsSync(credentials)) {

@@ -1,6 +1,6 @@
 // Measure this machine's Codex and Claude session logs, read-only, into the DISTRIBUTIONS the
 // generator (test/helpers/usage_fixtures.ts) samples from: quantile tables, shares and schema
-// words only, never text, ids or paths. Invoked as `deno task usage:profile --out FILE`.
+// words only, never text, ids or paths. Invoked as `bun run usage:profile --out FILE`.
 //
 // The output is personal data (one machine's usage fingerprint), so `--out` is required and
 // must point outside the repository: a path inside this checkout is refused before any log is
@@ -56,7 +56,7 @@ const CLAUDE_MAX_DEPTH = 8;
 const REPO_ROOT = realpathSync(fileURLToPath(new URL("../..", import.meta.url)));
 
 function usage(): string {
-  return `Usage: deno task usage:profile --out FILE [--seed N]
+  return `Usage: bun run usage:profile --out FILE [--seed N]
 
 Walks the Codex session roots (sessions/, archived_sessions/ under every known
 Codex home) and the Claude transcript root (<claude-home>/projects) read-only
@@ -67,7 +67,7 @@ repository; a path inside this checkout is refused.`;
 
 function die(message: string): never {
   console.error(message);
-  Deno.exit(1);
+  process.exit(1);
 }
 
 interface Args {
@@ -106,7 +106,7 @@ function parseArgs(argv: string[]): Args {
     const arg = argv[i];
     if (arg === "--help" || arg === "-h") {
       console.log(usage());
-      Deno.exit(0);
+      process.exit(0);
     }
     const value = argv[i + 1];
     if (arg === "--out" && value !== undefined) {
@@ -621,7 +621,7 @@ async function profileClaudeFile(
 // ---------- main ----------
 
 async function main(): Promise<void> {
-  const args = parseArgs(Deno.args);
+  const args = parseArgs(process.argv.slice(2));
   const rng = mulberry32(args.seed);
   const accs: Record<UsageSource, SourceAccumulator> = {
     codex: new SourceAccumulator(rng),

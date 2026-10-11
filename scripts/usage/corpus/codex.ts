@@ -58,7 +58,7 @@ export async function recordCodex(
   if (baseUrl !== null) {
     writeFile(join(codexHome, "config.toml"), codexConfigToml(baseUrl));
   } else {
-    const auth = join(Deno.env.get("CODEX_HOME") ?? join(homedir(), ".codex"), "auth.json");
+    const auth = join(process.env.CODEX_HOME ?? join(homedir(), ".codex"), "auth.json");
     if (existsSync(auth)) {
       copyFileSync(auth, join(codexHome, "auth.json"));
       ledger.written.push("home/.codex/auth.json");

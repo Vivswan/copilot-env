@@ -10,12 +10,11 @@ description: >-
   so the latest release is the one under test.
 
   Its three callers, which therefore share one install:
-    - checks.yml `check`, the matrix test job (COPILOT_ENV_LIVE_CLIS)
-    - checks.yml `session-log-drift` (COPILOT_ENV_LIVE_CORPUS)
-    - nightly.yml `checks` (COPILOT_ENV_LIVE_CLIS)
-
-  checks.yml `codex-catalog-drift` does not use it: it needs Codex alone and
-  installs that package with a plain `npm install -g`.
+    - checks.yml `check`, the matrix test job (the installed Codex starts a
+      writer-produced profile)
+    - release-gate.yml `live-clis` (COPILOT_ENV_LIVE_CLIS, COPILOT_ENV_LIVE_CODEX,
+      COPILOT_ENV_LIVE_CORPUS)
+    - release-gate.yml `session-log-corpus`
 
   Each CLI is installed globally and then run with `--version`. One that does
   not run is uninstalled and installed once more. A second failure fails the

@@ -8,20 +8,17 @@ import {
   isCodexUsageLine,
   scrubJsonl,
 } from "../../scripts/usage/corpus/scrub.ts";
+import { isRecord } from "../../src/utils/json.ts";
 import { agentHomeEnv } from "../helpers/env.ts";
 import { ROOT, runCli, runScript } from "../helpers/run.ts";
 import { describe, expect, tempDir, test } from "../helpers/testing.ts";
 
 type Json = Record<string, unknown>;
 
-function isJson(value: unknown): value is Json {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function field(obj: unknown, ...path: string[]): unknown {
   let current: unknown = obj;
   for (const key of path) {
-    if (!isJson(current)) return undefined;
+    if (!isRecord(current)) return undefined;
     current = current[key];
   }
   return current;
@@ -213,9 +210,9 @@ describe("usage corpus scrub", () => {
 });
 
 // The recorder runs the real CLIs through five turns each with a minute-boundary wait, so it is
-// its own opt-in: COPILOT_ENV_LIVE_CORPUS, set by the session-log-drift job in checks.yml (the
-// job that owns the corpus), never by the matrix legs. Opted in, a missing CLI is a failure the
-// driver names ("<cli> is not on PATH"), never a skip.
+// its own opt-in: COPILOT_ENV_LIVE_CORPUS, set by the release gate's live-clis job on its Linux
+// leg (release-gate.yml), never by checks.yml. Opted in, a missing CLI is a failure the driver
+// names ("<cli> is not on PATH"), never a skip.
 const LIVE_CORPUS_ENV = "COPILOT_ENV_LIVE_CORPUS";
 const LIVE_CORPUS = Boolean(process.env[LIVE_CORPUS_ENV]);
 

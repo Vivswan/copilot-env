@@ -5,6 +5,10 @@
 #   jobs get no secrets, at most `contents: read`  -> a check needing either has its own workflow
 #   all-green sees only the aggregate              -> a job skipped by its own `if:` does not
 #                                                     fail the gate
+#
+# These run on every PR and push to main. The slow, environment-heavy, and network-bound jobs
+# are the release gate (release-gate.yml), which ci.yml calls on the release PR and a dispatch
+# and nightly.yml calls on the schedule. Never call release-gate.yml from here.
 
 name: Checks
 
@@ -19,9 +23,9 @@ jobs:
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     # Backstop for the steps with no ceiling of their own (checkout, setup, deno ci, the lints).
-    # Five minutes above the step ceilings summed with a normal setup (2 + 20 + 25 + 3 = 50), so
+    # Five minutes above the step ceilings summed with a normal setup (2 + 20 + 3 = 25), so
     # unless setup itself runs long a hung step hits its own ceiling first and its log is kept.
-    timeout-minutes: 55
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -37,9 +41,9 @@ jobs:
       - name: Install dependencies
         run: deno ci
 
-      # The real claude and codex CLIs run against the fake model endpoint
-      # (test/helpers/fake_model_endpoint.ts) inside the suite; the opt-in below makes a missing
-      # binary a failure there, never a skip. Same install as the nightly (nightly.yml).
+      # The suite's one use of a real CLI here: test/codex/codex_profile_wiring.test.ts starts the
+      # installed Codex on a writer-produced named profile (its contract since profile v1 went).
+      # The live-CLI files skip without their opt-ins; the release gate sets those. Same install.
       - uses: ./.github/actions/install-agent-clis
 
       - name: Typecheck
@@ -54,18 +58,7 @@ jobs:
       # legs). The lifecycle smoke's 3 is a floor: it runs under a minute everywhere.
       - name: Test
         timeout-minutes: 20
-        env:
-          COPILOT_ENV_LIVE_CLIS: "1"
         run: deno task test
-
-      # The usage-index perf test and the goldens' extra run again over a large seeded tree
-      # (the Windows runner's disk is slower, so it gets a smaller one). Only these two files:
-      # the generator's own tests read the same knob and hold whole trees in memory.
-      - name: Usage index on a large tree
-        timeout-minutes: 25
-        env:
-          COPILOT_ENV_USAGE_FIXTURE_MB: ${{ runner.os == 'Windows' && '100' || '1024' }}
-        run: deno test -P=test test/usage/usage_index_perf.test.ts test/usage/usage_golden.test.ts
 
       # .github/scripts/lifecycle-smoke.ts against the fake proxy, so no Copilot auth is needed.
       - name: Start/stop + health lifecycle (fake proxy)
@@ -90,174 +83,6 @@ jobs:
           Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
           Install-Module PSScriptAnalyzer -Force -Scope CurrentUser -SkipPublisherCheck
           deno task lint:ps
-
-  # Not redundant with the matrix: the container is where the throwaway HOME comes from, so this
-  # is the only run proving the suite is hermetic. Never path-gated: it IS the suite.
-  #
-  #   test-container    -> --network=none, the real proxy from the warmed cache; any network reach fails loudly
-  #   floated-lifecycle -> networked, the real proxy from the live registry; asserts only up to auth
-  test-container:
-    name: container suite (hermetic HOME)
-    runs-on: ubuntu-latest
-    # Dominated by the cold image build; the suite itself runs in well under a
-    # minute once the image exists.
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
-        with:
-          deno-version-file: .dvmrc
-          cache: true
-
-      # docker is preinstalled on ubuntu runners; the task prefers podman and
-      # falls back, so no engine selection is needed here.
-      - name: Run the suite in a container
-        run: deno task test:docker
-
-  # Codex parses the generated model catalog strictly, so a field a new Codex requires
-  # is a startup error: generate against the CURRENT CLI release (its own dump plus a
-  # fixture Copilot body, no token) and make it parse the result and reject a broken one.
-  codex-catalog-drift:
-    name: Codex model catalog schema drift (current Codex CLI)
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
-        with:
-          deno-version-file: .dvmrc
-          cache: true
-
-      - name: Install dependencies
-        run: deno ci
-
-      - name: Install the current Codex CLI release
-        run: npm install -g @openai/codex
-
-      - name: Generate from the installed Codex's dump and prove it accepts the result (and rejects a broken one)
-        env:
-          COPILOT_ENV_LIVE_CODEX: "1"
-        run: deno test -P=test test/codex/codex_catalog_live.test.ts
-
-      # The named-profile layout is Codex's contract too (profile v1 was removed in 0.134): the
-      # installed CLI must start `--profile <name>` on what the writer produces.
-      - name: Prove the installed Codex starts a writer-produced named profile
-        run: deno test -P=test test/codex/codex_profile_wiring.test.ts
-
-  # The one job that floats the REAL proxy against the live registry and runs the daemon to auth.
-  # It asserts up to auth, not through a lifecycle: there is no credential here.
-  #
-  #   matrix lifecycle smoke -> the fake (COPILOT_API_ENTRY)                -> start/stop + health
-  #   test-container         -> the real proxy, offline from the warmed cache -> the suite is hermetic
-  #   floated-lifecycle      -> the real proxy, live registry                -> the float and spawn reach auth
-  floated-lifecycle:
-    name: floated lifecycle (real proxy)
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-
-      # Bounded cost: only the change classes that can plausibly break the float or the daemon
-      # spawn are worth a live-registry run. The token is empty on purpose: the all-green caller
-      # grants contents: read only, so the action diffs the full-history checkout above with git
-      # instead of asking the pull-request API.
-      - name: Decide whether this change can affect the floated spawn
-        id: scope
-        if: github.event_name == 'pull_request'
-        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
-        with:
-          token: ""
-          base: ${{ github.event.pull_request.base.sha }}
-          filters: |
-            float:
-              - deno.json
-              - deno.lock
-              - copilot-env.config
-              - src/proxy_float.ts
-              - src/copilot_api/process.ts
-              - src/copilot_api/launch.ts
-              - src/copilot_api/sidecar.ts
-              - src/copilot_api/shims.ts
-              - src/copilot_api/paths.ts
-              - src/scripts/**
-              - .github/scripts/floated-smoke.ts
-              - .github/scripts/lifecycle-smoke.ts
-              - .github/scripts/smoke-support.ts
-              - scripts/test_docker.ts
-
-      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
-        if: github.event_name != 'pull_request' || steps.scope.outputs.float == 'true'
-        with:
-          deno-version-file: .dvmrc
-          cache: true
-
-      - name: Install dependencies
-        if: github.event_name != 'pull_request' || steps.scope.outputs.float == 'true'
-        run: deno ci
-
-      # No COPILOT_API_ENTRY: `agent start` resolves and runs the real proxy.
-      # The runner's HOME is disposable, which is what the smoke's guard wants.
-      - name: Float the proxy and assert the daemon reaches auth
-        if: github.event_name != 'pull_request' || steps.scope.outputs.float == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: deno run --allow-env --allow-read --allow-run=deno .github/scripts/floated-smoke.ts
-
-  # The session-log readers parse what the REAL Claude Code and Codex CLIs write
-  # today, so this is the one job that can catch a log-format drift: it installs
-  # the current CLI releases, drives them against a fake inference backend under
-  # a throwaway HOME (scripts/usage/corpus.ts over scripts/usage/corpus/), then
-  # asserts `agent cost` still sees usage from both.
-  session-log-drift:
-    name: session-log format drift smoke (real CLIs, fake backend)
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
-        with:
-          deno-version-file: .dvmrc
-          cache: true
-
-      - name: Install dependencies
-        run: deno ci
-
-      - uses: ./.github/actions/install-agent-clis
-
-      # The recorder's own end-to-end test runs HERE only (COPILOT_ENV_LIVE_CORPUS is this job's
-      # opt-in): five turns per CLI plus a minute-boundary wait is this job's cost, not the
-      # matrix legs'.
-      - name: Recorder end to end (real CLIs, fake backend)
-        env:
-          COPILOT_ENV_LIVE_CORPUS: "1"
-        run: deno test -P=test test/usage/usage_corpus.test.ts
-
-      # The corpus task prints one JSON summary line last and leaves a runnable
-      # HOME at <out>/home. HOME moves for the `agent cost` run so nothing on the
-      # runner leaks in; DENO_DIR is pinned first so the moved HOME does not also
-      # move the dependency cache `deno ci` just filled.
-      - name: Session-log format drift smoke (real CLIs, fake backend)
-        shell: bash
-        env:
-          OUT: ${{ runner.temp }}/usage-corpus
-        run: |
-          set -euo pipefail
-          summary="$(deno task usage:corpus -- --out "$OUT" | tail -n 1)"
-          echo "corpus summary: $summary"
-          printf '%s\n' "$summary" | jq -e '.usageLines.claude > 0 and .usageLines.codex > 0'
-          DENO_DIR="$(deno info --json | jq -r .denoDir)"
-          export DENO_DIR
-          HOME="$OUT/home" CODEX_HOME="$OUT/home/.codex" CLAUDE_CONFIG_DIR="$OUT/home/.claude" \
-            deno run -P=cli src/cli.ts cost --json --days 7 \
-            | jq -e '([.claudeSessions.usageByModel[].events] | add // 0) > 0
-                     and ([.codexSessions.providers[] | .usageByModel[].events] | add // 0) > 0'
 
   # Each install.sh scenario runs as its OWN isolated job (fresh runner, fresh
   # $HOME) via the reusable installer-sh.yml, which compiles this tree's binary

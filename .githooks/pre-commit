@@ -1,7 +1,8 @@
 #!/bin/sh
-# Wired by scripts/setup-env.sh (.ps1 on Windows) through core.hooksPath. Bun's own checks only;
-# the shell linters (shellcheck, PSScriptAnalyzer) are separately installed tools, so the `check`
-# job in .github/workflows/checks.yml runs those.
+# Wired by scripts/setup-env.sh (.ps1 on Windows) through core.hooksPath. Bun's own checks only,
+# and only the unit tests: the *.e2e.test.ts files spawn processes and set up home-shaped
+# sandboxes, so they run in CI (the `check` job in .github/workflows/checks.yml), which also runs
+# the shell linters (shellcheck, PSScriptAnalyzer), separately installed tools.
 #
 # A hook installs nothing: a missing bun or node_modules fails here, naming the one-time
 # bootstrap, instead of being fetched by the first task.
@@ -19,5 +20,5 @@ if [ ! -d node_modules ]; then
     exit 1
 fi
 bun run typecheck
-bun run test
 bun run lint
+bun run test:unit

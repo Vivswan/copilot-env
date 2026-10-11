@@ -19,7 +19,7 @@ bun install --frozen-lockfile
 # A relative hooksPath resolves against each worktree's root.
 git config core.hooksPath .githooks
 
-echo "Done. Try: bun run typecheck && bun run lint && bun run test"
+echo "Done. Try: bun run typecheck && bun run lint && bun run test:unit"
 # Advise only when the CALLER's PATH has no bun: this shell has already run bun, so bash's
 # `command -v` would answer from its hash table, hence the fresh sh with the saved PATH.
 bun_bin="${BUN_INSTALL:-$HOME/.bun}/bin"

@@ -56,7 +56,7 @@ The [docs index](docs/README.md) lists every page by task. Start with [Getting s
 git clone https://github.com/Vivswan/copilot-env.git
 cd copilot-env
 bash scripts/setup-env.sh
-bun run test
+bun run test:unit
 ```
 
 [Development](docs/development.md) covers the tasks and the env init; [CONTRIBUTING.md](CONTRIBUTING.md) covers how to submit a change; [AGENTS.md](AGENTS.md) holds the rules.

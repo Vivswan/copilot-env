@@ -20,7 +20,7 @@ if ($LASTEXITCODE -ne 0) { throw 'bun install failed.' }
 & git config core.hooksPath .githooks
 if ($LASTEXITCODE -ne 0) { throw 'git hooks path setup failed.' }
 
-Write-Host 'Done. Try: bun run typecheck; bun run lint; bun run test'
+Write-Host 'Done. Try: bun run typecheck; bun run lint; bun run test:unit'
 if (-not $callerHasBun) {
     $bunHome = if ($env:BUN_INSTALL) { $env:BUN_INSTALL } else { Join-Path $HOME '.bun' }
     $bunBin = Join-Path $bunHome 'bin'

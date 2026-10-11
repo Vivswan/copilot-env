@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { directHelperCommand, proxyHelperCommand } from "../../src/claude/config.ts";
 import type { ProbeFetch } from "../../src/copilot_api/integration_identity.ts";
@@ -1127,13 +1127,26 @@ test("cli.ts cost prices at the stored pricing-url when the flag is omitted and 
   await loadPricing(storedUrl, { ...seed, fetchImpl: priced("0.000015") });
   await loadPricing(flagUrl, { ...seed, fetchImpl: priced("0.000115") });
 
-  const totalUsdOf = (...flags: string[]): number => {
+  // The total, with what the child said and the cache files that exist after its run as the
+  // failure message: a wrong total alone names nothing.
+  const expectTotalUsd = (expected: number, ...flags: string[]): void => {
     const proc = runCli(["cost", "--json", "--no-index", ...flags], { env });
-    expect(proc.exitCode).toBe(0);
-    return JSON.parse(proc.stdout).claudeSessions.totalUsd;
+    const said = `stdout: ${proc.stdout}\nstderr: ${proc.stderr}\ncache files: ${readdirSync(
+      seed.cacheDir,
+    )
+      .sort()
+      .join(", ")}`;
+    expect(proc.exitCode, said).toBe(0);
+    let payload: { claudeSessions: { totalUsd: number } };
+    try {
+      payload = JSON.parse(proc.stdout);
+    } catch (cause) {
+      throw new Error(`cost --json printed no JSON (${String(cause)})\n${said}`);
+    }
+    expect(payload.claudeSessions.totalUsd, said).toBe(expected);
   };
   // 10 in at $15/M + 20 out at $75/M from the stored URL's cache ...
-  expect(totalUsdOf()).toBe(0.0017);
+  expectTotalUsd(0.0017);
   // ... and 10 in at $115/M + the same output from the flag's.
-  expect(totalUsdOf("--pricing-url", flagUrl)).toBe(0.0027);
+  expectTotalUsd(0.0027, "--pricing-url", flagUrl);
 });

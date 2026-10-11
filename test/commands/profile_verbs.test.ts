@@ -282,7 +282,8 @@ test("add and del ask before a change: a script without --yes is refused, --yes 
   const change = observe(["profile", "work", "add", "--direct"], scratch);
   expect(change.exitCode).toBe(1);
   expect(change.stderr).toContain("pass --yes to switch the mode");
-  expect(observe(["profile", "work", "add", "--direct", "--dry-run"], scratch).exitCode).toBe(0);
+  const planned = observe(["profile", "work", "add", "--direct", "--dry-run"], scratch);
+  expect(planned.exitCode, planned.stderr).toBe(0);
   // del always asks.
   const del = observe(["profile", "work", "del"], scratch);
   expect(del.exitCode).toBe(1);

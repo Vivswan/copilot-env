@@ -23,9 +23,8 @@ bench(`${MB} MiB tree: --no-index`, async () => {
   await runCurrentCost(root, { noIndex: true });
 });
 
-// A home no run has indexed yet, every time: mitata's computed parameters recompute on no
-// promised schedule, so the fresh path is taken inside the timed call (an empty directory's
-// cost is nothing next to the index build).
+// A fresh home per call, inside the timed body: mitata's computed parameters promise no
+// per-call recompute, and a reused home would time a warm index.
 let cold = 0;
 bench(`${MB} MiB tree: cold index`, async () => {
   await runCurrentCost(root, { copilotApiHome: join(homes, "cold", String(cold++)) });

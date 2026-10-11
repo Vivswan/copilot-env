@@ -68,9 +68,9 @@ function Install-CopilotEnvBun {
         # The official installer with its side effects switched off: PATH is bin/agent.ps1's and
         # shell/agents.ps1's job, and it registers no uninstaller and installs no completions. It
         # writes only under $bunHome. Its failures are printed, not exit codes, so the installed
-        # file is checked below.
-        $installArgs = @('-NoPathUpdate', '-NoRegisterInstallation', '-NoCompletions')
-        if ($want) { $installArgs += @('-Version', $want) }
+        # file is checked below. A hashtable splat: an array splat binds positionally.
+        $installArgs = @{ NoPathUpdate = $true; NoRegisterInstallation = $true; NoCompletions = $true }
+        if ($want) { $installArgs.Version = $want }
         & $script @installArgs | ForEach-Object { [Console]::Error.WriteLine($_) }
     } finally {
         Remove-Item $scratch -Recurse -Force -ErrorAction SilentlyContinue

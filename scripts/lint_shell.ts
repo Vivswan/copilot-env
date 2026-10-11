@@ -6,7 +6,7 @@
 //   bun run lint:ps -> PSScriptAnalyzer; severity and rule exclusions live in
 //                      PSScriptAnalyzerSettings.psd1
 import { spawnSync } from "node:child_process";
-import { type Dirent, readdirSync } from "node:fs";
+import { readdirSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -33,20 +33,16 @@ function excludedDir(rel: string): boolean {
 
 /** Regular files (never symlinks, FIFOs or sockets) under `root` as sorted repo-relative posix
  *  paths. Excluded directories are pruned before the walk enters them (node's recursive readdir
- *  has no prune and walks node_modules whole; Bun.Glob skips dotfiles). Suffixes match
- *  case-insensitively, as Windows filesystems do. Exported for test/shell/lint_shell.test.ts. */
+ *  has no prune and walks node_modules whole; the glob APIs skip dot directories, and
+ *  `.husky/pre-commit.sh` is linted). An unreadable directory throws: a skipped one would read as
+ *  "nothing there". Suffixes match case-insensitively, as Windows filesystems do. Exported for
+ *  test/shell/lint_shell.test.ts. */
 export function discoverLintTargets(root: string, kind: LintKind): string[] {
   const { suffixes, always } = DISCOVERY[kind];
   const base = resolve(root);
   const found: string[] = [];
   const walk = (dir: string): void => {
-    let entries: Dirent[];
-    try {
-      entries = readdirSync(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const entry of entries) {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const path = join(dir, entry.name);
       const rel = relative(base, path).replaceAll("\\", "/");
       if (entry.isDirectory()) {

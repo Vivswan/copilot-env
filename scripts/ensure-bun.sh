@@ -34,7 +34,10 @@ ensure_bun() {
     _copilot_env_quiet="${2:-}"
     _copilot_env_bun_bin="${BUN_INSTALL:-$HOME/.bun}/bin"
     # Absent on a checkout the platform sync has not written it to: no pin, the latest installs.
-    _copilot_env_want="$(tr -d '[:space:]' < "${_copilot_env_root}/.bun-version" 2>/dev/null || true)"
+    _copilot_env_want=""
+    if [ -f "${_copilot_env_root}/.bun-version" ]; then
+        _copilot_env_want="$(tr -d '[:space:]' < "${_copilot_env_root}/.bun-version")"
+    fi
 
     # `|| true`: under a caller's `set -e` (setup-env.sh) a bare failed
     # substitution would abort the shell before the install arm could run.

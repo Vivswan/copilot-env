@@ -10,6 +10,7 @@ import { cpSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } fr
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseArgs } from "node:util";
 import { fileSha256 } from "../src/install/checksums.ts";
 import {
   BUNDLED_ONLY_ASSETS,
@@ -60,34 +61,45 @@ function knownTarget(triple: string): ReleaseTarget {
   return target;
 }
 
-const selected: ReleaseTarget[] = [];
-const args = process.argv.slice(2);
-for (let arg = args.shift(); arg !== undefined; arg = args.shift()) {
-  if (arg === "-h" || arg === "--help") {
-    console.log(usage());
-    process.exit(0);
-  } else if (arg === "--host") {
-    const host = currentReleaseTarget();
-    if (host === null) {
-      die(`no release target for this platform (${process.platform}/${process.arch}).`);
-    }
-    console.log(host.triple);
-    process.exit(0);
-  } else if (arg === "--target") {
-    const triple = args.shift();
-    if (triple === undefined) die("--target needs a target triple argument.");
-    selected.push(knownTarget(triple));
-  } else if (arg.startsWith("--target=")) {
-    selected.push(knownTarget(arg.slice("--target=".length)));
-  } else {
-    die(`unknown argument '${arg}' (try --help)`);
+function parseCli(): { host: boolean; help: boolean; targets: ReleaseTarget[] } {
+  try {
+    const { values } = parseArgs({
+      args: process.argv.slice(2),
+      options: {
+        help: { type: "boolean", short: "h" },
+        host: { type: "boolean" },
+        target: { type: "string", multiple: true },
+      },
+      strict: true,
+      allowPositionals: false,
+    });
+    return {
+      host: values.host === true,
+      help: values.help === true,
+      targets: (values.target ?? []).map(knownTarget),
+    };
+  } catch (error) {
+    die(`${error instanceof Error ? error.message : String(error)} (try --help)`);
   }
 }
-const targets = selected.length > 0 ? selected : [...RELEASE_TARGETS];
 
-/** The embedded tree, copied out at its repository paths; one `--asset` per top-level entry. */
-function stageAssets(): string {
-  const stage = mkdtempSync(join(tmpdir(), "copilot-env-assets-"));
+const cli = parseCli();
+if (cli.help) {
+  console.log(usage());
+  process.exit(0);
+}
+if (cli.host) {
+  const host = currentReleaseTarget();
+  if (host === null) {
+    die(`no release target for this platform (${process.platform}/${process.arch}).`);
+  }
+  console.log(host.triple);
+  process.exit(0);
+}
+const targets = cli.targets.length > 0 ? cli.targets : [...RELEASE_TARGETS];
+
+/** The embedded tree, copied out at its repository paths under `stage`. */
+function stageAssets(stage: string): void {
   for (const dir of MATERIALIZED_ASSET_DIRS) {
     cpSync(join(ROOT, dir), join(stage, dir), { recursive: true });
   }
@@ -95,10 +107,10 @@ function stageAssets(): string {
     mkdirSync(dirname(join(stage, file)), { recursive: true });
     cpSync(join(ROOT, file), join(stage, file));
   }
-  return stage;
 }
 
-function build(target: ReleaseTarget, assetFlags: readonly string[]): void {
+/** The build's exit status. */
+function build(target: ReleaseTarget, assetFlags: readonly string[]): number {
   const out = `${OUT_DIR}/${releaseAssetName(target)}`;
   console.error(`==> bun build --compile --target ${target.bunTarget} -> ${out}`);
   // The deno binary autoloaded nothing from the cwd; a `.env` or bunfig.toml there must not
@@ -114,17 +126,24 @@ function build(target: ReleaseTarget, assetFlags: readonly string[]): void {
     ENTRY,
   ], { cwd: ROOT, stdio: "inherit" });
   if (result.error) throw result.error;
-  if (result.status !== 0) process.exit(result.status ?? 1);
+  return result.status ?? 1;
 }
 
 mkdirSync(join(ROOT, OUT_DIR), { recursive: true });
-const stage = stageAssets();
+// One `--asset` per top-level entry of the stage; the stage goes whatever the builds did.
+const stage = mkdtempSync(join(tmpdir(), "copilot-env-assets-"));
+let status = 0;
 try {
+  stageAssets(stage);
   const assetFlags = readdirSync(stage).sort().map((entry) => `--asset=${join(stage, entry)}`);
-  for (const target of targets) build(target, assetFlags);
+  for (const target of targets) {
+    status = build(target, assetFlags);
+    if (status !== 0) break;
+  }
 } finally {
   rmSync(stage, { recursive: true, force: true });
 }
+if (status !== 0) process.exit(status);
 
 // checksums.txt covers every release binary currently in dist/ (so a filtered
 // build still emits verifiable lines), in `shasum -a 256 -c` compatible form.

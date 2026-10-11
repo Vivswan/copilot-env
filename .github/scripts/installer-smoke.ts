@@ -8,6 +8,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { launcherFunctionLines } from "../../src/commands/env.ts";
 import { resolveRootHome } from "../../src/copilot_api/paths.ts";
+import { resolveExecutablePath } from "../../src/utils/command.ts";
 import { readDvmrcPin, SIDECAR_DENO_ENV, sidecarBinPath } from "../../src/copilot_api/sidecar.ts";
 import { daemonConfigFile } from "../../src/proxy_float.ts";
 import { isRecord } from "../../src/utils/json.ts";
@@ -348,7 +349,7 @@ function verifySidecarDaemonSpawn(launcher: string): void {
   delete process.env[SIDECAR_DENO_ENV];
   const rootHome = resolveRootHome();
   const sidecar = sidecarBinPath(rootHome, readDvmrcPin());
-  const pathDeno = commandPath("deno");
+  const pathDeno = resolveExecutablePath("deno");
   if (pathDeno === null) {
     console.error("::error::no deno on PATH to plant as the sidecar");
     process.exit(1);

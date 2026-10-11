@@ -1,5 +1,7 @@
-// Exclusion is an exclusive create (`wx`) of the lock file, whose text names the holder: pid, then
-// the clock of the write. A crashed holder (SIGKILL, a power loss) leaves its file behind, so the
+// Exclusion is the exclusive creation of the lock file, whose text names the holder: pid, then the
+// clock of the write. The file appears WITH its text (a fully written sibling is hard-linked into
+// place; a refresh renames one over it), so no reader ever meets an empty marker and takes a
+// creator mid-write for a leftover. A crashed holder (SIGKILL, a power loss) leaves its file behind, so the
 // next acquirer judges the pid it names (src/utils/pid.ts): a dead pid, a malformed marker, or
 // this process's own pid with no in-process hold is a leftover and is taken over; a live pid, or
 // one this permission set cannot signal (the daemon's), is a holder. The same file is the whole
@@ -9,10 +11,11 @@
 // Two limits, accepted: a recycled pid reads as a live holder, and two contenders that judge one
 // leftover stale at the same instant race between the judgment and the unlink, so the loser can
 // take the winner's fresh file (the published pid lockfiles accept the same race).
-import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { linkSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { setTimeout as sleepAsync } from "node:timers/promises";
 import { isEnoentOrNotdir, retryOpenHandleRefusal } from "./fs.ts";
+import { renameWithRetry } from "./fs_disk.ts";
 import * as fs from "./fs_facade.ts";
 import { dryRunActive } from "./fs_facade.ts";
 import { isRecord } from "./json.ts";
@@ -70,10 +73,18 @@ class HeldFileLock {
     return Number.isFinite(staleMs) && nowMs - this.#ts > staleMs;
   }
 
-  /** On a failed write the previous clock stays remembered; the file itself may be torn. */
+  /** On a failed write the previous clock stays remembered. The new text lands by rename (the
+   *  disk writer's retrying one, for a marker a scanner holds open on Windows), so a reader never
+   *  sees the marker between a truncate and a write. */
   refresh(nowMs: number): Acquire {
     try {
-      writeFileSync(this.path, renderMarker(nowMs));
+      const staged = stageMarker(this.path, renderMarker(nowMs));
+      try {
+        renameWithRetry(staged, this.path);
+      } catch (cause) {
+        discardStaged(staged);
+        throw cause;
+      }
     } catch (cause) {
       return { kind: "unavailable", cause };
     }
@@ -100,13 +111,54 @@ function readMarker(lockPath: string): MarkerRead {
   }
 }
 
-/** `exists` is the one refusal the create itself can answer; anything else is the lock's I/O. */
-function createMarker(lockPath: string, text: string): "created" | "exists" | { cause: unknown } {
+/** Staging names count up per process: a sibling a refused delete left behind (an open handle on
+ *  Windows) may still alias the marker through its hard link, and reopening that name would
+ *  truncate the live marker. The exclusive open is the backstop for a name that exists anyway. */
+let stagingSerial = 0;
+
+/** The marker's bytes, written to a sibling only this process names, so they can reach the lock
+ *  path in one atomic step (a link for the create, a rename for a refresh). The sibling is removed
+ *  where the OS allows, a failed write's included; a refused removal leaves a harmless alias that
+ *  the per-process serial keeps from reuse. */
+function stageMarker(lockPath: string, text: string): string {
+  for (;;) {
+    const staged = `${lockPath}.${process.pid}.${(stagingSerial++).toString(36)}.staging`;
+    try {
+      writeFileSync(staged, text, { flag: "wx" });
+      return staged;
+    } catch (cause) {
+      if (isRecord(cause) && cause.code === "EEXIST") continue;
+      discardStaged(staged);
+      throw cause;
+    }
+  }
+}
+
+/** A sibling left behind is named by its pid and harms nothing, so a refusal to delete it (an
+ *  open handle on Windows) never undoes the step it followed. */
+function discardStaged(staged: string): void {
   try {
-    writeFileSync(lockPath, text, { flag: "wx" });
+    rmSync(staged, { force: true });
+  } catch {}
+}
+
+/** `exists` is the one refusal the create itself can answer; anything else is the lock's I/O, a
+ *  filesystem without hard links included: a lock that cannot be taken without a window in which
+ *  a contender reads an empty marker is not taken at all. */
+function createMarker(lockPath: string, text: string): "created" | "exists" | { cause: unknown } {
+  let staged: string;
+  try {
+    staged = stageMarker(lockPath, text);
+  } catch (cause) {
+    return { cause };
+  }
+  try {
+    linkSync(staged, lockPath);
     return "created";
   } catch (cause) {
     return isRecord(cause) && cause.code === "EEXIST" ? "exists" : { cause };
+  } finally {
+    discardStaged(staged);
   }
 }
 

@@ -13,7 +13,6 @@
 #                                    were never recorded, so there is no artifact
 #   release-assets red            -> a cross-compile target, a denort download, or the installer
 #                                    pinning (release-gate.yml names the steps)
-#   floated-lifecycle red         -> the proxy package on the live registry, or its spawn
 #   `deno ci` or setup red        -> the registry or the runner, not the CLIs
 #   a job CANCELLED               -> a hang hit timeout-minutes; the report job reads it as red too
 # The report job files one label-deduplicated tracking issue for any of these and closes it on

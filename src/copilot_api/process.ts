@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { closeSync, openSync } from "node:fs";
 import { devNull } from "node:os";
+import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { consola } from "consola";
 import { daemonConfigFile, readResolvedVersionRecord, writeDaemonConfig } from "../proxy_float.ts";
@@ -8,6 +9,7 @@ import { runPowershell } from "../utils/app_scan.ts";
 import { runCaptured } from "../utils/command.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { pidAlive } from "../utils/pid.ts";
+import { PROJECT_ROOT } from "../utils/root.ts";
 import { terminalWidth, wrapMessage } from "../utils/table.ts";
 import { clearDeadDaemonLock } from "./daemon_lock.ts";
 import {
@@ -103,6 +105,17 @@ const PROXY_PERMISSIONS = [
   "--allow-sys",
 ] as const;
 
+/**
+ * Decided here, once per spawn, for a file entry (the test fixtures' fake proxy, a COPILOT_API_ENTRY
+ * override): the shims resolve their npm imports from the node_modules beside this process's own
+ * src, which a checkout has, so they need no download; an install materializes src with no
+ * node_modules, so there the sidecar's own cache serves them as before. The flag matters only
+ * under the Deno sidecar, which is what resolves the shims' imports.
+ */
+function checkoutNodeModulesExist(): boolean {
+  return fs.exists(join(PROJECT_ROOT, "node_modules"));
+}
+
 /** `entry` is passed in by callers that also need copilotApiEnv for the SAME entry, so the argv and the
  *  environment can never be built from two different resolutions. */
 export function copilotApiArgv(
@@ -121,10 +134,7 @@ export function copilotApiArgv(
     // entry runs only on what an earlier float left in the sidecar's cache.
     ...(entry.kind === "file" ? [] : ["--cached-only"]),
     ...(entry.kind === "floated" ? ["--node-modules-dir=none"] : []),
-    // A file entry (the test fixtures' fake proxy, a COPILOT_API_ENTRY override) runs from a checkout
-    // whose node_modules already holds the shims' dependencies, so the sidecar resolves bare and
-    // npm: imports there instead of downloading them. Phase two retires this with the deno path.
-    ...(entry.kind === "file" ? ["--node-modules-dir=manual"] : []),
+    ...(entry.kind === "file" && checkoutNodeModulesExist() ? ["--node-modules-dir=manual"] : []),
     ...PROXY_PERMISSIONS,
     // FIRST, on every spawn: the proxy's dependency tree probes /proc at module load, which deno's node
     // compat turns into a thrown NotCapable instead of node's documented `false`, so on Linux the proxy

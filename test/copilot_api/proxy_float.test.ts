@@ -1,10 +1,11 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { parse as parseToml } from "smol-toml";
 import { directHelperCommand } from "../../src/claude/config.ts";
+import { registryEntry } from "../../src/copilot_api/config_registry.ts";
 import { CopilotEnvConfig } from "../../src/copilot_api/env_config.ts";
 import {
   daemonConfigFile,
-  defaultReleaseCooldownSeconds,
   type DenoRunner,
   ensureProxyNpmrc,
   type FetchLike,
@@ -356,7 +357,16 @@ describe("resolveMinimumReleaseAgeSeconds", () => {
   // env override > stored config > built-in default; a non-numeric override is refused, never
   // read as zero.
   test("the env override wins over the stored cooldown, which wins over the default", () => {
-    expect(resolveMinimumReleaseAgeSeconds()).toBe(defaultReleaseCooldownSeconds());
+    // The default is spelled twice, in the preference registry and in bunfig.toml's [install]
+    // minimumReleaseAge (the floor `bun install` itself applies): both must read as the same
+    // number, else `agent config` would describe one cooldown and the float apply another.
+    const bunfig = parseToml(readFileSync(join(ROOT, "bunfig.toml"), "utf8")) as {
+      install: { minimumReleaseAge: number };
+    };
+    expect(resolveMinimumReleaseAgeSeconds()).toBe(bunfig.install.minimumReleaseAge);
+    expect(registryEntry("daemon.release-cooldown").defaultValue).toBe(
+      bunfig.install.minimumReleaseAge,
+    );
     new CopilotEnvConfig().set({ "daemon.release-cooldown": 172800 });
     expect(resolveMinimumReleaseAgeSeconds()).toBe(172800);
     for (const [env, seconds] of [["100", 100], ["0", 0]] as const) {

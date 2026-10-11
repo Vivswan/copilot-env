@@ -11,7 +11,8 @@
     "moduleResolution": "bundler",
     "allowImportingTsExtensions": true,
     "resolveJsonModule": true,
-    "types": ["bun"]
+    "types": ["bun"],
+    "allowJs": true
   },
   "include": ["src", "test", "scripts", "bench", ".github/scripts", "types"]
 }

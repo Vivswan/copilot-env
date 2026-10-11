@@ -18,12 +18,32 @@ bash scripts/setup-env.sh   # one-shot env/worktree init (bun install --frozen-l
 ```
 
 - **Tasks:** run `bun run` for the list (typecheck, test, bench, lint, check). They are the `scripts` of `package.json`; the toolchain is Bun at the version in `.bun-version`.
-- **Tests:** `bun run test` is `scripts/run_tests.ts`, which runs one bun process per test file. Name files to run a subset: `bun run test test/usage/usage.test.ts`.
+- **Tests:** `bun run test` is `scripts/run_tests.ts`, which runs one bun process per test file. Name files to run a subset: `bun run test test/usage/usage.test.ts`. `bun run test:unit` runs the unit files alone ([below](#unit-tests-and-e2e-tests)).
 - **The sidecar:** the proxy daemon runs under a Deno sidecar the binary downloads, pinned by `SIDECAR_DENO_VERSION` in `copilot-env.config`. A checkout installs no deno; the CI jobs that start the daemon put that pin on the runner through `.github/actions/setup-sidecar-deno`.
 - **Env init:** `scripts/setup-env.sh` (`setup-env.ps1` on Windows) is the single initializer. The Copilot coding agent and Codespaces / Dev Containers both run it.
 - **Checks before a push:** the tasks and the pre-commit hook are listed in [CONTRIBUTING.md](../CONTRIBUTING.md).
 - **Rules and decisions:** the conventions, the hard rules, and the decisions a reader would otherwise reverse (the proxy float, one credential, atomic profiles) live in [`AGENTS.md`](../AGENTS.md).
 - **Layering:** the layers, the edges they draw, and the decisions as diagrams are on the [architecture page](architecture.md); `architecture.json` declares the edges and `bun run test` fails on any import it does not declare.
+
+## Unit tests and e2e tests
+
+A test file is one of two kinds, told apart by its name:
+
+- `<name>.test.ts` is a unit test: it runs in this process and touches nothing outside the suite's temp root. `bun run test:unit` runs these, and so does the pre-commit hook.
+- `<name>.e2e.test.ts` is a realistic test: it spawns a process (the CLI, the daemon, bun, deno, biome), opens a listener, sets up a home-shaped sandbox (`isolateAgentHomes` or `agentHomeEnv` from `test/helpers/env.ts`), or needs a real CLI, the proxy, or the network. A file with both kinds of tests is e2e. CI runs these; `bun run test` runs both kinds.
+
+The launcher refuses to run an `*.e2e.test.ts` file unless `GITHUB_ACTIONS=true` or `CI=true` is set or `--e2e` is passed. The refusal is one line on stderr, exit 2, naming the count of e2e files selected, the two markers, the flag, and `bun run test:unit`. A file named outright obeys the same rule, and must match `**/*.test.ts` at all: any other name is refused rather than handed to `bun test` unexamined.
+
+The refusal answers an incident. Bun resolves `os.homedir()` once at startup, so a HOME the test helpers retarget inside a test never reaches the paths derived from it, and one run of the realistic files under a developer's own HOME rewrote the real Claude and Codex configs.
+
+Two guards keep it from recurring. The launcher starts every test file under a scratch HOME (or the one `COPILOT_ENV_TEST_HOME` names) and sets `COPILOT_ENV_TEST_HOME` to it. `test/helpers/home_guard.ts`, loaded before every test file, refuses a file whose HOME that variable does not name, so a bare `bun test <file>` is refused with the launcher command to use instead.
+
+The boundary is linted by `biome/no_e2e_helper_imports.grit` over every `.ts` file under `test/` except the `*.e2e.test.ts` files, the banned helpers themselves, and `testing.ts` (it imports nothing banned, and the child-spawn rule's scope fixture pins its finding count), so a helper that re-exports a banned one is flagged as it is written. The fix for a finding is the rename to `.e2e.test.ts`. A file in scope may not:
+
+- import a banned helper: `run.ts`, `daemon.ts`, `mcp.ts`, `deno_sidecar.ts`, `sidecar.ts`, `scratch_home.ts`, `fake_codex.ts`, `fake_endpoint.ts`, `fake_model_endpoint.ts`, `net.ts`, `biome_plugin.ts`, `usage_goldens.ts` (the files that spawn, listen, or point HOME somewhere, closed under import)
+- import `node:child_process` or a listener module (`node:net`, `http`, `https`, `http2`, `dgram`)
+- reach `Bun.spawn`, `spawnSync`, `serve`, `listen`, or `connect`, under any spelling, or import any value from the `bun` module (its `$` shell spawns too)
+- reach `isolateAgentHomes` or `agentHomeEnv` from `env.ts`, or use `require`
 
 ## Test fakes
 

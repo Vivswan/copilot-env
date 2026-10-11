@@ -7,6 +7,7 @@ import { consola } from "consola";
 import { assertNever } from "../utils/assert.ts";
 import {
   childEnvWithPath,
+  cliSpawn,
   commandExists,
   findCommand,
   resolveCommand,
@@ -245,9 +246,14 @@ function spawnNpm(args: string[], capture: boolean): SpawnSyncReturns<string> {
   //   npm's own dir        -> IS node's bin dir, so prepending it is the fix
   //   Windows              -> a bare name, nothing to prepend: npm is already on PATH
   const npmDir = npm.includes("/") || npm.includes("\\") ? dirname(npm) : null;
-  return spawnSync(npm, args, {
+  // bun, like node since CVE-2024-27980, refuses to spawn a batch shim such as npm.cmd without a
+  // shell (`spawnSync npm.cmd EINVAL`), hence the cliSpawn hop.
+  const s = cliSpawn(npm, args);
+  // nosemgrep: javascript.lang.security.audit.spawn-shell-true.spawn-shell-true -- Windows-only, for .cmd shims; the spec quotes args
+  return spawnSync(s.file, s.args, {
     encoding: "utf8",
     stdio: capture ? ["ignore", "pipe", "inherit"] : "inherit",
+    shell: s.shell,
     env: childEnvWithPath([npmDir]),
   });
 }

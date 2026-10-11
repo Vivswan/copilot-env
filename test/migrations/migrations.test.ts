@@ -1828,5 +1828,5 @@ test("5.0.1 sweeps every .oslock sidecar under the root home and the install's .
       path,
     ).toBe(true);
   // A second run has nothing to do and says nothing: the step is idempotent.
-  expect(warningsDuring(() => removeOsLockSidecars([home, autoupdateHome]), "info")).toBe("");
+  expect(warningsDuring(() => removeOsLockSidecars([home, autoupdateHome]), "info")).toEqual([]);
 });

@@ -15,13 +15,13 @@ $script:AgentsDir = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyComma
 $script:AgentPs1 = Join-Path $AgentsDir 'bin\agent.ps1'
 $script:AgentHost = Resolve-AgentHost (Get-Process -Id $PID).Path
 
-# DENO_INSTALL is the same override scripts/ensure-deno.ps1 honors, so every entry point
-# looks in one place.
-$DenoHome = if ($env:DENO_INSTALL) { $env:DENO_INSTALL } else { Join-Path $HOME '.deno' }
-$DenoDir = Join-Path $DenoHome 'bin'
-$DenoExe = Join-Path $DenoDir 'deno.exe'
-if ((Test-Path $DenoExe) -and (-not (Get-Command deno -ErrorAction SilentlyContinue))) {
-    $env:Path = "$DenoDir;$env:Path"
+# BUN_INSTALL is the same override scripts/ensure-bun.ps1 honors, so the bun that bin/agent.ps1
+# installed once is the bun this session finds too.
+$BunHome = if ($env:BUN_INSTALL) { $env:BUN_INSTALL } else { Join-Path $HOME '.bun' }
+$BunDir = Join-Path $BunHome 'bin'
+$BunExe = Join-Path $BunDir 'bun.exe'
+if ((Test-Path $BunExe) -and (-not (Get-Command bun -ErrorAction SilentlyContinue))) {
+    $env:Path = "$BunDir;$env:Path"
 }
 
 # --- low-level helpers -----------------------------------------------------

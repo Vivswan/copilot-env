@@ -341,28 +341,35 @@ function codexCliPath(): string | null {
   return cachedCodexCliPath;
 }
 
+type DebugModelsRun =
+  | { kind: "ran"; result: SpawnSyncReturns<string> }
+  | { kind: "skipped"; reason: string };
+
 /** The throwaway CODEX_HOME keeps a user's existing `model_catalog_json` (our own output) from
- *  feeding back into the run. Null when codex is not installed or the home cannot be created. */
+ *  feeding back into the run. */
 function runCodexDebugModels(
   args: string[],
   prepareHome: (home: string) => void,
   budgetMs: number,
-): SpawnSyncReturns<string> | null {
-  // The budget covers this whole call: resolving codex and preparing the home come off the child's
-  // timeout, never on top of it.
-  const deadline = Date.now() + budgetMs;
+): DebugModelsRun {
+  // The PATH look comes before the budget: it is paid once per process, and on Windows it is a
+  // PowerShell start that has taken seconds on a loaded machine, which is not the run's cost.
+  // Preparing the home still comes off the child's timeout, never on top of it.
   const cliPath = codexCliPath();
-  if (cliPath === null) return null;
+  if (cliPath === null) return { kind: "skipped", reason: "codex did not resolve on PATH" };
+  const deadline = Date.now() + budgetMs;
   let tmpHome: ScratchDir;
   try {
     tmpHome = scratchDir(path.join(tmpdir(), "copilot-env-codex-catalog-"));
-  } catch {
-    return null;
+  } catch (e) {
+    return { kind: "skipped", reason: `no scratch home (${errMessage(e)})` };
   }
   try {
     prepareHome(tmpHome);
     const timeoutMs = deadline - Date.now();
-    if (timeoutMs <= 0) return null;
+    if (timeoutMs <= 0) {
+      return { kind: "skipped", reason: `the ${budgetMs} ms budget went on preparing the home` };
+    }
     const s = cliSpawn(cliPath, ["debug", "models", ...args]);
     // On Windows resolveCommand returns the bare command name (no directory): "." must not be
     // prepended to PATH.
@@ -371,7 +378,7 @@ function runCodexDebugModels(
     // and a caller's project must not colour the verdict. The catalog is hundreds of KB, so the
     // default 1 MB maxBuffer risks ENOBUFS.
     // nosemgrep: javascript.lang.security.audit.spawn-shell-true.spawn-shell-true -- Windows-only, for .cmd shims; the spec quotes args
-    return spawnSync(s.file, s.args, {
+    const result = spawnSync(s.file, s.args, {
       cwd: tmpHome,
       stdio: ["ignore", "pipe", "pipe"],
       encoding: "utf8",
@@ -385,8 +392,9 @@ function runCodexDebugModels(
         extra: { CODEX_HOME: tmpHome },
       }),
     });
-  } catch {
-    return null;
+    return { kind: "ran", result };
+  } catch (e) {
+    return { kind: "skipped", reason: `the spawn failed (${errMessage(e)})` };
   } finally {
     removeScratchDir(tmpHome);
   }
@@ -399,16 +407,16 @@ let bundledDump: string | null | undefined;
 
 function bundledCatalog(): string | null {
   if (bundledDump === undefined) {
-    const result = runCodexDebugModels(["--bundled"], () => {}, BUNDLED_DUMP_TIMEOUT_MS);
-    if (result !== null && !result.error && result.status === 0) {
-      bundledDump = result.stdout;
+    const run = runCodexDebugModels(["--bundled"], () => {}, BUNDLED_DUMP_TIMEOUT_MS);
+    if (run.kind === "ran" && !run.result.error && run.result.status === 0) {
+      bundledDump = run.result.stdout;
     } else {
       const failure =
-        result === null
-          ? "did not run"
-          : result.error
-            ? errMessage(result.error)
-            : `exited ${result.status}: ${result.stderr.split("\n")[0] ?? ""}`;
+        run.kind === "skipped"
+          ? `did not run: ${run.reason}`
+          : run.result.error
+            ? errMessage(run.result.error)
+            : `exited ${run.result.status}: ${run.result.stderr.split("\n")[0] ?? ""}`;
       logger.warn(`codex model catalog not written: codex debug models --bundled ${failure}`);
       bundledDump = null;
     }
@@ -460,12 +468,15 @@ export function resetCatalogProbeState(budgetMs: number = CATALOG_PROBE_TIMEOUT_
   probeVerdicts.clear();
 }
 
-/** A probe spawn charged to the process budget; null without spawning once it is spent. */
+/** A probe spawn charged to the process budget; null without spawning once it is spent. The
+ *  PATH look is resolved first so the budget pays for probe runs alone, as the dump's does. */
 function runProbeSpawn(prepareHome: (home: string) => void): SpawnSyncReturns<string> | null {
   if (probeBudgetLeftMs <= 0) return null;
+  if (codexCliPath() === null) return null;
   const started = Date.now();
   try {
-    return runCodexDebugModels([], prepareHome, probeBudgetLeftMs);
+    const run = runCodexDebugModels([], prepareHome, probeBudgetLeftMs);
+    return run.kind === "ran" ? run.result : null;
   } finally {
     probeBudgetLeftMs -= Date.now() - started;
   }

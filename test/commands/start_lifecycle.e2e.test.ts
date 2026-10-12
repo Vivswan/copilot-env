@@ -134,6 +134,9 @@ test("start --dry-run runs the launch's credential gate: no credential is the re
   });
   expect(refused.stdout).not.toContain(".state.json");
   expect(refused.stdout).not.toContain("integrationIdentity");
+  // The live start reaches the config refusal only after its floor gate, which would float the
+  // proxy from the registry; the fake entry is the file entry that gate takes as resolved.
+  process.env.COPILOT_API_ENTRY = join(ROOT, "test", "copilot-api-fake.mjs");
   await expect(
     captureChannels(() =>
       runStart({ kind: "launch", dryRun: false, force: false, port: undefined, profile: null }),

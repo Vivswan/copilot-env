@@ -7,6 +7,8 @@
 //                       block when the file finishes, so parallel files never interleave
 //   *.e2e.test.ts    -> the realistic files (a process, a listener, a home-shaped sandbox, a real
 //                       CLI or the network) run in CI or under --e2e only; --unit leaves them out
+//   a Bun panic      -> a file whose process Bun itself killed runs once more and the second run
+//                       is judged; a test failure and the budget kill are final
 import { mkdirSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { availableParallelism, tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
@@ -34,12 +36,18 @@ const FILE_BUDGET_MS = 10 * 60_000;
 const FILE_BUDGET_ENV = "COPILOT_ENV_TEST_FILE_BUDGET_MS";
 /** The pipes settle with the child unless a descendant still holds them. */
 const PIPE_GRACE_MS = 5_000;
+/** Bun dying of its own fault: this exit code AND this line in the output (a test failure is
+ *  exit 1, whatever it prints). The case: Bun 1.4.2 segfaults on the Windows runner about one
+ *  run in three. */
+const BUN_PANIC_EXIT = 3;
+const BUN_PANIC_MARKER = "panic(main thread)";
 
 interface FileResult {
   file: string;
   exitCode: number;
   output: string;
   ms: number;
+  panicked: boolean;
 }
 
 interface Selection {
@@ -238,7 +246,14 @@ async function runFile(file: string, budgetMs: number): Promise<FileResult> {
           budgetMs,
         )}) and was killed\n`
       : chunks.join("");
-    return { file, exitCode: overran ? 1 : exitCode, output, ms: performance.now() - started };
+    const panicked = !overran && exitCode === BUN_PANIC_EXIT && output.includes(BUN_PANIC_MARKER);
+    return {
+      file,
+      exitCode: overran ? 1 : exitCode,
+      output,
+      ms: performance.now() - started,
+      panicked,
+    };
   } finally {
     dispose();
   }
@@ -280,7 +295,11 @@ async function runAll(files: string[], limit: number, budgetMs: number): Promise
   const results: FileResult[] = [];
   const worker = async (): Promise<void> => {
     for (let file = queue.shift(); file !== undefined; file = queue.shift()) {
-      const result = await runFile(file, budgetMs);
+      let result = await runFile(file, budgetMs);
+      if (result.panicked) {
+        report(result, "retrying");
+        result = await runFile(file, budgetMs);
+      }
       results.push(result);
       report(result);
     }
@@ -301,12 +320,15 @@ function seconds(ms: number): string {
 }
 
 /** A failed file stays out of the GitHub Actions log group, so the failure shows without a click. */
-function report(result: FileResult): void {
+function report(result: FileResult, retrying?: "retrying"): void {
   const name = displayName(result.file);
   const passed = result.exitCode === 0;
-  const header = `${name}: ${passed ? "passed" : `failed (exit ${result.exitCode})`} in ${seconds(
-    result.ms,
-  )}`;
+  const outcome = retrying
+    ? `died of a Bun runtime panic (exit ${result.exitCode}), running it once more`
+    : passed
+      ? "passed"
+      : `failed (exit ${result.exitCode})`;
+  const header = `${name}: ${outcome} in ${seconds(result.ms)}`;
   const group = passed && process.env.GITHUB_ACTIONS === "true";
   const open = group ? `::group::${header}` : `=== ${header}`;
   const close = group ? "::endgroup::\n" : "\n";

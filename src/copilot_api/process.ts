@@ -6,7 +6,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { consola } from "consola";
 import { floatedProxyEntry, proxyHome, proxyInstallDir } from "../proxy_float.ts";
-import { runPowershell } from "../utils/app_scan.ts";
+import { PROCESS_SCAN_TIMEOUT_MS, runPowershell } from "../utils/app_scan.ts";
 import { runCaptured } from "../utils/command.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { pidAlive } from "../utils/pid.ts";
@@ -444,7 +444,7 @@ async function listUserProcesses(): Promise<ProcessRow[]> {
   const { exitCode, stdout } = await runCaptured(
     "ps",
     ["-U", String(uid), "-o", "pid=,ucomm=,args="],
-    { maxBuffer: 64 * 1024 * 1024 },
+    { timeoutMs: PROCESS_SCAN_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024 },
   );
   if (exitCode !== 0) return [];
   return parseProcessRows(stdout);
@@ -616,6 +616,7 @@ export function launchDaemon(spec: DaemonSpec): number {
   fs.writeText(daemonPreloadFile(spec.entry.proxyHome), renderDaemonPreload(spec), {
     secretKeys: [],
   });
+  // biome-ignore lint/plugin/no_unbounded_child_spawn: the daemon runs for the user, detached and long-lived
   const proc = spawn(process.execPath, daemonArgv(spec), {
     cwd: spec.entry.proxyHome,
     stdio: [devnull, logFd, logFd],

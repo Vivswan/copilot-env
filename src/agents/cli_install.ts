@@ -10,6 +10,8 @@ import {
   cliSpawn,
   commandExists,
   findCommand,
+  LOOK_KILL_SIGNAL,
+  POWERSHELL_LOOK_TIMEOUT_MS,
   resolveCommand,
   withPowershellChildEnv,
 } from "../utils/command.ts";
@@ -61,6 +63,7 @@ function run(
   args: string[],
   options: Parameters<typeof spawnSync>[2] = {},
 ): ReturnType<typeof spawnSync> {
+  // biome-ignore lint/plugin/no_unbounded_child_spawn: installers run for the user on inherited stdio
   return spawnSync(command, args, { stdio: "inherit", ...options });
 }
 
@@ -95,7 +98,7 @@ function refreshWindowsPath(): void {
           "$user=[Environment]::GetEnvironmentVariable('Path','User');" +
           "($machine,$user,$env:Path) -join ';'",
       ],
-      { encoding: "utf8", env },
+      { encoding: "utf8", env, timeout: POWERSHELL_LOOK_TIMEOUT_MS, killSignal: LOOK_KILL_SIGNAL },
     ),
   );
   if (result.status !== 0 || !result.stdout.trim()) {
@@ -109,6 +112,7 @@ function refreshWindowsPath(): void {
 function addWindowsUserPath(directory: string): void {
   if (process.platform !== "win32") return;
   const result = withPowershellChildEnv("powershell", (env) =>
+    // biome-ignore lint/plugin/no_unbounded_child_spawn: a user-PATH registry write for the user, where a kill mid-write is worse than a hang
     spawnSync(
       "powershell",
       [
@@ -164,13 +168,24 @@ function installNodePosix(): void {
   if (result.status !== 0) throw new Error("nvm failed to install/activate Node LTS.");
 }
 
-/** A FAILED winget look reads absent here and only aborts (nothing installs off it); ensureNpm's
- *  npm look just completed through the same probe shell. A dry run refuses here too. */
+/** Either miss only aborts (nothing installs off it), but a failed look must not hand out the
+ *  install advice a proven absence earns. A dry run refuses here too. */
 function assertWingetAvailable(): void {
-  if (commandExists("winget")) return;
-  throw new Error(
-    "Cannot install Node.js because winget is unavailable. Install Node.js LTS and rerun 'agent shell --clis'.",
-  );
+  const look = findCommand("winget");
+  switch (look.kind) {
+    case "found":
+      return;
+    case "unproven":
+      throw new Error(
+        "Cannot install Node.js: could not check for winget (the command probe failed to run).",
+      );
+    case "absent":
+      throw new Error(
+        "Cannot install Node.js because winget is unavailable. Install Node.js LTS and rerun 'agent shell --clis'.",
+      );
+    default:
+      assertNever(look);
+  }
 }
 
 function installNodeWindows(): void {
@@ -238,6 +253,10 @@ function resolveNpm(): string {
   return resolved;
 }
 
+/** `npm view` asks the registry and `npm ls -g` walks the global tree, seconds on a healthy machine,
+ *  so 30 s is a hang rather than a slow answer. */
+const NPM_READ_TIMEOUT_MS = 30_000;
+
 function spawnNpm(args: string[], capture: boolean): SpawnSyncReturns<string> {
   const npm = resolveNpm();
   // npm is a `#!/usr/bin/env node` shim, so found via the nvm fallback right after Node was
@@ -249,13 +268,28 @@ function spawnNpm(args: string[], capture: boolean): SpawnSyncReturns<string> {
   // bun, like node since CVE-2024-27980, refuses to spawn a batch shim such as npm.cmd without a
   // shell (`spawnSync npm.cmd EINVAL`), hence the cliSpawn hop.
   const s = cliSpawn(npm, args);
+  const env = childEnvWithPath([npmDir]);
+  if (capture) {
+    // nosemgrep: javascript.lang.security.audit.spawn-shell-true.spawn-shell-true -- Windows-only, for .cmd shims; the spec quotes args
+    return spawnSync(s.file, s.args, {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "inherit"],
+      shell: s.shell,
+      env,
+      timeout: NPM_READ_TIMEOUT_MS,
+      killSignal: LOOK_KILL_SIGNAL,
+    });
+  }
+  // biome-ignore-start lint/plugin/no_unbounded_child_spawn: an npm install runs for the user on inherited stdio
   // nosemgrep: javascript.lang.security.audit.spawn-shell-true.spawn-shell-true -- Windows-only, for .cmd shims; the spec quotes args
-  return spawnSync(s.file, s.args, {
+  const result = spawnSync(s.file, s.args, {
     encoding: "utf8",
-    stdio: capture ? ["ignore", "pipe", "inherit"] : "inherit",
+    stdio: "inherit",
     shell: s.shell,
-    env: childEnvWithPath([npmDir]),
+    env,
   });
+  // biome-ignore-end lint/plugin/no_unbounded_child_spawn: the suppression ends with the install
+  return result;
 }
 
 function runNpm(args: string[], capture = false): string {

@@ -1,7 +1,11 @@
 import { spawnSync } from "node:child_process";
 import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import { consola } from "consola";
-import { withPowershellChildEnv } from "../utils/command.ts";
+import {
+  LOOK_KILL_SIGNAL,
+  POWERSHELL_LOOK_TIMEOUT_MS,
+  withPowershellChildEnv,
+} from "../utils/command.ts";
 import { isEnoent } from "../utils/fs.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { userHomeDir } from "../utils/home.ts";
@@ -450,7 +454,12 @@ function psEval(command: string): string {
   const failures: string[] = [];
   for (const exe of PS_EXES) {
     const result = withPowershellChildEnv(exe, (env) =>
-      spawnSync(exe, ["-NoProfile", "-Command", command], { encoding: "utf-8", env }),
+      spawnSync(exe, ["-NoProfile", "-Command", command], {
+        encoding: "utf-8",
+        env,
+        timeout: POWERSHELL_LOOK_TIMEOUT_MS,
+        killSignal: LOOK_KILL_SIGNAL,
+      }),
     );
     if (isEnoent(result.error)) {
       failures.push(`${exe}: not on PATH`);
@@ -482,6 +491,7 @@ function relaxWindowsExecutionPolicy(_target: { source: "system" }): void {
   }
   for (const exe of PS_EXES) {
     const result = withPowershellChildEnv(exe, (env) =>
+      // biome-ignore lint/plugin/no_unbounded_child_spawn: a Set-ExecutionPolicy registry write for the user, where a kill mid-write is worse than a hang
       spawnSync(exe, ["-NoProfile", "-Command", command], {
         stdio: ["ignore", "inherit", "inherit"],
         env,

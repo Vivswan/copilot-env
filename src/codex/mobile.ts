@@ -7,10 +7,15 @@ import {
   appRunning,
   appScanFromExit,
   appScanVerdict,
+  PROCESS_SCAN_TIMEOUT_MS,
   processScanScript,
   runPowershell,
 } from "../utils/app_scan.ts";
-import { runCaptured, withPowershellChildEnv } from "../utils/command.ts";
+import {
+  POWERSHELL_LOOK_TIMEOUT_MS,
+  runCaptured,
+  withPowershellChildEnv,
+} from "../utils/command.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { isRecord } from "../utils/json.ts";
 import { createStderrLogger, prompt } from "../utils/logger.ts";
@@ -28,6 +33,9 @@ const APP_NAME = "Codex";
 const CONFIG_SECRETS: readonly string[] = [codexBearerLeaf(CODEX_PROVIDER_ID)];
 const QUIT_POLL_MS = 500;
 const QUIT_TIMEOUT_MS = 8000;
+/** `open` and `osascript` hand a request to LaunchServices or the app and answer in under a second;
+ *  an app parked on a dialog can hold the quit request. */
+const APP_COMMAND_TIMEOUT_MS = 10_000;
 
 // --- pure config toggle (unit-tested) ---------------------------------------
 
@@ -143,7 +151,9 @@ export async function installedState(): Promise<AppScan> {
   // exclusive exit vocabulary, so an exotic LaunchServices failure could still exit 1 (stderr
   // text is not a contract). Hence the absent arm's rendering stays hedged ("does not appear to
   // be").
-  return appScanFromExit(await runCaptured("open", ["-Ra", APP_NAME]));
+  return appScanFromExit(
+    await runCaptured("open", ["-Ra", APP_NAME], { timeoutMs: APP_COMMAND_TIMEOUT_MS }),
+  );
 }
 
 export function runningState(): Promise<AppScan> {
@@ -165,7 +175,7 @@ async function openApp(): Promise<void> {
           `$a = Get-StartApps | Where-Object { $_.Name -like '${APP_NAME}*' } | Select-Object -First 1;` +
             `if ($a) { Start-Process ('shell:AppsFolder\\' + $a.AppID) } else { Start-Process '${APP_NAME}' }`,
         ],
-        { env },
+        { timeoutMs: POWERSHELL_LOOK_TIMEOUT_MS, env },
       ),
     );
     if (r.exitCode !== 0) {
@@ -173,7 +183,7 @@ async function openApp(): Promise<void> {
     }
     return;
   }
-  await runCaptured("open", ["-a", APP_NAME]);
+  await runCaptured("open", ["-a", APP_NAME], { timeoutMs: APP_COMMAND_TIMEOUT_MS });
 }
 
 export async function quitApp(): Promise<void> {
@@ -182,7 +192,9 @@ export async function quitApp(): Promise<void> {
       `Get-Process -Name '${APP_NAME}' -ErrorAction SilentlyContinue | ForEach-Object { $_.CloseMainWindow() | Out-Null }`,
     );
   } else {
-    await runCaptured("osascript", ["-e", `tell application "${APP_NAME}" to quit`]);
+    await runCaptured("osascript", ["-e", `tell application "${APP_NAME}" to quit`], {
+      timeoutMs: APP_COMMAND_TIMEOUT_MS,
+    });
   }
   const deadline = Date.now() + QUIT_TIMEOUT_MS;
   while (Date.now() < deadline) {
@@ -194,7 +206,7 @@ export async function quitApp(): Promise<void> {
   if (process.platform === "win32") {
     await runPowershell(`Stop-Process -Name '${APP_NAME}' -Force -ErrorAction SilentlyContinue`);
   } else {
-    await runCaptured("pkill", ["-x", APP_NAME]);
+    await runCaptured("pkill", ["-x", APP_NAME], { timeoutMs: PROCESS_SCAN_TIMEOUT_MS });
   }
 }
 

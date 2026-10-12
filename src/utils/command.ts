@@ -1,12 +1,22 @@
 // Not the `which` npm package: this also sources nvm.sh so a freshly nvm-installed binary resolves
 // in the same process that installed it. Its own module because importing setup.ts here would close
 // a cycle (setup -> codex/claude config -> agents/live_probe -> setup).
-import { execFile, spawnSync } from "node:child_process";
+import { type ChildProcess, execFile, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, win32 } from "node:path";
+import { deadline } from "@std/async/deadline";
 import * as fs from "./fs_facade.ts";
 
 const POSIX_NVM_SH = '"$' + '{NVM_DIR:-$HOME/.nvm}/nvm.sh"';
+
+/** A PowerShell look's cost is its startup: Windows PowerShell 5.1 takes seconds on a cold or
+ *  loaded machine, the query itself milliseconds. */
+export const POWERSHELL_LOOK_TIMEOUT_MS = 10_000;
+/** `command -v` with the nvm fallback sourced, or a where.exe walk: well under a second. */
+const COMMAND_LOOK_TIMEOUT_MS = 5_000;
+/** SIGKILL, not the default TERM: a child that ignores TERM holds a sync spawn forever, since the
+ *  runtime waits for the exit, not for the signal. */
+export const LOOK_KILL_SIGNAL = "SIGKILL";
 
 /** `found` carries the path (the bare name on Windows: Get-Command probes, the spawn recipe stays
  *  the name). `absent` is proven: the probe ran and found nothing. `unproven` is a probe that never
@@ -84,7 +94,12 @@ export function findCommand(command: string): CommandLook {
             "-Command",
             `if (Get-Command ${command} -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }`,
           ],
-          { stdio: "ignore", env: { ...env, ...profile.env } },
+          {
+            stdio: "ignore",
+            env: { ...env, ...profile.env },
+            timeout: POWERSHELL_LOOK_TIMEOUT_MS,
+            killSignal: LOOK_KILL_SIGNAL,
+          },
         ),
       );
       return commandLookFromSpawn(result, () => command);
@@ -101,7 +116,7 @@ export function findCommand(command: string): CommandLook {
       "sh",
       command,
     ],
-    { encoding: "utf8" },
+    { encoding: "utf8", timeout: COMMAND_LOOK_TIMEOUT_MS, killSignal: LOOK_KILL_SIGNAL },
   );
   return commandLookFromSpawn(result, () => result.stdout.trim() || null);
 }
@@ -158,22 +173,35 @@ export function childEnvWithPath(
   return out;
 }
 
-/** Never rejects. A spawn failure (ENOENT, a killing signal) maps to exit 1, the same code many
- *  scans use for a real "ran, found nothing", so that case also carries `launchFailed`; a completed
- *  run never does. */
-export function runCaptured(
+export interface CapturedRun {
+  exitCode: number;
+  stdout: string;
+  launchFailed?: true;
+}
+
+/** Never rejects, and never outlives `timeoutMs`. A spawn failure (ENOENT, a killing signal, the
+ *  bound) maps to exit 1, the same code many scans use for a real "ran, found nothing", so that case
+ *  also carries `launchFailed`; a completed run never does. */
+export async function runCaptured(
   file: string,
   args: readonly string[],
-  opts: { maxBuffer?: number; env?: Record<string, string | undefined> } = {},
-): Promise<{ exitCode: number; stdout: string; launchFailed?: true }> {
-  return new Promise((resolve) => {
+  opts: { timeoutMs: number; maxBuffer?: number; env?: Record<string, string | undefined> },
+): Promise<CapturedRun> {
+  let child: ChildProcess | undefined;
+  const run = new Promise<CapturedRun>((resolve) => {
     // `windowsHide` keeps a no-console Windows parent from flashing a console window. An overflow
     // of `maxBuffer` (16 MiB here, past node's 1 MiB) kills the child and reads as a marked launch
     // failure.
-    execFile(
+    child = execFile(
       file,
       args,
-      { windowsHide: true, maxBuffer: opts.maxBuffer ?? 16 * 1024 * 1024, env: opts.env },
+      {
+        windowsHide: true,
+        maxBuffer: opts.maxBuffer ?? 16 * 1024 * 1024,
+        env: opts.env,
+        timeout: opts.timeoutMs,
+        killSignal: LOOK_KILL_SIGNAL,
+      },
       (error, stdout) => {
         if (error === null) return resolve({ exitCode: 0, stdout });
         if (typeof error.code === "number" && error.code !== 0) {
@@ -183,6 +211,15 @@ export function runCaptured(
       },
     );
   });
+  try {
+    return await deadline(run, opts.timeoutMs);
+  } catch {
+    // Bun on macOS can drop a child's exit notification (oven-sh/bun#41024): the child is gone,
+    // yet the callback never comes, and the library's own timeout only kills and then waits for
+    // that same exit.
+    child?.unref();
+    return { exitCode: 1, stdout: "", launchFailed: true };
+  }
 }
 
 function quoteCmdArg(arg: string): string {
@@ -228,6 +265,8 @@ function windowsWhereCandidates(pattern: string): string[] {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"],
     windowsHide: true,
+    timeout: COMMAND_LOOK_TIMEOUT_MS,
+    killSignal: LOOK_KILL_SIGNAL,
   });
   if (result.error || result.status !== 0) return [];
   return (result.stdout ?? "")

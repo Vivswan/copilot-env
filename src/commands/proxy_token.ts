@@ -75,6 +75,7 @@ export function launchProxy(profile: Profile, output: LaunchOutput): void | Prom
     profile === null ? ["start"] : ["profile", profile, "start"],
   );
   const spawn = (env?: Record<string, string>) =>
+    // biome-ignore lint/plugin/no_unbounded_child_spawn: the proxy start runs for the user, its progress on the terminal
     spawnSync(launcher.command, launcher.args, {
       // `2` is our stderr fd: the visible child's start progress must show without touching our
       // stdout.

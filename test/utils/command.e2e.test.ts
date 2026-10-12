@@ -1,3 +1,4 @@
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   childEnvWithPath,
@@ -246,22 +247,64 @@ test("findCommand: a real found command and a real proven absence, both proven",
   expect(findCommand("copilot-env-no-such-command-xyz")).toEqual({ kind: "absent" });
 });
 
+// Nothing in the runtime bounds a child, so a probe shell that never returns would hang every
+// look. The shim ignores TERM and execs the sleeper under its own pid, so only a KILL ends it.
+const HANGING_SHIM = "#!/bin/sh\ntrap '' TERM\nexec sleep 20\n";
+
+test.skipIf(process.platform === "win32")(
+  "findCommand: a probe shell that never exits reads as unproven at the bound, never as absent",
+  () => {
+    const bin = tempDir("copilot-env-hanging-sh-");
+    writeFileSync(join(bin, "sh"), HANGING_SHIM, { mode: 0o755 });
+    process.env.PATH = childPathPrepending([bin]);
+    const started = performance.now();
+    const look = findCommand("gh");
+    const elapsed = performance.now() - started;
+    // Control: a missing shell fails in milliseconds; only the bound ending a live child takes
+    // seconds, and it must end it well before a caller's own deadline would.
+    expect({ look, waited: elapsed > 1000 && elapsed < 15_000 }).toEqual({
+      look: { kind: "unproven" },
+      waited: true,
+    });
+  },
+);
+
 test("runCaptured: the launch-failure mark rides ONLY the synthesized exit", async () => {
   step("a child that prints ok");
-  const ok = await runCaptured(process.execPath, ["-e", "console.log('ok')"]);
+  const ok = await runCaptured(process.execPath, ["-e", "console.log('ok')"], { timeoutMs: 5000 });
   expect(ok.exitCode).toBe(0);
   expect(ok.launchFailed).toBeUndefined();
   expect(ok.stdout.trim()).toBe("ok");
 
   // The child's OWN nonzero exit is a completed look: pgrep's "ran, found nothing" exit 1 rides exactly here.
   step("a child that exits 1");
-  const ranNonzero = await runCaptured(process.execPath, ["-e", "process.exit(1)"]);
+  const ranNonzero = await runCaptured(process.execPath, ["-e", "process.exit(1)"], {
+    timeoutMs: 5000,
+  });
   expect(ranNonzero.exitCode).toBe(1);
   expect(ranNonzero.launchFailed).toBeUndefined();
 
   // ENOENT coerces to the SAME exit 1; the mark is the only thing separating it from a real exit 1.
   step("an executable that does not exist");
-  const missing = await runCaptured(join(tempDir("copilot-env-no-such-tool-"), "missing"), []);
+  const missing = await runCaptured(join(tempDir("copilot-env-no-such-tool-"), "missing"), [], {
+    timeoutMs: 5000,
+  });
   expect(missing.exitCode).toBe(1);
   expect(missing.launchFailed).toBe(true);
+
+  // Nothing in the runtime bounds a child, and a TERM handler would hold off a polite kill: the
+  // bound ends the look with the same mark, well inside any caller's own deadline.
+  step("a child that never exits and ignores TERM");
+  const started = performance.now();
+  const hung = await runCaptured(
+    process.execPath,
+    ["-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"],
+    { timeoutMs: 500 },
+  );
+  expect({ ...hung, inBound: performance.now() - started < 5000 }).toEqual({
+    exitCode: 1,
+    stdout: "",
+    launchFailed: true,
+    inBound: true,
+  });
 });

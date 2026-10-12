@@ -3,16 +3,25 @@
 // emitted its verdict); "unproven" is a look that FAILED (pgrep/PowerShell erroring or missing, or
 // the spawn itself failing) and never reads as a confident absence, as in classifyPidFromScan
 // (src/copilot_api/process.ts).
-import { runCaptured, scratchPowershellProfile, withPowershellChildEnv } from "./command.ts";
+import {
+  type CapturedRun,
+  POWERSHELL_LOOK_TIMEOUT_MS,
+  runCaptured,
+  scratchPowershellProfile,
+  withPowershellChildEnv,
+} from "./command.ts";
 
 export type AppScan = "present" | "absent" | "unproven";
+
+/** A process-table walk (`ps`, `pgrep`, `pkill`) answers in well under a second. */
+export const PROCESS_SCAN_TIMEOUT_MS = 5_000;
 
 /** runCaptured's shape; a test's fake may ignore `opts`. */
 export type ScanExec = (
   file: string,
   args: string[],
-  opts?: { env?: Record<string, string | undefined> },
-) => Promise<{ exitCode: number; stdout: string; launchFailed?: true }>;
+  opts: { timeoutMs: number; env?: Record<string, string | undefined> },
+) => Promise<CapturedRun>;
 
 /** A PowerShell scan or signal (never a launch: what it starts would inherit the profile), run
  *  under the scratch profile of scratchPowershellProfile, in a dry run's process scan as in a
@@ -20,11 +29,12 @@ export type ScanExec = (
 export async function runPowershell(
   script: string,
   exec: ScanExec = runCaptured,
-): Promise<{ exitCode: number; stdout: string; launchFailed?: true }> {
+): Promise<CapturedRun> {
   const profile = scratchPowershellProfile();
   try {
     return await withPowershellChildEnv("powershell", (env) =>
       exec("powershell", ["-NoProfile", "-NonInteractive", "-Command", script], {
+        timeoutMs: POWERSHELL_LOOK_TIMEOUT_MS,
         env: { ...env, ...profile.env },
       }),
     );
@@ -72,5 +82,7 @@ export async function appRunning(
   }
   // pgrep's exit vocabulary is already three-state; the launch-failure mark separates a REAL exit 1
   // from the one runCaptured synthesizes for a pgrep that never ran.
-  return appScanFromExit(await exec("pgrep", ["-x", appName]));
+  return appScanFromExit(
+    await exec("pgrep", ["-x", appName], { timeoutMs: PROCESS_SCAN_TIMEOUT_MS }),
+  );
 }

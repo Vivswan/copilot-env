@@ -23,6 +23,7 @@ export type DaemonShimFile = (typeof DAEMON_SHIM_FILES)[number];
  *  there through NODE_PATH. test/install/installer_pinning.e2e.test.ts pins the list to the closure. */
 export const DAEMON_SHIM_DEPENDENCIES = [
   "consola",
+  "json-stable-stringify",
   "string-width",
   "valibot",
   "wrap-ansi",

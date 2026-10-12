@@ -15,6 +15,7 @@ const step = process.argv[2];
 const isWindows = process.platform === "win32";
 const optionalClis = ["claude", "copilot", "codex"];
 const posixNvmSource =
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: a POSIX shell line; the braces are the shell's parameter expansion
   '[ -s "${NVM_DIR:-$HOME/.nvm}/nvm.sh" ] && . "${NVM_DIR:-$HOME/.nvm}/nvm.sh" >/dev/null 2>&1 || true';
 
 function envBool(name: string, fallback = false): boolean {

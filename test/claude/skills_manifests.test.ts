@@ -38,6 +38,7 @@ test(".claude-plugin manifests parse and list skills that exist", () => {
       ? undefined
       : {
           ...declared,
+          // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude's manifest placeholder, named here to replace it
           command: String(declared.command).replaceAll("${CLAUDE_PLUGIN_ROOT}", PROJECT_ROOT),
         };
   expect(existsSync(entry?.command ?? ""), "the plugin's launcher").toBe(true);

@@ -553,6 +553,7 @@ for (const shell of ["bash", "zsh"]) {
           [
             "_env=keep",
             'source "$1"',
+            // biome-ignore lint/suspicious/noTemplateCurlyInString: POSIX shell parameter expansions in the script under test
             'echo "after source: $COPILOT_FAKE_REFRESHES $COPILOT_FAKE_ARGS stale=${COPILOT_FAKE_STALE-unset} _env=${_env-unset}"',
             "fake_launcher",
             "agent hello",
@@ -584,6 +585,7 @@ for (const shell of ["bash", "zsh"]) {
         shell,
         [
           "-c",
+          // biome-ignore lint/suspicious/noTemplateCurlyInString: POSIX shell parameter expansions in the script under test
           'source "$1"\necho "after failed source: ${COPILOT_FAKE_REFRESHES-unset}"',
           shell,
           staged.rc,

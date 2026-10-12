@@ -338,11 +338,7 @@ class SqliteUsageIndex implements UsageIndex {
  *  database with another table layout. Anything else (a corrupt database, say) is left as it is. */
 function isRebuildable(e: unknown): boolean {
   const message = errMessage(e);
-  return (
-    (e as { code?: unknown }).code === SQLITE_NOTADB ||
-    message === "file is not a database" ||
-    LAYOUT_MISMATCH_RE.test(message)
-  );
+  return (e as { code?: unknown }).code === SQLITE_NOTADB || LAYOUT_MISMATCH_RE.test(message);
 }
 
 /** Configures and stamps a fresh connection, or closes it and throws. Rows under another stamp, or

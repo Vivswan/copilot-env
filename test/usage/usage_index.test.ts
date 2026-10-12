@@ -838,11 +838,14 @@ for (const { name, rewrite, reused } of REWRITTEN_RECORDS) {
   });
 }
 
+/** The database and its WAL, byte for byte. The -shm sidecar is left out: it is the wal-index,
+ *  which SQLite may regenerate while opening, a failed open included, and which holds no row. */
 function diskState(path: string): unknown {
   if (!existsSync(path)) return null;
   if (!statSync(path).isDirectory()) return readFileSync(path).toString("hex");
   return Object.fromEntries(
     readdirSync(path)
+      .filter((name) => !name.endsWith("-shm"))
       .sort()
       .map((name) => [name, diskState(join(path, name))]),
   );

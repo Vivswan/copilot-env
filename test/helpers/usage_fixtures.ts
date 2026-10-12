@@ -773,8 +773,8 @@ function codexSessionMeta(
             const payload = line.payload;
             if (isJsonObject(payload)) {
               // forked_from_id sits before model_provider in the writer's key order.
-              const provider = payload["model_provider"] ?? null;
-              delete payload["model_provider"];
+              const provider = payload.model_provider ?? null;
+              delete payload.model_provider;
               line.payload = {
                 ...payload,
                 forked_from_id: session.forkedFrom!,
@@ -965,8 +965,7 @@ function codexSession(
   };
   const share = profile.lineTypeShare;
   const usageRecordShare =
-    (share["token_usage_record"] ?? 0) /
-    Math.max(share["event_msg/token_count"] ?? 1, Number.EPSILON);
+    (share.token_usage_record ?? 0) / Math.max(share["event_msg/token_count"] ?? 1, Number.EPSILON);
   const state: CodexState = {
     ordinal: 0,
     nowMs: startMs,

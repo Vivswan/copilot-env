@@ -200,7 +200,7 @@ function entryVerdict(
     return stale("the config file could not be read or parsed");
   }
   if (!isRecord(doc)) return stale("the config file is not a JSON object");
-  const gateway = doc["inferenceGatewayBaseUrl"];
+  const gateway = doc.inferenceGatewayBaseUrl;
   // What a rewire of this target bakes: renderDirectWiring, the same overlay-over-the-slot every
   // re-render takes. A Direct slot holding no pair is stale by construction: nothing in the entry
   // may vouch for itself, and the reconcile never lands the pair (the repair command does, together
@@ -234,7 +234,7 @@ function entryVerdict(
   if (`${JSON.stringify(rewrite, null, 2)}\n` !== raw) {
     return stale("the managed keys drifted (a rewire would change the entry)");
   }
-  const rows = doc["inferenceModels"];
+  const rows = doc.inferenceModels;
   if (target.mode === "direct" && (!Array.isArray(rows) || rows.length === 0)) {
     return stale("no model rows (re-run `agent profile sync --claude` online)");
   }
@@ -252,11 +252,11 @@ function expectedCredential(
   credential: CredentialWiring["kind"],
 ): DesktopCredential | { stale: string } {
   if (credential === "static") {
-    if (doc["inferenceCredentialHelper"] !== undefined) {
+    if (doc.inferenceCredentialHelper !== undefined) {
       return { stale: "a credential helper is still recorded, but static-key covers Claude" };
     }
-    const key = doc["inferenceGatewayApiKey"];
-    if (doc["inferenceCredentialKind"] !== "static" || typeof key !== "string" || key === "") {
+    const key = doc.inferenceGatewayApiKey;
+    if (doc.inferenceCredentialKind !== "static" || typeof key !== "string" || key === "") {
       return { stale: "no static key recorded, but static-key covers Claude" };
     }
     const leftover = presentDesktopHelperScripts(rootHome).find(
@@ -268,7 +268,7 @@ function expectedCredential(
     return { kind: "static", token: key };
   }
   const helper = desktopHelperPath(rootHome, target.mode, target.profile);
-  const recorded = doc["inferenceCredentialHelper"];
+  const recorded = doc.inferenceCredentialHelper;
   if (recorded !== helper) {
     return { stale: `credential helper ${String(recorded)}, expected ${helper}` };
   }

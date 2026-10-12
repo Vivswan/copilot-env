@@ -391,7 +391,7 @@ test("static-key bakes the bearer as http_headers.Authorization with no auth tab
     credential: COMMAND,
   });
   table = provider(directHome);
-  expect(asRecord(table.http_headers)["Authorization"]).toBeUndefined();
+  expect(asRecord(table.http_headers).Authorization).toBeUndefined();
   expect(asRecord(table.http_headers)["User-Agent"]).toBe(
     `codex_exec/${FALLBACK_CODEX_UA_VERSION}`,
   );

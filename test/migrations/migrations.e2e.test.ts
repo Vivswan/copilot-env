@@ -1454,7 +1454,7 @@ test("4.0.9 profile verb tree: the default's MCP registration moves to `agent pr
   expect(doc.mcpServers["copilot-env"]?.args).toEqual(
     agentLauncherCommand(["profile", "mcp", "--serve"]).args,
   );
-  expect(doc.mcpServers["theirs"]).toEqual({ type: "stdio", command: "x", args: [] });
+  expect(doc.mcpServers.theirs).toEqual({ type: "stdio", command: "x", args: [] });
   // Idempotent: the second run finds the new shape and writes nothing.
   const before = fingerprintTree(dir);
   await captureChannels(() => moveProfilesToVerbTree());

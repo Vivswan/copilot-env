@@ -79,7 +79,7 @@ live(
     // What claude sent: the settings' bearer (present; aimock redacts its value) and custom
     // headers, the pinned model, a stream.
     const request = await fake.lastRequest("messages");
-    expect(request?.headers["authorization"]).toBeDefined();
+    expect(request?.headers.authorization).toBeDefined();
     expect(request?.headers["user-agent"]).toBe(FAKE_USER_AGENT);
     expect(request?.headers["openai-intent"]).toBe("conversation-edits");
     expect(request?.headers["anthropic-version"]).toBe("2023-06-01");

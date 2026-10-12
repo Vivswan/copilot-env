@@ -69,7 +69,7 @@ function managedMcpServers(profile: Profile, existing: unknown): Record<string, 
   const { command, args } = agentLauncherCommand(mcpServeArgs(profile));
   const foreign = Array.isArray(existing)
     ? existing.filter(
-        (row): row is Record<string, unknown> => isRecord(row) && row["name"] !== MCP_SERVER_NAME,
+        (row): row is Record<string, unknown> => isRecord(row) && row.name !== MCP_SERVER_NAME,
       )
     : [];
   return [...foreign, { name: MCP_SERVER_NAME, transport: "stdio", command: command, args: args }];
@@ -125,7 +125,7 @@ export function desktopConfigPayload(opts: DesktopPayloadOptions): Record<string
     doc.inferenceGatewayAuthScheme = "bearer";
   }
   doc.deploymentDisplayName = DESKTOP_DISPLAY_NAME;
-  doc.managedMcpServers = managedMcpServers(opts.profile, existing["managedMcpServers"]);
+  doc.managedMcpServers = managedMcpServers(opts.profile, existing.managedMcpServers);
   // Capability switches: everything on (user decision).
   doc.chatTabEnabled = true;
   doc.coworkTabEnabled = true;
@@ -149,7 +149,7 @@ export function desktopConfigPayload(opts: DesktopPayloadOptions): Record<string
   doc.disableEssentialTelemetry = true;
   doc.disableNonessentialTelemetry = true;
   doc.disableNonessentialServices = true;
-  const headers = existing["inferenceCustomHeaders"];
+  const headers = existing.inferenceCustomHeaders;
   if (opts.mode === "direct") {
     // directClientHeaders OMITS the integration id when null, so a rotation to a null identity must
     // drop the stale header rather than inherit it; user-added headers survive.
@@ -205,7 +205,7 @@ export function desktopModelsFromPicks(
 
 /** The entry's recorded inferenceModels rows when they are OUR shape, else null (fetch). */
 export function recordedModelRows(existing: Record<string, unknown>): DesktopModelSpec[] | null {
-  const rows = existing["inferenceModels"];
+  const rows = existing.inferenceModels;
   if (!Array.isArray(rows) || rows.length === 0) return null;
   const parsed: DesktopModelSpec[] = [];
   for (const row of rows) {
@@ -231,9 +231,9 @@ export function recordedModelRows(existing: Record<string, unknown>): DesktopMod
 export function ownMcpRow(
   doc: Record<string, unknown>,
 ): (Record<string, unknown> & { args: unknown[] }) | undefined {
-  const servers = doc["managedMcpServers"];
+  const servers = doc.managedMcpServers;
   const ours = Array.isArray(servers)
-    ? servers.find((row) => isRecord(row) && row["name"] === MCP_SERVER_NAME)
+    ? servers.find((row) => isRecord(row) && row.name === MCP_SERVER_NAME)
     : undefined;
   if (!isRecord(ours) || !Array.isArray(ours.args)) return undefined;
   return ours as Record<string, unknown> & { args: unknown[] };

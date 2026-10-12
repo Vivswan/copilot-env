@@ -91,14 +91,14 @@ function tmpHome(): string {
 test("daemonLifecycleEnv transports home, root, and the keep-port policy per daemon", () => {
   tmpHome();
   const defaults = daemonLifecycleEnv(null, new CopilotApiPaths());
-  expect(defaults["COPILOT_ENV_ROOT_HOME"]).toBe(dir);
-  expect(defaults["COPILOT_API_SQLITE_DB_PATH"]).toBe(new CopilotApiPaths().sqliteDb);
+  expect(defaults.COPILOT_ENV_ROOT_HOME).toBe(dir);
+  expect(defaults.COPILOT_API_SQLITE_DB_PATH).toBe(new CopilotApiPaths().sqliteDb);
   // The default daemon releases its port on auto-stop (DaemonPolicy.releasesPortOnStop).
-  expect(defaults["COPILOT_ENV_DAEMON_KEEP_PORT"]).toBe("0");
+  expect(defaults.COPILOT_ENV_DAEMON_KEEP_PORT).toBe("0");
   // A named profile's port is its stable reservation: the watchdog must keep it.
   const work = daemonLifecycleEnv(WORK, new CopilotApiPaths(WORK));
-  expect(work["COPILOT_ENV_DAEMON_KEEP_PORT"]).toBe("1");
-  expect(work["COPILOT_ENV_ROOT_HOME"]).toBe(dir);
+  expect(work.COPILOT_ENV_DAEMON_KEEP_PORT).toBe("1");
+  expect(work.COPILOT_ENV_ROOT_HOME).toBe(dir);
 });
 
 const UA = "codex_exec/1";

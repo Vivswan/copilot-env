@@ -153,7 +153,7 @@ function referencedDesktopHelpers(): Set<string> {
     } catch {
       continue; // an unparseable entry document names no helper
     }
-    const helper = isRecord(doc) ? doc["inferenceCredentialHelper"] : undefined;
+    const helper = isRecord(doc) ? doc.inferenceCredentialHelper : undefined;
     if (typeof helper === "string") referenced.add(helper);
   }
   return referenced;

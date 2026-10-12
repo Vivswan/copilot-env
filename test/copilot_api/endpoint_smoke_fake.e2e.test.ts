@@ -63,14 +63,14 @@ test("the claude smoke: the haiku pick, then one 1-token /v1/messages call under
   expect(catalog?.headers["user-agent"]).toBe("codex_exec/1.0.0");
   expect(catalog?.headers["copilot-integration-id"]).toBe("vscode-chat");
   expect(catalog?.headers["openai-intent"]).toBe("conversation-edits");
-  expect(catalog?.headers["authorization"]).toBe("Bearer tok");
+  expect(catalog?.headers.authorization).toBe("Bearer tok");
 
   // The ping is journaled by aimock, which redacts the credential's value; the identity headers
   // ride on the ping exactly as on the catalog look.
   const ping = await fake.lastRequest("messages");
   expect(ping?.path).toBe("/v1/messages");
   expect(ping?.headers["anthropic-version"]).toBe("2023-06-01");
-  expect(ping?.headers["authorization"]).toBeDefined();
+  expect(ping?.headers.authorization).toBeDefined();
   expect(ping?.headers["user-agent"]).toBe("codex_exec/1.0.0");
   expect(ping?.headers["copilot-integration-id"]).toBe("vscode-chat");
   expect(ping?.headers["openai-intent"]).toBe("conversation-edits");
@@ -89,7 +89,7 @@ test("the codex smoke: the reduced-tier pick, then one capped /responses call wi
   const ping = await fake.lastRequest("responses");
   expect(ping?.path).toBe("/responses");
   expect(ping?.headers["anthropic-version"]).toBeUndefined();
-  expect(ping?.headers["authorization"]).toBeDefined();
+  expect(ping?.headers.authorization).toBeDefined();
   expect(ping?.headers["user-agent"]).toBe("codex_exec/1.0.0");
   expect(ping?.headers["copilot-integration-id"]).toBe("vscode-chat");
   expect(ping?.headers["openai-intent"]).toBe("conversation-edits");

@@ -19,10 +19,11 @@ export interface Observation {
 }
 
 /** Its data home, both agent homes, and a port pin that keeps a real proxy on 4141 out of the
- *  picture. */
-export function scratchHome(prefix: string): ScratchHome {
+ *  picture. `port` is one the caller probed and released (freePort in test/helpers/net.ts): files
+ *  run as concurrent processes, and two homes pinning one literal port made their daemons collide. */
+export function scratchHome(prefix: string, port: number): ScratchHome {
   const home = tempDir(prefix);
-  writeFileSync(join(home, "state.json"), JSON.stringify({ global: { "daemon.port": 4199 } }));
+  writeFileSync(join(home, "state.json"), JSON.stringify({ global: { "daemon.port": port } }));
   return {
     home,
     env: {

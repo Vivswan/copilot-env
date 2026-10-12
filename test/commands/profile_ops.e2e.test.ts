@@ -6,6 +6,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { desktopEntryName, META_FILENAME } from "../../src/claude/desktop_library.ts";
+import { freePort } from "../helpers/net.ts";
 import {
   expectIdentical,
   observe,
@@ -15,7 +16,10 @@ import {
 } from "../helpers/scratch_home.ts";
 import { expect, test } from "../helpers/testing.ts";
 
-const scratchHome = () => scratchHomeOf("copilot-profile-ops-");
+/** This file's own daemon port: the files run as concurrent processes, so a shared literal would collide. */
+const PORT = await freePort();
+
+const scratchHome = () => scratchHomeOf("copilot-profile-ops-", PORT);
 
 interface HealthReport {
   profile: string | null;
@@ -32,7 +36,7 @@ test("each runtime verb reaches its command on the named profile: env on the por
   const scratch = scratchHome();
   seedProxyProfiles(scratch);
   // work's port is the one its daemon would bind, which its runtime health reports; the env
-  // the shell evals points there, never at the default's pinned 4199.
+  // the shell evals points there, never at the default's pinned port.
   const runtime = observe(["profile", "work", "health", "--scope", "runtime", "--json"], scratch);
   expect(runtime.exitCode).toBe(1);
   const runtimeReport = JSON.parse(runtime.stdout) as HealthReport;
@@ -40,7 +44,7 @@ test("each runtime verb reaches its command on the named profile: env on the por
   const portCheck = runtimeReport.checks.find((c) => c.id === "runtime.port");
   expect(portCheck).toMatchObject({ status: "fail", fix: "agent profile work start" });
   const port = portCheck?.value?.port;
-  expect(port).not.toBe(4199);
+  expect(port).not.toBe(PORT);
   const env = observe(["profile", "work", "env"], scratch);
   expect(env.exitCode).toBe(0);
   expect(env.stdout).toBe(`export ANTHROPIC_BASE_URL='http://127.0.0.1:${port}'\n`);
@@ -49,7 +53,7 @@ test("each runtime verb reaches its command on the named profile: env on the por
   expect(powershell.stdout).toBe(`$env:ANTHROPIC_BASE_URL = 'http://127.0.0.1:${port}'\n`);
   expect(observe(["profile", "env"], scratch)).toMatchObject({
     exitCode: 0,
-    stdout: "export ANTHROPIC_BASE_URL='http://127.0.0.1:4199'\n",
+    stdout: `export ANTHROPIC_BASE_URL='http://127.0.0.1:${PORT}'\n`,
   });
   // The auth scope narrowed to work is its one credential check, passing on the stored token.
   const auth = observe(["profile", "work", "health", "--scope", "auth", "--json"], scratch);
@@ -197,7 +201,7 @@ test("profile settings is one profile's bundle: a named profile's slot and secti
   const whole = observe(["settings", "--export"], scratch).stdout;
   const wholeBundle = JSON.parse(whole) as Bundle;
   expect(wholeBundle.config.global).toEqual({
-    "daemon.port": 4199,
+    "daemon.port": PORT,
     "daemon.strict-port": true,
     "proxy.small-model": "gpt-x",
   });
@@ -222,7 +226,7 @@ test("profile settings is one profile's bundle: a named profile's slot and secti
     observe(["settings", "--export", "--with-credentials"], twin).stdout,
   ) as Bundle;
   expect(twinStore.config).toEqual({
-    global: { "daemon.port": 4199 },
+    global: { "daemon.port": PORT },
     profiles: { work: { passthrough: "off" } },
   });
   expect(twinStore.profiles.work).toMatchObject({
@@ -253,7 +257,7 @@ test("profile settings is one profile's bundle: a named profile's slot and secti
   expect(defaultId).toBeDefined();
   const defaultEntry = join(library, `${defaultId}.json`);
   const stale = readFileSync(defaultEntry, "utf8").replace(
-    "http://127.0.0.1:4199",
+    `http://127.0.0.1:${PORT}`,
     "http://127.0.0.1:4100",
   );
   expect(stale).not.toBe(readFileSync(defaultEntry, "utf8"));

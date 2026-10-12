@@ -6,6 +6,7 @@
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { changedPaths, plannedPaths } from "../helpers/dry_run.ts";
+import { freePort } from "../helpers/net.ts";
 import {
   expectIdentical,
   observe,
@@ -15,7 +16,10 @@ import {
 } from "../helpers/scratch_home.ts";
 import { expect, test } from "../helpers/testing.ts";
 
-const scratchHome = () => scratchHomeOf("copilot-profile-verbs-");
+/** This file's own daemon port: the files run as concurrent processes, so a shared literal would collide. */
+const PORT = await freePort();
+
+const scratchHome = () => scratchHomeOf("copilot-profile-verbs-", PORT);
 
 test("the verbs are reserved words, a flag before the verb is refused, and `help <verb>` works", () => {
   const scratch = scratchHome();
@@ -207,7 +211,7 @@ test("a named profile's verbs read that profile's slot and files, never the defa
   const claudeDefault = observe(["profile", "check", "--claude"], scratch);
   expect(claudeDefault.exitCode).toBe(2);
   expect(claudeDefault.stdout).toContain("Claude provider mode: proxy");
-  expect(claudeDefault.stdout).toContain("ANTHROPIC_BASE_URL: http://127.0.0.1:4199");
+  expect(claudeDefault.stdout).toContain(`ANTHROPIC_BASE_URL: http://127.0.0.1:${PORT}`);
   const codexDefault = observe(["profile", "check", "--codex"], scratch);
   expect(codexDefault.exitCode).toBe(2);
   expect(codexDefault.stdout).toContain("Codex provider mode: proxy");
@@ -282,8 +286,14 @@ test("add and del ask before a change: a script without --yes is refused, --yes 
   const change = observe(["profile", "work", "add", "--direct"], scratch);
   expect(change.exitCode).toBe(1);
   expect(change.stderr).toContain("pass --yes to switch the mode");
+  // The dry run skips the question; its landing still probes the credential against Copilot (the
+  // probe is a read, and no host override exists for a child), so the exit code is the live
+  // answer for a fake token and is not this row's claim.
   const planned = observe(["profile", "work", "add", "--direct", "--dry-run"], scratch);
-  expect(planned.exitCode, planned.stderr).toBe(0);
+  expect(planned.stderr, planned.stderr).not.toContain("pass --yes to switch the mode");
+  expect(planned.stdout + planned.stderr, planned.stderr).toContain(
+    "Configuring profile 'work' for GitHub Copilot Direct",
+  );
   // del always asks.
   const del = observe(["profile", "work", "del"], scratch);
   expect(del.exitCode).toBe(1);

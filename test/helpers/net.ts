@@ -1,6 +1,7 @@
 // A real listening loopback socket, so a port probe meets a real listener and a busy-port case
 // is a port something really holds.
 import { createServer, type Server } from "node:net";
+import getPort from "get-port";
 
 export function listenEphemeral(host = "127.0.0.1"): Promise<{ server: Server; port: number }> {
   return new Promise((resolve, reject) => {
@@ -21,9 +22,7 @@ export function closeServer(server: Server): Promise<void> {
   return new Promise((resolve) => server.close(() => resolve()));
 }
 
-/** A port the OS just handed out and this process released again. */
-export async function freePort(): Promise<number> {
-  const { server, port } = await listenEphemeral();
-  await closeServer(server);
-  return port;
+/** A loopback port the OS just handed out and this process released again (get-port's probe). */
+export function freePort(): Promise<number> {
+  return getPort({ host: "127.0.0.1" });
 }

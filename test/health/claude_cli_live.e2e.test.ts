@@ -24,8 +24,9 @@ import { afterEach, beforeEach, expect, tempDir, test } from "../helpers/testing
 const LIVE_ENV = "COPILOT_ENV_LIVE_CLIS";
 const claudePath = resolveCommand("claude");
 const live = test.skipIf(claudePath === null && !process.env[LIVE_ENV]);
-/** A cold CLI start on a CI runner takes a while; the fake itself answers in milliseconds. */
-const TEST_TIMEOUT_MS = 120_000;
+/** A cold CLI start on a loaded CI runner takes a while (the Windows leg has needed two minutes
+ *  for the first answer); the fake itself answers in milliseconds. */
+const TEST_TIMEOUT_MS = 180_000;
 
 let fake: FakeModelEndpoint;
 let home = "";
@@ -61,7 +62,10 @@ live(
   "a Direct-shaped wiring answers: exit 0, a success result line, and the baked identity on the wire",
   async () => {
     const run = await runClaude("ok");
-    expect(run.exitCode, run.stderr).toBe(0);
+    expect(
+      run.exitCode,
+      run.timedOut ? "claude did not finish inside the budget" : run.stderr,
+    ).toBe(0);
     // The health probe's own read of the same stream: the model answered.
     expect(claudeLiveLaunch(home, null).answered(run.stdout)).toBe(true);
     expect(resultLine(run.stdout)).toMatchObject({

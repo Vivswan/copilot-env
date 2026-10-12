@@ -54,7 +54,12 @@ function fancyAt(
   color = false,
 ): { log: ReturnType<typeof createConsola>; lines: () => string[] } {
   const out: string[] = [];
-  const sink = { write: (s: string) => (out.push(s), true) } as unknown as NodeJS.WriteStream;
+  const sink = {
+    write: (s: string) => {
+      out.push(s);
+      return true;
+    },
+  } as unknown as NodeJS.WriteStream;
   const log = wrapToTerminal(
     createConsola({
       level: 5,

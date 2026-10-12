@@ -1121,9 +1121,12 @@ test("loginWithGhCli: an UNPROVEN look says could-not-check; a proven miss quote
     "could not check gh authentication (`gh auth token` did not complete (killed)) - retry `agent auth`",
   );
   asked.length = 0;
-  expect(() => loginWithGhCli(SOLE_WORK, (ghUser) => (asked.push(ghUser), killed))).toThrow(
-    "could not check gh authentication",
-  );
+  expect(() =>
+    loginWithGhCli(SOLE_WORK, (ghUser) => {
+      asked.push(ghUser);
+      return killed;
+    }),
+  ).toThrow("could not check gh authentication");
   expect(asked).toEqual(["work"]);
 });
 

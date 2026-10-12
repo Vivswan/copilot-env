@@ -4,6 +4,7 @@ import {
   classifyPayloads,
   comparable,
   deltaCell,
+  failureLine,
   renderWindowTable,
 } from "../../.github/scripts/cost-metrics.ts";
 import { ROOT, runScript } from "../helpers/run.ts";
@@ -109,6 +110,37 @@ test("the window table has a row per measure with base, head, and a signed delta
   // A percent that rounds to zero keeps a plus; a zero base gets the delta without a percent.
   expect(deltaCell(9999, 10000, " ms")).toBe("-1 ms (+0.0%)");
   expect(deltaCell(0, 0, "")).toBe("+0");
+  // A base that produced no payload under the declared intent: n/a cells, no deltas, and the
+  // comparison row says what stood in for a comparison.
+  expect(
+    renderWindowTable({
+      window: "whole tree",
+      base: undefined,
+      head: { coldMs: 3997, warmMs: 353, noIndexMs: 3601, bytesRead: 0 },
+      outcome: { kind: "head-only", reason: "error: Cannot find package 'commander'" },
+      runtimeKeyPresent: true,
+    }).slice(4),
+  ).toEqual([
+    "| cold | n/a | 3997 ms |  |",
+    "| warm | n/a | 353 ms |  |",
+    "| --no-index | n/a | 3601 ms |  |",
+    "| warm bytes read | n/a | 0 |  |",
+    "| JSON vs base |  |  | no base payload (declared intended) |",
+  ]);
+});
+
+test("failureLine picks the child's first stderr line out of a run failure, or the message itself", () => {
+  expect(
+    failureLine(
+      new Error(
+        "bun run src/cli.ts cost --help exited 1\nerror: Cannot find package 'commander' from '/work/src/cli.ts'\n    at ...",
+      ),
+    ),
+  ).toBe("error: Cannot find package 'commander' from '/work/src/cli.ts'");
+  expect(failureLine(new Error("base: cost --json printed nothing\n"))).toBe(
+    "base: cost --json printed nothing",
+  );
+  expect(failureLine("spawn bun ENOENT")).toBe("spawn bun ENOENT");
 });
 
 test("the verdict step exits 1 on a recorded differs, 0 on a match, and 0 on a diff the label declared intended", () => {

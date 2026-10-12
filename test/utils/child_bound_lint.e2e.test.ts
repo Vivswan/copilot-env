@@ -32,9 +32,15 @@ const SOURCES: [source: string, diagnostics: number][] = [
   'spawnSync(command, args, { stdio: "inherit", ...options });',
   'spawnSync("ps", ["-U"], { env: { timeout: "1" } });',
   'execFile("ps", ["-U"], (error) => { const retry = { timeout: 1 }; });',
-  // A `timeout` the library reads as none.
+  // A `timeout` that is no bound by construction: `undefined` or 0, a conditional with
+  // `undefined` behind any arm, an optional chain, a call, arithmetic.
   'spawnSync("ps", ["-U"], { timeout: undefined, killSignal: "SIGKILL" });',
+  'spawnSync("ps", ["-U"], { timeout: 0, killSignal: "SIGKILL" });',
   'spawnSync("npm", ["view"], { timeout: capture ? 30_000 : undefined, killSignal: "SIGKILL" });',
+  'spawnSync("ps", ["-U"], { timeout: slow ? 5000 : capture ? 5000 : undefined });',
+  'spawnSync("ps", ["-U"], { timeout: opts?.timeout });',
+  'spawnSync("ps", ["-U"], { timeout: bound() });',
+  'spawnSync("ps", ["-U"], { timeout: 5 * 1000 });',
   // An alias would hide the call from the name list, so the import is the diagnostic: one for the
   // import, none for the call through it.
   'import { spawnSync as probe } from "node:child_process";\nprobe("ps", ["-U"], { encoding: "utf8" });',
@@ -44,9 +50,10 @@ const SOURCES: [source: string, diagnostics: number][] = [
 ]
   .map((source): [string, number] => [source, 1])
   .concat([
-    // An options literal with its own `timeout`, as a value or shorthand, is bounded, wherever
-    // the overload puts it.
+    // An options literal whose `timeout` is a number literal, a named constant, a member, or the
+    // shorthand is bounded, wherever the overload puts it.
     ['spawnSync("ps", ["-U"], { encoding: "utf8", timeout: 5000, killSignal: "SIGKILL" });', 0],
+    ['spawnSync("ps", ["-U"], { timeout: PROCESS_SCAN_TIMEOUT_MS, killSignal: "SIGKILL" });', 0],
     ['spawnSync("ps", ["-U"], { timeout });', 0],
     ['spawnSync("ps", { timeout: 5000, killSignal: "SIGKILL" });', 0],
     ['execFile("ps", ["-U"], { timeout: 5, killSignal: "SIGKILL" }, (error, stdout) => {});', 0],

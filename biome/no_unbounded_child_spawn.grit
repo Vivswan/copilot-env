@@ -4,27 +4,34 @@
 // node:child_process call in src/, so a new raw look cannot drop the bound unnoticed. biome.json
 // scopes it to src/.
 //
-// Flagged: a spawnSync/execFile/execFileSync/spawn call, bare or as a member, with no argument
-// that is an object literal carrying its own `timeout` member (a bound held in a variable or a
-// spread, a `timeout` nested under another key or set to `undefined`, all read as unbounded). A
-// one-argument `spawn` is not matched, bare or as a member: `spawn` is also an ordinary callback
-// name, and a Bun.spawn takes its options inside its one argument. An aliased import of one of
-// the four names from node:child_process is flagged too, since the call would then escape the
-// name list. A child that runs FOR the user (an installer, the agent launch, the daemon) is
-// excused at its call site with a biome-ignore naming why it runs for the user, never by path.
-// Teeth pinned by test/utils/child_bound_lint.e2e.test.ts.
+// The rule catches an ACCIDENTAL omission in the call shapes this repository writes: a direct or
+// member call of spawnSync/execFile/execFileSync/spawn whose options literal, at any argument
+// position, carries no `timeout` that is a bound by construction (a bound held in a variable or
+// a spread, a `timeout` nested under another key, computed, or `undefined`, all read as
+// unbounded). A one-argument `spawn` is not matched, bare or as a member: `spawn` is also an
+// ordinary callback name, and a Bun.spawn takes its options inside its one argument. An aliased
+// import of one of the four names from node:child_process is flagged too, since the call would
+// then escape the name list. Deliberately hiding a spawn (an optional call, a local alias, a
+// re-export, exec or fork) is out of scope. A child that runs FOR the user (an installer, the
+// agent launch, the daemon) is excused at its call site with a biome-ignore naming why it runs
+// for the user, never by path. Teeth pinned by test/utils/child_bound_lint.e2e.test.ts.
 language js(typescript)
 
-// A `timeout` that is `undefined`, outright or on one arm of a conditional, is no bound: the
-// library reads it as none.
+// A `timeout` is a bound only by construction: a computed, conditional or optional-chain value
+// can be `undefined` or 0 on some path, so a site that needs one names it as a constant first.
 pattern bounded_options() {
   JsObjectExpression(members=$members) where {
     $members <: some or {
       JsPropertyObjectMember(name=`timeout`, value=$value) where {
+        $value <: or {
+          JsNumberLiteralExpression(),
+          JsIdentifierExpression(),
+          JsStaticMemberExpression()
+        },
         not $value <: or {
+          `0`,
           `undefined`,
-          `$test ? $then : undefined`,
-          `$test ? undefined : $else`
+          includes "?."
         }
       },
       JsShorthandPropertyObjectMember(name=`timeout`)

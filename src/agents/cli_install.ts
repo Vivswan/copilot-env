@@ -10,6 +10,7 @@ import {
   cliSpawn,
   commandExists,
   findCommand,
+  LOOK_KILL_SIGNAL,
   resolveCommand,
   withPowershellChildEnv,
 } from "../utils/command.ts";
@@ -238,6 +239,10 @@ function resolveNpm(): string {
   return resolved;
 }
 
+/** `npm view` asks the registry and `npm ls -g` walks the global tree, seconds on a healthy machine,
+ *  so 30 s is a hang rather than a slow answer. */
+const NPM_READ_TIMEOUT_MS = 30_000;
+
 function spawnNpm(args: string[], capture: boolean): SpawnSyncReturns<string> {
   const npm = resolveNpm();
   // npm is a `#!/usr/bin/env node` shim, so found via the nvm fallback right after Node was
@@ -255,6 +260,7 @@ function spawnNpm(args: string[], capture: boolean): SpawnSyncReturns<string> {
     stdio: capture ? ["ignore", "pipe", "inherit"] : "inherit",
     shell: s.shell,
     env: childEnvWithPath([npmDir]),
+    ...(capture ? { timeout: NPM_READ_TIMEOUT_MS, killSignal: LOOK_KILL_SIGNAL } : {}),
   });
 }
 

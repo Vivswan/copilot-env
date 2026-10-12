@@ -271,20 +271,40 @@ test.skipIf(process.platform === "win32")(
 
 test("runCaptured: the launch-failure mark rides ONLY the synthesized exit", async () => {
   step("a child that prints ok");
-  const ok = await runCaptured(process.execPath, ["-e", "console.log('ok')"]);
+  const ok = await runCaptured(process.execPath, ["-e", "console.log('ok')"], { timeoutMs: 5000 });
   expect(ok.exitCode).toBe(0);
   expect(ok.launchFailed).toBeUndefined();
   expect(ok.stdout.trim()).toBe("ok");
 
   // The child's OWN nonzero exit is a completed look: pgrep's "ran, found nothing" exit 1 rides exactly here.
   step("a child that exits 1");
-  const ranNonzero = await runCaptured(process.execPath, ["-e", "process.exit(1)"]);
+  const ranNonzero = await runCaptured(process.execPath, ["-e", "process.exit(1)"], {
+    timeoutMs: 5000,
+  });
   expect(ranNonzero.exitCode).toBe(1);
   expect(ranNonzero.launchFailed).toBeUndefined();
 
   // ENOENT coerces to the SAME exit 1; the mark is the only thing separating it from a real exit 1.
   step("an executable that does not exist");
-  const missing = await runCaptured(join(tempDir("copilot-env-no-such-tool-"), "missing"), []);
+  const missing = await runCaptured(join(tempDir("copilot-env-no-such-tool-"), "missing"), [], {
+    timeoutMs: 5000,
+  });
   expect(missing.exitCode).toBe(1);
   expect(missing.launchFailed).toBe(true);
+
+  // Nothing in the runtime bounds a child, and a TERM handler would hold off a polite kill: the
+  // bound ends the look with the same mark, well inside any caller's own deadline.
+  step("a child that never exits and ignores TERM");
+  const started = performance.now();
+  const hung = await runCaptured(
+    process.execPath,
+    ["-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"],
+    { timeoutMs: 500 },
+  );
+  expect({ ...hung, inBound: performance.now() - started < 5000 }).toEqual({
+    exitCode: 1,
+    stdout: "",
+    launchFailed: true,
+    inBound: true,
+  });
 });

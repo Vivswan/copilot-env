@@ -10,6 +10,7 @@ import {
   MARKER as SHELL_MARKER,
 } from "../../src/shell/integration.ts";
 import { loadPricing } from "../../src/usage/pricing.ts";
+import { must } from "../../src/utils/assert.ts";
 import { getSanitizedHostname } from "../../src/utils/hostname.ts";
 import { MILLISECONDS_PER_DAY } from "../../src/utils/time.ts";
 import { agentHomeEnv } from "../helpers/env.ts";
@@ -405,7 +406,11 @@ test("launch --help documents the contract; bad invocations are boundary rejecti
 
 test("profile add reconciles the Desktop library after its write; --check reports drift", () => {
   const env = isolatedEnv();
-  const dataDir = join(env.COPILOT_API_HOME!, "claude-desktop");
+  const apiHome = must(
+    env.COPILOT_API_HOME,
+    "isolatedEnv() points the copilot-api home at a temp dir",
+  );
+  const dataDir = join(apiHome, "claude-desktop");
   const library = join(dataDir, "configLibrary");
   mkdirSync(library, { recursive: true });
   env.COPILOT_ENV_CI_CLAUDE_DESKTOP_DIR = dataDir;
@@ -416,7 +421,7 @@ test("profile add reconciles the Desktop library after its write; --check report
     `${JSON.stringify({ entries: [{ id: "old", name: "copilot-env: old" }] })}\n`,
   );
   writeFileSync(
-    join(env.COPILOT_API_HOME!, "state.json"),
+    join(apiHome, "state.json"),
     `${JSON.stringify({
       global: { "daemon.port": 4199 },
       ownership: { claudeDesktopPaths: [join(library, "old.json")] },

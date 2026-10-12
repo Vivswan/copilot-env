@@ -12,6 +12,7 @@ import {
   usageDbsUnderHome,
 } from "../copilot_api/paths.ts";
 import { isValidProfileName } from "../copilot_api/profile.ts";
+import { must } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import { isEnoentOrNotdir } from "../utils/fs.ts";
 import * as fs from "../utils/fs_facade.ts";
@@ -424,8 +425,7 @@ export function undatedUsage(report: ReadonlyUsageTotals): Map<string, ModelUsag
   }
   for (const dayModels of report.perDay.values()) {
     for (const [model, u] of dayModels) {
-      // record() puts every perDay model in byModel first.
-      const r = rest.get(model)!;
+      const r = must(rest.get(model), "record() puts every perDay model in byModel first");
       r.input -= u.input;
       r.output -= u.output;
       r.cacheRead -= u.cacheRead;

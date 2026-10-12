@@ -21,6 +21,7 @@ import {
   configKeyDef,
   isProxyProjected,
   OPENROUTER_MODELS_URL,
+  registryEntry,
 } from "../../src/copilot_api/config_registry.ts";
 import { anyTrackedDaemonAlive, trackedDaemonAlive } from "../../src/copilot_api/daemon.ts";
 import {
@@ -254,11 +255,11 @@ test("the registry parsers accept valid input and reject bad input with a clear 
   expect(configKeyDef("proxy.claude-auto-model")?.parse("claude-haiku-4.5")).toBe(
     "claude-haiku-4.5",
   );
-  const multiplier = configKeyDef("proxy.claude-token-multiplier")!;
+  const multiplier = registryEntry("proxy.claude-token-multiplier");
   expect(multiplier.parse("1.15")).toBe(1.15);
   expect(multiplier.parse("2")).toBe(2);
   expect(multiplier.parse(" 1.5 ")).toBe(1.5);
-  const pricingUrl = configKeyDef("cost.pricing-url")!;
+  const pricingUrl = registryEntry("cost.pricing-url");
   expect(pricingUrl.parse(" https://pricing.example/models?x=1 ")).toBe(
     "https://pricing.example/models?x=1",
   );
@@ -673,14 +674,14 @@ test("every registry key round-trips: a CLI-set value survives read() and reache
     if (def.scope === "profile") expect(data.global).not.toHaveProperty(def.key);
     // ... and the projection reads through the same schema, so a projected key sees it.
     if (isProxyProjected(def)) {
-      expect(projectedValue(projected, def.proxyPath!)).toBe(expected);
+      expect(projectedValue(projected, def.proxyPath)).toBe(expected);
     }
   }
 });
 
 test("codex.home: an absolute path as typed or `auto`; `~` and relative paths are refused with the reason", () => {
   tmpHome();
-  const def = configKeyDef("codex.home")!;
+  const def = registryEntry("codex.home");
   // Trimmed, never expanded or normalized: the export and the write use the exact spelling.
   expect(def.parse(`  ${ABS_CODEX_HOME}  `)).toBe(ABS_CODEX_HOME);
   expect(def.parse("AUTO")).toBe("AUTO");
@@ -1241,13 +1242,13 @@ test("projectedProxyConfig(): force keys always project (built-in default or sto
 test("one web-search default for both surfaces, and unset IS the default where the read sites layer their own", () => {
   // The proxy's own default must match the MCP tool's DEFAULT_WEB_SEARCH_MODEL, owned by
   // web_search.ts (which imports env_config, so the registry cannot reference it).
-  expect(configDefaultValue(configKeyDef("proxy.message-websearch-model")!)).toBe(
+  expect(configDefaultValue(registryEntry("proxy.message-websearch-model"))).toBe(
     DEFAULT_WEB_SEARCH_MODEL,
   );
   // Unset IS the default: a disabled override, a floating pin, and the update cooldown (whose
   // two read sites apply different defaults: none for `agent update`, 7 days for autoupdate).
   for (const key of ["proxy.claude-auto-model", "daemon.version", "update.cooldown"] as const) {
-    expect(configDefaultValue(configKeyDef(key)!)).toBeUndefined();
+    expect(configDefaultValue(registryEntry(key))).toBeUndefined();
   }
 });
 

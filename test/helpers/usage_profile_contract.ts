@@ -2,6 +2,7 @@
 // (usage_fixtures.ts): the strict schema, the closed label sets its record keys may carry, and
 // the quantile table both sides speak. Nothing here reads a file or draws a random number.
 import * as v from "valibot";
+import { must } from "../../src/utils/assert.ts";
 import { isRecord } from "../../src/utils/json.ts";
 
 export type UsageSource = "codex" | "claude";
@@ -289,7 +290,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 export function filenameShape(name: string): string {
   const rollout = /^rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-(.+)\.jsonl(\.zst)?$/.exec(name);
   if (rollout !== null) {
-    const parts = rollout[1]!.split("_");
+    const parts = must(rollout[1], "the id group always participates").split("_");
     const ids = parts.every((part) => UUID.test(part)) ? parts.map(() => "UUID").join("_") : "ID";
     return `rollout-9999-99-99T99-99-99-${ids}.jsonl${rollout[2] ?? ""}`;
   }

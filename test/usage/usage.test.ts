@@ -12,6 +12,7 @@ import {
   undatedUsage,
   usageReport,
 } from "../../src/usage/usage.ts";
+import { must } from "../../src/utils/assert.ts";
 import { dayKeyIn, localDayKey } from "../../src/utils/time.ts";
 import { afterEach, expect, removeDir, tempDir, test } from "../helpers/testing.ts";
 
@@ -134,7 +135,7 @@ test("record snapshots the increment, so an aliasing accumulator cannot double-c
   // Fold the report's OWN byModel entry back in. Without the snapshot, the
   // byModel fold doubles that entry in place and the perDay fold then reads the
   // doubled values: 10 + 20 = 30 instead of 20.
-  record(report, "2026-06-01", "m", report.byModel.get("m")!);
+  record(report, "2026-06-01", "m", must(report.byModel.get("m"), "m was recorded above"));
 
   const doubled = { input: 20, output: 10, cacheRead: 4, cacheCreation: 2, events: 2 };
   expect(report.byModel.get("m")).toEqual(doubled);

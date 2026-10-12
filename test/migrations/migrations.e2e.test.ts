@@ -73,6 +73,7 @@ import {
 import { dueMigrations, type Migration, runMigrations } from "../../src/migrations/index.ts";
 import type { LockedDaemonOutcome } from "../../src/migrations/legacy_daemon.ts";
 import { MARKER, MARKER_END } from "../../src/shell/integration.ts";
+import { must } from "../../src/utils/assert.ts";
 import { renderDryRun } from "../../src/utils/dry_run_report.ts";
 import { releaseFileLock } from "../../src/utils/file_lock.ts";
 import { getSanitizedHostname } from "../../src/utils/hostname.ts";
@@ -560,23 +561,24 @@ test("rewriteLegacyCodexTables moves the 3.5.6 tables to the managed auth block"
   );
   expect(rewriteLegacyCodexTables(doc)).toBe(true);
   const providers = doc.model_providers as Record<string, Record<string, unknown>>;
-  const main = providers["copilot-env"]!;
+  const table = (id: string) => must(providers[id], `the fixture declares a ${id} table`);
+  const main = table("copilot-env");
   expect(main.base_url).toBe("http://localhost:4141/v1");
   expect(main.user_extra).toBe("kept");
   expect((main.auth as Record<string, unknown>).command).toBe(proxyTokenCommand().command);
   expect((main.auth as Record<string, unknown>).args).toEqual(proxyTokenCommand().args);
-  const work = providers["copilot-env-work"]!;
+  const work = table("copilot-env-work");
   expect(work.env_key).toBeUndefined();
   expect((work.auth as Record<string, unknown>).args).toEqual(proxyTokenCommand(WORK).args);
-  expect((providers["copilot-env-win"]!.auth as Record<string, unknown>).args).toEqual(
+  expect((table("copilot-env-win").auth as Record<string, unknown>).args).toEqual(
     proxyTokenCommand(parseProfileName("win")).args,
   );
   expect(providers["copilot-env-old"]).toEqual({ base_url: "https://api.githubcopilot.com" });
-  expect((providers["copilot-env-mine"]!.auth as Record<string, unknown>).command).toBe(
+  expect((table("copilot-env-mine").auth as Record<string, unknown>).command).toBe(
     "/usr/local/bin/wrap",
   );
   for (const id of ["copilot-env-other", "copilot-env-extra"]) {
-    expect((providers[id]!.auth as Record<string, unknown>).command, id).toBe("/bin/sh");
+    expect((table(id).auth as Record<string, unknown>).command, id).toBe("/bin/sh");
   }
   expect(providers.other).toEqual({ base_url: "http://other/v1", env_key: "OTHER_KEY" });
   // Converged: a second pass changes nothing.

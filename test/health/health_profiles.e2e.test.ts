@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from "nod
 import { join } from "node:path";
 import { BASE_URL_ENV, proxyHelperCommand } from "../../src/claude/config.ts";
 import { configureCodexConfig } from "../../src/codex/config.ts";
-import { prepareLaunch } from "../../src/commands/launch.ts";
+import { type LaunchPlan, prepareLaunch } from "../../src/commands/launch.ts";
 import { CopilotEnvState } from "../../src/copilot_api/env_state.ts";
 import {
   resetIntegrationIdentityCache,
@@ -34,6 +34,7 @@ import {
 import { gatherFacts } from "../../src/health/probe.ts";
 import { type ProbeDeps, runLiveCli } from "../../src/health/probe_deps.ts";
 import type { CheckId, CheckResult, CheckStatus } from "../../src/health/types.ts";
+import { must } from "../../src/utils/assert.ts";
 import { dryRunChanges } from "../helpers/dry_run.ts";
 import { envSnapshot, isolateAgentHomes, isolateProxyHome } from "../helpers/env.ts";
 import { writeRunState } from "../helpers/fixtures.ts";
@@ -691,18 +692,26 @@ test("the --live launch is the launcher's start minus interactivity, never the D
       // The selector and the scrub are the launcher's own, read off its plan for the same profile.
       const {
         result: [claudePlan, codexPlan],
-      } = await dryRunChanges(async () => [
-        await prepareLaunch({ kind: "claude", profile, relaxed: false, args: [] }),
-        await prepareLaunch({ kind: "codex", profile, relaxed: false, args: [] }),
-      ]);
+      } = await dryRunChanges(
+        async (): Promise<[LaunchPlan, LaunchPlan]> => [
+          must(
+            await prepareLaunch({ kind: "claude", profile, relaxed: false, args: [] }),
+            "a wired profile has a claude launch plan",
+          ),
+          must(
+            await prepareLaunch({ kind: "codex", profile, relaxed: false, args: [] }),
+            "a wired profile has a codex launch plan",
+          ),
+        ],
+      );
       const selector = (args: string[], flag: string) => {
         const i = args.indexOf(flag);
         return i === -1 ? [] : args.slice(i, i + 2);
       };
-      expect(selector(claude.args, "--settings")).toEqual(selector(claudePlan!.args, "--settings"));
-      expect(selector(codex.args, "--profile")).toEqual(selector(codexPlan!.args, "--profile"));
-      expect(claude.omitEnv).toEqual(claudePlan!.scrub);
-      expect(codex.omitEnv).toEqual(codexPlan!.scrub);
+      expect(selector(claude.args, "--settings")).toEqual(selector(claudePlan.args, "--settings"));
+      expect(selector(codex.args, "--profile")).toEqual(selector(codexPlan.args, "--profile"));
+      expect(claude.omitEnv).toEqual(claudePlan.scrub);
+      expect(codex.omitEnv).toEqual(codexPlan.scrub);
       // External fact: Claude namespaces its keychain entry by CLAUDE_CONFIG_DIR, so exporting even
       // the default dir hides a keychain-held key from the probe that a real session reads.
       expect(claude.env).toEqual({});

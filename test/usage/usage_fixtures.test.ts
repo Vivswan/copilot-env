@@ -10,6 +10,7 @@ import { discoverCodexSessionRoots, readCodexSessions } from "../../src/usage/co
 import { parseEveryCandidate } from "../../src/usage/contribution.ts";
 import { canonicalModelName } from "../../src/usage/pricing.ts";
 import type { ModelUsage, ReadonlyUsageTotals } from "../../src/usage/usage.ts";
+import { must } from "../../src/utils/assert.ts";
 import { MILLISECONDS_PER_DAY } from "../../src/utils/time.ts";
 import { expect, tempDir, test } from "../helpers/testing.ts";
 import {
@@ -91,7 +92,7 @@ function textOf(file: string): string {
 function expectLedgerMatch(tree: GeneratedTree, got: Awaited<ReturnType<typeof readBack>>): void {
   expect([...got.codex.keys()].sort()).toEqual([...tree.expected.codex.keys()].sort());
   for (const [provider, expected] of tree.expected.codex) {
-    const report = got.codex.get(provider)!;
+    const report = must(got.codex.get(provider), "readBack reports every ledger provider");
     expect(byModel(report)).toEqual(byModel(canonical(expected)));
     expect(perDay(report)).toEqual(perDay(canonical(expected)));
   }
@@ -101,11 +102,15 @@ function expectLedgerMatch(tree: GeneratedTree, got: Awaited<ReturnType<typeof r
 
 /** The JSONL lines of the first file of `source` whose text carries `needle`. */
 function linesOf(tree: GeneratedTree, source: "codex" | "claude", needle: string) {
-  const file = tree.files.find((f) => f.source === source && textOf(f.path).includes(needle))!;
+  const file = must(
+    tree.files.find((f) => f.source === source && textOf(f.path).includes(needle)),
+    `a ${source} file carries ${needle}`,
+  );
   const lines = readFileSync(file.path, "utf8")
     .split("\n")
     .filter((l) => l !== "");
-  return { file, lines, at: lines.findIndex((l) => l.includes(needle)) };
+  const at = lines.findIndex((l) => l.includes(needle));
+  return { file, lines, at, line: must(lines[at], "the file was chosen for carrying the needle") };
 }
 
 test("generateUsageTree writes the pinned bytes, and the readers return exactly its ledger", async () => {
@@ -152,13 +157,13 @@ test("generateUsageTree writes the pinned bytes, and the readers return exactly 
   });
   expectLedgerMatch(plain, await readBack(plain));
   const claude = linesOf(plain, "claude", '"type":"assistant"');
-  const raised = JSON.parse(claude.lines[claude.at]!) as {
+  const raised = JSON.parse(claude.line) as {
     message: { usage: { output_tokens: number } };
   };
   raised.message.usage.output_tokens += 1_000;
   writeFileSync(claude.file.path, `${[...claude.lines, JSON.stringify(raised)].join("\n")}\n`);
   const codex = linesOf(plain, "codex", '"token_count"');
-  const extra = JSON.parse(codex.lines[codex.at]!) as {
+  const extra = JSON.parse(codex.line) as {
     payload: { info: { total_token_usage: { total_tokens: number } } };
   };
   extra.payload.info.total_token_usage.total_tokens += 1;
@@ -168,7 +173,7 @@ test("generateUsageTree writes the pinned bytes, and the readers return exactly 
   expect(
     [...plain.expected.codex].some(
       ([provider, expected]) =>
-        JSON.stringify(byModel(tampered.codex.get(provider)!)) !==
+        JSON.stringify(byModel(must(tampered.codex.get(provider), "a ledger provider"))) !==
         JSON.stringify(byModel(canonical(expected))),
     ),
   ).toBe(true);
@@ -180,7 +185,7 @@ test("generateUsageTree writes the pinned bytes, and the readers return exactly 
     adversarial: false,
   });
   const target = linesOf(shifted, "claude", '"type":"assistant"');
-  const moved = JSON.parse(target.lines[target.at]!) as { timestamp: string };
+  const moved = JSON.parse(target.line) as { timestamp: string };
   moved.timestamp = new Date(Date.parse(moved.timestamp) + MILLISECONDS_PER_DAY).toISOString();
   target.lines[target.at] = JSON.stringify(moved);
   writeFileSync(target.file.path, `${target.lines.join("\n")}\n`);

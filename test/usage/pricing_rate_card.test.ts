@@ -168,7 +168,7 @@ const RESHAPED: { name: string; reshape: (text: string) => string; problem: stri
     // A file with no rows is not an empty card: that would price every model from the list and
     // be cached for a day.
     name: "every row removed",
-    reshape: (text) => text.split(/\n(?=- model:)/)[0]!,
+    reshape: (text) => text.split(/\n(?=- model:)/)[0] ?? "",
     problem: "the rate card is not a list of rows",
   },
   {

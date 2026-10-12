@@ -75,6 +75,7 @@ import { OwnershipLedger } from "../../src/copilot_api/ownership.ts";
 import { CopilotApiPaths, resolveRootHome } from "../../src/copilot_api/paths.ts";
 import type { Profile } from "../../src/copilot_api/profile.ts";
 import { parseProfileName } from "../../src/copilot_api/profile.ts";
+import { must } from "../../src/utils/assert.ts";
 import { agentLauncherCommand } from "../../src/utils/root.ts";
 import { linesNaming } from "../helpers/dry_run.ts";
 import { envSnapshot, isolateAgentHomes, resetExitCode } from "../helpers/env.ts";
@@ -1618,9 +1619,12 @@ test("an interrupted removal's unlisted claim is reported, listed for the dry ru
   writeFileSync(blankPath, "{}\n");
   // The blank one names no wiring now, so the profile's wire mints a sibling beside it.
   await wireClaudeDesktopEntry(directWire(WORK));
-  const besideBlank = (metaOf(library).entries as { id: string }[])
-    .map((e) => join(library, `${e.id}.json`))
-    .find((p) => p !== blankPath && p !== configPath)!;
+  const besideBlank = must(
+    (metaOf(library).entries as { id: string }[])
+      .map((e) => join(library, `${e.id}.json`))
+      .find((p) => p !== blankPath && p !== configPath),
+    "the profile's wire minted a sibling entry beside the blank one",
+  );
   prune();
   const unknown = await captureAllWrites(() => reconcileClaudeDesktopWiring());
   expect(unknown).toContain(`${blankPath} carries no copilot-env wiring`);
@@ -1692,7 +1696,7 @@ test("a renamed owned entry is ours by path: rewired in place, name kept, unmana
   await wireClaudeDesktopEntry(directWire());
   const configPath = firstEntryPath(library);
   const meta = metaOf(library);
-  (meta.entries as { name: string }[])[0]!.name = "Mine now";
+  must((meta.entries as { name: string }[])[0], "the wire minted an entry").name = "Mine now";
   writeFileSync(join(library, "_meta.json"), `${JSON.stringify(meta)}\n`);
   const target: DesktopTarget = { profile: null, mode: "direct" };
   // Still the default's entry: judged against its target, never an orphan.
@@ -1750,7 +1754,8 @@ test("a renamed owned entry is ours by path: rewired in place, name kept, unmana
   // Renamed to ANOTHER wiring's seed name, it is still the default's and no obstacle to
   // that wiring: the profile gets its own entry (the picker twin is the user's doing).
   const twin = metaOf(library);
-  (twin.entries as { name: string }[])[0]!.name = "copilot-env: work";
+  must((twin.entries as { name: string }[])[0], "the wire minted an entry").name =
+    "copilot-env: work";
   writeFileSync(join(library, "_meta.json"), `${JSON.stringify(twin)}\n`);
   // A named Direct slot must exist for its pair to land (what `agent profile <name> add` commits).
   new CopilotEnvState().commitProfile(WORK, {

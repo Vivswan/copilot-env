@@ -17,7 +17,7 @@ import { fileSha256 } from "../../src/install/checksums.ts";
 import { verifyReleaseProvenance } from "../../src/install/provenance.ts";
 import { describe, expect, tempDir, test } from "../helpers/testing.ts";
 
-const FIXTURES = join(import.meta.dirname!, "..", "fixtures", "provenance", "v4.0.0");
+const FIXTURES = join(import.meta.dirname, "..", "fixtures", "provenance", "v4.0.0");
 const BUNDLE = readFileSync(join(FIXTURES, ATTESTATION_NAME), "utf8");
 const TRUSTED_ROOT = TrustedRoot.fromJSON(
   JSON.parse(readFileSync(join(FIXTURES, "trusted_root.json"), "utf8")),

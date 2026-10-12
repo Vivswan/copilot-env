@@ -8,6 +8,7 @@ import {
   isCodexUsageLine,
   scrubJsonl,
 } from "../../scripts/usage/corpus/scrub.ts";
+import { must } from "../../src/utils/assert.ts";
 import { agentHomeEnv } from "../helpers/env.ts";
 import { ROOT, runCli, runScript } from "../helpers/run.ts";
 import { describe, expect, tempDir, test } from "../helpers/testing.ts";
@@ -124,8 +125,8 @@ describe("usage corpus scrub", () => {
     });
     const blocks = field(parsed, "message", "content") as Json[];
     expect(blocks[0]).toEqual({ type: "text", text: "SCRUBBED", citations: null });
-    expect(blocks[1]!.name).toBe("Read");
-    expect(blocks[1]!.input).toEqual({ SCRUBBED_KEY_0: "SCRUBBED", SCRUBBED_KEY_1: 0 });
+    expect(blocks[1]?.name).toBe("Read");
+    expect(blocks[1]?.input).toEqual({ SCRUBBED_KEY_0: "SCRUBBED", SCRUBBED_KEY_1: 0 });
     expect(field(parsed, "toolUseResult", "SCRUBBED_KEY_2")).toBe(parsed.uuid); // the ref, pseudonymized
     expect(field(parsed, "toolUseResult", "SCRUBBED_KEY_3")).toBe(0); // the count, a placeholder
     expect(Object.values(parsed.settings as Json)).toEqual([0, 0, "SCRUBBED", 0]);
@@ -191,8 +192,8 @@ describe("usage corpus scrub", () => {
     expect(codex.usageLines).toBe(1);
     for (const secret of ["octocat", "secret", thread]) expect(codex.text).not.toContain(secret);
     const [meta, turn, count] = codex.text.split("\n").map((l) => JSON.parse(l) as Json);
-    expect(meta!.type).toBe("session_meta");
-    expect(meta!.timestamp).toBe("2026-09-05T00:35:24.019Z");
+    expect(meta?.type).toBe("session_meta");
+    expect(meta?.timestamp).toBe("2026-09-05T00:35:24.019Z");
     expect(field(meta, "payload", "id")).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-/);
     expect(field(meta, "payload", "session_id")).toBe(field(meta, "payload", "id"));
     expect(field(meta, "payload", "forked_from_id")).not.toBe(field(meta, "payload", "id"));
@@ -200,9 +201,9 @@ describe("usage corpus scrub", () => {
     expect(field(meta, "payload", "cli_version")).toBe("0.153.4");
     expect(field(meta, "payload", "cwd")).toBe("SCRUBBED");
     expect(field(meta, "payload", "base_instructions", "text")).toBe("SCRUBBED");
-    expect(turn!.type).toBe("turn_context");
+    expect(turn?.type).toBe("turn_context");
     expect(field(turn, "payload", "model")).toBe("gpt-5.4");
-    expect(count!.type).toBe("event_msg");
+    expect(count?.type).toBe("event_msg");
     expect(field(count, "payload", "type")).toBe("token_count");
     expect(field(count, "payload", "info", "last_token_usage")).toEqual({
       input_tokens: 7895,
@@ -252,7 +253,7 @@ describe("usage corpus recorder", () => {
         const lines = result.stdout.split(/\r?\n/);
         expect(lines).toHaveLength(2);
         expect(lines[1]).toBe("");
-        const summary = JSON.parse(lines[0]!) as Json;
+        const summary = JSON.parse(must(lines[0], "the summary is stdout's one line")) as Json;
         expect(summary.failures).toEqual([]);
         expect(field(summary, "usageLines", "claude") as number).toBeGreaterThan(0);
         expect(field(summary, "usageLines", "codex") as number).toBeGreaterThan(0);
@@ -270,6 +271,8 @@ describe("usage corpus recorder", () => {
         expect(cost.exitCode).toBe(0);
         const report: unknown = JSON.parse(cost.stdout);
         const served = summary.fakeUsage as Record<string, Record<string, number>>;
+        const servedCodex = must(served.codex, "the fake endpoint served codex usage");
+        const servedClaude = must(served.claude, "the fake endpoint served claude usage");
         const codex = field(
           report,
           "codexSessions",
@@ -280,8 +283,8 @@ describe("usage corpus recorder", () => {
         );
         const claude = field(report, "claudeSessions", "usageByModel", "claude-sonnet-4.6");
         for (const bucket of ["input", "cacheRead", "cacheCreation", "output"]) {
-          expect(field(codex, bucket)).toBe(served.codex![bucket]);
-          expect(field(claude, bucket)).toBe(served.claude![bucket]);
+          expect(field(codex, bucket)).toBe(servedCodex[bucket]);
+          expect(field(claude, bucket)).toBe(servedClaude[bucket]);
         }
       } finally {
         rmSync(parent, { recursive: true, force: true });

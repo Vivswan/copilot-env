@@ -15,6 +15,7 @@ import {
   walkClaudeSessions,
 } from "../../src/usage/claude_sessions.ts";
 import { parseEveryCandidate, type WalkedFile } from "../../src/usage/contribution.ts";
+import { must } from "../../src/utils/assert.ts";
 import { errMessage } from "../../src/utils/error.ts";
 import { captureAllWrites } from "../helpers/output.ts";
 import {
@@ -29,7 +30,7 @@ test("readClaudeSessions counts an unterminated final line once its LF lands", a
   const scenario = scenarioNamed(CLAUDE_SCENARIOS, "does not count an unterminated final line");
   const { roots, files } = scenario.build(tempDir("claude-sessions-"));
   scenario.check(await readClaudeSessions(roots, undefined, undefined, parseEveryCandidate));
-  appendFileSync(files![0]!, "\n");
+  appendFileSync(must(files?.[0], "the scenario builds one transcript file"), "\n");
   expect(
     (await readClaudeSessions(roots, undefined, undefined, parseEveryCandidate)).byModel.get(
       "claude-opus-4.8",
@@ -155,7 +156,7 @@ test("walkClaudeSessions reports every transcript with its candidacy verdict, as
   expect(walked.map((f) => f.path)).toEqual([fresh, nested, stale]);
   expect(walked.map((f) => f.candidate)).toEqual([true, true, false]);
   expect(walked.every((f) => f.resumable)).toBe(true);
-  expect(walked[0]!.size).toBe(statSync(fresh).size);
+  expect(walked[0]?.size).toBe(statSync(fresh).size);
 });
 
 // File symlinks need a privilege on Windows that CI runners do not always hold.

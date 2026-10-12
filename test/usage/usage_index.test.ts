@@ -38,6 +38,7 @@ import {
   USAGE_INDEX_LOCK_NAME,
   type UsageIndex,
 } from "../../src/usage/index.ts";
+import { must } from "../../src/utils/assert.ts";
 import { releaseFileLock, tryAcquireFileLock } from "../../src/utils/file_lock.ts";
 import { captureAllWrites } from "../helpers/output.ts";
 import { afterEach, expect, removeDir, tempDir, test } from "../helpers/testing.ts";
@@ -557,7 +558,8 @@ for (const { name, seedFingerprint, sabotage, openFingerprint, rebuilds, line } 
     });
     expect(out.split("rebuilding the usage index").length - 1).toBe(rebuilds ? 1 : 0);
     if (line !== undefined) expect(out).toContain(line);
-    const result = runReconcile(reopened!.reconcile, [walked(a), walked(b)]);
+    const live = must(reopened, "open() handed back the reopened index");
+    const result = runReconcile(live.reconcile, [walked(a), walked(b)]);
     expect(result.stats).toEqual(
       fullStats(
         rebuilds
@@ -567,7 +569,7 @@ for (const { name, seedFingerprint, sabotage, openFingerprint, rebuilds, line } 
     );
     expect(result.records[0]?.contribution).toEqual(expectedContribution(a));
     expect(result.records[1]?.contribution).toEqual(expectedContribution(b));
-    reopened!.close();
+    live.close();
     expect(storedRows().map((r) => r.path)).toEqual([a, b]);
   });
 }

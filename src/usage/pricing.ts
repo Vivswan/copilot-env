@@ -366,11 +366,12 @@ export function canonicalModelNames(): (model: string) => string {
 
 export function resolvePricingId(model: string, catalogIds: Set<string>): string | null {
   const normalized = normalizeModelName(model);
-  const bare = normalized.includes("/") ? normalized.split("/").slice(1).join("/") : normalized;
+  const slash = normalized.indexOf("/");
+  const bare = slash === -1 ? normalized : normalized.slice(slash + 1);
 
   const providers: string[] = [];
-  if (normalized.includes("/")) {
-    providers.push(normalized.split("/", 1)[0]!);
+  if (slash !== -1) {
+    providers.push(normalized.slice(0, slash));
   }
   for (const provider of inferProviders(bare)) {
     if (!providers.includes(provider)) {

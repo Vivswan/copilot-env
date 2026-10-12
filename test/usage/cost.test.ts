@@ -47,6 +47,7 @@ import {
   type PricingTier,
 } from "../../src/usage/pricing.ts";
 import { type ModelUsage, record, type UsageReport, usageReport } from "../../src/usage/usage.ts";
+import { must } from "../../src/utils/assert.ts";
 import { PROJECT_ROOT } from "../../src/utils/root.ts";
 import { localDayKey, MILLISECONDS_PER_DAY } from "../../src/utils/time.ts";
 import { captureAllWrites, captureChannels } from "../helpers/output.ts";
@@ -234,7 +235,7 @@ test("undated usage prints as its own row so the TOTAL's columns add up", () => 
     "2026-06-01",
     "2026-06-02",
   ]);
-  const undated = rows[2]!;
+  const undated = must(rows[2], "the undated row comes last");
   expect(undated.input).toBe(1_000_000);
   expect(undated.reqs).toBe(1);
   expect(undated.cost).toBeCloseTo(1, 10);
@@ -855,12 +856,11 @@ test("runCost --json keeps stdout pure JSON while the index narrates a rebuild o
   withCostHome(async ({ home, claudeRoot }) => {
     // An index stamped by another parser: opening it says so, at a level consola would
     // route to stdout by default, right in front of the payload a consumer parses whole.
-    const stale = openUsageIndex({
-      dir: join(home, USAGE_INDEX_DIR_NAME),
-      fingerprint: "another-parser",
-    });
-    expect(stale).not.toBeNull();
-    stale!.close();
+    const stale = must(
+      openUsageIndex({ dir: join(home, USAGE_INDEX_DIR_NAME), fingerprint: "another-parser" }),
+      "an index stamped by another parser still opens",
+    );
+    stale.close();
     const { payload, stderr } = await jsonRun(
       { pricingUrl: PRICE_URL },
       {

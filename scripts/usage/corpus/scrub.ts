@@ -3,6 +3,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
+import { must } from "../../../src/utils/assert.ts";
 import { isRecord } from "../../../src/utils/json.ts";
 import { writeFile } from "./cli.ts";
 import {
@@ -110,7 +111,8 @@ function scrubValue(
     const enumKey = inContainer
       ? key === "type" || key === "name"
       : Object.hasOwn(ENUM_VALUES, key);
-    if ((!nested || inContainer) && enumKey && ENUM_VALUES[key]!.has(value)) return value;
+    const allowed = enumKey ? ENUM_VALUES[key] : undefined;
+    if ((!nested || inContainer) && allowed !== undefined && allowed.has(value)) return value;
     state.scrubbed++;
     return PLACEHOLDER;
   }
@@ -238,7 +240,8 @@ function scrubbedRelativePath(
         if (index < 3 && index < last && dateShape.test(segment)) return segment;
         const rollout = index === last && index === 3 ? ROLLOUT_FILE_RE.exec(segment) : null;
         if (rollout !== null) {
-          return `rollout-${rollout[1]}-${ids.pseudonym(rollout[2]!) ?? rollout[2]}.jsonl`;
+          const id = must(rollout[2], "the id group of ROLLOUT_FILE_RE always participates");
+          return `rollout-${rollout[1]}-${ids.pseudonym(id) ?? id}.jsonl`;
         }
         return rename(segment, index);
       }
@@ -258,7 +261,10 @@ function scrubbedRelativePath(
         segments[2] === "subagents" &&
         (index === 3 || (index === 5 && segments[3] === "workflows"));
       const agent = agentPosition ? AGENT_FILE_RE.exec(segment) : null;
-      if (agent !== null) return `${ids.pseudonym(agent[1]!) ?? agent[1]}.jsonl`;
+      if (agent !== null) {
+        const id = must(agent[1], "the name group of AGENT_FILE_RE always participates");
+        return `${ids.pseudonym(id) ?? id}.jsonl`;
+      }
       return rename(segment, index);
     })
     .join("/");

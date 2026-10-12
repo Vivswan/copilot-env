@@ -1183,7 +1183,7 @@ test("projectedProxyConfig(): force keys always project (built-in default or sto
   // an entry WITHOUT a value, the clear that lets the proxy's own default stand.
   const empty = projectedProxyConfig(null);
   expect(projectedValue(empty, ["smallModel"])).toBe("gpt-5-mini");
-  expect(projectedValue(empty, ["useResponsesApiWebSocket"])).toBe(true);
+  expect(projectedValue(empty, ["useResponsesApiWebSocket"])).toBe(false);
   expect(projectedValue(empty, ["useResponsesApiWebSearch"])).toBe(true);
   expect(projectedValue(empty, ["useMessagesApi"])).toBe(true);
   expect(empty.filter((e) => e.value !== undefined)).toHaveLength(4);
@@ -1203,7 +1203,7 @@ test("projectedProxyConfig(): force keys always project (built-in default or sto
   // contextManagement.responses (the pre-1.14 flat key is never projected).
   const cfg = new CopilotEnvConfig();
   cfg.set({
-    "proxy.responses.websocket": false,
+    "proxy.responses.websocket": true,
     "proxy.message-websearch-model": "gpt-5",
     "proxy.responses.context-management": true,
     "proxy.alpha-search.codex-priority": false,
@@ -1211,7 +1211,7 @@ test("projectedProxyConfig(): force keys always project (built-in default or sto
     "proxy.claude-auto-model": "claude-haiku-4.5",
   });
   const projected = projectedProxyConfig(null);
-  expect(projectedValue(projected, ["useResponsesApiWebSocket"])).toBe(false);
+  expect(projectedValue(projected, ["useResponsesApiWebSocket"])).toBe(true);
   expect(projectedValue(projected, ["messageApiWebSearchModel"])).toBe("gpt-5");
   expect(projectedValue(projected, ["alphaSearchCodexPriority"])).toBe(false);
   expect(projectedValue(projected, ["alphaSearchModel"])).toBe("gpt-5");

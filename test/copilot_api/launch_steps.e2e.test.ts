@@ -1300,6 +1300,22 @@ test("applyDefaultConfig: a nested projection merges into contextManagement", ()
   expect(doc.useResponsesApiContextManagement).toBe(false); // not ours: untouched
 });
 
+// The WebSocket transport is the one upstream path the client-headers shim cannot reach under bun
+// (its handshake is bun's native WebSocket), so the key's default turns it off against the proxy's
+// own: the bytes the proxy reads say false with nothing stored, and true only when the operator
+// stored it. The proxy's config.json is the boundary, not the projection list.
+test("applyDefaultConfig: useResponsesApiWebSocket lands false by default and true when stored", () => {
+  const { paths } = projectionFixture();
+  const written = (): unknown =>
+    (JSON.parse(readFileSync(paths.configFile, "utf8")) as Record<string, unknown>)
+      .useResponsesApiWebSocket;
+  applyDefaultConfig(null, paths);
+  expect(written()).toBe(false);
+  new CopilotEnvConfig().set({ "proxy.responses.websocket": true });
+  applyDefaultConfig(null, paths);
+  expect(written()).toBe(true);
+});
+
 // Every opt-in key, nested or top-level: after --del the next apply clears its path and nothing
 // else. A key the clearing missed would outlive the operator's unset.
 test("applyDefaultConfig: --del of any opt-in key clears its path on the next apply", () => {

@@ -743,9 +743,12 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     key: "proxy.responses.websocket",
     scope: "profile-default",
-    describe: "Responses API over WebSocket",
+    describe: "Responses WebSocket, proxy ID",
     ...BOOL_DOMAIN,
-    proxyDefault: true,
+    // Off by default, against the proxy's own: the handshake is bun's native WebSocket, which the
+    // client-headers shim cannot reach, so it would carry the proxy's identity while every HTTP
+    // call carries the resolved one. Over HTTP the identity is one.
+    proxyDefault: false,
     proxyPath: ["useResponsesApiWebSocket"],
   },
   {

@@ -244,10 +244,19 @@ async function runFile(file: string, budgetMs: number): Promise<FileResult> {
   }
 }
 
-/** A process already gone is not an error: the tree is what the budget wanted ended. */
+/** Resolves either way: a tree already gone is the wanted state, and any other refusal is said,
+ *  since a tree left standing would otherwise pass for a kill. */
 function killTree(pid: number): Promise<void> {
   return new Promise((resolve) => {
-    treeKill(pid, "SIGKILL", () => resolve());
+    treeKill(pid, "SIGKILL", (error) => {
+      // Windows reports success as a null error (exec's callback shape), POSIX as none.
+      if (error) {
+        console.error(
+          `run_tests: could not kill the process tree under pid ${pid}: ${error.message}`,
+        );
+      }
+      resolve();
+    });
   });
 }
 

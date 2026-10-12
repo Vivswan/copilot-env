@@ -88,7 +88,9 @@ if (buildCode !== 0) {
 // while anything reaching for the real network fails loudly. The floated
 // lifecycle is the one mode that opts out - it exists precisely to exercise the
 // float against the live registry.
-const runArgs = ["run", "--rm"];
+// --init: a reaping pid 1, as a developer machine has. Without it the suite's own entry is
+// pid 1, and a killed child's orphans stay zombies that a signal-0 probe reads as alive.
+const runArgs = ["run", "--rm", "--init"];
 const [first, ...rest] = process.argv.slice(2);
 
 let command: string[];

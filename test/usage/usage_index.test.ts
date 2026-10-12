@@ -2,6 +2,8 @@
 // occurrence keyed by the line's hash, so a stored contribution carries numbers, a model name,
 // and hashes, never a byte of the line itself. `IndexStats` is the oracle for what the index
 // did each run.
+
+import { Database } from "bun:sqlite";
 import {
   appendFileSync,
   existsSync,
@@ -14,19 +16,18 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import {
   type ClaudeContribution,
   type ClaudeOccurrence,
-  type CodexContribution,
   CONTRIBUTION_VERSION,
+  type CodexContribution,
   dedupKey,
   emptyIndexStats,
   type IndexStats,
   type ParsedFile,
-  parseEveryCandidate,
   type ParseTail,
   type ParseWhole,
+  parseEveryCandidate,
   type Reconcile,
   TAIL_PROBE_BYTES,
   type WalkedFile,
@@ -39,7 +40,7 @@ import {
 } from "../../src/usage/index.ts";
 import { releaseFileLock, tryAcquireFileLock } from "../../src/utils/file_lock.ts";
 import { captureAllWrites } from "../helpers/output.ts";
-import { afterEach, expect, tempDir, test } from "../helpers/testing.ts";
+import { afterEach, expect, removeDir, tempDir, test } from "../helpers/testing.ts";
 import { indexBytesOnDisk } from "../helpers/usage_index.ts";
 
 let root = "";
@@ -48,14 +49,8 @@ let indexDir = "";
 const openIndexes: UsageIndex[] = [];
 
 afterEach(() => {
-  for (const index of openIndexes.splice(0)) {
-    try {
-      index.close();
-    } catch {
-      // already closed by the test
-    }
-  }
-  if (root) rmSync(root, { recursive: true, force: true });
+  for (const index of openIndexes.splice(0)) index.close();
+  if (root) removeDir(root);
   root = "";
 });
 
@@ -134,7 +129,11 @@ function parseFrom(
   prior: ClaudeContribution,
 ): ParsedFile<ClaudeContribution> {
   const bytes = readFileSync(path);
-  const fresh = bytes.subarray(fromByte).toString("utf8").split("\n").filter((t) => t !== "");
+  const fresh = bytes
+    .subarray(fromByte)
+    .toString("utf8")
+    .split("\n")
+    .filter((t) => t !== "");
   return {
     contribution: {
       v: CONTRIBUTION_VERSION,
@@ -199,37 +198,37 @@ interface StoredRow {
 }
 
 function storedRows(): StoredRow[] {
-  const db = new DatabaseSync(dbPath(), { readOnly: true });
+  const db = new Database(dbPath(), { readonly: true });
   try {
-    return db.prepare(
-      `SELECT "path", "record", "tail_probe" AS tailProbe FROM "files" ORDER BY "path"`,
-    ).all() as unknown as StoredRow[];
+    return db
+      .prepare(`SELECT "path", "record", "tail_probe" AS tailProbe FROM "files" ORDER BY "path"`)
+      .all() as unknown as StoredRow[];
   } finally {
-    db.close();
+    db.close(true);
   }
 }
 
 function rewriteRecord(path: string, record: string): void {
-  const db = new DatabaseSync(dbPath());
+  const db = new Database(dbPath());
   try {
     db.prepare(`UPDATE "files" SET "record" = ? WHERE "path" = ?`).run(record, path);
   } finally {
-    db.close();
+    db.close(true);
   }
 }
 
 /** Make the index's next `files` read fail from a second connection (the table is
  *  renamed away), or put it back so a later write COULD land. */
 function hideFilesTable(hidden: boolean): void {
-  const db = new DatabaseSync(dbPath());
+  const db = new Database(dbPath());
   try {
-    db.exec(
+    db.run(
       hidden
         ? `ALTER TABLE "files" RENAME TO "files_hidden"`
         : `ALTER TABLE "files_hidden" RENAME TO "files"`,
     );
   } finally {
-    db.close();
+    db.close(true);
   }
 }
 
@@ -370,12 +369,14 @@ for (const { name, file = "a.jsonl", resumable = true, initial, change, parsed }
 
     const bytesRead = change(a, { size: before.size, mtimeMs: before.mtimeMs });
     const second = runReconcile(index.reconcile, files());
-    expect(second.stats).toEqual(fullStats({
-      filesSeen: 2,
-      filesReused: 1,
-      ...(parsed === "tail" ? { filesParsedTail: 1 } : { filesParsedWhole: 1 }),
-      bytesRead,
-    }));
+    expect(second.stats).toEqual(
+      fullStats({
+        filesSeen: 2,
+        filesReused: 1,
+        ...(parsed === "tail" ? { filesParsedTail: 1 } : { filesParsedWhole: 1 }),
+        bytesRead,
+      }),
+    );
     if (parsed === "tail") {
       expect(second.calls.whole).toEqual([]);
       expect(second.calls.tail).toEqual([{ path: a, fromByte: before.size, prior: priorA }]);
@@ -510,25 +511,27 @@ const OPENERS: {
     // Tables another build left behind: sound SQLite, not our columns.
     name: "a database with another table layout is rebuilt",
     sabotage: () => {
-      const db = new DatabaseSync(dbPath());
+      const db = new Database(dbPath());
       try {
-        db.exec(`DROP TABLE "meta"; CREATE TABLE "meta" ("k" TEXT PRIMARY KEY, "v" TEXT NOT NULL)`);
-        db.exec(`DROP TABLE "files"; CREATE TABLE "files" ("path" TEXT PRIMARY KEY, "blob" TEXT)`);
+        db.run(`DROP TABLE "meta"; CREATE TABLE "meta" ("k" TEXT PRIMARY KEY, "v" TEXT NOT NULL)`);
+        db.run(`DROP TABLE "files"; CREATE TABLE "files" ("path" TEXT PRIMARY KEY, "blob" TEXT)`);
       } finally {
-        db.close();
+        db.close(true);
       }
     },
     rebuilds: true,
-    line: "rebuilding the usage index (no such column: ",
+    // SQLite reads a double-quoted name that is not a column as a string literal, so the stamp
+    // SELECT finds no row and the stamp INSERT is the statement the layout refuses.
+    line: "rebuilding the usage index (table meta has no column named key",
   },
   {
     name: "rows without stamps are rebuilt, never adopted",
     sabotage: () => {
-      const db = new DatabaseSync(dbPath());
+      const db = new Database(dbPath());
       try {
-        db.exec(`DELETE FROM "meta"`);
+        db.run(`DELETE FROM "meta"`);
       } finally {
-        db.close();
+        db.close(true);
       }
     },
     rebuilds: true,
@@ -555,11 +558,13 @@ for (const { name, seedFingerprint, sabotage, openFingerprint, rebuilds, line } 
     expect(out.split("rebuilding the usage index").length - 1).toBe(rebuilds ? 1 : 0);
     if (line !== undefined) expect(out).toContain(line);
     const result = runReconcile(reopened!.reconcile, [walked(a), walked(b)]);
-    expect(result.stats).toEqual(fullStats(
-      rebuilds
-        ? { filesSeen: 2, filesParsedWhole: 2, bytesRead: statSync(a).size + statSync(b).size }
-        : { filesSeen: 2, filesReused: 2 },
-    ));
+    expect(result.stats).toEqual(
+      fullStats(
+        rebuilds
+          ? { filesSeen: 2, filesParsedWhole: 2, bytesRead: statSync(a).size + statSync(b).size }
+          : { filesSeen: 2, filesReused: 2 },
+      ),
+    );
     expect(result.records[0]?.contribution).toEqual(expectedContribution(a));
     expect(result.records[1]?.contribution).toEqual(expectedContribution(b));
     reopened!.close();
@@ -617,11 +622,13 @@ test("with the lock held elsewhere the records are still right and nothing is wr
       result = runReconcile(index.reconcile, [walked(a)]);
     });
     expect(out).toContain("usage index lock unavailable; this run's results were not saved.");
-    expect(result?.stats).toEqual(fullStats({
-      filesSeen: 1,
-      filesParsedTail: 1,
-      bytesRead: TAIL_PROBE_BYTES + statSync(a).size - 3 * Buffer.byteLength(line(0, "alpha")),
-    }));
+    expect(result?.stats).toEqual(
+      fullStats({
+        filesSeen: 1,
+        filesParsedTail: 1,
+        bytesRead: TAIL_PROBE_BYTES + statSync(a).size - 3 * Buffer.byteLength(line(0, "alpha")),
+      }),
+    );
     expect(result?.records.map((r) => r.path)).toEqual([a]);
     expect(result?.records[0]?.contribution).toEqual(expectedContribution(a));
   } finally {
@@ -638,12 +645,14 @@ test("with the lock held elsewhere the records are still right and nothing is wr
   // The next run, lock free, catches up.
   const reopened = open();
   const caughtUp = runReconcile(reopened.reconcile, [walked(a)]);
-  expect(caughtUp.stats).toEqual(fullStats({
-    filesSeen: 1,
-    filesParsedTail: 1,
-    filesDeleted: 1,
-    bytesRead: TAIL_PROBE_BYTES + 2 * Buffer.byteLength(line(3, "alpha")),
-  }));
+  expect(caughtUp.stats).toEqual(
+    fullStats({
+      filesSeen: 1,
+      filesParsedTail: 1,
+      filesDeleted: 1,
+      bytesRead: TAIL_PROBE_BYTES + 2 * Buffer.byteLength(line(3, "alpha")),
+    }),
+  );
 });
 
 test("opening while another run holds the lock yields no index, with one info line", async () => {
@@ -720,15 +729,19 @@ for (const when of ["before the run", "between two candidates"] as const) {
     // Before: nothing is known, all parse whole. Between: a still resumed from its
     // row (a tail parse), then the failure made b and d whole parses.
     const expectedTail = when === "before the run" ? 0 : 1;
-    expect(result?.stats).toEqual(fullStats({
-      filesSeen: 3,
-      filesParsedWhole: 3 - expectedTail,
-      filesParsedTail: expectedTail,
-      bytesRead: (expectedTail === 1
-        ? TAIL_PROBE_BYTES + Buffer.byteLength(line(3, "alpha"))
-        : statSync(a).size) +
-        statSync(b).size + statSync(d).size,
-    }));
+    expect(result?.stats).toEqual(
+      fullStats({
+        filesSeen: 3,
+        filesParsedWhole: 3 - expectedTail,
+        filesParsedTail: expectedTail,
+        bytesRead:
+          (expectedTail === 1
+            ? TAIL_PROBE_BYTES + Buffer.byteLength(line(3, "alpha"))
+            : statSync(a).size) +
+          statSync(b).size +
+          statSync(d).size,
+      }),
+    );
     index.close();
     // Nothing was saved although the table was back: a's row still describes the
     // 3-line file and the deleted c's row is still there.
@@ -739,14 +752,18 @@ for (const when of ["before the run", "between two candidates"] as const) {
     // their 3-line rows, b reuses, the deleted c goes.
     const reopened = open();
     const next = runReconcile(reopened.reconcile, [walked(a), walked(b), walked(d)]);
-    expect(next.stats).toEqual(fullStats({
-      filesSeen: 3,
-      filesReused: 1,
-      filesParsedTail: 2,
-      filesDeleted: 1,
-      bytesRead: 2 * TAIL_PROBE_BYTES + Buffer.byteLength(line(3, "alpha")) +
-        Buffer.byteLength(line(3, "delta")),
-    }));
+    expect(next.stats).toEqual(
+      fullStats({
+        filesSeen: 3,
+        filesReused: 1,
+        filesParsedTail: 2,
+        filesDeleted: 1,
+        bytesRead:
+          2 * TAIL_PROBE_BYTES +
+          Buffer.byteLength(line(3, "alpha")) +
+          Buffer.byteLength(line(3, "delta")),
+      }),
+    );
   });
 }
 
@@ -808,22 +825,29 @@ for (const { name, rewrite, reused } of REWRITTEN_RECORDS) {
 
     const reopened = open();
     const result = runReconcile(reopened.reconcile, [walked(a)]);
-    expect(result.stats).toEqual(fullStats(
-      reused
-        ? { filesSeen: 1, filesReused: 1 }
-        : { filesSeen: 1, filesParsedWhole: 1, bytesRead: statSync(a).size },
-    ));
+    expect(result.stats).toEqual(
+      fullStats(
+        reused
+          ? { filesSeen: 1, filesReused: 1 }
+          : { filesSeen: 1, filesParsedWhole: 1, bytesRead: statSync(a).size },
+      ),
+    );
     expect(result.records[0]?.contribution).toEqual(expectedContribution(a));
     reopened.close();
     expect(JSON.parse(storedRows()[0]?.record ?? "")).toEqual(expectedContribution(a));
   });
 }
 
+/** The database and its WAL, byte for byte. The -shm sidecar is left out: it is the wal-index,
+ *  which SQLite may regenerate while opening, a failed open included, and which holds no row. */
 function diskState(path: string): unknown {
   if (!existsSync(path)) return null;
   if (!statSync(path).isDirectory()) return readFileSync(path).toString("hex");
   return Object.fromEntries(
-    readdirSync(path).sort().map((name) => [name, diskState(join(path, name))]),
+    readdirSync(path)
+      .filter((name) => !name.endsWith("-shm"))
+      .sort()
+      .map((name) => [name, diskState(join(path, name))]),
   );
 }
 
@@ -847,10 +871,9 @@ const UNREMOVABLE: { name: string; sabotage: () => void; line: () => string | Re
       rmSync(`${dbPath()}-shm`, { force: true });
       mkdirSync(dbPath());
     },
-    // The path is spelled by the SQLite binding (Deno 2.9.7 resolves symlinks, so macOS's /tmp
-    // prints as /private/tmp); the cause and the fallback are the contract, the spelling is not.
-    line: () =>
-      /could not open the usage index \(unable to open database file: .*\); running without it\./,
+    // The cause is spelled by the SQLite binding (each runtime words it, and the path, its own
+    // way); the refusal and the fallback are the contract, the spelling is not.
+    line: () => /could not open the usage index \(.*\); running without it\./,
   },
   {
     name: "a directory that cannot be created",

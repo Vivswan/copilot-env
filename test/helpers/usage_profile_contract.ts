@@ -215,12 +215,12 @@ export function parseProfile(raw: unknown): Profile {
     const issue = result.issues[0];
     // Record keys (line types, model ids, shapes) are data, so only the schema's own field
     // names may appear in the path.
-    const where = issue.path
-      ?.map((p) => (PROFILE_FIELDS.has(String(p.key)) ? String(p.key) : "<entry>"))
-      .join(".") ?? "<root>";
-    const detail = issue.type === "check"
-      ? issue.message
-      : `expected ${issue.expected ?? issue.type}`;
+    const where =
+      issue.path
+        ?.map((p) => (PROFILE_FIELDS.has(String(p.key)) ? String(p.key) : "<entry>"))
+        .join(".") ?? "<root>";
+    const detail =
+      issue.type === "check" ? issue.message : `expected ${issue.expected ?? issue.type}`;
     throw new Error(`invalid usage profile at ${where}: ${detail}`);
   }
   return result.output;
@@ -252,9 +252,10 @@ export function codexLineType(line: Record<string, unknown>): string {
   let label = type;
   if (type === "event_msg" || type === "response_item") {
     const sub = typeof payload.type === "string" ? payload.type : "";
-    label = type === "response_item" && sub === "message" && typeof payload.role === "string"
-      ? `${type}/${sub}/${payload.role}`
-      : `${type}/${sub}`;
+    label =
+      type === "response_item" && sub === "message" && typeof payload.role === "string"
+        ? `${type}/${sub}/${payload.role}`
+        : `${type}/${sub}`;
   }
   return CODEX_LINE_TYPES.has(label) ? label : OTHER_LINE_TYPE;
 }
@@ -267,7 +268,8 @@ export function claudeLineType(line: Record<string, unknown>): string {
   } else if (type === "user") {
     const message = isRecord(line.message) ? line.message : {};
     const content = message.content;
-    const isToolResult = Array.isArray(content) &&
+    const isToolResult =
+      Array.isArray(content) &&
       content.some((block) => isRecord(block) && block.type === "tool_result");
     label = isToolResult ? "user/tool_result" : "user/prompt";
   }

@@ -1,0 +1,123 @@
+// A test may not make its own temp path. test/helpers/testing.ts owns the ONE temp root of each
+// test file's process, removed when that process ends, and `tempDir` there is the only way to a
+// temp directory. A path made anywhere else sits directly in the OS tmpdir, where nothing removes
+// it once the test that made it fails, times out, or forgets: an interrupted run once left every
+// fixture home behind, each with its own module cache. biome.json scopes the rule to test/ minus
+// testing.ts.
+//
+// The ban is on REACHING a temp-path API at all, under any spelling: node's mkdtemp family
+// (plain, Sync, Disposable) and os.tmpdir, as a value import from any module, a re-export, a
+// member read off any object (`fs.mkdtempSync`, `os.tmpdir`, `fs["mkdtempSync"]`), or a
+// destructuring. Matching the call would miss a function stored first; a user property that
+// happens to share a name false-positives loudly, which beats a silent miss. Teeth pinned by
+// test/utils/temp_dir_lint.e2e.test.ts.
+language js(typescript)
+
+or {
+  JsNamedImportSpecifier(name=$name) where {
+    $name <: r"^(?:mkdtemp|mkdtempSync|mkdtempDisposable|mkdtempDisposableSync|tmpdir)$",
+    not $hit <: `type $n as $l`,
+    not $hit <: within `import type $c from $s`
+  },
+  JsShorthandNamedImportSpecifier(local_name=$name) where {
+    $name <: or {
+      `mkdtemp`,
+      `mkdtempSync`,
+      `mkdtempDisposable`,
+      `mkdtempDisposableSync`,
+      `tmpdir`
+    },
+    not $hit <: `type $n`,
+    not $hit <: within `import type $c from $s`
+  },
+  `export * from $source` where {
+    $source <: or {
+      `"node:fs"`,
+      `"node:fs/promises"`,
+      `"node:os"`,
+      `"fs"`,
+      `"fs/promises"`,
+      `"os"`
+    }
+  },
+  `export * as $ns from $source` where {
+    $source <: or {
+      `"node:fs"`,
+      `"node:fs/promises"`,
+      `"node:os"`,
+      `"fs"`,
+      `"fs/promises"`,
+      `"os"`
+    }
+  },
+  JsExportNamedFromSpecifier(source_name=$name) where {
+    $name <: r"^(?:mkdtemp|mkdtempSync|mkdtempDisposable|mkdtempDisposableSync|tmpdir)$",
+    not $hit <: within `export type { $specs } from $s`
+  },
+  `$obj.$prop` where {
+    $prop <: or {
+      `mkdtemp`,
+      `mkdtempSync`,
+      `mkdtempDisposable`,
+      `mkdtempDisposableSync`,
+      `tmpdir`
+    }
+  },
+  `$obj[$prop]` where {
+    $prop <: or {
+      `"mkdtemp"`,
+      `"mkdtempSync"`,
+      `"mkdtempDisposable"`,
+      `"mkdtempDisposableSync"`,
+      `"tmpdir"`
+    }
+  },
+  JsObjectBindingPatternShorthandProperty(identifier=$id) where {
+    $id <: or {
+      `mkdtemp`,
+      `mkdtempSync`,
+      `mkdtempDisposable`,
+      `mkdtempDisposableSync`,
+      `tmpdir`
+    }
+  },
+  JsObjectBindingPatternProperty(member=$id) where {
+    $id <: or {
+      `mkdtemp`,
+      `mkdtempSync`,
+      `mkdtempDisposable`,
+      `mkdtempDisposableSync`,
+      `tmpdir`,
+      `"mkdtemp"`,
+      `"mkdtempSync"`,
+      `"mkdtempDisposable"`,
+      `"mkdtempDisposableSync"`,
+      `"tmpdir"`
+    }
+  },
+  JsObjectAssignmentPatternShorthandProperty(identifier=$id) where {
+    $id <: or {
+      `mkdtemp`,
+      `mkdtempSync`,
+      `mkdtempDisposable`,
+      `mkdtempDisposableSync`,
+      `tmpdir`
+    }
+  },
+  JsObjectAssignmentPatternProperty(member=$id) where {
+    $id <: or {
+      `mkdtemp`,
+      `mkdtempSync`,
+      `mkdtempDisposable`,
+      `mkdtempDisposableSync`,
+      `tmpdir`,
+      `"mkdtemp"`,
+      `"mkdtempSync"`,
+      `"mkdtempDisposable"`,
+      `"mkdtempDisposableSync"`,
+      `"tmpdir"`
+    }
+  }
+} as $hit where {
+  register_diagnostic(span=$hit, message="make temp directories with tempDir (test/helpers/testing.ts), which puts them under the root that is removed when the test file ends -- one made here stays in the OS tmpdir when its test fails or forgets it")
+}

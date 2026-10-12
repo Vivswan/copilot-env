@@ -1,18 +1,18 @@
 import { consola } from "consola";
-import type { RequestedMode } from "../agents/provider_mode.ts";
-import { fetchRawModels } from "../copilot_api/catalog.ts";
-import { Credential } from "../copilot_api/credential.ts";
-import { discoverServableClaudeModels } from "../copilot_api/discovery.ts";
 import { renderDirectWiring } from "../agents/profile_wiring.ts";
+import type { RequestedMode } from "../agents/provider_mode.ts";
 import { directWiringFor } from "../codex/config.ts";
 import { codexUserAgent } from "../codex/user_agent.ts";
+import { fetchRawModels } from "../copilot_api/catalog.ts";
+import { Credential } from "../copilot_api/credential.ts";
 import { proxyStatus } from "../copilot_api/daemon.ts";
+import { discoverServableClaudeModels } from "../copilot_api/discovery.ts";
 import { knownProfile } from "../copilot_api/env_state.ts";
+import { type ModelListEntry, mergeUnlistedModels, parseModelList } from "../copilot_api/models.ts";
 import { agentAuthCommand, agentStartCommand, type Profile } from "../copilot_api/profile.ts";
 import { colorEnabled, palette } from "../utils/ansi.ts";
 import { errMessage } from "../utils/error.ts";
 import { formatTable, type TableRow, terminalWidth } from "../utils/table.ts";
-import { mergeUnlistedModels, type ModelListEntry, parseModelList } from "../copilot_api/models.ts";
 
 interface ModelsArgs {
   mode: RequestedMode;
@@ -127,7 +127,8 @@ export async function runModels(args: ModelsArgs): Promise<void> {
       // A listing renders what the wiring bakes (renderDirectWiring: the pin and literal over the
       // slot's probed halves) and writes nothing; a half never probed is probed here, and even that
       // answer is not stored: storing is the landing commands' (directWiringFor's `land`).
-      const direct = renderDirectWiring(profile) ?? await directWiringFor(profile, token, "probe");
+      const direct =
+        renderDirectWiring(profile) ?? (await directWiringFor(profile, token, "probe"));
       const discovered = await discoverServableClaudeModels(
         token,
         codexUserAgent(),
@@ -146,11 +147,12 @@ export async function runModels(args: ModelsArgs): Promise<void> {
     }
   } catch (e) {
     const authCommand = agentAuthCommand(profile);
-    const hint = source === "proxy"
-      ? profile === null
-        ? "check `agent health` (or use --direct)"
-        : `check \`${agentStartCommand(profile)} --check\` (or use --direct)`
-      : `see \`${authCommand} --check\``;
+    const hint =
+      source === "proxy"
+        ? profile === null
+          ? "check `agent health` (or use --direct)"
+          : `check \`${agentStartCommand(profile)} --check\` (or use --direct)`
+        : `see \`${authCommand} --check\``;
     throw new Error(`could not list models via ${label}: ${errMessage(e)}; ${hint}`);
   }
   if (args.json) {
@@ -166,9 +168,10 @@ export async function runModels(args: ModelsArgs): Promise<void> {
   if (source === "proxy") {
     // copilot-api's local list is its own view, trimmed from upstream's (Fable stays hidden even
     // when the identity it sends lists it); the proxy still serves what upstream serves.
-    const directListing = profile === null
-      ? "agent profile models --direct"
-      : `agent profile ${profile} models --direct`;
+    const directListing =
+      profile === null
+        ? "agent profile models --direct"
+        : `agent profile ${profile} models --direct`;
     consola.info(
       `The proxy lists its own catalog, a trimmed view of upstream's; \`${directListing}\` ` +
         "lists what Copilot serves this credential under its client identity.",

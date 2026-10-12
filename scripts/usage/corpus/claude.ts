@@ -2,10 +2,10 @@
 import { copyFileSync, existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { ledger } from "./cli.ts";
-import { registry, runTurn } from "./children.ts";
-import type { MinuteStraddle } from "./fake.ts";
 import { isRecord, parseJsonRecord } from "../../../src/utils/json.ts";
+import { registry, runTurn } from "./children.ts";
+import { ledger } from "./cli.ts";
+import type { MinuteStraddle } from "./fake.ts";
 import { filesFor } from "./transcripts.ts";
 
 const CLAUDE_MODEL = "claude-sonnet-4-6";
@@ -50,7 +50,7 @@ export async function recordClaude(
     // --real: a file-backed login lives in the (possibly overridden) config dir, so carry it
     // into the throwaway one.
     const credentials = join(
-      Deno.env.get("CLAUDE_CONFIG_DIR") ?? join(homedir(), ".claude"),
+      process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"),
       ".credentials.json",
     );
     if (existsSync(credentials)) {
@@ -96,11 +96,9 @@ export async function recordClaude(
   ids.tool = await turn(
     "claude turn 3 (tool)",
     [],
-    `Use the Read tool on the note. tool-name: Read tool-args64: ${
-      Buffer.from(JSON.stringify({ "file_path": join(work, "corpus-note.txt") })).toString(
-        "base64",
-      )
-    }`,
+    `Use the Read tool on the note. tool-name: Read tool-args64: ${Buffer.from(
+      JSON.stringify({ file_path: join(work, "corpus-note.txt") }),
+    ).toString("base64")}`,
   );
   if (ids.tool === null) return ids;
   ids.afterTool = await turn(
@@ -127,7 +125,10 @@ export function claudeEvidenceFailures(
   const failures: string[] = [];
   const files = [...recordsByFile.keys()];
   if (
-    ids.first === null || ids.resumed === null || ids.tool === null || ids.afterTool === null ||
+    ids.first === null ||
+    ids.resumed === null ||
+    ids.tool === null ||
+    ids.afterTool === null ||
     ids.fork === null
   ) {
     return ["claude: not every turn produced a session id"];
@@ -136,12 +137,11 @@ export function claudeEvidenceFailures(
   if (ids.afterTool !== ids.tool) {
     failures.push("claude: the resume after the tool turn did not continue the tool session");
   }
-  for (
-    const [label, id] of [["session 1", ids.first], ["the tool session", ids.tool], [
-      "the fork",
-      ids.fork,
-    ]]
-  ) {
+  for (const [label, id] of [
+    ["session 1", ids.first],
+    ["the tool session", ids.tool],
+    ["the fork", ids.fork],
+  ]) {
     const count = filesFor(files, id!, "claude").length;
     if (count !== 1) failures.push(`claude: ${label} has ${count} transcripts, expected 1`);
   }
@@ -154,7 +154,9 @@ export function claudeEvidenceFailures(
         if (record.type === "assistant" && isRecord(record.message)) {
           if (typeof record.message.id === "string") out.add(record.message.id);
         } else if (
-          only === undefined && record.type === "user" && typeof record.uuid === "string"
+          only === undefined &&
+          record.type === "user" &&
+          typeof record.uuid === "string"
         ) {
           out.add(record.uuid);
         }

@@ -2,6 +2,8 @@
 // managed write seeds the key): the wiring- and launch-time sync that heals or strips it, and the account-wide
 // sweep that keeps a deleted catalog from leaving a dangling reference in any known Codex home.
 // Best-effort throughout: stderr-only, never throws.
+
+import type { CatalogSource } from "../copilot_api/catalog.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { CopilotEnvState } from "../copilot_api/env_state.ts";
 import { OwnershipLedger } from "../copilot_api/ownership.ts";
@@ -11,7 +13,6 @@ import { isEnoent } from "../utils/fs.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import { parseToml, stringify } from "../utils/toml.ts";
-import type { CatalogSource } from "../copilot_api/catalog.ts";
 import {
   catalogBookkeepingAllowed,
   inspectCatalogFile,
@@ -150,8 +151,10 @@ function cleanupCodexCatalogArtifacts(catalogFile: string): void {
   const state = new CopilotEnvState();
   const recorded = state.read();
   if (
-    recorded.codexCatalogLastAttemptMs !== 0 || recorded.codexCatalogCodexVersion !== null ||
-    recorded.codexCatalogPatchVersion !== 0 || recorded.codexCatalogAccepted !== null
+    recorded.codexCatalogLastAttemptMs !== 0 ||
+    recorded.codexCatalogCodexVersion !== null ||
+    recorded.codexCatalogPatchVersion !== 0 ||
+    recorded.codexCatalogAccepted !== null
   ) {
     state.set({
       codexCatalogLastAttemptMs: null,
@@ -167,9 +170,10 @@ function cleanupCodexCatalogArtifacts(catalogFile: string): void {
  *
  *  the ledger     -> only EXTENDS the known homes
  *  `deletionSafe` -> the sweep's proof that no readable config still references the file */
-function stripCodexCatalogReferences(
-  catalogFile: string,
-): { stripped: boolean; deletionSafe: boolean } {
+function stripCodexCatalogReferences(catalogFile: string): {
+  stripped: boolean;
+  deletionSafe: boolean;
+} {
   const ledger = new OwnershipLedger();
   const { configs, complete } = codexCatalogConfigCandidates();
   const recordedPaths = new Set(ledger.ownedPaths("codexCatalog"));

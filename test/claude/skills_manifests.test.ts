@@ -33,20 +33,25 @@ test(".claude-plugin manifests parse and list skills that exist", () => {
   // resolved to this checkout, the entry is the launcher invocation the registration writes.
   const servers = (plugin.mcpServers ?? {}) as Record<string, Record<string, unknown> | undefined>;
   const declared = servers["copilot-env"];
-  const entry = declared === undefined ? undefined : {
-    ...declared,
-    command: String(declared.command).replaceAll("${CLAUDE_PLUGIN_ROOT}", PROJECT_ROOT),
-  };
+  const entry =
+    declared === undefined
+      ? undefined
+      : {
+          ...declared,
+          command: String(declared.command).replaceAll("${CLAUDE_PLUGIN_ROOT}", PROJECT_ROOT),
+        };
   expect(existsSync(entry?.command ?? ""), "the plugin's launcher").toBe(true);
   if (process.platform !== "win32") expect(classifyMcpEntry(entry, null)).toBe("ours-current");
 
   // The skill's example registration is what a user pastes into a project .mcp.json: it must
   // parse, and it must spawn the same `agent profile mcp --serve` the plugin does.
   const example = readJson(join(PROJECT_ROOT, "skills", "web-search", ".mcp.json.example"));
-  const exampleEntry = ((example.mcpServers ?? {}) as Record<
-    string,
-    { type?: string; command?: string; args?: string[] } | undefined
-  >)["copilot-env"];
+  const exampleEntry = (
+    (example.mcpServers ?? {}) as Record<
+      string,
+      { type?: string; command?: string; args?: string[] } | undefined
+    >
+  )["copilot-env"];
   expect(String(exampleEntry?.command).endsWith("/bin/agent"), "the example's launcher").toBe(true);
   // `?? ""` so two missing argv lists never compare equal.
   expect(exampleEntry?.args, "the example's argv").toEqual(declared?.args ?? "");

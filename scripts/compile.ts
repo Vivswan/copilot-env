@@ -1,103 +1,153 @@
-// `deno task compile`: the release binaries and dist/checksums.txt. The --include list is NOT
-// here: deno.json's `compile.include` owns it (test/install/installer_pinning.test.ts pins it to
-// installer.ts's asset lists), and a CLI --include MERGES with the config's list rather than
-// replacing it, so a second copy would silently union.
+// `bun run build`: the release binaries and dist/checksums.txt. What the binary embeds is the
+// three fate lists in src/install/installer.ts and nothing else; they are staged into one
+// directory at their repository paths first, because `bun build --asset` keeps a directory's
+// inner tree but files each argument under its basename (`--asset=src/utils/ansi.ts` would
+// surface as `<root>/ansi.ts`). At run time the stage is the binary's asset root: `import.meta.dir`
+// of the bundled entry (`/$bunfs/root` on POSIX, `B:\~BUN\root` on Windows), which
+// src/utils/root.ts exposes as ASSET_ROOT.
+import { spawnSync } from "node:child_process";
+import { cpSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { join } from "node:path";
+import { parseArgs } from "node:util";
 import { fileSha256 } from "../src/install/checksums.ts";
-import { RELEASE_TARGETS, releaseAssetName, type ReleaseTarget } from "../src/install/targets.ts";
+import {
+  BUNDLED_ONLY_ASSETS,
+  MATERIALIZED_ASSET_DIRS,
+  MATERIALIZED_ASSET_FILES,
+} from "../src/install/installer.ts";
+import {
+  currentReleaseTarget,
+  RELEASE_TARGETS,
+  type ReleaseTarget,
+  releaseAssetName,
+} from "../src/utils/targets.ts";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const OUT_DIR = "dist";
-// deno.json's compile.permissions holds the set; -P must still be passed as an
-// explicit acknowledgement or `deno compile` refuses to use it.
-const PERMISSION_SET = "cli";
 const ENTRY = "src/cli.ts";
-const APP_NAME = "copilot-env";
 
 const KNOWN_TRIPLES = RELEASE_TARGETS.map((target) => target.triple);
 
 function usage(): string {
-  return `Usage: deno task compile [--target TRIPLE]...
+  return `Usage: bun run build [--target TRIPLE|host]...
 
 Compiles ${ENTRY} for every release target into ${OUT_DIR}/ and writes
 ${OUT_DIR}/checksums.txt. --target (repeatable) restricts the build to the
-given triple(s), e.g. for a quick local host build:
+given triple(s); \`host\` is this machine's, e.g. for a quick local build:
 
-  deno task compile --target aarch64-apple-darwin
+  bun run build --target host
 
 Targets: ${KNOWN_TRIPLES.join(" ")}`;
 }
 
 function die(message: string): never {
   console.error(`ERROR: ${message}`);
-  Deno.exit(2);
+  process.exit(2);
 }
 
+/** `host` is this machine's target: the installer workflows build only that one. */
 function knownTarget(triple: string): ReleaseTarget {
+  if (triple === "host") {
+    const host = currentReleaseTarget();
+    if (host === null) {
+      die(`no release target for this platform (${process.platform}/${process.arch}).`);
+    }
+    return host;
+  }
   const target = RELEASE_TARGETS.find((candidate) => candidate.triple === triple);
   if (target === undefined) {
-    die(`unknown target '${triple}' (known: ${KNOWN_TRIPLES.join(" ")}).`);
+    die(`unknown target '${triple}' (known: host ${KNOWN_TRIPLES.join(" ")}).`);
   }
   return target;
 }
 
-const selected: ReleaseTarget[] = [];
-const args = [...Deno.args];
-for (let arg = args.shift(); arg !== undefined; arg = args.shift()) {
-  if (arg === "-h" || arg === "--help") {
-    console.log(usage());
-    Deno.exit(0);
-  } else if (arg === "--target") {
-    const triple = args.shift();
-    if (triple === undefined) die("--target needs a target triple argument.");
-    selected.push(knownTarget(triple));
-  } else if (arg.startsWith("--target=")) {
-    selected.push(knownTarget(arg.slice("--target=".length)));
-  } else {
-    die(`unknown argument '${arg}' (try --help)`);
+function parseCli(): { help: boolean; targets: ReleaseTarget[] } {
+  try {
+    const { values } = parseArgs({
+      args: process.argv.slice(2),
+      options: {
+        help: { type: "boolean", short: "h" },
+        target: { type: "string", multiple: true },
+      },
+      strict: true,
+      allowPositionals: false,
+    });
+    return { help: values.help === true, targets: (values.target ?? []).map(knownTarget) };
+  } catch (error) {
+    die(`${error instanceof Error ? error.message : String(error)} (try --help)`);
   }
 }
-const targets = selected.length > 0 ? selected : [...RELEASE_TARGETS];
 
-Deno.mkdirSync(join(ROOT, OUT_DIR), { recursive: true });
-for (const target of targets) {
+const cli = parseCli();
+if (cli.help) {
+  console.log(usage());
+  process.exit(0);
+}
+const targets = cli.targets.length > 0 ? cli.targets : [...RELEASE_TARGETS];
+
+/** The embedded tree, copied out at its repository paths under `stage`. */
+function stageAssets(stage: string): void {
+  for (const dir of MATERIALIZED_ASSET_DIRS) {
+    cpSync(join(ROOT, dir), join(stage, dir), { recursive: true });
+  }
+  for (const file of [...MATERIALIZED_ASSET_FILES, ...BUNDLED_ONLY_ASSETS]) {
+    mkdirSync(dirname(join(stage, file)), { recursive: true });
+    cpSync(join(ROOT, file), join(stage, file));
+  }
+}
+
+/** The build's exit status. */
+function build(target: ReleaseTarget, assetFlags: readonly string[]): number {
   const out = `${OUT_DIR}/${releaseAssetName(target)}`;
-  console.error(`==> deno compile --target ${target.triple} -> ${out}`);
-  // --node-modules-dir=none resolves npm through the global cache; --exclude-unused-npm is
-  // silently a no-op while a local node_modules exists. Without it the checkout's node_modules
-  // (the proxy's own tree, which this binary never imports) embeds whole: ~78MB per target.
-  const { code } = new Deno.Command("deno", {
-    args: [
-      "compile",
-      "--target",
-      target.triple,
-      "--node-modules-dir=none",
-      "--exclude-unused-npm",
-      `-P=${PERMISSION_SET}`,
-      "--app-name",
-      APP_NAME,
-      "-o",
-      out,
+  console.error(`==> bun build --compile --target ${target.bunTarget} -> ${out}`);
+  // A `.env` or bunfig.toml in the cwd must not reach the CLI's environment.
+  const result = spawnSync(
+    process.execPath,
+    [
+      "build",
+      "--compile",
+      `--target=${target.bunTarget}`,
+      "--no-compile-autoload-dotenv",
+      "--no-compile-autoload-bunfig",
+      ...assetFlags,
+      `--outfile=${out}`,
       ENTRY,
     ],
-    cwd: ROOT,
-    env: { "DENO_NO_UPDATE_CHECK": "1" },
-    stdout: "inherit",
-    stderr: "inherit",
-  }).outputSync();
-  if (code !== 0) Deno.exit(code);
+    { cwd: ROOT, stdio: "inherit" },
+  );
+  if (result.error) throw result.error;
+  return result.status ?? 1;
 }
+
+mkdirSync(join(ROOT, OUT_DIR), { recursive: true });
+// One `--asset` per top-level entry of the stage; the stage goes whatever the builds did.
+const stage = mkdtempSync(join(tmpdir(), "copilot-env-assets-"));
+let status = 0;
+try {
+  stageAssets(stage);
+  const assetFlags = readdirSync(stage)
+    .sort()
+    .map((entry) => `--asset=${join(stage, entry)}`);
+  for (const target of targets) {
+    status = build(target, assetFlags);
+    if (status !== 0) break;
+  }
+} finally {
+  rmSync(stage, { recursive: true, force: true });
+}
+if (status !== 0) process.exit(status);
 
 // checksums.txt covers every release binary currently in dist/ (so a filtered
 // build still emits verifiable lines), in `shasum -a 256 -c` compatible form.
 const assetNames = new Set(RELEASE_TARGETS.map(releaseAssetName));
-const binaries = [...Deno.readDirSync(join(ROOT, OUT_DIR))]
-  .filter((entry) => entry.isFile && assetNames.has(entry.name))
+const binaries = readdirSync(join(ROOT, OUT_DIR), { withFileTypes: true })
+  .filter((entry) => entry.isFile() && assetNames.has(entry.name))
   .map((entry) => entry.name)
   .sort();
 const lines = await Promise.all(
   binaries.map(async (name) => `${await fileSha256(join(ROOT, OUT_DIR, name))}  ${name}\n`),
 );
-Deno.writeTextFileSync(join(ROOT, OUT_DIR, "checksums.txt"), lines.join(""));
+writeFileSync(join(ROOT, OUT_DIR, "checksums.txt"), lines.join(""));
 console.error(`==> wrote ${OUT_DIR}/checksums.txt`);

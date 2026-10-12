@@ -4,7 +4,7 @@ import * as fs from "./fs_facade.ts";
 import { ASSET_ROOT } from "./root.ts";
 import { type SemverString, toSemverString, versionLessThan } from "./semver.ts";
 
-export const PROJECT_CONFIG_FILE = "copilot-env.config";
+const PROJECT_CONFIG_FILE = "copilot-env.config";
 
 const CONFIG_KEYS = ["PROXY_MIN_VERSION", "PROXY_MAX_VERSION"] as const;
 
@@ -47,11 +47,16 @@ function semverValue(key: ProjectConfigKey, value: string, source: string): Semv
   return parsed;
 }
 
-export function parseProjectConfig(content: string, source = PROJECT_CONFIG_FILE): ProjectConfig {
+function knownKeys(content: string): Partial<Record<ProjectConfigKey, string>> {
   const raw: Partial<Record<ProjectConfigKey, string>> = {};
   for (const [key, value] of Object.entries(parse(content))) {
     if (isProjectConfigKey(key)) raw[key] = value;
   }
+  return raw;
+}
+
+export function parseProjectConfig(content: string, source = PROJECT_CONFIG_FILE): ProjectConfig {
+  const raw = knownKeys(content);
 
   const proxyMinVersion = semverValue(
     "PROXY_MIN_VERSION",
@@ -59,9 +64,8 @@ export function parseProjectConfig(content: string, source = PROJECT_CONFIG_FILE
     source,
   );
   const rawMaxVersion = optionalValue(raw.PROXY_MAX_VERSION);
-  const proxyMaxVersion = rawMaxVersion === null
-    ? null
-    : semverValue("PROXY_MAX_VERSION", rawMaxVersion, source);
+  const proxyMaxVersion =
+    rawMaxVersion === null ? null : semverValue("PROXY_MAX_VERSION", rawMaxVersion, source);
   // This parser is the only production producer of a ProjectConfig, so consumers never see floor >
   // ceiling.
   if (proxyMaxVersion !== null && versionLessThan(proxyMaxVersion, proxyMinVersion)) {

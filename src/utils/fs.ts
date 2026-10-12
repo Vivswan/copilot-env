@@ -43,7 +43,7 @@ export function isOpenHandleRefusal(e: unknown): boolean {
 /** A POSIX rename or unlink over an open file always succeeds; Windows transiently refuses it while
  *  another process holds the handle, so `op` gets a few more chances there. */
 export function retryOpenHandleRefusal(op: () => void, attempts = 5): void {
-  for (let i = 0;; i++) {
+  for (let i = 0; ; i++) {
     try {
       op();
       return;

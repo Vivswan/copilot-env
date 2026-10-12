@@ -3,13 +3,13 @@
 // every target's identity at its own signal boundary.
 import { setTimeout as sleep } from "node:timers/promises";
 import { consola } from "consola";
-import { daemonLockHold, daemonLockHolderPid, daemonLockVerdict } from "./daemon_lock.ts";
 import { assertNever } from "../utils/assert.ts";
 import { pidAlive } from "../utils/pid.ts";
+import { daemonLockHold, daemonLockHolderPid, daemonLockVerdict } from "./daemon_lock.ts";
 import { allDaemonHomes, CopilotApiPaths, profileHomeNames } from "./paths.ts";
 import { daemonPolicy } from "./port.ts";
 import {
-  classifyDaemonPid,
+  type classifyDaemonPid,
   classifyOwnedDaemonPid,
   DAEMON_SIGKILL_GRACE_MS,
   getOrphanPids,
@@ -32,9 +32,10 @@ export function trackedDaemonPids(except?: Profile): Set<number> {
   return pids;
 }
 
-/** A held daemon.lock is the STRONGER keep-signal beside run-state tracking: OS-enforced, immune to
- *  pid reuse and run-state loss. `indeterminate` means the sweep cannot prove ANY pid unprotected,
- *  so it must not run. */
+/** A held daemon.lock is the STRONGER keep-signal beside run-state tracking: a pid marker the lock
+ *  module judges by the pid's liveness, so it survives run-state loss (a recycled pid can defeat
+ *  it, which is why every stop re-proves identity at its KILL boundary). `indeterminate` means the
+ *  sweep cannot prove ANY pid unprotected, so it must not run. */
 type LockSweepSpares =
   | { readonly kind: "pids"; readonly pids: Set<number> }
   | { readonly kind: "indeterminate"; readonly home: string };
@@ -134,10 +135,7 @@ async function stopLockHolder(home: string, holder: number): Promise<void> {
   const deadline = Date.now() + DAEMON_SIGKILL_GRACE_MS;
   while (daemonLockHolderPid(home) === holder) {
     if (Date.now() >= deadline) {
-      if (
-        await corroborateLockHolder(home, holder) &&
-        daemonLockHolderPid(home) === holder
-      ) {
+      if ((await corroborateLockHolder(home, holder)) && daemonLockHolderPid(home) === holder) {
         try {
           process.kill(holder, "SIGKILL");
         } catch {
@@ -207,12 +205,7 @@ export async function planCleanup(
         : { kind: "leave-holder", pid: holder },
     );
   }
-  const orphans = await listUntrackedOrphans(
-    process.pid,
-    process.ppid,
-    postClearTracked,
-    listPids,
-  );
+  const orphans = await listUntrackedOrphans(process.pid, process.ppid, postClearTracked, listPids);
   for (const pid of orphans) {
     if (pidAlive(pid)) actions.push({ kind: "stop-orphan", pid });
   }
@@ -249,13 +242,21 @@ function warnUnprovenTrackedPid(pid: number): void {
  * pointing at a dead daemon. The residual is terminatePid's SIGKILL gate: it signals on an UNREADABLE
  * identity scan, so a pid recycled inside the grace still dies.
  */
+/** `stopped`: a daemon of this root home was signalled (a tracked pid, this home's lock holder, an
+ *  orphan), so the tree it ran from is free: the start runs the floor gate once more
+ *  (src/commands/start.ts), since the float refuses to swap under a running daemon. */
+export interface CleanupOutcome {
+  stopped: boolean;
+}
+
 export async function cleanupExistingProxies(
   profile: Profile,
   state: CopilotEnvRunState = CopilotEnvRunState.forProfile(profile),
   listPids: (myPid: number, myPpid: number) => Promise<number[] | "unproven"> = getOrphanPids,
   classifyPid: typeof classifyDaemonPid = classifyOwnedDaemonPid,
-): Promise<void> {
+): Promise<CleanupOutcome> {
   consola.start("Cleaning up existing proxy processes ...");
+  let stopped = false;
 
   const home = new CopilotApiPaths(profile).home;
   const plan = await planCleanup(home, profile, state, listPids, classifyPid);
@@ -272,6 +273,7 @@ export async function cleanupExistingProxies(
           // Verdict unused: the clear-tracking action queued right behind unbinds the pid whichever
           // way the kill went, and terminatePid reports a refused escalation itself.
           await terminatePid(action.pid, DAEMON_SIGKILL_GRACE_MS, classifyPid);
+          stopped = true;
         } else if (cls === "unknown") {
           warnUnprovenTrackedPid(action.pid);
         }
@@ -288,6 +290,7 @@ export async function cleanupExistingProxies(
         if (await corroborateLockHolder(home, action.pid)) {
           consola.info(`   Stopping this home's daemon.lock holder (pid=${action.pid}) ...`);
           await stopLockHolder(home, action.pid);
+          stopped = true;
         } else {
           warnLeaveHolder(action.pid);
         }
@@ -307,13 +310,11 @@ export async function cleanupExistingProxies(
     // Only pids in both the plan and a FRESH scan are signalled: the tracked and holder stops above
     // can take a grace, so a pid recycled since planning is never TERM'd off the stale snapshot.
     const planned = new Set(orphans);
-    const confirmed = (await listUntrackedOrphans(
-      process.pid,
-      process.ppid,
-      trackedDaemonPids(),
-      listPids,
-    )).filter((p) => planned.has(p));
+    const confirmed = (
+      await listUntrackedOrphans(process.pid, process.ppid, trackedDaemonPids(), listPids)
+    ).filter((p) => planned.has(p));
     if (confirmed.length > 0) {
+      stopped = true;
       for (const opid of confirmed) {
         if (pidAlive(opid)) {
           consola.info(`   Stopping orphaned proxy (pid=${opid}) ...`);
@@ -325,12 +326,9 @@ export async function cleanupExistingProxies(
         }
       }
       await sleep(DAEMON_SIGKILL_GRACE_MS);
-      const survivors = (await listUntrackedOrphans(
-        process.pid,
-        process.ppid,
-        trackedDaemonPids(),
-        listPids,
-      )).filter((p) => planned.has(p));
+      const survivors = (
+        await listUntrackedOrphans(process.pid, process.ppid, trackedDaemonPids(), listPids)
+      ).filter((p) => planned.has(p));
       for (const opid of survivors) {
         if (pidAlive(opid)) {
           try {
@@ -344,4 +342,5 @@ export async function cleanupExistingProxies(
   }
 
   await sleep(LAUNCH_SETTLE_MS);
+  return { stopped };
 }

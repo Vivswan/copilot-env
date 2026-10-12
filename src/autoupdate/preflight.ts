@@ -2,6 +2,8 @@
 // (src/commands/start.ts) runs it as the last step of a live launch, so an installed binary
 // self-updates through the one command path (a source checkout runs the check and skips the
 // apply). Stderr-only output: `start`'s stdout and exit code are never touched here.
+
+import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { resolveTarget } from "../install/resolve-release.ts";
 import { errMessage } from "../utils/error.ts";
 import { createStderrLogger } from "../utils/logger.ts";
@@ -9,7 +11,6 @@ import { isProtectedRoot } from "../utils/root.ts";
 import { isUpToDate } from "../utils/semver.ts";
 import { isDue } from "../utils/time.ts";
 import { packageVersion } from "../utils/version.ts";
-import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { applyUpdate, resolveProvenanceDecision } from "./apply.ts";
 import { withUpdateLock } from "./lock.ts";
 import { AutoupdateState, effectiveUpdateCooldownDays } from "./state.ts";
@@ -34,9 +35,7 @@ export async function runPreflight(opts: PreflightOptions): Promise<void> {
 
   await (opts.lock ?? withUpdateLock)(opts.nowMs, async (outcome) => {
     if (!outcome.held) {
-      logger.info(
-        "autoupdate: could not take the update lock (another check running?); skipping.",
-      );
+      logger.info("autoupdate: could not take the update lock (another check running?); skipping.");
       return;
     }
     // Re-read under the lock: a concurrent run may have completed the check (and apply) between

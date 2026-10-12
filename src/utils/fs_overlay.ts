@@ -23,9 +23,10 @@
 // A disk entry the run carries (a chmod, a rename, a copy) is loaded into the volume by value; its
 // bytes are never decoded here, and the report prints its verdict alone. A directory the volume
 // holds only as a planned entry's ancestor is the disk's own: no row, and the disk speaks below it.
-import type { Volume } from "memfs";
+
 import type { Stats } from "node:fs";
 import { basename, dirname, join, parse, resolve, sep } from "node:path";
+import type { Volume } from "memfs";
 import * as disk from "./fs_disk.ts";
 import {
   type DirEntry,
@@ -84,15 +85,15 @@ function isEnoent(e: unknown): boolean {
   return (e as NodeJS.ErrnoException).code === "ENOENT";
 }
 
-/** The mode a fresh entry lands with under Deno. A file's explicit mode is set by a chmod after the
- *  create, so it lands exactly; a directory's goes to the OS, which applies the umask, as it does
- *  to either default. */
+/** The mode a fresh entry lands with on the disk side (fs_disk.ts). A file's explicit mode is set
+ *  by a chmod after the create, so it lands exactly; a directory's goes to the OS, which applies
+ *  the umask, as it does to either default. */
 function freshMode(mode: number | undefined, kind: "file" | "dir"): number {
   if (mode !== undefined && kind === "file") return platformMode(mode);
   return platformMode((mode ?? (kind === "file" ? 0o666 : 0o777)) & ~umask());
 }
 
-/** The mode the platform reports for `mode`. Windows keeps one bit, read-only: Deno's stat says
+/** The mode the platform reports for `mode`. Windows keeps one bit, read-only: stat there says
  *  0666 for anything writable and 0444 otherwise, for a directory too. */
 function platformMode(mode: number): number {
   if (WINDOWS) return (mode & 0o222) === 0 ? 0o444 : 0o666;
@@ -105,7 +106,7 @@ function underFile(syscall: string): string {
   return !WINDOWS || syscall === "mkdir" ? "ENOTDIR" : "ENOENT";
 }
 
-/** Windows has no umask (Deno refuses the call), and no bits for one to mask. */
+/** Windows has no umask (the call throws there), and no bits for one to mask. */
 function umask(): number {
   try {
     return process.umask();
@@ -121,7 +122,10 @@ function split(abs: string): { root: string; parts: string[] } {
   const { root } = parse(abs);
   return {
     root: foldKey(root),
-    parts: abs.slice(root.length).split(sep).filter((part) => part !== ""),
+    parts: abs
+      .slice(root.length)
+      .split(sep)
+      .filter((part) => part !== ""),
   };
 }
 
@@ -223,7 +227,7 @@ export class Overlay {
 
   /** The entry's own name as a listing prints it. */
   private basenameOf(key: string): string {
-    return WINDOWS ? this.spellings.get(key) ?? basename(key) : basename(key);
+    return WINDOWS ? (this.spellings.get(key) ?? basename(key)) : basename(key);
   }
 
   /** The disk's own spelling of a non-link entry it holds at `key` (realpath restores the case a
@@ -435,7 +439,7 @@ export class Overlay {
    *  tombstoned. A planned file above `key` is what node reports for a lookup under a regular
    *  file. */
   private diskBelow(key: string, syscall: string, path: string): boolean {
-    for (let cur = dirname(key);; cur = dirname(cur)) {
+    for (let cur = dirname(key); ; cur = dirname(cur)) {
       if (this.gone.has(cur)) return false;
       if (this.rows.has(cur)) {
         const above = this.vol.lstatSync(volPath(cur));
@@ -556,7 +560,7 @@ export class Overlay {
     if (this.view(key, "lstat", path) === null) throw errno("ENOENT", "lstat", path);
     if (!WINDOWS) return key;
     const tail: string[] = [];
-    for (let cur = key;; cur = dirname(cur)) {
+    for (let cur = key; ; cur = dirname(cur)) {
       try {
         return join(disk.realpath(cur), ...tail);
       } catch {
@@ -569,9 +573,10 @@ export class Overlay {
 
   // --- writes ------------------------------------------------------------------------------------
 
-  /** An explicit mode lands whether the file exists or not (Deno chmods after the write); without
-   *  one an existing file keeps its mode and a fresh inode takes the default. A staged write
-   *  (`replace`) lands at the path itself, so a link there is replaced, as the real rename does. */
+  /** An explicit mode lands whether the file exists or not (the disk side chmods after the
+   *  write); without one an existing file keeps its mode and a fresh inode takes the default. A
+   *  staged write (`replace`) lands at the path itself, so a link there is replaced, as the real
+   *  rename does. */
   writeText(path: string, text: string, write: OverlayWrite = {}): void {
     this.land(path, new TextEncoder().encode(text), true, write);
   }
@@ -606,7 +611,10 @@ export class Overlay {
         if (WINDOWS) throw new RenameRefusedError(path, errno("EPERM", "rename", staged, path));
         throw errno("EISDIR", "rename", staged, path);
       }
-      throw errno(WINDOWS ? "EINVAL" : "EISDIR", "open", path);
+      // bun's node:fs on Windows opens the directory and fails the write, with no path in the
+      // message; node refused the open with EINVAL. The dry run says what this runtime says.
+      if (WINDOWS) throw errno("EISDIR", "write", null);
+      throw errno("EISDIR", "open", path);
     }
     const mode =
       write.mode !== undefined || seen === null || write.replace || seen.stats.isSymbolicLink()
@@ -636,22 +644,24 @@ export class Overlay {
   mkdir(path: string, mode?: number): void {
     const asked = this.key(path, "mkdir");
     // A link on the way whose target is gone (a `~/.local` link whose target the run removed) is
-    // what mkdir meets, and it refuses it as EEXIST rather than creating the target behind it.
+    // what mkdir meets: node's recursive mkdir reports the missing target as ENOENT rather than
+    // creating it behind the link.
     const spelled = split(resolve(path));
     for (let cur = spelled.root, i = 0; i < spelled.parts.length; i++) {
       cur = join(cur, spelled.parts[i] as string);
       const link = this.view(this.key(cur, "mkdir", false), "mkdir", path, false);
       if (
-        link !== null && link.stats.isSymbolicLink() &&
+        link !== null &&
+        link.stats.isSymbolicLink() &&
         this.view(this.key(cur, "mkdir"), "mkdir", path) === null
       ) {
-        throw errno("EEXIST", "mkdir", path);
+        throw errno("ENOENT", "mkdir", path);
       }
     }
     const missing: [string, string][] = [];
     // The canonical and the spelled path climb together, so an ancestor made here is named as the
     // caller spelled it.
-    for (let cur = asked, said = resolve(path);; cur = dirname(cur), said = dirname(said)) {
+    for (let cur = asked, said = resolve(path); ; cur = dirname(cur), said = dirname(said)) {
       const seen = this.view(cur, "mkdir", path);
       if (seen !== null) {
         if (!seen.stats.isDirectory()) {
@@ -702,8 +712,9 @@ export class Overlay {
     if (seen.stats.isSymbolicLink()) {
       if (!WINDOWS) throw errno("ENOTDIR", "rmdir", path);
     } else {
-      // At a regular file (not under one): ENOTDIR on Windows too, as Deno's rmdirSync raises it.
-      if (!seen.stats.isDirectory()) throw errno("ENOTDIR", "rmdir", path);
+      // At a regular file (not under one): ENOTDIR on POSIX; bun's Windows rmdir says ENOENT
+      // (node's said ENOTDIR).
+      if (!seen.stats.isDirectory()) throw errno(WINDOWS ? "ENOENT" : "ENOTDIR", "rmdir", path);
       if (this.readdir(path).length > 0) throw errno("ENOTEMPTY", "rmdir", path);
     }
     this.tombstone(key, resolve(path));
@@ -846,7 +857,7 @@ export class Overlay {
 
 /** `path` and `dir` are canonical keys. */
 function isBelow(path: string, dir: string): boolean {
-  for (let cur = dirname(path);; cur = dirname(cur)) {
+  for (let cur = dirname(path); ; cur = dirname(cur)) {
     if (cur === dir) return true;
     if (dirname(cur) === cur) return false;
   }

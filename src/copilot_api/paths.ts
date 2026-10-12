@@ -1,24 +1,26 @@
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { isEnoentOrNotdir } from "../utils/fs.ts";
 import * as fs from "../utils/fs_facade.ts";
-import { hideWritesUnder } from "../utils/report_write.ts";
+import { userHomeDir } from "../utils/home.ts";
 import { getSanitizedHostname } from "../utils/hostname.ts";
+import { hideWritesUnder } from "../utils/report_write.ts";
 import {
   DEFAULT_PROFILE_NAME,
   isValidProfileName,
-  parseProfileName,
   type Profile,
   type ProfileName,
+  parseProfileName,
 } from "./profile.ts";
 
 // One spelling on every platform: do NOT swap in a native %LOCALAPPDATA% location on Windows, the wrapper
 // and the daemon must derive the identical path. The daemon never depends on this default: every spawn
 // pins COPILOT_API_HOME from DaemonSpec.home (process.ts), so the dir carries OUR name, not the proxy package's.
-export const DEFAULT_HOME: string = join(homedir(), ".local", "share", "copilot-env");
+function defaultHome(): string {
+  return join(userHomeDir(), ".local", "share", "copilot-env");
+}
 
 export function resolveHome(): string {
-  return process.env.COPILOT_API_HOME || DEFAULT_HOME;
+  return process.env.COPILOT_API_HOME || defaultHome();
 }
 
 /** Directory under a daemon home that holds the per-host runtime dirs (`.run/<host>/`). */
@@ -114,9 +116,15 @@ export function defaultDaemonHome(): string {
   return join(resolveHome(), PROFILES_DIR_NAME, DEFAULT_PROFILE_DIR);
 }
 
-/** The sweep and corroboration sites' one list producer, so no caller enumerates homes with a different rule. */
-export function allDaemonHomes(): string[] {
-  return [defaultDaemonHome(), ...profileHomeNames().map(profileHome)];
+/** The sweep and corroboration sites' one list producer, so no caller enumerates homes with a
+ *  different rule. `rootHome` names ANOTHER root's homes (the float warming a fixture root); unset,
+ *  the resolved root's, where the default daemon's home follows the env pins. */
+export function allDaemonHomes(rootHome?: string): string[] {
+  if (rootHome === undefined) return [defaultDaemonHome(), ...profileHomeNames().map(profileHome)];
+  return [
+    join(rootHome, PROFILES_DIR_NAME, DEFAULT_PROFILE_DIR),
+    ...profileHomeNamesUnder(rootHome).map((name) => join(rootHome, PROFILES_DIR_NAME, name)),
+  ];
 }
 
 /** Complements the credential store's `profiles` map: a proxy-mode profile can exist here with no
@@ -124,8 +132,13 @@ export function allDaemonHomes(): string[] {
  *  dir reads as "no profiles": callers use this list to avoid port collisions and to protect tracked
  *  daemons from the orphan sweep, where an incomplete answer is worse than an error. */
 export function profileHomeNames(): ProfileName[] {
+  return profileHomeNamesUnder(resolveRootHome());
+}
+
+function profileHomeNamesUnder(rootHome: string): ProfileName[] {
   try {
-    return fs.readdirEntries(join(resolveRootHome(), PROFILES_DIR_NAME))
+    return fs
+      .readdirEntries(join(rootHome, PROFILES_DIR_NAME))
       .filter((entry) => entry.isDirectory() && isValidProfileName(entry.name))
       .map((entry) => parseProfileName(entry.name))
       .sort();
@@ -145,9 +158,9 @@ export const RUN_STATE_FILENAME = ".state.json";
 /** The one account-wide store at the ROOT home (src/copilot_api/state_store.ts). */
 export const STATE_STORE_FILENAME = "state.json";
 
-/** Lock sidecars are PERMANENT (file_lock.ts never unlinks one), so the root stores' locks park here
- *  instead of cluttering the home listing. Locks inside daemon homes stay beside their files: a daemon
- *  home is the proxy's territory, not ours to reorganize. */
+/** The root stores' lock markers park here instead of cluttering the home listing. Locks inside
+ *  daemon homes stay beside their files: a daemon home is the proxy's territory, not ours to
+ *  reorganize. */
 export const LOCKS_DIR_NAME = "locks";
 
 /** Generated helper scripts that FOREIGN programs execute (the Claude Desktop credential helpers).

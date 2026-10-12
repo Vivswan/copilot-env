@@ -1,9 +1,8 @@
-import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { Profile } from "../copilot_api/profile.ts";
 import { powershellFileArgs } from "./command.ts";
 import * as fs from "./fs_facade.ts";
+import { userHomeDir } from "./home.ts";
 import { parseJsonRecord } from "./json.ts";
 import { hideWritesUnder } from "./report_write.ts";
 
@@ -14,8 +13,8 @@ export type RootMode =
   /** The root is the source tree itself: the code we execute and the files we manage are one
    *  directory. */
   | { readonly kind: "checkout"; readonly root: string }
-  /** Derived from `Deno.execPath()`, never `import.meta.url`: inside a compiled binary that URL
-   *  points into the embedded VFS, a temp-dir-shaped path that exists only in-process. Paths handed
+  /** Derived from `process.execPath`, never `import.meta.url`: inside a compiled binary that URL
+   *  points into the embedded virtual filesystem, a path that exists only in-process. Paths handed
    *  to other programs (Codex's `auth.command`, Claude's `apiKeyHelper`, the preload shims) must be
    *  real on-disk paths. */
   | { readonly kind: "compiled"; readonly root: string };
@@ -59,45 +58,35 @@ function isVersionedInstallTop(top: string): boolean {
   const normalized = stripExtendedLengthPrefix(target).replace(/[\\/]+$/, "");
   const parent = dirname(resolve(top, normalized));
   const versionsDir = resolve(join(top, VERSIONS_DIR));
-  const sameDir = process.platform === "win32"
-    ? parent.toLowerCase() === versionsDir.toLowerCase()
-    : parent === versionsDir;
+  const sameDir =
+    process.platform === "win32"
+      ? parent.toLowerCase() === versionsDir.toLowerCase()
+      : parent === versionsDir;
   return sameDir && !fs.entryAbsent(versionsDir);
 }
 
-/** The compiled binary's embedded VFS, or the checkout root in dev. Readable in-process only: never
- *  hand an ASSET_ROOT path to another program, and never write under it. Distinct from PROJECT_ROOT
- *  because an install materializes only some assets onto disk; `copilot-env.config` in particular
- *  is read out of the binary. */
-export const ASSET_ROOT: string = resolve(fileURLToPath(new URL("../..", import.meta.url)));
-
-/** Typed locally so the module also typechecks under non-Deno tooling. */
-interface DenoRuntimeGlobal {
-  execPath(): string;
-  build: { standalone?: boolean };
-}
-
-export function denoRuntime(): DenoRuntimeGlobal | null {
-  const versions: Record<string, string | undefined> = process.versions;
-  if (!versions.deno) return null;
-  return (globalThis as { Deno?: DenoRuntimeGlobal }).Deno ?? null;
-}
-
-/** Under a standalone, `Deno.execPath()` is OUR binary, which cannot run `deno cache` or launch the
- *  proxy. Observed from deno's own report rather than sniffed from `import.meta.url`: the compiled
- *  VFS path is a plain `file:` URL under the temp dir, and its directory name follows the output
- *  file name, which no contract pins. */
+/** Under a standalone, `process.execPath` is OUR binary: a bun CLI only under BUN_BE_BUN, and the
+ *  root of an install rather than a checkout. Observed from the runtime's own report rather than
+ *  sniffed from `import.meta.url`: the virtual filesystem root is a plain path whose spelling no
+ *  contract pins. */
 export function isStandaloneBinary(): boolean {
-  return denoRuntime()?.build.standalone === true;
+  return Bun.isStandaloneExecutable;
 }
 
-/** The one owner of the "can our runtime act as a deno CLI" guard; every fast path (resolveDenoBin,
- *  detectSidecar) goes through it rather than re-deriving it. */
-export function devDenoExecPath(): string | null {
-  const runtime = denoRuntime();
-  if (runtime === null || isStandaloneBinary()) return null;
-  return runtime.execPath();
-}
+/** This module's place in the source tree (`src/utils/`), so in a checkout the asset root is two
+ *  steps up. */
+const ASSET_ROOT_FROM_HERE = ["..", ".."] as const;
+
+/** The compiled binary's embedded virtual filesystem, or the checkout root in dev. Readable
+ *  in-process only: never hand an ASSET_ROOT path to another program, and never write under it.
+ *  Distinct from PROJECT_ROOT because an install materializes only some assets onto disk;
+ *  `copilot-env.config` in particular is read out of the binary. The compile step
+ *  (scripts/compile.ts) bundles every module into one file at the virtual root and embeds the
+ *  assets beside it at their repository paths, so under a standalone this module's own directory
+ *  IS the asset root. */
+export const ASSET_ROOT: string = isStandaloneBinary()
+  ? import.meta.dir
+  : resolve(import.meta.dir, ...ASSET_ROOT_FROM_HERE);
 
 /** `<root>/bin/copilot-env` -> `<root>`; nothing else may define the layout. In a versioned layout
  *  execPath resolves the `current` link, so the derivation lands on the version dir and the root
@@ -118,7 +107,7 @@ function detectRootMode(): RootMode {
   // Taken literally, never re-derived: `agent update` uses it to aim the staged binary inside a
   // not-yet-live version root.
   if (override) return { kind: "compiled", root: resolve(override) };
-  return { kind: "compiled", root: derivedCompiledRoot(denoRuntime()?.execPath() ?? "") };
+  return { kind: "compiled", root: derivedCompiledRoot(process.execPath) };
 }
 
 const ROOT_MODE: RootMode = detectRootMode();
@@ -212,7 +201,7 @@ function looksLikeVersionedInstallTop(resolved: string): boolean {
 export function looksLikeInstallRoot(root: string): boolean {
   const resolved = resolve(root);
   if (resolved === dirname(resolved)) return false; // a filesystem root
-  if (resolved === resolve(homedir())) return false;
+  if (resolved === resolve(userHomeDir())) return false;
   // A valid manifest alone qualifies: a user-deleted asset dir must not make a real install
   // invisible to uninstall. A root we cannot inspect is not one we may delete. Absent or invalid
   // falls back to the markers.

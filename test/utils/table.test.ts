@@ -1,13 +1,13 @@
 import stringWidth from "string-width";
+import { statusPaint } from "../../src/utils/ansi.ts";
 import {
-  formatTable as renderTable,
   keyValueLine,
+  formatTable as renderTable,
   type TableOptions,
   type TableRow,
   terminalWidth,
   wrapLine,
 } from "../../src/utils/table.ts";
-import { statusPaint } from "../../src/utils/ansi.ts";
 import { expect, test } from "../helpers/testing.ts";
 
 /** Plain unless a case asks for color: the default is the running terminal's. */
@@ -15,11 +15,12 @@ const formatTable = (body: TableRow[], options: TableOptions = {}): string[] =>
   renderTable(body, { color: false, ...options });
 
 test("formatTable pads and aligns per column, separates header and footer rows, trims every line, and takes ragged rows, an empty body, and a custom indent", () => {
-  const rows: Array<
-    { body: string[][]; options?: TableOptions; lines: string[] }
-  > = [
+  const rows: Array<{ body: string[][]; options?: TableOptions; lines: string[] }> = [
     {
-      body: [["a", "10"], ["longer", "5"]],
+      body: [
+        ["a", "10"],
+        ["longer", "5"],
+      ],
       options: { header: ["name", "count"], aligns: ["left", "right"] },
       lines: ["  name    count", "  ------  -----", "  a          10", "  longer      5"],
     },
@@ -80,14 +81,14 @@ const IDENTITIES = {
 const WIDE = [
   "identity                   Direct (api.githubcopilot.com)  Proxy (api.enterprise.githubcopilot.com)  note",
   "-------------------------  ------------------------------  ----------------------------------------  " +
-  "------------------------------------------------------------",
+    "------------------------------------------------------------",
   "codex                      rejected (400)                  -                                         " +
-  "Direct default: no Copilot-Integration-Id header (auto only)",
+    "Direct default: no Copilot-Integration-Id header (auto only)",
   "copilot-developer-cli      accepted (5 models)             accepted (37 models) *                    " +
-  "GitHub Copilot CLI; accepts fine-grained PATs",
+    "GitHub Copilot CLI; accepts fine-grained PATs",
   "copilot-developer-sandbox  accepted (2 models)             rejected (400)",
   "vscode-chat                -                               rejected (400)                            " +
-  "proxy default (copilot-api's own identity)",
+    "proxy default (copilot-api's own identity)",
 ];
 
 // The note column gives way first, down to its longest word; the fixed columns keep every body
@@ -110,9 +111,9 @@ const WRAPPED_AT_120 = [
 const WRAPPED_AT_160 = [
   WIDE[0] ?? "",
   "-------------------------  ------------------------------  ----------------------------------------  " +
-  "-----------------------------------------------------------",
+    "-----------------------------------------------------------",
   "codex                      rejected (400)                  -                                         " +
-  "Direct default: no Copilot-Integration-Id header (auto",
+    "Direct default: no Copilot-Integration-Id header (auto",
   "                                                                                                     only)",
   WIDE[3] ?? "",
   WIDE[4] ?? "",
@@ -162,7 +163,10 @@ test("formatTable fits the width: natural when it fits or off a TTY, word-wrappe
 
 test("a hard-wrap column splits a path at its own edge, spaces kept, where a word-wrap column would stack the table", () => {
   const path = "/Users/Jane  Doe/Library/Application  Support/copilot-env/logs/api.log";
-  const body = [["Logs:", path], ["PID:", "1"]];
+  const body = [
+    ["Logs:", path],
+    ["PID:", "1"],
+  ];
   const hard = formatTable(body, { indent: "", wrap: [false, "hard"], width: 40 });
   expect(hard).toEqual([
     "Logs:  /Users/Jane  Doe/Library/Applicat",
@@ -180,11 +184,19 @@ test("a hard-wrap column splits a path at its own edge, spaces kept, where a wor
   // A path without spaces has no word boundary a word-wrap column may use: the floors do not fit,
   // and the stacked cell splits at the width too rather than spill.
   const spaceless = "/home/me/.local/share/copilot-env/logs/copilot-api.log";
-  expect(formatTable([["Logs:", spaceless], ["PID:", "1"]], {
-    indent: "",
-    wrap: [false, true],
-    width: 40,
-  })).toEqual([
+  expect(
+    formatTable(
+      [
+        ["Logs:", spaceless],
+        ["PID:", "1"],
+      ],
+      {
+        indent: "",
+        wrap: [false, true],
+        width: 40,
+      },
+    ),
+  ).toEqual([
     "Logs:",
     "  /home/me/.local/share/copilot-env/logs",
     "    /copilot-api.log",
@@ -214,7 +226,10 @@ test("terminalWidth takes a TTY's own size over COLUMNS, and COLUMNS only for a 
   } finally {
     if (saved === undefined) delete process.env.COLUMNS;
     else process.env.COLUMNS = saved;
-    for (const [key, desc] of [["isTTY", isTTY], ["columns", columns]] as const) {
+    for (const [key, desc] of [
+      ["isTTY", isTTY],
+      ["columns", columns],
+    ] as const) {
       if (desc === undefined) delete (process.stdout as unknown as Record<string, unknown>)[key];
       else Object.defineProperty(process.stdout, key, desc);
     }

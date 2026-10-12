@@ -21,7 +21,7 @@ import * as facade from "../../src/utils/fs_facade.ts";
 import { expect, outcomeOf, tempDir, test } from "../helpers/testing.ts";
 
 let dir = "";
-const WINDOWS = Deno.build.os === "windows";
+const WINDOWS = process.platform === "win32";
 
 /** The thrown code (or the error's name when it carries none), or "ok": the shape both modes are
  *  compared in. */
@@ -95,7 +95,7 @@ const ERROR_CASES: Array<{
   setup: (root: string) => void;
   op: (root: string) => unknown;
   code: string;
-  /** The code Windows' own node:fs raises for the same state, when it differs. */
+  /** The code bun's node:fs raises on Windows for the same state, when it differs. */
   win32?: string;
   /** A state Windows cannot build without a privilege the runner lacks (a symlink). */
   posixOnly?: boolean;
@@ -105,7 +105,6 @@ const ERROR_CASES: Array<{
     setup: (r) => facade.mkdir(join(r, "d")),
     op: (r) => facade.writeText(join(r, "d"), "x", { atomic: false }),
     code: "EISDIR",
-    win32: "EINVAL",
   },
   {
     name: "staged write onto a directory",
@@ -172,6 +171,7 @@ const ERROR_CASES: Array<{
     setup: (r) => writeFileSync(join(r, "f"), "x"),
     op: (r) => facade.rmdir(join(r, "f")),
     code: "ENOTDIR",
+    win32: "ENOENT",
   },
   {
     name: "rm of a missing path with force",
@@ -201,7 +201,7 @@ const ERROR_CASES: Array<{
       facade.rm(join(r, "target"), { recursive: true });
     },
     op: (r) => facade.mkdir(join(r, "alias")),
-    code: "EEXIST",
+    code: "ENOENT",
     posixOnly: true,
   },
   {
@@ -212,7 +212,7 @@ const ERROR_CASES: Array<{
       facade.rm(join(r, "target"), { recursive: true });
     },
     op: (r) => facade.mkdir(join(r, "alias", "child")),
-    code: "EEXIST",
+    code: "ENOENT",
     posixOnly: true,
   },
 ];
@@ -238,7 +238,7 @@ test("every error the overlay derives from planned state carries the code this p
     }
   });
   const expected = Object.fromEntries(
-    CASES.map((c) => [c.name, WINDOWS ? c.win32 ?? c.code : c.code]),
+    CASES.map((c) => [c.name, WINDOWS ? (c.win32 ?? c.code) : c.code]),
   );
   expect(planned).toEqual(expected);
   expect(real).toEqual(expected);
@@ -256,10 +256,7 @@ test("mkdir -p crosses real and planned ancestors, and the report names only the
     expect(facade.stat(deeper).isDirectory()).toBe(true);
     expect(facade.readdir(deeper)).toEqual([]);
   });
-  expect(lines).toEqual([
-    `create ${join(real, "planned")}${sep}`,
-    `create ${deeper}${sep}`,
-  ]);
+  expect(lines).toEqual([`create ${join(real, "planned")}${sep}`, `create ${deeper}${sep}`]);
   expect(outcome(() => lstatSync(join(real, "planned")))).toBe("ENOENT");
 });
 
@@ -297,8 +294,9 @@ test("rename moves planned text and whole disk trees by reference, a binary keep
     expect(facade.readdir(join(moved, "inner"))).toEqual(["f.txt"]);
     expect(facade.readText(join(moved, "inner", "f.txt"))).toBe("leaf");
     expect(facade.exists(tree)).toBe(false);
-    expect([facade.stat(movedBlob).size, facade.exists(blob), facade.readBytes(movedBlob)])
-      .toEqual([bytes.length, false, bytes]);
+    expect([facade.stat(movedBlob).size, facade.exists(blob), facade.readBytes(movedBlob)]).toEqual(
+      [bytes.length, false, bytes],
+    );
     expect(facade.readdir(remade)).toEqual(["kept.txt"]);
     expect(facade.exists(join(remade, "stale.txt"))).toBe(false);
   });
@@ -336,7 +334,8 @@ test("a mode-only change is a rewrite with no row where the platform can change 
   writeFileSync(script, "#!/bin/sh\n");
   writeFileSync(both, "old\n");
   // Both in-place writes below name 0600 over a 0644 file: the real one is the witness for what
-  // Deno's writeFileSync lands on an existing inode (its chmod after the write), the dry one the pin.
+  // the runtime's writeFileSync lands on an existing inode (its chmod after the write), the dry one
+  // the pin.
   writeFileSync(inplace, "old\n");
   chmodSync(inplace, 0o644);
   writeFileSync(join(dir, "real-inplace"), "old\n");
@@ -358,7 +357,7 @@ test("a mode-only change is a rewrite with no row where the platform can change 
   facade.mkdir(join(dir, "real-d-default"));
   facade.writeText(join(dir, "real-f-default"), "x");
   const realModes = ["real-d", "real-f", "real-d-default", "real-f-default"].map((n) =>
-    modeOf(join(dir, n))
+    modeOf(join(dir, n)),
   );
   const fileDefault = realModes[3] as string;
   const afterChmod = (mode: number): string => {
@@ -387,12 +386,10 @@ test("a mode-only change is a rewrite with no row where the platform can change 
     facade.writeText(join(dir, "dry-f"), "x", { mode: 0o666 });
     facade.mkdir(join(dir, "dry-d-default"));
     facade.writeText(join(dir, "dry-f-default"), "x");
-    expect((facade.stat(script).mode & 0o777).toString(8).padStart(4, "0")).toBe(
-      afterChmod(0o700),
-    );
+    expect((facade.stat(script).mode & 0o777).toString(8).padStart(4, "0")).toBe(afterChmod(0o700));
     expect(
       ["dry-d", "dry-f", "dry-d-default", "dry-f-default"].map((n) =>
-        (facade.stat(join(dir, n)).mode & 0o777).toString(8).padStart(4, "0")
+        (facade.stat(join(dir, n)).mode & 0o777).toString(8).padStart(4, "0"),
       ),
     ).toEqual(realModes);
   });
@@ -506,8 +503,10 @@ test.skipIf(WINDOWS)(
       expect(facade.lstat(alias).isSymbolicLink()).toBe(true);
       // A staged write lands over the link itself; what the link pointed at is untouched.
       facade.writeText(link, "replaced", { atomic: true });
-      expect([facade.lstat(link).isSymbolicLink(), facade.readText(join(real, "keep.txt"))])
-        .toEqual([false, "same"]);
+      expect([
+        facade.lstat(link).isSymbolicLink(),
+        facade.readText(join(real, "keep.txt")),
+      ]).toEqual([false, "same"]);
       // The alias follows into the remade target, which hides the disk's children.
       facade.rm(real, { recursive: true });
       facade.mkdir(real);
@@ -708,8 +707,11 @@ test("writeText is staged by default: a stale temp under this pid goes first and
   expect(lines).toEqual([`delete ${stale}`, `create ${file}`, `  + {}`]);
   expect(readFileSync(stale, "utf8")).toBe("stale");
   facade.writeText(file, "{}", { mode: 0o600 });
-  expect([readFileSync(file, "utf8"), existsSync(stale), facade.readdir(join(dir, "nested"))])
-    .toEqual(["{}", false, ["f.json"]]);
+  expect([
+    readFileSync(file, "utf8"),
+    existsSync(stale),
+    facade.readdir(join(dir, "nested")),
+  ]).toEqual(["{}", false, ["f.json"]]);
   if (!WINDOWS) expect(modeOf(file)).toBe("0600");
 });
 
@@ -764,7 +766,16 @@ test.skipIf(WINDOWS)(
           facade.stat(current).isDirectory(),
           facade.readdir(current),
           facade.readdirEntries(top).map((e) => [e.name, e.isSymbolicLink()]),
-        ]).toEqual([true, target, true, ["bin"], [["current", true], ["versions", false]]]);
+        ]).toEqual([
+          true,
+          target,
+          true,
+          ["bin"],
+          [
+            ["current", true],
+            ["versions", false],
+          ],
+        ]);
       }
       facade.rename(moved.from, moved.to);
       expect([
@@ -808,10 +819,10 @@ test.skipIf(!WINDOWS)(
     const native = realpathSync.native(onDisk);
     // The drive letter, the directory and the file name in the other case.
     const variant = (path: string): string =>
-      path.replace(/^[A-Za-z]:/, (drive) => drive.toLowerCase()).toUpperCase().replace(
-        /^[A-Z]:/,
-        (drive) => drive.toLowerCase(),
-      );
+      path
+        .replace(/^[A-Za-z]:/, (drive) => drive.toLowerCase())
+        .toUpperCase()
+        .replace(/^[A-Z]:/, (drive) => drive.toLowerCase());
     const lines = await dryRun(() => {
       facade.writeText(join(dir, "Mixed", "File.txt"), "planned");
       expect(facade.readText(variant(join(dir, "Mixed", "File.txt")))).toBe("planned");

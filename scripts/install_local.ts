@@ -1,18 +1,19 @@
-// `deno task install [--force] [installer flags]`: compile the host binary, then run the
+// `bun run install:local [--force] [installer flags]`: build the host binary, then run the
 // platform installer with COPILOT_ENV_DOWNLOAD_BASE at dist/ (the same override CI smokes
 // use), so the result is exactly a release install whose source is this checkout.
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, realpathSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
-import { fileURLToPath } from "node:url";
 import { join, resolve } from "node:path";
-import { currentReleaseTarget } from "../src/install/targets.ts";
+import { fileURLToPath } from "node:url";
 import { looksLikeInstallRoot } from "../src/utils/root.ts";
+import { currentReleaseTarget } from "../src/utils/targets.ts";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 
 function die(message: string): never {
   console.error(`ERROR: ${message}`);
-  Deno.exit(2);
+  process.exit(2);
 }
 
 /** The installers' flags, POSIX spelling on the left; the task forwards them untouched on
@@ -57,9 +58,9 @@ function usage(): string {
   const width = Math.max(...FORWARDED_FLAGS.map((f) => `${f.posix} ${f.value ?? ""}`.length));
   const row = (flag: string, help: string) => `  ${flag.padEnd(width)}  ${help}`;
   return [
-    "Usage: deno task install [--force] [installer flags]",
+    "Usage: bun run install:local [--force] [installer flags]",
     "",
-    "Compiles the host-target binary into dist/ and installs it via the platform",
+    "Builds the host-target binary into dist/ and installs it via the platform",
     "installer (COPILOT_ENV_DOWNLOAD_BASE=dist/).",
     "",
     "Task flags:",
@@ -71,13 +72,13 @@ function usage(): string {
     `Installer flags (forwarded to ${isWindows ? "install.ps1" : "install.sh"}):`,
     ...FORWARDED_FLAGS.map((f) => row(`${f.posix} ${f.value ?? ""}`.trimEnd(), f.help)),
     "",
-    "--version is not accepted: the task installs the binary it just compiled.",
+    "--version is not accepted: the task installs the binary it just built.",
   ].join("\n");
 }
 
 let force = false;
 const forwarded: { flag: ForwardedFlag; value?: string }[] = [];
-const args = [...Deno.args];
+const args = process.argv.slice(2);
 while (args.length > 0) {
   const arg = args.shift() ?? "";
   const eq = arg.indexOf("=");
@@ -89,11 +90,11 @@ while (args.length > 0) {
   }
   if (arg === "-h" || arg === "--help") {
     console.log(usage());
-    Deno.exit(0);
+    process.exit(0);
   }
   if (name === "--version") {
     die(
-      "--version is not accepted: the task installs the binary it just compiled " +
+      "--version is not accepted: the task installs the binary it just built " +
         "(COPILOT_ENV_DOWNLOAD_BASE=dist/), and the installer resolves no release tag there.",
     );
   }
@@ -113,7 +114,9 @@ while (args.length > 0) {
   // A separated value that looks like a flag is a missing value, not a path: `--dir --yes` must
   // not install into <cwd>/--yes.
   if (
-    value === undefined || value === "" || (inlineValue === undefined && value.startsWith("--"))
+    value === undefined ||
+    value === "" ||
+    (inlineValue === undefined && value.startsWith("--"))
   ) {
     die(
       `${flag.posix} needs a ${flag.value} argument; a ${flag.value} that starts with -- is spelled ${flag.posix}=${flag.value}.`,
@@ -128,27 +131,26 @@ if (given("--yes") && given("--no")) die("--yes and --no conflict; pass one.");
 const installDirArg = given("--dir")?.value;
 
 function run(command: string, args: string[], env: Record<string, string> = {}): void {
-  const { code } = new Deno.Command(command, {
-    args,
+  // stdin too: install.ps1 gates its reload offer on an unredirected console input.
+  const result = spawnSync(command, args, {
     cwd: ROOT,
-    env,
-    // stdin too: install.ps1 gates its reload offer on an unredirected console input.
-    stdin: "inherit",
-    stdout: "inherit",
-    stderr: "inherit",
-  }).outputSync();
-  if (code !== 0) Deno.exit(code);
+    env: { ...process.env, ...env },
+    stdio: "inherit",
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0) process.exit(result.status ?? 1);
 }
 
-run("deno", ["task", "compile", "--target", target.triple]);
+run("bun", ["run", "build", "--target", "host"]);
 
-// Delete only after a successful compile, so a broken build never leaves the
+// Delete only after a successful build, so a broken build never leaves the
 // machine with no install at all.
 if (force) {
   // The installers' exact precedence (--dir, then `${COPILOT_ENV_DIR:-default}`, PS
   // falsy-empty): only the EMPTY value reads as unset, or deletion and install could diverge.
   const envDir = process.env.COPILOT_ENV_DIR;
-  const requested = installDirArg ??
+  const requested =
+    installDirArg ??
     (envDir !== undefined && envDir !== "" ? envDir : join(homedir(), ".copilot-env"));
   if (existsSync(requested)) {
     // Physical paths on BOTH sides (mirrors the installers' canonicalization):
@@ -174,7 +176,7 @@ const installerArgs = forwarded.flatMap(({ flag, value }) => [
   isWindows ? flag.windows : flag.posix,
   ...(value === undefined ? [] : [value]),
 ]);
-const env = { "COPILOT_ENV_DOWNLOAD_BASE": join(ROOT, "dist") };
+const env = { COPILOT_ENV_DOWNLOAD_BASE: join(ROOT, "dist") };
 if (isWindows) {
   run(
     "powershell",

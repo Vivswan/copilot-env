@@ -10,8 +10,8 @@ import { CopilotEnvConfig } from "../../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../../src/copilot_api/env_state.ts";
 import { OwnershipLedger } from "../../src/copilot_api/ownership.ts";
 import { CopilotApiPaths } from "../../src/copilot_api/paths.ts";
-import { afterEach, beforeEach, expect, test } from "../helpers/testing.ts";
 import { envSnapshot, isolateProxyHome } from "../helpers/env.ts";
+import { afterEach, beforeEach, expect, test } from "../helpers/testing.ts";
 
 const restoreEnv = envSnapshot();
 
@@ -33,9 +33,9 @@ test("the three writers share one file under one lock, and each preserves the ke
     token: "ghu_x",
   });
   new OwnershipLedger().record("claudeDesktop", "/lib/uuid.json");
-  // One lock sidecar for the whole store, under locks/; none per former store.
-  expect(existsSync(`${paths.stateStoreLock}.oslock`)).toBe(true);
-  expect(existsSync(join(paths.locksDir, "credentials.json.lock.oslock"))).toBe(false);
+  // One lock marker for the whole store, under locks/, released on return; none per former store.
+  expect(existsSync(paths.stateStoreLock)).toBe(false);
+  expect(existsSync(join(paths.locksDir, "credentials.json.lock"))).toBe(false);
   // A newer release's keys in `global` and in a profile map survive a settings write, and the
   // state keys sharing the maps survive it too.
   const doc = JSON.parse(readFileSync(paths.stateStoreFile, "utf8")) as {
@@ -99,10 +99,11 @@ test("`agent config` writes settings only: a state key, bare or as a path into t
   ];
   for (const [key, owner] of cases) {
     expect(() =>
-      runConfig({ kind: "set", key: key, value: "x", view: { kind: "config" }, dryRun: false })
+      runConfig({ kind: "set", key: key, value: "x", view: { kind: "config" }, dryRun: false }),
     ).toThrow(owner);
-    expect(() => runConfig({ kind: "unset", key: key, view: { kind: "config" }, dryRun: false }))
-      .toThrow(/sets preferences only/);
+    expect(() =>
+      runConfig({ kind: "unset", key: key, view: { kind: "config" }, dryRun: false }),
+    ).toThrow(/sets preferences only/);
   }
   // Control: a settings key still lands, and an unknown key still gets the unknown-key error.
   runConfig({
@@ -120,8 +121,6 @@ test("`agent config` writes settings only: a state key, bare or as a path into t
       value: "1",
       view: { kind: "config" },
       dryRun: false,
-    })
-  ).toThrow(
-    /unknown config key/,
-  );
+    }),
+  ).toThrow(/unknown config key/);
 });

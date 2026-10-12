@@ -42,7 +42,7 @@ export function changedPaths(before: Map<string, string>, after: Map<string, str
   }
   for (const path of before.keys()) if (!after.has(path)) changed.add(path);
   for (const path of changed) {
-    if (/\.lock$|\.oslock$|\.tmp\.\d+$/.test(path) && !before.has(path)) changed.delete(path);
+    if (/\.lock$|\.staging$|\.tmp\.\d+$/.test(path) && !before.has(path)) changed.delete(path);
   }
   return changed;
 }
@@ -63,11 +63,14 @@ export function plannedPaths(stdout: string): string[] {
   const lines = stdout.split("\n");
   const header = lines.findIndex((line) => line.startsWith(PLAN_HEADER));
   if (header === -1) throw new Error(`no dry-run plan in stdout:\n${stdout}`);
-  return lines.slice(header + 1).filter((line) => /^ {2}\S/.test(line)).map((line) => {
-    const [verdict, ...path] = line.trimStart().split(" ");
-    if (!PLAN_VERDICTS.has(verdict ?? "")) throw new Error(`not a plan row: ${line}`);
-    return path.join(" ");
-  });
+  return lines
+    .slice(header + 1)
+    .filter((line) => /^ {2}\S/.test(line))
+    .map((line) => {
+      const [verdict, ...path] = line.trimStart().split(" ");
+      if (!PLAN_VERDICTS.has(verdict ?? "")) throw new Error(`not a plan row: ${line}`);
+      return path.join(" ");
+    });
 }
 
 /** `body` run as a dry run: the tree diff it would print and its result; a body that fails

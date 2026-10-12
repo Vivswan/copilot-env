@@ -2,7 +2,7 @@ import * as net from "node:net";
 
 import { BOUNDED_LOCK_POLICY, withRequiredFileLockSync } from "../utils/file_lock.ts";
 import { isLoopbackHostname } from "./config_registry.ts";
-import { configSetCommand, CopilotEnvConfig } from "./env_config.ts";
+import { CopilotEnvConfig, configSetCommand } from "./env_config.ts";
 import { allProfileNames } from "./env_state.ts";
 import { CopilotApiPaths } from "./paths.ts";
 import type { Profile, ProfileName } from "./profile.ts";
@@ -18,17 +18,17 @@ import { CopilotEnvRunState } from "./run_state.ts";
  */
 type DaemonPolicy =
   | {
-    readonly port: { readonly source: "config" };
-    readonly strictPortEligible: true;
-    readonly releasesPortOnStop: true;
-  }
+      readonly port: { readonly source: "config" };
+      readonly strictPortEligible: true;
+      readonly releasesPortOnStop: true;
+    }
   | {
-    readonly port: { readonly source: "reservation"; readonly name: ProfileName };
-    /** A named profile's reservation is soft and always auto-increments. */
-    readonly strictPortEligible: false;
-    /** The baked agent wiring points at the reservation, so it survives a stop. */
-    readonly releasesPortOnStop: false;
-  };
+      readonly port: { readonly source: "reservation"; readonly name: ProfileName };
+      /** A named profile's reservation is soft and always auto-increments. */
+      readonly strictPortEligible: false;
+      /** The baked agent wiring points at the reservation, so it survives a stop. */
+      readonly releasesPortOnStop: false;
+    };
 
 export function daemonPolicy(profile: Profile): DaemonPolicy {
   if (profile === null) {
@@ -53,9 +53,10 @@ export function proxyPortRange(config: CopilotEnvConfig): { min: number; max: nu
   if (min > max) {
     throw new Error(
       `invalid port range: daemon.min-port (${min}) is greater than daemon.max-port (${max}); ` +
-        `fix it with \`${configSetCommand("daemon.min-port", "<n>")}\` / \`${
-          configSetCommand("daemon.max-port", "<n>")
-        }\`.`,
+        `fix it with \`${configSetCommand("daemon.min-port", "<n>")}\` / \`${configSetCommand(
+          "daemon.max-port",
+          "<n>",
+        )}\`.`,
     );
   }
   return { min, max };
@@ -112,9 +113,10 @@ export async function copilotApiFindPort(
     }
   }
   throw new Error(
-    `no free port found in range ${from}-${to - 1}; free a port or run \`${
-      configSetCommand("daemon.port", "<n>")
-    }\` to start the search elsewhere`,
+    `no free port found in range ${from}-${to - 1}; free a port or run \`${configSetCommand(
+      "daemon.port",
+      "<n>",
+    )}\` to start the search elsewhere`,
   );
 }
 

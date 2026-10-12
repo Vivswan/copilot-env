@@ -3,21 +3,21 @@
 // it does not own. The files themselves are desktop_library.ts, the entry document
 // desktop_payload.ts, the helper scripts desktop_helper_scripts.ts.
 import { basename, isAbsolute, join, relative, sep } from "node:path";
-import { codexUserAgent } from "../codex/user_agent.ts";
 import { type ManagedMode, type ManagedWrite, reservePlannedPort } from "../agents/configure.ts";
+import { codexUserAgent } from "../codex/user_agent.ts";
 import { fetchRawModels } from "../copilot_api/catalog.ts";
 import { Credential } from "../copilot_api/credential.ts";
 import { staticKeyDetail } from "../copilot_api/credential_detail.ts";
 import { discoverServableClaudeModels } from "../copilot_api/discovery.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { DEFAULT_COPILOT_API_BASE, type ProbeFetch } from "../copilot_api/integration_identity.ts";
-import { OwnershipLedger } from "../copilot_api/ownership.ts";
 import {
   claudeCatalogRows,
   ONE_M_SUFFIX,
   parseCatalogModels,
   parseModelList,
 } from "../copilot_api/models.ts";
+import { OwnershipLedger } from "../copilot_api/ownership.ts";
 import { CopilotApiPaths, resolveRootHome } from "../copilot_api/paths.ts";
 import { copilotApiResolvePort, proxyLoopbackOrigin } from "../copilot_api/port.ts";
 import { type Profile, profileKey, profileLabel } from "../copilot_api/profile.ts";
@@ -36,9 +36,9 @@ import {
 } from "./desktop_helper_scripts.ts";
 import {
   claudeDesktopInstalled,
-  desktopEntryName,
   type DesktopMeta,
   type DesktopMetaEntry,
+  desktopEntryName,
   META_FILENAME,
   parseDesktopMeta,
   prepareClaudeDesktopAppFiles,
@@ -51,10 +51,10 @@ import {
 } from "./desktop_library.ts";
 import {
   DESKTOP_SECRETS,
-  desktopConfigPayload,
   type DesktopCredential,
-  desktopModelsFromPicks,
   type DesktopModelSpec,
+  desktopConfigPayload,
+  desktopModelsFromPicks,
   entryProfileAt,
   recordedModelRows,
 } from "./desktop_payload.ts";
@@ -114,11 +114,12 @@ async function wiringModels(
 ): Promise<readonly DesktopModelSpec[] | undefined> {
   if (opts.mode === "direct") {
     try {
-      const resolved = typeof opts.directToken === "string"
-        ? { token: opts.directToken, reason: null }
-        : opts.credential.kind === "static"
-        ? { token: opts.credential.token, reason: null }
-        : new Credential(undefined, opts.profile).resolveWithReason();
+      const resolved =
+        typeof opts.directToken === "string"
+          ? { token: opts.directToken, reason: null }
+          : opts.credential.kind === "static"
+            ? { token: opts.credential.token, reason: null }
+            : new Credential(undefined, opts.profile).resolveWithReason();
       if (resolved.token === null) throw new Error(resolved.reason);
       const token = resolved.token;
       const discovered = await discoverServableClaudeModels(
@@ -152,9 +153,7 @@ async function wiringModels(
       }
     }
   }
-  logger.warn(
-    "  Claude Desktop: no live model data; leaving the entry's model rows as they are.",
-  );
+  logger.warn("  Claude Desktop: no live model data; leaving the entry's model rows as they are.");
   return undefined;
 }
 
@@ -173,17 +172,19 @@ export async function wireClaudeDesktopEntry(opts: DesktopWireOptions): Promise<
 
   // The text PEEKS a proxy port; the write reserves it (reservePlannedPort).
   const plannedPort = opts.mode === "proxy" ? copilotApiResolvePort(opts.profile) : null;
-  const baseUrl = plannedPort === null
-    ? opts.direct?.directBaseUrl ?? DEFAULT_COPILOT_API_BASE
-    : proxyLoopbackOrigin(plannedPort);
+  const baseUrl =
+    plannedPort === null
+      ? (opts.direct?.directBaseUrl ?? DEFAULT_COPILOT_API_BASE)
+      : proxyLoopbackOrigin(plannedPort);
 
   const metaRaw = readFileOrNull(join(dir, META_FILENAME));
   const meta = parseDesktopMeta(metaRaw);
   if (meta === null) {
     logger.warn(
-      `  Claude Desktop: ${
-        join(dir, META_FILENAME)
-      } has an unexpected shape; leaving the config library alone.`,
+      `  Claude Desktop: ${join(
+        dir,
+        META_FILENAME,
+      )} has an unexpected shape; leaving the config library alone.`,
     );
     return;
   }
@@ -230,8 +231,7 @@ export async function wireClaudeDesktopEntry(opts: DesktopWireOptions): Promise<
     );
     return;
   }
-  const owned = entry !== undefined &&
-    ledger.owns("claudeDesktop", configPathOf(entry.id));
+  const owned = entry !== undefined && ledger.owns("claudeDesktop", configPathOf(entry.id));
   const created = entry === undefined;
   if (entry === undefined) {
     const id = mintedEntryId(
@@ -245,14 +245,15 @@ export async function wireClaudeDesktopEntry(opts: DesktopWireOptions): Promise<
   const configPath = configPathOf(entry.id);
   const existingRaw = readFileOrNull(configPath);
   // Unparseable content under our path (an in-app edit racing us) is rebuilt.
-  const existing: Record<string, unknown> = existingRaw === null
-    ? {}
-    : parseJsonRecord(existingRaw) ?? {};
+  const existing: Record<string, unknown> =
+    existingRaw === null ? {} : (parseJsonRecord(existingRaw) ?? {});
 
   // The launcher hot path (quiet) must NEVER run discovery: its probes are billed requests. It
   // reuses the recorded rows; `agent init`, `agent profile <name> add`, and `agent profile sync --claude` refresh live.
   const models = opts.quiet
-    ? (owned ? recordedModelRows(existing) ?? undefined : undefined)
+    ? owned
+      ? (recordedModelRows(existing) ?? undefined)
+      : undefined
     : await wiringModels(opts);
 
   // A FRESH direct entry without model data would have neither discovery (Copilot 404s /v1/models)
@@ -267,22 +268,22 @@ export async function wireClaudeDesktopEntry(opts: DesktopWireOptions): Promise<
 
   // The helper script exists only for the command shape; a static entry names none. Read now, so
   // an unreadable helper refuses the wire before anything is reserved or written.
-  const credential: DesktopCredential = opts.credential.kind === "static" ? opts.credential : {
-    kind: "command",
-    helperPath: desktopHelperPath(resolveRootHome(), opts.mode, opts.profile),
-  };
-  const helper = credential.kind === "command"
-    ? readDesktopHelperScript(opts.mode, opts.profile)
-    : null;
+  const credential: DesktopCredential =
+    opts.credential.kind === "static"
+      ? opts.credential
+      : {
+          kind: "command",
+          helperPath: desktopHelperPath(resolveRootHome(), opts.mode, opts.profile),
+        };
+  const helper =
+    credential.kind === "command" ? readDesktopHelperScript(opts.mode, opts.profile) : null;
   // Re-extracted so the payload receives the Direct facts only alongside a direct mode.
-  const write: ManagedMode = opts.mode === "direct"
-    ? { mode: "direct", direct: opts.direct }
-    : { mode: "proxy" };
+  const write: ManagedMode =
+    opts.mode === "direct" ? { mode: "direct", direct: opts.direct } : { mode: "proxy" };
   // The write's own line announces the wiring; a byte-identical no-op states it instead, unless
   // quiet (the launcher hot path).
-  const staticClause = credential.kind === "command"
-    ? ""
-    : `; ${staticKeyDetail(opts.mode, opts.profile)}`;
+  const staticClause =
+    credential.kind === "command" ? "" : `; ${staticKeyDetail(opts.mode, opts.profile)}`;
   const wiring = `${ENTRY} "${entry.name}" (${opts.mode}) wired${staticClause}`;
   const payload = desktopConfigPayload({
     ...write,
@@ -297,9 +298,10 @@ export async function wireClaudeDesktopEntry(opts: DesktopWireOptions): Promise<
   if (!meta.entries.some((e) => e.id === meta.appliedId)) meta.appliedId = entry.id;
 
   // The post-save steps take their looks before the first wiring write.
-  const retire = credential.kind === "command"
-    ? planRemoveHelperScripts(opts.profile, opts.mode)
-    : planRemoveHelperScripts(opts.profile);
+  const retire =
+    credential.kind === "command"
+      ? planRemoveHelperScripts(opts.profile, opts.mode)
+      : planRemoveHelperScripts(opts.profile);
   const appFiles = prepareClaudeDesktopAppFiles();
   // Reserved now that everything is computed: a refusal above leaves no reservation behind.
   if (plannedPort !== null) reservePlannedPort(opts.profile, plannedPort);
@@ -346,8 +348,7 @@ export function profileStoreWellFormed(storeFile: string): boolean {
   }
   if (!isRecord(doc)) return false;
   const profiles = doc["profiles"];
-  return profiles === undefined ||
-    (isRecord(profiles) && Object.values(profiles).every(isRecord));
+  return profiles === undefined || (isRecord(profiles) && Object.values(profiles).every(isRecord));
 }
 
 /** Best-effort: a Desktop failure warns, never fails the caller. Key off leaves the default's
@@ -478,13 +479,16 @@ export function removeUnmanagedClaudeDesktopWiring(opts: { quiet?: boolean } = {
   // Every look before the first write: the helper listing and the unlisted claims are judged over
   // the library as it stands, and a listing that fails leaves it untouched.
   const helpers = planRemoveFiles(
-    presentDesktopHelperScripts(resolveRootHome())
-      .filter((path) => desktopHelperScriptWiring(basename(path))?.profile !== null),
+    presentDesktopHelperScripts(resolveRootHome()).filter(
+      (path) => desktopHelperScriptWiring(basename(path))?.profile !== null,
+    ),
   );
   const unlisted = unlistedClaims(sweepable);
   const entries = sweepOwnedEntries((e) => sweepable(e.path));
   if (entries.kind === "blocked") return;
-  if (unlisted.kind === "listed") { for (const path of unlisted.paths) removeFile(path, ENTRY); }
+  if (unlisted.kind === "listed") {
+    for (const path of unlisted.paths) removeFile(path, ENTRY);
+  }
   helpers();
   if (!opts.quiet) announceUnmanagedDefault();
   releaseClaims(entries.removed);
@@ -569,8 +573,13 @@ function claimsUnder(ledger: OwnershipLedger, dir: string): Set<string> {
   return new Set(
     ledger.ownedPaths("claudeDesktop").filter((p) => {
       const rel = relative(dir, p);
-      return rel !== "" && !isAbsolute(rel) && !rel.startsWith("..") && !rel.includes(sep) &&
-        rel.endsWith(".json");
+      return (
+        rel !== "" &&
+        !isAbsolute(rel) &&
+        !rel.startsWith("..") &&
+        !rel.includes(sep) &&
+        rel.endsWith(".json")
+      );
     }),
   );
 }

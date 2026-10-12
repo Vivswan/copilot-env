@@ -1,4 +1,4 @@
-// The entry behind bin/agent, bin/agent.ps1, and the `deno compile` binary. Commander rather than
+// The entry behind bin/agent, bin/agent.ps1, and the compiled binary. Commander rather than
 // citty so unknown flags are rejected (`error: unknown option '--x'`, exit 1) instead of silently
 // accepted, and so help wraps to the terminal width natively. Every command registers from
 // src/commands/ (profile_verbs.ts, profile_ops.ts, machine.ts); this file owns the program alone.

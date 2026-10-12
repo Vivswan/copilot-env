@@ -6,12 +6,12 @@ set -e
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SNAP="$(cd "${HERE}/.." && pwd)"
 
-# shellcheck source=../scripts/ensure-deno.sh
-. "${SNAP}/scripts/ensure-deno.sh"
+# shellcheck source=../scripts/ensure-bun.sh
+. "${SNAP}/scripts/ensure-bun.sh"
 # `agent profile env` is the wrapper's automatic refresh after every command: its
-# bootstrap runs quiet so an old PATH deno warns once per command, not twice.
-if ! ensure_deno "${SNAP}" "$([ "${1:-}" = "profile" ] && [ "${2:-}" = "env" ] && echo quiet)"; then
-    echo "copilot-env bootstrap failed: deno is unavailable -- check network, then re-run." >&2
+# bootstrap runs quiet so an old PATH bun warns once per command, not twice.
+if ! ensure_bun "${SNAP}" "$([ "${1:-}" = "profile" ] && [ "${2:-}" = "env" ] && echo quiet)"; then
+    echo "copilot-env bootstrap failed: bun is unavailable -- check network, then re-run." >&2
     exit 1
 fi
 
@@ -19,19 +19,19 @@ fi
 # A failed read reinstalls (the self-healing direction) rather than reading as "deps current".
 deps_proven_current() {
     [ -d "${SNAP}/node_modules" ] || return 1
-    newer="$(find "${SNAP}/deno.lock" -prune -newer "${SNAP}/node_modules" 2>/dev/null)" || return 1
+    newer="$(find "${SNAP}/bun.lock" -prune -newer "${SNAP}/node_modules" 2>/dev/null)" || return 1
     [ -z "${newer}" ]
 }
 if ! deps_proven_current; then
-    if ! ( cd "${SNAP}" && deno install --frozen >&2 ); then
-        echo "copilot-env bootstrap failed: deno install did not complete -- check network/deno, then re-run." >&2
+    if ! ( cd "${SNAP}" && bun install --frozen-lockfile >&2 ); then
+        echo "copilot-env bootstrap failed: bun install did not complete -- check network/bun, then re-run." >&2
         exit 1
     fi
-    # Mark node_modules as freshly installed so the deno.lock-vs-node_modules mtime
+    # Mark node_modules as freshly installed so the bun.lock-vs-node_modules mtime
     # check above can't loop: a no-op frozen install needn't bump the dir's mtime.
     touch "${SNAP}/node_modules"
 fi
 
-# -q drops Deno's own "Permissions in the config file is an experimental feature" line, printed
-# for -P on every command; its errors and the CLI's stderr still print.
-exec deno run -q -P=cli "${SNAP}/src/cli.ts" "$@"
+# --no-env-file: bun otherwise loads a `.env` from the cwd into the CLI's environment, which
+# the compiled binary never does.
+exec bun --no-env-file run "${SNAP}/src/cli.ts" "$@"

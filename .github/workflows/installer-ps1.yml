@@ -38,9 +38,6 @@ on:
 permissions:
   contents: read
 
-env:
-  DENO_NO_UPDATE_CHECK: "1"
-
 jobs:
   smoke:
     name: windows-latest
@@ -49,31 +46,33 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          deno-version-file: .dvmrc
-          cache: true
+          bun-version-file: .bun-version
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('**/bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
 
       - name: Install dependencies
-        run: deno ci
+        run: bun install --frozen-lockfile
 
-      # `shell: bash` (git-bash) just for the $(...) triple substitution; the
-      # compile task itself is cross-platform TypeScript.
+      # The build script resolves `host` to the runner's triple itself, so no shell
+      # substitution is needed; the script is cross-platform TypeScript.
       - name: Compile this tree's host binary
-        shell: bash
-        run: |
-          triple="$(deno eval 'console.log(Deno.build.target)')"
-          deno task compile --target "$triple"
+        run: bun run build --target host
 
       - name: Run install.ps1 ${{ inputs.args }}
-        run: deno run -P=cli .github/scripts/installer-smoke.ts run-install
+        run: bun .github/scripts/installer-smoke.ts run-install
         env:
           INSTALLER_ARGS: ${{ inputs.args }}
           RERUN: ${{ inputs.rerun }}
           COPILOT_ENV_DOWNLOAD_BASE: ${{ github.workspace }}\dist
 
       - name: Assert installer did not install optional CLIs
-        run: deno run -P=cli .github/scripts/installer-smoke.ts assert-no-optional-clis
+        run: bun .github/scripts/installer-smoke.ts assert-no-optional-clis
         env:
           INSTALLER_ARGS: ${{ inputs.args }}
 
@@ -91,7 +90,7 @@ jobs:
           & "$env:USERPROFILE\.copilot-env\bin\agent.ps1" config set shell.launchers true
 
       - name: Verify install.ps1 outcome
-        run: deno run -P=cli .github/scripts/installer-smoke.ts verify-outcome
+        run: bun .github/scripts/installer-smoke.ts verify-outcome
         env:
           INSTALLER_ARGS: ${{ inputs.args }}
           EXPECT_CLIS: ${{ inputs.expect-clis }}

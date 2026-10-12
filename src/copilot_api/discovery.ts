@@ -8,6 +8,14 @@
 //   verify    -> a 1-token /v1/messages ping per extra under the EXACT headers the wiring bakes
 //   1m probe  -> a >200k-token prompt; Copilot bills per REQUEST, so it costs the same as the ping
 // Verdicts are identity-exact: meaningful only for the header set the consumer will actually send.
+
+import { errMessage } from "../utils/error.ts";
+import { defaultFetch } from "../utils/fetch.ts";
+import { createStderrLogger } from "../utils/logger.ts";
+import { isDue } from "../utils/time.ts";
+import { CODEX_IDENTITY_NAME } from "./config_registry.ts";
+import { PING_TIMEOUT_MS } from "./endpoint_smoke.ts";
+import { CopilotEnvState } from "./env_state.ts";
 import {
   COPILOT_CLI_INTEGRATION_ID,
   COPILOT_SANDBOX_INTEGRATION_ID,
@@ -16,14 +24,7 @@ import {
   VSCODE_CHAT_INTEGRATION_ID,
 } from "./integration_identity.ts";
 import { type CatalogModel, ONE_M_SUFFIX, parseCatalogModels } from "./models.ts";
-import { PING_TIMEOUT_MS } from "./endpoint_smoke.ts";
 import { fetchModelCatalog } from "./models_fetch.ts";
-import { CODEX_IDENTITY_NAME } from "./config_registry.ts";
-import { CopilotEnvState } from "./env_state.ts";
-import { errMessage } from "../utils/error.ts";
-import { isDue } from "../utils/time.ts";
-import { defaultFetch } from "../utils/fetch.ts";
-import { createStderrLogger } from "../utils/logger.ts";
 
 const logger = createStderrLogger();
 
@@ -124,18 +125,15 @@ export async function discoverServableClaudeModels(
       const key = `${credential}|${identityKey(integrationId)}|${id}`;
       let verdict = state.readModelVerdict(key);
       if (verdict === null || isDue(verdict.atMs, now)) {
-        const ping = await probeOnce(
-          `${key}|ping`,
-          now,
-          () => pingModel(fetchImpl, apiBase, own, id, "x"),
+        const ping = await probeOnce(`${key}|ping`, now, () =>
+          pingModel(fetchImpl, apiBase, own, id, "x"),
         );
-        const oneM = ping.outcome === "yes"
-          ? await probeOnce(
-            `${key}|1m`,
-            now,
-            () => pingModel(fetchImpl, apiBase, own, id, "x ".repeat(ONE_M_PROBE_TOKENS)),
-          )
-          : { outcome: "no" as const, atMs: ping.atMs };
+        const oneM =
+          ping.outcome === "yes"
+            ? await probeOnce(`${key}|1m`, now, () =>
+                pingModel(fetchImpl, apiBase, own, id, "x ".repeat(ONE_M_PROBE_TOKENS)),
+              )
+            : { outcome: "no" as const, atMs: ping.atMs };
         // Only DEFINITIVE outcomes are cached: a timeout / 429 / 5xx must not wedge
         // a servable model out (or in) for a whole TTL window.
         if (ping.outcome === "unknown" || oneM.outcome === "unknown") {
@@ -168,9 +166,8 @@ export async function discoverServableClaudeModels(
 /** A short non-reversible digest of the host and token for the verdict-cache key (never the token). */
 async function credentialDigest(hostAndToken: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(hostAndToken));
-  return Array.from(
-    new Uint8Array(digest).slice(0, 6),
-    (b) => b.toString(16).padStart(2, "0"),
+  return Array.from(new Uint8Array(digest).slice(0, 6), (b) =>
+    b.toString(16).padStart(2, "0"),
   ).join("");
 }
 
@@ -207,7 +204,7 @@ async function catalogUnder(
 /** The wiring's exact bytes plus the credential, for the POSTs; the GETs go through
  *  fetchModelCatalog, which adds the bearer itself. */
 function wireHeaders(token: string, userAgent: string, id: string | null): Record<string, string> {
-  return { ...directClientHeaders(userAgent, id), "Authorization": `Bearer ${token}` };
+  return { ...directClientHeaders(userAgent, id), Authorization: `Bearer ${token}` };
 }
 
 /** Empty when no gated trigger id exists or the oracle's error shape is not understood: never a guess. */
@@ -266,10 +263,10 @@ async function oracleAllowlist(
     method: "POST",
     headers: { ...headers, "Content-Type": "application/json" },
     body: JSON.stringify({
-      "model": gatedId,
-      "input": "x",
-      "stream": false,
-      "max_output_tokens": 1,
+      model: gatedId,
+      input: "x",
+      stream: false,
+      max_output_tokens: 1,
     }),
     signal: AbortSignal.timeout(PING_TIMEOUT_MS),
   });
@@ -317,9 +314,9 @@ async function pingModel(
         "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify({
-        "model": model,
-        "max_tokens": 1,
-        "messages": [{ "role": "user", "content": content }],
+        model: model,
+        max_tokens: 1,
+        messages: [{ role: "user", content: content }],
       }),
       signal: AbortSignal.timeout(PING_TIMEOUT_MS),
     });

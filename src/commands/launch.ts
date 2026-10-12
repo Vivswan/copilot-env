@@ -3,31 +3,32 @@
 // moved a port or built the farm, and nothing refreshes the shell's env between wiring and exec
 // inside one process.
 //
-// Neither deno nor node exposes an execve-style replacement, so the agent runs as a child with
-// inherited stdio and its exit code (or 128+signal) passes through.
+// A child with inherited stdio rather than an execve-style replacement, which Windows has no form
+// of: the agent's exit code (or 128+signal) passes through, and the parent's own exit still runs
+// (the write-report flush, the scratch cleanup).
 import { spawnSync } from "node:child_process";
 import { constants } from "node:os";
-import { assertNever } from "../utils/assert.ts";
-import { wireBothAgents } from "../agents/profile_wiring.ts";
 import { runClaude, runCodex } from "../agents/configure_defaults.ts";
+import { wireBothAgents } from "../agents/profile_wiring.ts";
 import { BASE_URL_ENV, managedClaudeBaseUrl } from "../claude/config.ts";
 import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
 import { refreshCodexCatalogAndSync } from "../codex/catalog_reference.ts";
 import { narrateCodexHome, resolveCodexHome } from "../codex/host.ts";
-import { CopilotEnvState, partialSlotGap, type ProfileMode } from "../copilot_api/env_state.ts";
+import { CopilotEnvState, type ProfileMode, partialSlotGap } from "../copilot_api/env_state.ts";
 import {
-  parseProfileFlag,
-  parseProfileName,
   type Profile,
   type ProfileName,
+  parseProfileFlag,
+  parseProfileName,
 } from "../copilot_api/profile.ts";
+import { assertNever } from "../utils/assert.ts";
 import { childEnvWithPath, findCommand, verbatimCliSpawn } from "../utils/command.ts";
 import { errMessage } from "../utils/error.ts";
 import { deferWriteReports, flushWriteReports } from "../utils/report_write.ts";
 import type { ManagedEnvValue } from "../utils/shell_quote.ts";
+import { printWrappedToStderr } from "../utils/table.ts";
 import { runDryRun } from "./dry_run.ts";
 import { proxyTokenDeps, resolveProxyToken } from "./proxy_token.ts";
-import { printWrappedToStderr } from "../utils/table.ts";
 
 /** Each name is also the command spawned. */
 const LAUNCH_CLIS = ["claude", "codex", "copilot"] as const;
@@ -233,32 +234,19 @@ export async function prepareLaunch(action: LaunchAction): Promise<LaunchPlan | 
 
 function spawnAgentCli(plan: LaunchPlan): number {
   const spawn = verbatimCliSpawn(plan.command, plan.args);
-  // Deno's node:child_process MERGES the `env` option over the parent environment (node replaces),
-  // so a scrubbed key must also be cleared from the parent for the child's span, then restored.
-  const scrubbed: [string, string][] = [];
-  for (const [key, value] of Object.entries(process.env)) {
-    if (value !== undefined && plan.scrub.includes(key.toUpperCase())) {
-      scrubbed.push([key, value]);
-      delete process.env[key];
-    }
-  }
-  try {
-    // nosemgrep: javascript.lang.security.audit.spawn-shell-true.spawn-shell-true -- Windows-only, for .cmd shims; the spec quotes args
-    const result = spawnSync(spawn.file, spawn.args, {
-      stdio: "inherit",
-      shell: spawn.shell,
-      env: childEnvWithPath([spawn.binDir], {
-        extra: plan.env,
-        omit: (upper) => plan.scrub.includes(upper),
-      }),
-    });
-    if (result.error) throw result.error;
-    if (result.status !== null) return result.status;
-    const signalNumber = result.signal ? constants.signals[result.signal] : undefined;
-    return signalNumber === undefined ? 1 : 128 + signalNumber;
-  } finally {
-    for (const [key, value] of scrubbed) process.env[key] = value;
-  }
+  // nosemgrep: javascript.lang.security.audit.spawn-shell-true.spawn-shell-true -- Windows-only, for .cmd shims; the spec quotes args
+  const result = spawnSync(spawn.file, spawn.args, {
+    stdio: "inherit",
+    shell: spawn.shell,
+    env: childEnvWithPath([spawn.binDir], {
+      extra: plan.env,
+      omit: (upper) => plan.scrub.includes(upper),
+    }),
+  });
+  if (result.error) throw result.error;
+  if (result.status !== null) return result.status;
+  const signalNumber = result.signal ? constants.signals[result.signal] : undefined;
+  return signalNumber === undefined ? 1 : 128 + signalNumber;
 }
 
 /** The refusal every launch, real or dry, gives before preparing anything. A failed look must not
@@ -279,7 +267,7 @@ function rejectMissingCli(cli: LaunchAction["kind"]): void {
         `'${cli}' is not installed. Run 'agent shell --clis' to install the agent CLIs.`,
       );
     default:
-      return assertNever(cliLook);
+      assertNever(cliLook);
   }
 }
 

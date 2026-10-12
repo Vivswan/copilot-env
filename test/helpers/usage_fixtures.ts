@@ -18,15 +18,15 @@ import { isRecord } from "../../src/utils/json.ts";
 import { MILLISECONDS_PER_DAY } from "../../src/utils/time.ts";
 import {
   type ModelProfile,
-  parseProfile,
   type Profile,
+  parseProfile,
   type Quantiles,
   RESUME_GAP_MS,
   type UsageSource,
 } from "./usage_profile_contract.ts";
 
 export const FIXTURES_DIR = fileURLToPath(new URL("../fixtures/usage/", import.meta.url));
-export const PROFILE_PATH = path.join(FIXTURES_DIR, "profile.json");
+const PROFILE_PATH = path.join(FIXTURES_DIR, "profile.json");
 const TEMPLATES_DIR = path.join(FIXTURES_DIR, "templates");
 const MEGABYTE = 1024 * 1024;
 
@@ -93,7 +93,7 @@ export type Rng = () => number;
 export function mulberry32(seed: number): Rng {
   let a = seed >>> 0;
   return () => {
-    a = (a + 0x6D2B79F5) >>> 0;
+    a = (a + 0x6d2b79f5) >>> 0;
     let t = a;
     t = Math.imul(t ^ (t >>> 15), t | 1);
     t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
@@ -178,7 +178,9 @@ const SourceTemplatesSchema = v.strictObject({
 });
 
 function loadTemplates(dir: string = TEMPLATES_DIR): Templates {
-  const files = readdirSync(dir).filter((name) => name.endsWith(".json")).sort();
+  const files = readdirSync(dir)
+    .filter((name) => name.endsWith(".json"))
+    .sort();
   const out: Partial<Templates> = {};
   for (const source of USAGE_SOURCES) {
     const file = `${source}.json`;
@@ -394,13 +396,15 @@ function addBuckets(into: Map<string, ModelUsage>, model: string, u: ModelUsage)
   const prev = into.get(model);
   into.set(
     model,
-    prev === undefined ? { ...u } : {
-      input: prev.input + u.input,
-      output: prev.output + u.output,
-      cacheRead: prev.cacheRead + u.cacheRead,
-      cacheCreation: prev.cacheCreation + u.cacheCreation,
-      events: prev.events + u.events,
-    },
+    prev === undefined
+      ? { ...u }
+      : {
+          input: prev.input + u.input,
+          output: prev.output + u.output,
+          cacheRead: prev.cacheRead + u.cacheRead,
+          cacheCreation: prev.cacheCreation + u.cacheCreation,
+          events: prev.events + u.events,
+        },
   );
 }
 
@@ -632,7 +636,7 @@ function lineStamps(template: Json, ctx: Record<string, Json>): LineStamps {
   for (const name of instants) {
     if (name !== "ts") nested.push(ctx[name] as number);
   }
-  return { outer: instants.includes("ts") ? (Date.parse(ctx.ts as string)) : undefined, nested };
+  return { outer: instants.includes("ts") ? Date.parse(ctx.ts as string) : undefined, nested };
 }
 
 interface LineOptions {
@@ -675,12 +679,12 @@ interface CodexState {
 
 function codexUsageJson(u: Usage): Json {
   return {
-    "input_tokens": u.input,
-    "cached_input_tokens": u.cacheRead,
-    "cache_write_input_tokens": u.cacheWrite,
-    "output_tokens": u.output,
-    "reasoning_output_tokens": Math.floor(u.output * 0.4),
-    "total_tokens": u.input + u.output,
+    input_tokens: u.input,
+    cached_input_tokens: u.cacheRead,
+    cache_write_input_tokens: u.cacheWrite,
+    output_tokens: u.output,
+    reasoning_output_tokens: Math.floor(u.output * 0.4),
+    total_tokens: u.input + u.output,
   };
 }
 
@@ -720,8 +724,8 @@ function codexLine(
     if (!state.withOrdinal) delete rendered.ordinal;
     if (opts.reshape !== undefined) rendered = opts.reshape(rendered);
   }
-  const target = opts.bytes ??
-    sampleQuantile(g.rng, profile.bytesPerLine[type] ?? profile.fileBytes);
+  const target =
+    opts.bytes ?? sampleQuantile(g.rng, profile.bytesPerLine[type] ?? profile.fileBytes);
   session.buffer.push(
     serializeSized(g.rng, rendered, target, opts.kind ?? "prose", opts.prefix ?? ""),
     lineStamps(template, ctx),
@@ -762,20 +766,23 @@ function codexSessionMeta(
 ): void {
   codexLine(g, session, state, "session_meta", {
     gapMs: first ? 0 : undefined,
-    reshape: session.forkedFrom === undefined ? undefined : (line) => {
-      const payload = line.payload;
-      if (isJsonObject(payload)) {
-        // forked_from_id sits before model_provider in the writer's key order.
-        const provider = payload["model_provider"] ?? null;
-        delete payload["model_provider"];
-        line.payload = {
-          ...payload,
-          "forked_from_id": session.forkedFrom!,
-          "model_provider": provider,
-        };
-      }
-      return line;
-    },
+    reshape:
+      session.forkedFrom === undefined
+        ? undefined
+        : (line) => {
+            const payload = line.payload;
+            if (isJsonObject(payload)) {
+              // forked_from_id sits before model_provider in the writer's key order.
+              const provider = payload["model_provider"] ?? null;
+              delete payload["model_provider"];
+              line.payload = {
+                ...payload,
+                forked_from_id: session.forkedFrom!,
+                model_provider: provider,
+              };
+            }
+            return line;
+          },
   });
 }
 
@@ -827,20 +834,20 @@ function codexRoundTrip(
 
   codexLine(g, session, state, "response_item/reasoning", { kind: "opaque" });
   codexItemCompleted(g, session, state, {
-    "type": "reasoning",
-    "id": `item_${hex(g.rng, 12)}`,
-    "summary_text": [],
-    "raw_content": [],
+    type: "reasoning",
+    id: `item_${hex(g.rng, 12)}`,
+    summary_text: [],
+    raw_content: [],
   });
   if (chance(g.rng, 0.5)) codexLine(g, session, state, "event_msg/agent_reasoning");
   if (final) {
     codexMessage(g, session, state, "assistant");
     codexLine(g, session, state, "event_msg/agent_message");
     codexItemCompleted(g, session, state, {
-      "type": "agent_message",
-      "id": `item_${hex(g.rng, 12)}`,
-      "content": [],
-      "phase": "final_answer",
+      type: "agent_message",
+      id: `item_${hex(g.rng, 12)}`,
+      content: [],
+      phase: "final_answer",
     });
     usageRecord();
   } else {
@@ -853,20 +860,20 @@ function codexRoundTrip(
       codexLine(g, session, state, "response_item/custom_tool_call");
       usageRecord();
       codexItemCompleted(g, session, state, {
-        "type": "command_execution",
-        "id": `item_${hex(g.rng, 12)}`,
-        "process_id": String(1000 + Math.floor(g.rng() * 60000)),
-        "command": ["bash", "-lc", "@fill"],
-        "cwd": state.cwd,
-        "parsed_cmd": [],
-        "source": "agent",
-        "status": "completed",
-        "stdout": "",
-        "stderr": "",
-        "aggregated_output": "",
-        "exit_code": 0,
-        "duration": { "secs": 0, "nanos": 120000000 },
-        "formatted_output": "",
+        type: "command_execution",
+        id: `item_${hex(g.rng, 12)}`,
+        process_id: String(1000 + Math.floor(g.rng() * 60000)),
+        command: ["bash", "-lc", "@fill"],
+        cwd: state.cwd,
+        parsed_cmd: [],
+        source: "agent",
+        status: "completed",
+        stdout: "",
+        stderr: "",
+        aggregated_output: "",
+        exit_code: 0,
+        duration: { secs: 0, nanos: 120000000 },
+        formatted_output: "",
       });
       codexLine(g, session, state, "response_item/custom_tool_call_output");
     } else if (tool === "function") {
@@ -879,9 +886,9 @@ function codexRoundTrip(
     }
   }
   const info: Json = {
-    "total_token_usage": codexUsageJson(state.totals),
-    "last_token_usage": codexUsageJson(last),
-    "model_context_window": CODEX_MODEL_CONTEXT_WINDOW,
+    total_token_usage: codexUsageJson(state.totals),
+    last_token_usage: codexUsageJson(last),
+    model_context_window: CODEX_MODEL_CONTEXT_WINDOW,
   };
   // A resumed or re-emitted count repeats the exact info; the readers book it once.
   const repeats = g.adversarial
@@ -911,7 +918,7 @@ function codexTurn(
     if (chance(g.rng, 0.15)) {
       state.model = weightedKey(g.rng, modelShares(profile.models));
       codexLine(g, session, state, "event_msg/thread_settings_applied", {
-        extra: { threadSettings: { "model": state.model, "effort": "high" } },
+        extra: { threadSettings: { model: state.model, effort: "high" } },
       });
     }
     codexLine(g, session, state, "turn_context");
@@ -957,7 +964,8 @@ function codexSession(
     forkedFrom: opts.forkOf?.id,
   };
   const share = profile.lineTypeShare;
-  const usageRecordShare = (share["token_usage_record"] ?? 0) /
+  const usageRecordShare =
+    (share["token_usage_record"] ?? 0) /
     Math.max(share["event_msg/token_count"] ?? 1, Number.EPSILON);
   const state: CodexState = {
     ordinal: 0,
@@ -967,9 +975,9 @@ function codexSession(
     model: weightedKey(g.rng, modelShares(profile.models)),
     cwd: `/home/user/projects/${pick(g.rng, WORDS)}-${pick(g.rng, WORDS)}`,
     git: {
-      "commit_hash": hex(g.rng, 40),
-      "branch": pick(g.rng, BRANCHES),
-      "repository_url": `https://example.invalid/${pick(g.rng, WORDS)}/${pick(g.rng, WORDS)}.git`,
+      commit_hash: hex(g.rng, 40),
+      branch: pick(g.rng, BRANCHES),
+      repository_url: `https://example.invalid/${pick(g.rng, WORDS)}/${pick(g.rng, WORDS)}.git`,
     },
     withOrdinal: chance(g.rng, 0.5),
     withUsageRecord: chance(g.rng, Math.min(1, usageRecordShare)),
@@ -981,10 +989,12 @@ function codexSession(
     // type, so a prompt that pasted the word is still an item) in one batch under fresh outer
     // timestamps; nested instants stay the parent's. Its totals continue from the prefix.
     const parent = opts.forkOf.buffer;
-    const copied = parent.lines.map((line, i) => ({
-      parsed: JSON.parse(line) as JsonObject,
-      nested: parent.stamps[i]!.nested,
-    })).filter(({ parsed }) => parsed.type !== "session_meta");
+    const copied = parent.lines
+      .map((line, i) => ({
+        parsed: JSON.parse(line) as JsonObject,
+        nested: parent.stamps[i]!.nested,
+      }))
+      .filter(({ parsed }) => parsed.type !== "session_meta");
     let copyMs = state.nowMs;
     const step = FORK_COPY_WINDOW_MS / Math.max(1, copied.length);
     for (const { parsed, nested } of copied) {
@@ -1024,11 +1034,12 @@ function codexSession(
   const perTurn = targetBytes / turns;
   for (let turn = 0; turn < turns; turn++) {
     if (turn > 0) {
-      const resumed = opts.spanMs !== undefined && turn === 1
-        ? opts.spanMs
-        : chance(g.rng, profile.resumeShare / Math.max(1, turns - 1))
-        ? RESUME_GAP_MS + g.rng() * 6 * RESUME_GAP_MS
-        : 0;
+      const resumed =
+        opts.spanMs !== undefined && turn === 1
+          ? opts.spanMs
+          : chance(g.rng, profile.resumeShare / Math.max(1, turns - 1))
+            ? RESUME_GAP_MS + g.rng() * 6 * RESUME_GAP_MS
+            : 0;
       if (resumed > 0) {
         // Codex appends a fresh session_meta when a session is resumed; the readers
         // honor only the first.
@@ -1072,8 +1083,8 @@ function writeCodexSession(
     // A crash mid-write leaves the tail unterminated: half a token_count line and
     // no LF. Its gate word is present, its JSON is not.
     const lines = session.buffer.lines;
-    const source = lines.findLast((line) => line.includes('"token_count"')) ??
-      lines[lines.length - 1]!;
+    const source =
+      lines.findLast((line) => line.includes('"token_count"')) ?? lines[lines.length - 1]!;
     body += source.slice(0, Math.max(8, Math.floor(source.length / 2)));
   }
   if (opts.archived === true) {
@@ -1132,7 +1143,9 @@ function generateCodex(g: Generator, codexHome: string, budget: number): void {
       // Archived only: the compressed copy is the sole record of this session.
       writeCodexSession(g, codexHome, codexSession(g, bytes, start), { archived: true });
     } else if (
-      g.adversarial && forkParent !== undefined && chance(g.rng, g.profile.codex.forkShare)
+      g.adversarial &&
+      forkParent !== undefined &&
+      chance(g.rng, g.profile.codex.forkShare)
     ) {
       const fork = codexSession(g, bytes, forkParent.metaMs + 60 * 60 * 1000, {
         forkOf: forkParent,
@@ -1226,8 +1239,8 @@ function claudeLine(
     }
     if (opts.reshape !== undefined) rendered = opts.reshape(rendered);
   }
-  const target = opts.bytes ??
-    sampleQuantile(g.rng, profile.bytesPerLine[type] ?? profile.fileBytes);
+  const target =
+    opts.bytes ?? sampleQuantile(g.rng, profile.bytesPerLine[type] ?? profile.fileBytes);
   const line = serializeSized(g.rng, rendered, target, opts.kind ?? "prose", opts.prefix ?? "");
   const stamps = lineStamps(template, ctx);
   session.buffer.push(line, stamps);
@@ -1240,20 +1253,20 @@ function claudeLine(
 
 function claudeUsageJson(u: Usage, output: number): Json {
   return {
-    "input_tokens": u.input,
-    "cache_creation_input_tokens": u.cacheWrite,
-    "cache_read_input_tokens": u.cacheRead,
-    "output_tokens": output,
-    "output_tokens_details": { "reasoning_tokens": Math.floor(output * 0.3) },
-    "server_tool_use": { "web_search_requests": 0, "web_fetch_requests": 0 },
-    "service_tier": "standard",
-    "cache_creation": {
-      "ephemeral_1h_input_tokens": 0,
-      "ephemeral_5m_input_tokens": u.cacheWrite,
+    input_tokens: u.input,
+    cache_creation_input_tokens: u.cacheWrite,
+    cache_read_input_tokens: u.cacheRead,
+    output_tokens: output,
+    output_tokens_details: { reasoning_tokens: Math.floor(output * 0.3) },
+    server_tool_use: { web_search_requests: 0, web_fetch_requests: 0 },
+    service_tier: "standard",
+    cache_creation: {
+      ephemeral_1h_input_tokens: 0,
+      ephemeral_5m_input_tokens: u.cacheWrite,
     },
-    "inference_geo": "us",
-    "iterations": [],
-    "speed": "standard",
+    inference_geo: "us",
+    iterations: [],
+    speed: "standard",
   };
 }
 
@@ -1290,11 +1303,12 @@ function claudeMessage(
   let booked = 0;
   for (let i = 0; i < repeats; i++) {
     const isLast = i === repeats - 1;
-    const block = i === 0 && repeats > 1
-      ? "thinking"
-      : (isLast && final) || !chance(g.rng, 0.8)
-      ? "text"
-      : "tool_use";
+    const block =
+      i === 0 && repeats > 1
+        ? "thinking"
+        : (isLast && final) || !chance(g.rng, 0.8)
+          ? "text"
+          : "tool_use";
     const snapshot = growing
       ? Math.max(1, Math.round(usage.output * ((i + 1) / repeats)))
       : usage.output;
@@ -1306,8 +1320,8 @@ function claudeMessage(
       toolUseId,
       toolName: pick(g.rng, ["Bash", "Read", "Edit", "Grep", "Agent", "Write"]),
       toolInput: needle
-        ? { "command": "@fill", "filter": { "type": "assistant", "token_count": 1 } }
-        : { "command": "@fill" },
+        ? { command: "@fill", filter: { type: "assistant", token_count: 1 } }
+        : { command: "@fill" },
       signature: hex(g.rng, 64),
     };
     const held = truncate && isLast;
@@ -1320,9 +1334,10 @@ function claudeMessage(
         apiBlockIndex: i,
       },
     });
-    const delta: Usage = i === 0
-      ? { ...usage, output: snapshot }
-      : { input: 0, cacheRead: 0, cacheWrite: 0, output: Math.max(0, snapshot - booked) };
+    const delta: Usage =
+      i === 0
+        ? { ...usage, output: snapshot }
+        : { input: 0, cacheRead: 0, cacheWrite: 0, output: Math.max(0, snapshot - booked) };
     booked = Math.max(booked, snapshot);
     if (held) {
       session.buffer.pop();
@@ -1338,16 +1353,16 @@ function claudeMessage(
         claudeLine(g, session, state, "attachment", {
           extra: {
             attachment: {
-              "type": "hook_success",
-              "hookName": "PostToolUse:Bash",
-              "toolUseID": toolUseId,
-              "hookEvent": "PostToolUse",
-              "content": "@fill",
-              "stdout": "",
-              "stderr": "",
-              "exitCode": 0,
-              "command": "deno lint",
-              "durationMs": 120,
+              type: "hook_success",
+              hookName: "PostToolUse:Bash",
+              toolUseID: toolUseId,
+              hookEvent: "PostToolUse",
+              content: "@fill",
+              stdout: "",
+              stderr: "",
+              exitCode: 0,
+              command: "deno lint",
+              durationMs: 120,
             },
           },
         });
@@ -1369,7 +1384,7 @@ function claudeTurn(
   const profile = g.profile.claude;
   claudeLine(g, session, state, "user/prompt", { prefix: promptText(g) });
   claudeLine(g, session, state, "attachment", {
-    extra: { attachment: { "type": "total_tokens_reminder", "text": "@fill" } },
+    extra: { attachment: { type: "total_tokens_reminder", text: "@fill" } },
   });
   if (firstTurn) claudeLine(g, session, state, "ai-title", { header: true });
   if (chance(g.rng, 0.3)) claudeLine(g, session, state, "queue-operation", { header: true });
@@ -1433,11 +1448,11 @@ function claudeSession(
     claudeLine(g, session, state, "attachment", {
       extra: {
         attachment: {
-          "type": "skill_listing",
-          "content": "@fill",
-          "skillCount": 12,
-          "isInitial": true,
-          "names": [],
+          type: "skill_listing",
+          content: "@fill",
+          skillCount: 12,
+          isInitial: true,
+          names: [],
         },
       },
     });
@@ -1527,30 +1542,24 @@ function writeClaudeSubagent(
   const dir = deep
     ? [parent.id, "subagents", "workflows", `wf_${hex(g.rng, 8)}-${hex(g.rng, 3)}`]
     : [parent.id, "subagents"];
-  writeClaudeFile(
-    g,
-    claudeHome,
-    parent.slug,
-    [...dir, `agent-${agentId}.jsonl`],
-    agent.buffer,
-  );
+  writeClaudeFile(g, claudeHome, parent.slug, [...dir, `agent-${agentId}.jsonl`], agent.buffer);
   if (deep) {
     // The workflow journal is a .jsonl the readers must walk and skip harmlessly.
     const journal = new LineBuffer();
     journal.push(
       JSON.stringify({
-        "type": "workflow_started",
-        "workflowId": dir[3],
-        "timestamp": isoTimestamp(start),
+        type: "workflow_started",
+        workflowId: dir[3],
+        timestamp: isoTimestamp(start),
       }),
       { outer: start, nested: [] },
     );
     journal.push(
       JSON.stringify({
-        "type": "step_completed",
-        "workflowId": dir[3],
-        "step": 1,
-        "timestamp": isoTimestamp(start + 60_000),
+        type: "step_completed",
+        workflowId: dir[3],
+        step: 1,
+        timestamp: isoTimestamp(start + 60_000),
       }),
       { outer: start + 60_000, nested: [] },
     );
@@ -1588,13 +1597,7 @@ function generateClaude(g: Generator, claudeHome: string, budget: number): void 
         const resumed = claudeSession(g, bytes, start, lastTopLevel.slug, {
           resumeOf: lastTopLevel,
         });
-        writeClaudeFile(
-          g,
-          claudeHome,
-          resumed.slug,
-          [`${resumed.id}.jsonl`],
-          resumed.buffer,
-        );
+        writeClaudeFile(g, claudeHome, resumed.slug, [`${resumed.id}.jsonl`], resumed.buffer);
         lastTopLevel = resumed;
       } else {
         const session = claudeSession(g, bytes, start, slug);

@@ -1,6 +1,6 @@
 // The fake model endpoint the REAL claude and codex CLIs (and our own Direct smoke,
 // src/copilot_api/endpoint_smoke.ts) run against with no network and no credential: aimock
-// (npm:@copilotkit/aimock, pinned in deno.json; zero runtime deps, MIT) behind a thin front.
+// (@copilotkit/aimock, pinned in package.json; zero runtime deps, MIT) behind a thin front.
 //
 // Hand-rolling the SSE emitter was weighed and dropped: aimock's Anthropic and OpenAI shapes are
 // validated daily against the real vendors by its own drift job (.github/workflows/test-drift.yml
@@ -36,11 +36,11 @@
 // body, status) with the front's own entries for the catalog route. aimock REDACTS credential
 // header values (`authorization`, `x-api-key` read "[REDACTED]"), so a test asserts their
 // presence there and their value only on a catalog entry, which the front journals in full.
-import { writeFileSync } from "node:fs";
-import { createServer, type IncomingMessage, request as httpRequest } from "node:http";
+import { readFileSync, writeFileSync } from "node:fs";
+import { createServer, request as httpRequest, type IncomingMessage } from "node:http";
 import { join } from "node:path";
 import { isRecord } from "../../src/utils/json.ts";
-import { denoRunArgs, ROOT, spawnChild } from "./run.ts";
+import { bunRunArgs, ROOT, resolvePackageDir, spawnChild } from "./run.ts";
 
 /** The header aimock matches a fixture's `context` against, exact string match. */
 export const SCENARIO_HEADER = "X-AIMock-Context";
@@ -77,15 +77,13 @@ const BASE_ENV_KEYS = [
   "USERNAME",
 ];
 
-/** A complete child env: the allowlist above from this process, then `extra` over it. Every
- *  child (aimock, the CLIs) is a deno or node process that would otherwise ask dl.deno.land for
- *  its latest release on start; DENO_NO_UPDATE_CHECK is forced so the fake stays offline. */
+/** A complete child env: the allowlist above from this process, then `extra` over it. */
 export function hermeticEnv(extra: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
     if (value !== undefined && BASE_ENV_KEYS.includes(key.toUpperCase())) out[key] = value;
   }
-  return { ...out, DENO_NO_UPDATE_CHECK: "1", ...extra };
+  return { ...out, ...extra };
 }
 
 type ScenarioSpec =
@@ -100,29 +98,31 @@ export type Scenarios = Record<string, ScenarioSpec>;
 function fixtureFile(scenarios: Scenarios): { fixtures: Record<string, unknown>[] } {
   const fixtures: Record<string, unknown>[] = [];
   for (const [context, spec] of Object.entries(scenarios)) {
-    const match = { "context": context };
+    const match = { context: context };
     switch (spec.kind) {
       case "text":
         fixtures.push({
           match,
-          "response": {
-            "content": spec.text,
-            ...(spec.usage === undefined ? {} : {
-              "usage": { "input_tokens": spec.usage.input, "output_tokens": spec.usage.output },
-            }),
+          response: {
+            content: spec.text,
+            ...(spec.usage === undefined
+              ? {}
+              : {
+                  usage: { input_tokens: spec.usage.input, output_tokens: spec.usage.output },
+                }),
           },
-          "latency": 1,
+          latency: 1,
         });
         break;
       case "error":
         fixtures.push({
           match,
-          "response": {
-            "status": spec.status,
-            "error": {
-              "type": spec.type,
-              "message": spec.message,
-              ...(spec.code === undefined ? {} : { "code": spec.code }),
+          response: {
+            status: spec.status,
+            error: {
+              type: spec.type,
+              message: spec.message,
+              ...(spec.code === undefined ? {} : { code: spec.code }),
             },
           },
         });
@@ -130,15 +130,15 @@ function fixtureFile(scenarios: Scenarios): { fixtures: Record<string, unknown>[
       case "truncate":
         fixtures.push({
           match,
-          "response": { "content": spec.text },
-          "latency": Math.min(20, MAX_LATENCY_MS),
-          "chunkSize": 5,
-          "truncateAfterChunks": spec.afterFrames,
+          response: { content: spec.text },
+          latency: Math.min(20, MAX_LATENCY_MS),
+          chunkSize: 5,
+          truncateAfterChunks: spec.afterFrames,
         });
         break;
     }
   }
-  fixtures.push({ "match": {}, "response": { "content": DEFAULT_REPLY }, "latency": 1 });
+  fixtures.push({ match: {}, response: { content: DEFAULT_REPLY }, latency: 1 });
   return { fixtures };
 }
 
@@ -194,27 +194,27 @@ const CATALOG: readonly {
 
 function catalogBody(): unknown {
   return {
-    "object": "list",
-    "data": CATALOG.map((m) => ({
-      "id": m.id,
-      "object": "model",
-      "created": 1_700_000_000,
-      "owned_by": m.vendor.toLowerCase(),
-      "name": m.name,
-      "vendor": m.vendor,
-      "version": m.id,
-      "preview": false,
-      "model_picker_enabled": true,
-      "supported_endpoints": m.endpoints,
-      "capabilities": {
-        "type": "chat",
-        "family": m.id,
-        "limits": {
-          "max_context_window_tokens": m.window,
-          "max_prompt_tokens": m.prompt,
-          "max_output_tokens": m.output,
+    object: "list",
+    data: CATALOG.map((m) => ({
+      id: m.id,
+      object: "model",
+      created: 1_700_000_000,
+      owned_by: m.vendor.toLowerCase(),
+      name: m.name,
+      vendor: m.vendor,
+      version: m.id,
+      preview: false,
+      model_picker_enabled: true,
+      supported_endpoints: m.endpoints,
+      capabilities: {
+        type: "chat",
+        family: m.id,
+        limits: {
+          max_context_window_tokens: m.window,
+          max_prompt_tokens: m.prompt,
+          max_output_tokens: m.output,
         },
-        "supports": { "streaming": true, "tool_calls": true, "parallel_tool_calls": true },
+        supports: { streaming: true, tool_calls: true, parallel_tool_calls: true },
       },
     })),
   };
@@ -270,20 +270,22 @@ function flatHeaders(req: IncomingMessage): Record<string, string> {
   return out;
 }
 
-/** The pinned aimock specifier from deno.json, so the pin lives in one place. */
-function aimockSpecifier(): string {
-  const config = JSON.parse(Deno.readTextFileSync(join(ROOT, "deno.json"))) as {
-    imports: Record<string, string>;
+/** aimock's `llmock` entry, read from the installed package's own bin map rather than a path
+ *  restated here, so a release that moves it fails by name. */
+function llmockEntry(): string {
+  const dir = resolvePackageDir("@copilotkit/aimock", ROOT);
+  const { bin } = JSON.parse(readFileSync(join(dir, "package.json"), "utf8")) as {
+    bin?: Record<string, string>;
   };
-  const pinned = config.imports["@copilotkit/aimock"];
-  if (pinned === undefined) throw new Error("deno.json does not pin @copilotkit/aimock");
-  return `${pinned}/llmock`;
+  const entry = bin?.llmock;
+  if (entry === undefined) throw new Error("@copilotkit/aimock declares no llmock bin");
+  return join(dir, entry);
 }
 
 /** Resolves with the port once aimock prints its listening line on either stream. A child that
  *  exits first (a bad fixture path, a refused flag) rejects at once with what it printed, never
  *  after the start timeout. Exported for its own test. */
-export async function awaitListening(child: Deno.ChildProcess): Promise<number> {
+export async function awaitListening(child: Bun.Subprocess): Promise<number> {
   const marker = /listening on http:\/\/127\.0\.0\.1:(\d+)/;
   let settled = false;
   const printed = { stdout: "", stderr: "" };
@@ -297,7 +299,7 @@ export async function awaitListening(child: Deno.ChildProcess): Promise<number> 
     const timer = setTimeout(
       () =>
         settle(() =>
-          reject(new Error(`aimock did not report a listening port within ${START_TIMEOUT_MS}ms`))
+          reject(new Error(`aimock did not report a listening port within ${START_TIMEOUT_MS}ms`)),
         ),
       START_TIMEOUT_MS,
     );
@@ -311,21 +313,25 @@ export async function awaitListening(child: Deno.ChildProcess): Promise<number> 
         if (printed[name].length > 65_536) printed[name] = printed[name].slice(-4_096);
       }
     };
-    const drained = Promise.all([scan(child.stdout, "stdout"), scan(child.stderr, "stderr")])
-      .catch(() => {});
+    const drained = Promise.all([
+      scan(child.stdout as ReadableStream<Uint8Array>, "stdout"),
+      scan(child.stderr as ReadableStream<Uint8Array>, "stderr"),
+    ]).catch(() => {});
     // An exit closes both pipes; the drain settles first so the message carries what they held.
-    child.status.then((status) =>
+    child.exited.then((code) =>
       drained.then(() =>
         settle(() =>
           reject(
             new Error(
-              `aimock exited with code ${status.code} before listening: ${
-                (printed.stderr || printed.stdout).trim().slice(0, 400)
-              }`,
+              `aimock exited with code ${code} before listening: ${(
+                printed.stderr || printed.stdout
+              )
+                .trim()
+                .slice(0, 400)}`,
             ),
-          )
-        )
-      )
+          ),
+        ),
+      ),
     );
   });
 }
@@ -344,10 +350,10 @@ export async function startFakeModelEndpoint(
 ): Promise<FakeModelEndpoint> {
   const fixturesPath = join(dir, "fixtures.json");
   writeFileSync(fixturesPath, `${JSON.stringify(fixtureFile(scenarios), null, 2)}\n`);
-  const child = spawnChild(Deno.execPath(), {
+  const child = spawnChild(process.execPath, {
     args: [
-      ...denoRunArgs("--preload", join(ROOT, "test", "helpers", "exit_with_parent_preload.ts")),
-      aimockSpecifier(),
+      ...bunRunArgs("--preload", join(ROOT, "test", "helpers", "exit_with_parent_preload.ts")),
+      llmockEntry(),
       "--port",
       "0",
       "--fixtures",
@@ -360,9 +366,9 @@ export async function startFakeModelEndpoint(
     env: hermeticEnv({}),
     clearEnv: true,
     // Never written; the preload reads it for the EOF alone.
-    stdin: "piped",
-    stdout: "piped",
-    stderr: "piped",
+    stdin: "pipe",
+    stdout: "pipe",
+    stderr: "pipe",
   });
   let aimockPort: number;
   try {
@@ -405,7 +411,7 @@ export async function startFakeModelEndpoint(
     );
     upstream.on("error", () => {
       if (!res.headersSent) res.writeHead(502, { "content-type": "application/json" });
-      res.end(JSON.stringify({ "error": { "message": "aimock unreachable", "type": "front" } }));
+      res.end(JSON.stringify({ error: { message: "aimock unreachable", type: "front" } }));
     });
     // A client that goes away mid-stream takes its upstream with it.
     res.on("close", () => {
@@ -432,9 +438,7 @@ export async function startFakeModelEndpoint(
           method: typeof entry.method === "string" ? entry.method : "",
           path: entry.path,
           headers: isRecord(entry.headers)
-            ? Object.fromEntries(
-              Object.entries(entry.headers).map(([k, v]) => [k, String(v)]),
-            )
+            ? Object.fromEntries(Object.entries(entry.headers).map(([k, v]) => [k, String(v)]))
             : {},
           body: entry.body ?? null,
           status: typeof response.status === "number" ? response.status : 0,
@@ -464,13 +468,10 @@ export async function startFakeModelEndpoint(
   };
 }
 
-/** Kill aimock and release its stdin pipe. A child that already exited throws on kill. */
-async function stopChild(child: Deno.ChildProcess): Promise<void> {
-  try {
-    child.kill();
-  } catch {
-    // already gone
-  }
-  await child.status;
-  await child.stdin.close();
+/** Kill aimock and release its stdin pipe. */
+async function stopChild(child: Bun.Subprocess): Promise<void> {
+  child.kill();
+  await child.exited;
+  const stdin = child.stdin;
+  if (stdin !== null && typeof stdin === "object" && "end" in stdin) await stdin.end();
 }

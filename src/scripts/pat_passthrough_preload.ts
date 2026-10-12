@@ -39,5 +39,5 @@ if (token !== null) {
     }
     return originalFetch(input, init);
   };
-  globalThis.fetch = wrapped;
+  globalThis.fetch = wrapped as typeof fetch;
 }

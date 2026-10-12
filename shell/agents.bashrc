@@ -7,13 +7,13 @@
 # shellcheck disable=SC2296
 _COPILOT_AGENTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-${(%):-%x}}")/.." && pwd)"
 
-# DENO_INSTALL is the same override scripts/ensure-deno.sh honors, so every entry point
-# looks in one place.
-_COPILOT_DENO_BIN="${DENO_INSTALL:-$HOME/.deno}/bin"
-if [ -x "${_COPILOT_DENO_BIN}/deno" ] && ! command -v deno > /dev/null 2>&1; then
-    export PATH="${_COPILOT_DENO_BIN}:$PATH"
+# BUN_INSTALL is the same override scripts/ensure-bun.sh honors, so the bun that bin/agent
+# installed once is the bun this shell finds too.
+_COPILOT_BUN_BIN="${BUN_INSTALL:-$HOME/.bun}/bin"
+if [ -x "${_COPILOT_BUN_BIN}/bun" ] && ! command -v bun > /dev/null 2>&1; then
+    export PATH="${_COPILOT_BUN_BIN}:$PATH"
 fi
-unset _COPILOT_DENO_BIN
+unset _COPILOT_BUN_BIN
 
 # `agent profile env` is the ONLY output this file ever evals (src/commands/env.ts owns what it
 # prints; the default profile's directives), so a new subcommand never touches this wrapper.

@@ -1,143 +1,89 @@
 import { spawn } from "node:child_process";
 import { closeSync, openSync } from "node:fs";
 import { devNull } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
+import { pathToFileURL } from "node:url";
 import { consola } from "consola";
-import { daemonConfigFile, readResolvedVersionRecord, writeDaemonConfig } from "../proxy_float.ts";
+import { floatedProxyEntry, proxyHome, proxyInstallDir } from "../proxy_float.ts";
 import { runPowershell } from "../utils/app_scan.ts";
 import { runCaptured } from "../utils/command.ts";
-import { pidAlive } from "../utils/pid.ts";
 import * as fs from "../utils/fs_facade.ts";
-import { type RootMode, rootMode } from "../utils/root.ts";
+import { pidAlive } from "../utils/pid.ts";
+import { escapeRegExp } from "../utils/regexp.ts";
 import { terminalWidth, wrapMessage } from "../utils/table.ts";
+import { clearDeadDaemonLock } from "./daemon_lock.ts";
 import {
   DAEMON_CLIENT_HEADERS_ENV,
   DAEMON_COPILOT_HOST_ENV,
   type DaemonClientHeaders,
 } from "./integration_identity.ts";
 import { resolveRootHome } from "./paths.ts";
-import { type DaemonShimFile, NODE_COMPAT_SHIM, shimPath } from "./shims.ts";
-import type { AbsolutePath } from "./sidecar.ts";
-import { PROXY_PACKAGE_NAME } from "./version.ts";
+import { type DaemonShimFile, shimPath } from "./shims.ts";
+import { installedProxyPackage, PROXY_PACKAGE_NAME } from "./version.ts";
 
 /**
- * Three shapes rather than one string plus flags: only a package specifier can take `--cached-only`,
- * and only the floated form has a DENO_DIR to point the resolve at. Every form carries its
- * `configFile`, chosen at resolve time, so an installed binary (no checkout deno.json on disk) is
- * never handed a config that does not exist.
+ * Every form carries what the spawn derives from the same resolution as the entry: `proxyHome`,
+ * the daemon's cwd, and `nodeModules`, where NODE_PATH points the preload shims' imports (the
+ * install tree src/proxy_float.ts verified and swapped in), so the argv and the environment can
+ * never come from two resolutions.
  */
+interface EntryHome {
+  readonly proxyHome: string;
+  readonly nodeModules: string;
+}
+
 export type CopilotApiEntry =
   /** The `COPILOT_API_ENTRY` override: run this file, resolve nothing. */
-  | { readonly kind: "file"; readonly path: string; readonly configFile: string }
-  /** An exact version in the cache the float pre-warmed, under the daemon config it wrote beside the record. */
-  | {
-    readonly kind: "floated";
-    readonly specifier: string;
-    readonly version: string;
-    readonly denoDir: string;
-    readonly configFile: string;
-  }
-  /** deno.json's mapped specifier, resolved through the config entryConfigFile picks: the daemon
-   *  config wherever the float has written one, else the checkout's frozen-lock deno.json. */
-  | { readonly kind: "package"; readonly specifier: string; readonly configFile: string };
+  | ({ readonly kind: "file"; readonly path: string } & EntryHome)
+  /** The float's recorded version, installed complete in the proxy home. */
+  | ({ readonly kind: "floated"; readonly version: string; readonly path: string } & EntryHome)
+  /** The checkout's own node_modules copy (bun install puts it there), with no float record to
+   *  pin a version; a compiled install has no such copy. */
+  | ({ readonly kind: "package"; readonly path: string } & EntryHome)
+  /** Nothing to run: no record whose install is present, no checkout copy. The floor gate
+   *  (judgeProxyFloor in launch.ts) refuses it before any spawn. */
+  | ({ readonly kind: "unresolved" } & EntryHome);
 
-/** Regenerated on every call (the float rewrites the same content on every warm), so a stale or
- *  foreign file can never steer a compiled spawn, including the spawns before any float ran. */
-function ensuredDaemonConfig(rootHome: string): string {
-  writeDaemonConfig(rootHome);
-  return daemonConfigFile(rootHome);
-}
-
-/**
- * The ONE rule for which config a non-floated entry runs under. A compiled root ALWAYS answers with
- * the daemon config: an install root deliberately carries no deno.json on disk (there it is a
- * checkout marker). The preload shims resolve their own imports through whichever config is passed,
- * which is why every spawn passes one.
- */
-function entryConfigFile(rootHome: string, mode: RootMode): string {
-  if (mode.kind === "compiled") return ensuredDaemonConfig(rootHome);
-  const daemonConfig = daemonConfigFile(rootHome);
-  return fs.exists(daemonConfig) ? daemonConfig : join(mode.root, "deno.json");
-}
+/** An entry the daemon can run: what the floor gate hands to the spawn. */
+export type RunnableEntry = Exclude<CopilotApiEntry, { kind: "unresolved" }>;
 
 /**
  * `COPILOT_API_ENTRY` is the escape hatch: CI points `start` at a fake proxy so the daemon lifecycle
- * runs without GitHub Copilot auth. A compiled install where the float never ran is Direct-only.
+ * runs without GitHub Copilot auth. A record whose install is gone falls through to the checkout
+ * copy rather than naming a file that is not there: the float gate ahead of every daemon start
+ * (proxyFloatVerifyStatus) is what reinstalls it.
  */
-export function resolveCopilotApiEntry(mode: RootMode = rootMode()): CopilotApiEntry {
+export function resolveCopilotApiEntry(): CopilotApiEntry {
   const rootHome = resolveRootHome();
-  const override = process.env.COPILOT_API_ENTRY?.trim();
-  if (override) {
-    return { kind: "file", path: override, configFile: entryConfigFile(rootHome, mode) };
-  }
-  const record = readResolvedVersionRecord(rootHome);
-  if (record !== null) {
-    // No regeneration here, unlike the other branches: a rewritten import map could be one the
-    // recorded cache was never warmed for, and `--cached-only` would then fail. The float gate ahead
-    // of every daemon start (proxyFloatVerifyStatus) regenerates where a re-warm can still follow.
-    return {
-      kind: "floated",
-      specifier: `npm:${PROXY_PACKAGE_NAME}@${record.version}`,
-      version: record.version,
-      denoDir: record.denoDir,
-      configFile: daemonConfigFile(rootHome),
-    };
-  }
-  return {
-    kind: "package",
-    specifier: PROXY_PACKAGE_NAME,
-    configFile: entryConfigFile(rootHome, mode),
+  const home: EntryHome = {
+    proxyHome: proxyHome(rootHome),
+    nodeModules: join(proxyInstallDir(rootHome), "node_modules"),
   };
+  // Resolved against the CALLER's cwd here: the daemon's own cwd is the proxy home.
+  const override = process.env.COPILOT_API_ENTRY?.trim();
+  if (override) return { kind: "file", path: resolve(override), ...home };
+  const floated = floatedProxyEntry(rootHome);
+  if (floated !== null) {
+    return { kind: "floated", version: floated.version, path: floated.entry, ...home };
+  }
+  const checkout = installedProxyPackage();
+  if (checkout !== null) return { kind: "package", path: checkout.entry, ...home };
+  return { kind: "unresolved", ...home };
 }
 
-/** Only the floated entry's version lives outside the default cache, so only it needs the resolve pointed
- *  at its DENO_DIR or `--cached-only` fails. */
-export function copilotApiEnv(entry: CopilotApiEntry): Record<string, string> {
-  return entry.kind === "floated" ? { DENO_DIR: entry.denoDir } : {};
-}
-
-/** Listed rather than `-A` so the grant set stays visible. */
-const PROXY_PERMISSIONS = [
-  "--allow-env",
-  "--allow-read",
-  "--allow-write",
-  "--allow-net",
-  "--allow-sys",
-] as const;
-
-/** `entry` is passed in by callers that also need copilotApiEnv for the SAME entry, so the argv and the
- *  environment can never be built from two different resolutions. */
+/** `run` first, the runtime flags after it (bun reads them nowhere before `run`). `--no-env-file`
+ *  keeps a `.env` out of the daemon's environment and `--no-install` keeps a missing import a
+ *  launch failure instead of a download: the proxy home's install is the one source of modules. */
 export function copilotApiArgv(
   subArgs: readonly string[],
-  preloadFlags: readonly string[] = [],
-  entry: CopilotApiEntry = resolveCopilotApiEntry(),
+  preloadFlags: readonly string[],
+  entry: RunnableEntry,
 ): string[] {
-  return [
-    "run",
-    // Always PINNED: a package specifier has no directory to discover a config from, so discovery would
-    // fall back to the caller's cwd and could pick up an unrelated project's import map, which the
-    // preload shims resolve their own imports through. A checkout's deno.json carries a frozen lock
-    // that rejects a floated version outright, hence the float's generated config wherever it exists.
-    "--config",
-    entry.configFile,
-    // Never reach the network: the float pre-warmed its cache for a floated entry and the frozen lock
-    // pre-warmed node_modules for the mapped one; a compiled install has no node_modules at all.
-    ...(entry.kind === "file" ? [] : ["--cached-only"]),
-    ...(entry.kind === "floated" ? ["--node-modules-dir=none"] : []),
-    ...PROXY_PERMISSIONS,
-    // FIRST, on every spawn: the proxy's dependency tree probes /proc at module load, which deno's node
-    // compat turns into a thrown NotCapable instead of node's documented `false`, so on Linux the proxy
-    // never reaches its own entry point without it.
-    "--preload",
-    shimPath(NODE_COMPAT_SHIM),
-    ...preloadFlags,
-    entry.kind === "file" ? entry.path : entry.specifier,
-    ...subArgs,
-  ];
+  return ["run", "--no-env-file", "--no-install", ...preloadFlags, entry.path, ...subArgs];
 }
 
-// THE daemon signature, pinned by test/copilot_api/daemon_spawn.test.ts. The sweep SIGKILLs what it matches, so every
+// THE daemon signature, pinned by test/copilot_api/daemon_spawn.e2e.test.ts. The sweep SIGKILLs what it matches, so every
 // tolerance below biases against false positives: a substring match once killed an agent CLI whose prompt
 // text mentioned copilot-api and start. A match needs a whole daemon-shaped invocation:
 //   runtime (DAEMON_RUNTIMES)  -> from the process table, never argv text
@@ -148,18 +94,20 @@ export function copilotApiArgv(
 
 /** Both scans gate on the process table's executable name (ps `ucomm`, the WMI image Name) derived from
  *  this list, never on argv text, where a spaced executable path is indistinguishable from arguments.
- *  A renamed deno (COPILOT_ENV_SIDECAR_DENO) goes unmatched: an accepted loss. */
-const DAEMON_RUNTIMES = ["deno"] as const;
+ *  The daemon is `process.execPath` run as a bun CLI: bun itself in a checkout, the installed binary
+ *  (INSTALLED_BINARY_POSIX in src/utils/targets.ts, which this layer does not import; the test
+ *  pins the two) under a release. A binary copied under another name goes unmatched: an accepted
+ *  loss. */
+export const DAEMON_RUNTIMES = ["bun", "copilot-env"] as const;
 const RUNTIME_ALTERNATION = DAEMON_RUNTIMES.join("|");
 
 // Each alternative consumes exactly one whitespace-delimited token and the classes are disjoint (a fragment
 // may not start with a dash, or it would overlap the flag class), so middle parsing never backtracks
 // combinatorially. A bare word breaks the match: every tolerance for bare words re-admits crafted impostor argv.
-//   `/Users/John Smith/.deno/bin/deno`  -> two slash fragments, still matches
-//   `/x/Deno Runtime Tools/deno`        -> the slash-less `Runtime` breaks it: accepted loss
-const MIDDLE_TOKEN =
-  `run|${RUNTIME_ALTERNATION}|-[^\\s"]*|(?:[^\\s"\\\\/-][^\\s"\\\\/]*)?[\\\\/][^\\s"]*`;
-// A path segment STARTING with `copilot-api` (an npm specifier, a node_modules path, a COPILOT_API_ENTRY
+//   `/Users/John Smith/.bun/bin/bun`  -> two slash fragments, still matches
+//   `/x/Bun Runtime Tools/bun`        -> the slash-less `Runtime` breaks it: accepted loss
+const MIDDLE_TOKEN = `run|${RUNTIME_ALTERNATION}|-[^\\s"]*|(?:[^\\s"\\\\/-][^\\s"\\\\/]*)?[\\\\/][^\\s"]*`;
+// A path segment STARTING with `copilot-api` (the installed package's directory, a COPILOT_API_ENTRY
 // file), never the bare word. A POSIX entry whose own name contains a space is an accepted loss.
 const ENTRY_TOKEN = '[^\\s"]*[\\\\/]copilot-api[^\\s"]*';
 
@@ -177,21 +125,81 @@ const DAEMON_CMDLINE_PATTERN =
   `^\\s*(?:"[^"]*[\\\\/](?:${RUNTIME_ALTERNATION})(?:\\.exe)?"|(?:[^\\s"]*[\\\\/])?(?:${RUNTIME_ALTERNATION})(?:\\.exe)?)\\s+` +
   `(?:(?:${MIDDLE_TOKEN}|"[^"]*")\\s+)*` +
   `(?:"[^"]*[\\\\/]copilot-api[^"]*"|${ENTRY_TOKEN})\\s+start(?:\\s|$)`;
-const DAEMON_CMDLINE_RE = new RegExp(DAEMON_CMDLINE_PATTERN);
+/** Case-insensitive like PowerShell's `-match` and the filesystem it describes, so a path spelled
+ *  `COPILOT-API` on disk is judged here as it was prefiltered there. */
+const DAEMON_CMDLINE_RE = new RegExp(DAEMON_CMDLINE_PATTERN, "i");
 
-/** Exported for the impostor/orphan fixtures in test/copilot_api/daemon_spawn.test.ts. */
-export function isDaemonProcess(row: ProcessRow): boolean {
-  if (!(DAEMON_RUNTIMES as readonly string[]).includes(row.ucomm)) return false;
-  return DAEMON_INVOCATION_RE.test(row.command);
+/** What only OUR spawn puts on a daemon's command line, and only for THIS root home: any tool may
+ *  run the same package from its own node_modules, and every test suite's scratch root home shares
+ *  one checkout, so neither the shape nor a shim path under the checkout tells this root home's
+ *  daemon from a sibling suite's decoy or a developer's real one.
+ *    preloadRoots -> the one `--preload` the spawn passes is the preload file it wrote under this
+ *                    root home's proxy home (daemonPreloadFile), whatever the entry kind
+ *    entryRoots   -> the entry is the package's own directory in this proxy home's install */
+export interface DaemonOwnership {
+  preloadRoots: readonly string[];
+  entryRoots: readonly string[];
 }
 
-/** Mirrors the PowerShell `-match` scripts so test/copilot_api/daemon_spawn.test.ts pins the interpolated pattern's semantics. */
-export function isDaemonCommandLine(command: string): boolean {
-  return DAEMON_CMDLINE_RE.test(command);
+/** Resolved per scan, never at module load: the proxy home follows COPILOT_API_HOME. */
+function daemonOwnership(): DaemonOwnership {
+  const rootHome = resolveRootHome();
+  const packageDir = ["node_modules", ...PROXY_PACKAGE_NAME.split("/")];
+  return {
+    preloadRoots: [proxyHome(rootHome)],
+    entryRoots: [join(proxyInstallDir(rootHome), ...packageDir)],
+  };
+}
+
+/** The process table's own spelling for a path comparison: separators either way, case-insensitive
+ *  on Windows, no trailing separator. */
+function pathSpelling(path: string): string {
+  const slashed = path.replace(/\\/g, "/").replace(/\/+$/, "");
+  return process.platform === "win32" ? slashed.toLowerCase() : slashed;
+}
+
+/**
+ * On a command line the signature already matched, read as text rather than tokens: ps flattens a
+ * spaced path into several tokens, and the roots are the one thing known to be verbatim in it.
+ *   `--preload <root>/...`            -> the preload file under this root home's proxy home, which
+ *                                        only our spawn writes and passes
+ *   `<entryRoot>/<no space>  start`   -> the entry under this proxy home's install
+ * A double quote may open either path (the Windows CommandLine form).
+ */
+function isOwnedInvocation(command: string, owned: DaemonOwnership): boolean {
+  const line = pathSpelling(command);
+  const preloaded = owned.preloadRoots.some((root) =>
+    new RegExp(`--preload[= ]"?${escapeRegExp(pathSpelling(root))}/`).test(line),
+  );
+  if (preloaded) return true;
+  return owned.entryRoots.some((root) =>
+    new RegExp(`(?:^|[\\s"])${escapeRegExp(pathSpelling(root))}/[^\\s"]*"?\\s+start(?:\\s|$)`).test(
+      line,
+    ),
+  );
+}
+
+/** Exported for the impostor/orphan fixtures in test/copilot_api/daemon_spawn.e2e.test.ts. */
+export function isDaemonProcess(
+  row: ProcessRow,
+  owned: DaemonOwnership = daemonOwnership(),
+): boolean {
+  if (!(DAEMON_RUNTIMES as readonly string[]).includes(row.ucomm)) return false;
+  return DAEMON_INVOCATION_RE.test(row.command) && isOwnedInvocation(row.command, owned);
+}
+
+/** The Windows judgment: the PS scripts prefilter on the interpolated pattern, and the command lines
+ *  they return are judged HERE, ownership included, so both platforms share one rule
+ *  (test/copilot_api/daemon_spawn.e2e.test.ts pins the pattern's semantics). */
+export function isDaemonCommandLine(
+  command: string,
+  owned: DaemonOwnership = daemonOwnership(),
+): boolean {
+  return DAEMON_CMDLINE_RE.test(command) && isOwnedInvocation(command, owned);
 }
 
 /** Also bounds the daemon's own drain: daemon_shutdown.ts keeps a separate literal (it loads in the
- *  daemon, which imports no CLI module) and test/copilot_api/daemon_spawn.test.ts pins the two in order. */
+ *  daemon, which imports no CLI module) and test/copilot_api/daemon_spawn.e2e.test.ts pins the two in order. */
 export const DAEMON_SIGKILL_GRACE_MS = 2_000;
 
 /** The launch pipeline's one-second wait: after the cleanup sweep, after a spawn before the pid is
@@ -255,12 +263,9 @@ export async function terminatePid(
 
 /** "unproven" rides to the consumer (listUntrackedOrphans SAYS the sweep is skipped) instead of a
  *  broken process table silently reading as "no orphans". */
-export function getOrphanPids(
-  myPid: number,
-  myPpid: number,
-): Promise<number[] | "unproven"> {
+export function getOrphanPids(myPid: number, myPpid: number): Promise<number[] | "unproven"> {
   return scanCopilotApiPids().then((scan) =>
-    scan === "unproven" ? scan : scan.filter((p) => p !== myPid && p !== myPpid)
+    scan === "unproven" ? scan : scan.filter((p) => p !== myPid && p !== myPpid),
   );
 }
 
@@ -318,20 +323,34 @@ export async function classifyOwnedDaemonPid(pid: number): Promise<"yes" | "no" 
 }
 
 async function classifyDaemonPidWindows(pid: number): Promise<"yes" | "no" | "unknown"> {
-  // The SPECIFIC pid is queried so a different process (CommandLine present, no match) is told apart
-  // from an unreadable one (CommandLine null: a restricted token); `pid` is our own integer, so inlining
-  // it is safe. CIM errors are non-terminating (an empty $p and exit 0, which would flatten into "no"),
-  // so the query is trapped to exit non-zero and read "unknown".
-  const script = "$ErrorActionPreference = 'Stop'; " +
+  // The SPECIFIC pid is queried so a different process (CommandLine present, judged here) is told
+  // apart from an unreadable one (CommandLine null: a restricted token); `pid` is our own integer,
+  // so inlining it is safe. CIM errors are non-terminating (an empty $p and exit 0, which would
+  // flatten into "no"), so the query is trapped to exit non-zero and read "unknown".
+  const script =
+    "$ErrorActionPreference = 'Stop'; " +
     `try { $p = Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}' } catch { exit 1 }; ` +
     "if (-not $p) { 'no' } " +
     "elseif ([string]::IsNullOrEmpty($p.CommandLine)) { 'unknown' } " +
-    `elseif ($p.CommandLine -match '${DAEMON_CMDLINE_PATTERN}') { 'yes' } ` +
-    "else { 'no' }";
+    `else { 'cmd:' + ${base64CommandLine("$p")} }`;
   const { exitCode, stdout } = await runPowershell(script);
   if (exitCode !== 0) return "unknown";
-  const verdict = stdout.trim();
-  return verdict === "yes" || verdict === "no" ? verdict : "unknown";
+  const answer = stdout.trim();
+  if (answer === "no") return "no";
+  if (answer.startsWith("cmd:")) {
+    return isDaemonCommandLine(decodeCommandLine(answer.slice(4))) ? "yes" : "no";
+  }
+  return "unknown";
+}
+
+/** A command line crosses the PowerShell boundary base64-encoded: an argument may itself carry a
+ *  newline or a tab, which would otherwise split one record into two and lend a pid to text. */
+function base64CommandLine(variable: string): string {
+  return `[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(${variable}.CommandLine))`;
+}
+
+function decodeCommandLine(base64: string): string {
+  return Buffer.from(base64.trim(), "base64").toString("utf8");
 }
 
 /** "unproven" when the scan itself failed: POSIX proves completion via the selfPid control
@@ -363,24 +382,27 @@ async function scanCopilotApiPidsWindows(): Promise<number[] | "unproven"> {
   // access-denied would exit 0 with no pids and read as an empty machine. The per-process GetOwner
   // SilentlyContinue stays (an explicit -ErrorAction overrides the Stop preference): skipping ONE
   // unattributable process is that filter's contract.
-  const script = "$ErrorActionPreference = 'Stop'; try { " +
+  const script =
+    "$ErrorActionPreference = 'Stop'; try { " +
     "Get-CimInstance Win32_Process | Where-Object { " +
     `(${nameTest}) ` +
     `-and $_.CommandLine -match '${DAEMON_CMDLINE_PATTERN}' ` +
     "} | Where-Object { " +
     "$o = Invoke-CimMethod -InputObject $_ -MethodName GetOwner -ErrorAction SilentlyContinue; " +
     "$o -and $o.ReturnValue -eq 0 -and $o.User -eq $env:USERNAME -and $o.Domain -eq $env:USERDOMAIN " +
-    "} | ForEach-Object { $_.ProcessId } " +
+    `} | ForEach-Object { "$($_.ProcessId) " + ${base64CommandLine("$_")} } ` +
     "} catch { exit 1 }";
   const { exitCode, stdout } = await runPowershell(script);
   if (exitCode !== 0) return "unproven";
 
+  // The pattern prefiltered in PowerShell; ownership is judged here, like the POSIX rows. One
+  // record per line by construction: a pid, a space, base64.
   const pids: number[] = [];
   for (const line of stdout.split(/\r?\n/)) {
-    const pid = Number.parseInt(line.trim(), 10);
-    if (!Number.isNaN(pid)) {
-      pids.push(pid);
-    }
+    const record = /^\s*(\d+) ([A-Za-z0-9+/=]+)\s*$/.exec(line);
+    if (record === null) continue;
+    const pid = Number.parseInt(record[1] as string, 10);
+    if (isDaemonCommandLine(decodeCommandLine(record[2] as string))) pids.push(pid);
   }
   return pids;
 }
@@ -428,16 +450,15 @@ async function listUserProcesses(): Promise<ProcessRow[]> {
   return parseProcessRows(stdout);
 }
 
+/** The ownership roots are resolved once per scan, not per row. */
 function posixDaemonPids(rows: ProcessRow[]): number[] {
-  return rows.filter(isDaemonProcess).map((row) => row.pid);
+  const owned = daemonOwnership();
+  return rows.filter((row) => isDaemonProcess(row, owned)).map((row) => row.pid);
 }
 
 /** Same control as classifyPidFromRows: rows without `selfPid` prove the scan FAILED, which is
  *  "unproven", never an empty list a broken `ps` could pass off as "no daemons anywhere". */
-export function daemonPidsFromRows(
-  rows: ProcessRow[],
-  selfPid: number,
-): number[] | "unproven" {
+export function daemonPidsFromRows(rows: ProcessRow[], selfPid: number): number[] | "unproven" {
   if (!rows.some((row) => row.pid === selfPid)) return "unproven";
   return posixDaemonPids(rows);
 }
@@ -464,8 +485,8 @@ export type DaemonCredential =
 export interface DaemonSpec {
   port: number;
   logFile: string;
-  /** Pinned into COPILOT_API_HOME on EVERY spawn: since the data-home rename the npm package's own
-   *  default no longer matches ours, so an unpinned daemon would split its files from the wrapper's. */
+  /** Pinned into COPILOT_API_HOME on EVERY spawn: the npm package's own default home is not ours, so
+   *  an unpinned daemon would split its files from the wrapper's. */
   home: string;
   /** Extra daemon environment the launch pipeline assembles (sqlite path, root home). */
   env: Record<string, string>;
@@ -479,15 +500,24 @@ export interface DaemonSpec {
   muteProxyLogs: boolean;
   /** Resolved ONCE per launch, so the argv and the environment derive from one answer and the
    *  bind-race relaunch reuses the identical entry rather than re-resolving mid-flight. */
-  entry: CopilotApiEntry;
-  /** Resolved ONCE beside `entry`: on a compiled install this is the provisioned sidecar, and the
-   *  bind-race relaunch must spawn the identical binary. */
-  denoBin: AbsolutePath;
+  entry: RunnableEntry;
+}
+
+/**
+ * The daemon's one `--preload`: a file in the proxy home that imports this build's shims. The argv
+ * then names the root home for every entry kind, which is the mark daemonOwnership reads (a shim
+ * path under the checkout would name every scratch root home's daemon alike), while the shim set
+ * still derives from the spec. launchDaemon writes it before each spawn; the start lock covers the
+ * spawn through readiness, so no second start rewrites it under a daemon still booting.
+ */
+export function daemonPreloadFile(proxyHome: string): string {
+  return join(proxyHome, "daemon_preload.ts");
 }
 
 /** Every shim is a RUNTIME shim touching none of copilot-api's files, so none of them pins the floated
- *  proxy version. */
-function daemonPreloadFlags(spec: DaemonSpec): string[] {
+ *  proxy version. One line of imports: a module's imports evaluate in order, so this IS the preload
+ *  order; file URLs, the one spelling an import accepts on every platform. */
+export function renderDaemonPreload(spec: DaemonSpec): string {
   // FIRST, ALWAYS: the liveness lock (`<home>/daemon.lock`, src/copilot_api/daemon_lock.ts) must be held
   // before anything else touches the home.
   const shims: DaemonShimFile[] = ["daemon_lock_preload.ts"];
@@ -500,7 +530,10 @@ function daemonPreloadFlags(spec: DaemonSpec): string[] {
   if (spec.credential.kind === "pat") shims.push("pat_passthrough_preload.ts");
   if (spec.idleWatchdog) shims.push("idle_watchdog_preload.ts");
   if (spec.muteProxyLogs) shims.push("log_mute_preload.ts");
-  return shims.flatMap((shim) => ["--preload", shimPath(shim)]);
+  const imports = shims.map(
+    (shim) => `import ${JSON.stringify(pathToFileURL(shimPath(shim)).href)};`,
+  );
+  return `${imports.join(" ")}\n`;
 }
 
 /**
@@ -517,22 +550,35 @@ function applyCredentialEnv(env: NodeJS.ProcessEnv, credential: DaemonCredential
   delete env.COPILOT_API_OAUTH_APP;
 }
 
-/** Deno honours HTTP_PROXY for loopback too, so a corporate proxy would otherwise swallow the daemon's
- *  own admin traffic and every local client's calls to it. */
+/** A corporate HTTP_PROXY would otherwise swallow the daemon's own admin traffic and every local
+ *  client's calls to it. */
 const LOOPBACK_NO_PROXY = ["127.0.0.1", "::1", "localhost"] as const;
 
 export function noProxyWithLoopback(current: string | undefined): string {
-  const entries = (current ?? "").split(",").map((e) => e.trim()).filter((e) => e !== "");
+  const entries = (current ?? "")
+    .split(",")
+    .map((e) => e.trim())
+    .filter((e) => e !== "");
   for (const host of LOOPBACK_NO_PROXY) {
     if (!entries.some((e) => e.toLowerCase() === host)) entries.push(host);
   }
   return entries.join(",");
 }
 
-/** `base` is inherited wholesale so TLS and outbound-proxy settings (DENO_TLS_CA_STORE, NODE_EXTRA_CA_CERTS,
+/**
+ * The bun-CLI environment a compiled binary needs to run anything but its own entry: without
+ * BUN_BE_BUN a spawn of process.execPath re-runs the CLI (a fork bomb). The runtime flags live in
+ * copilotApiArgv; test/copilot_api/daemon_spawn.e2e.test.ts pins the pair.
+ */
+export const BUN_CLI_ENV = { BUN_BE_BUN: "1" } as const;
+
+/** `base` is inherited wholesale so TLS and outbound-proxy settings (NODE_EXTRA_CA_CERTS,
  *  HTTP_PROXY/HTTPS_PROXY) reach the daemon exactly as the user set them for us. */
 export function daemonEnvironment(spec: DaemonSpec, base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...base, ...copilotApiEnv(spec.entry), ...spec.env };
+  const env: NodeJS.ProcessEnv = { ...base, ...BUN_CLI_ENV, ...spec.env };
+  // The preload shims sit beside the binary, where no node_modules is: their imports resolve from
+  // the proxy home's install. Set, never appended: an inherited NODE_PATH could shadow it.
+  env.NODE_PATH = spec.entry.nodeModules;
   env.COPILOT_API_HOME = spec.home;
   applyCredentialEnv(env, spec.credential);
   // copilot-api's own host selectors (COPILOT_API_ENTERPRISE_URL, COPILOT_API_OAUTH_APP=opencode)
@@ -544,24 +590,34 @@ export function daemonEnvironment(spec: DaemonSpec, base: NodeJS.ProcessEnv): No
   const noProxy = noProxyWithLoopback(env.NO_PROXY ?? env.no_proxy);
   env.NO_PROXY = noProxy;
   env.no_proxy = noProxy;
-  // A detached daemon must never stall on (or log) a release probe at startup.
-  env.DENO_NO_UPDATE_CHECK = "1";
   return env;
 }
 
 export function daemonArgv(spec: DaemonSpec): string[] {
   return copilotApiArgv(
     ["start", "--verbose", "--port", String(spec.port)],
-    daemonPreloadFlags(spec),
+    ["--preload", daemonPreloadFile(spec.entry.proxyHome)],
     spec.entry,
   );
 }
 
 export function launchDaemon(spec: DaemonSpec): number {
+  // A dead predecessor's marker would otherwise refuse the new daemon's acquire for its whole
+  // budget: the daemon cannot signal the pid, this process can.
+  clearDeadDaemonLock(spec.home);
   const logFd = fs.openWriteFd(spec.logFile);
   // The disk's `/dev/null` in every mode, a dry run included: the raw open the fs lint exempts.
   const devnull = openSync(devNull, "r");
-  const proc = spawn(spec.denoBin, daemonArgv(spec), {
+  // The daemon's cwd is the proxy home, whatever the caller's was: bun's own discovery (bunfig,
+  // package.json) then lands on the float's files, and a directory the user later deletes cannot
+  // take a running daemon's cwd with it. Created here because the file entry may run before any
+  // float made it.
+  fs.mkdir(spec.entry.proxyHome);
+  fs.writeText(daemonPreloadFile(spec.entry.proxyHome), renderDaemonPreload(spec), {
+    secretKeys: [],
+  });
+  const proc = spawn(process.execPath, daemonArgv(spec), {
+    cwd: spec.entry.proxyHome,
     stdio: [devnull, logFd, logFd],
     detached: true,
     // Defensive: redirected stdio already avoids a console window on Windows.

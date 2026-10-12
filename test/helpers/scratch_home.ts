@@ -19,10 +19,11 @@ export interface Observation {
 }
 
 /** Its data home, both agent homes, and a port pin that keeps a real proxy on 4141 out of the
- *  picture. */
-export function scratchHome(prefix: string): ScratchHome {
+ *  picture. `port` is one the caller probed and released (freePort in test/helpers/net.ts): files
+ *  run as concurrent processes, and two homes pinning one literal port made their daemons collide. */
+export function scratchHome(prefix: string, port: number): ScratchHome {
   const home = tempDir(prefix);
-  writeFileSync(join(home, "state.json"), JSON.stringify({ global: { "daemon.port": 4199 } }));
+  writeFileSync(join(home, "state.json"), JSON.stringify({ global: { "daemon.port": port } }));
   return {
     home,
     env: {
@@ -43,14 +44,12 @@ export function observe(args: string[], scratch: ScratchHome): Observation {
 
 /** A proxy default and a proxy profile `work`, each with a stored token. */
 export function seedProxyProfiles(scratch: ScratchHome): void {
-  for (
-    const args of [
-      ["auth", "--set", "ghu_test"],
-      ["init", "--proxy"],
-      ["profile", "work", "add", "--proxy", "--no-auth"],
-      ["profile", "work", "auth", "--set", "ghu_work"],
-    ]
-  ) {
+  for (const args of [
+    ["auth", "--set", "ghu_test"],
+    ["init", "--proxy"],
+    ["profile", "work", "add", "--proxy", "--no-auth"],
+    ["profile", "work", "auth", "--set", "ghu_work"],
+  ]) {
     expect(observe(args, scratch).exitCode, args.join(" ")).toBe(0);
   }
 }
@@ -91,8 +90,8 @@ export function expectIdentical(
   expect(foldHome(b.scratch.home, seenB.stderr), label).toBe(
     foldHome(a.scratch.home, seenA.stderr),
   );
-  expect([...treeContents(b.scratch.home).entries()], label).toEqual(
-    [...treeContents(a.scratch.home).entries()],
-  );
+  expect([...treeContents(b.scratch.home).entries()], label).toEqual([
+    ...treeContents(a.scratch.home).entries(),
+  ]);
   return seenA;
 }

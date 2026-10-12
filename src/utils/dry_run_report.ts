@@ -131,18 +131,19 @@ function entryChange(
   const bytesDiffer = (): boolean =>
     entry.kind === "file" &&
     (planned !== null ? before !== planned : !sameBytes(disk.readBytes(key), entry.bytes()));
-  const differs = !sameKind || replacesLink || bytesDiffer() ||
+  const differs =
+    !sameKind ||
+    replacesLink ||
+    bytesDiffer() ||
     (onDisk !== null && (onDisk.mode & 0o777) !== entry.mode);
-  const verdict: FileVerdict = onDisk === null && !replacesLink
-    ? "create"
-    : differs
-    ? "rewrite"
-    : "same";
+  const verdict: FileVerdict =
+    onDisk === null && !replacesLink ? "create" : differs ? "rewrite" : "same";
   // A line diff cannot redact a value inside a line, so a file with a declared secret prints its
   // verdict alone when it has no leaf rows.
-  const text = planned !== null && rows.length === 0 && secretKeys.size === 0 && !secretFile
-    ? { before, after: planned }
-    : undefined;
+  const text =
+    planned !== null && rows.length === 0 && secretKeys.size === 0 && !secretFile
+      ? { before, after: planned }
+      : undefined;
   return { path: name, verdict, directory, attributes: rows, ...(text ? { text } : {}) };
 }
 
@@ -195,7 +196,7 @@ function emptyLeaves(
 
 /** A TOML datetime and its ISO string serialize alike, yet the file changes shape. */
 function sameValue(a: unknown, b: unknown): boolean {
-  return (a instanceof Date) === (b instanceof Date) && JSON.stringify(a) === JSON.stringify(b);
+  return a instanceof Date === b instanceof Date && JSON.stringify(a) === JSON.stringify(b);
 }
 
 /** The leaf rows of a JSON or TOML file, every leaf of either side; no rows when either side does
@@ -226,10 +227,10 @@ function docRows(
     const status: AttributeStatus = !before.has(key)
       ? "set"
       : !after.has(key)
-      ? "remove"
-      : sameValue(before.get(key), after.get(key))
-      ? "same"
-      : "change";
+        ? "remove"
+        : sameValue(before.get(key), after.get(key))
+          ? "same"
+          : "change";
     rows.push({
       key,
       status,
@@ -290,9 +291,8 @@ function lineDiff(from: readonly string[], to: readonly string[]): [DiffKind, st
   const common = (i: number, j: number): number => table[i * width + j] ?? 0;
   for (let i = from.length - 1; i >= 0; i--) {
     for (let j = to.length - 1; j >= 0; j--) {
-      table[i * width + j] = from[i] === to[j]
-        ? common(i + 1, j + 1) + 1
-        : Math.max(common(i + 1, j), common(i, j + 1));
+      table[i * width + j] =
+        from[i] === to[j] ? common(i + 1, j + 1) + 1 : Math.max(common(i + 1, j), common(i, j + 1));
     }
   }
   const rows: [DiffKind, string][] = [];

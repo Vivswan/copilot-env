@@ -7,7 +7,11 @@ export function colorEnabled(): boolean {
   if (colorDecided === null) {
     const env = process.env;
     colorDecided = !(
-      env.NO_COLOR === "1" || env.TERM === "dumb" || env.TEST || env.CI || !process.stdout.isTTY
+      env.NO_COLOR === "1" ||
+      env.TERM === "dumb" ||
+      env.TEST ||
+      env.CI ||
+      !process.stdout.isTTY
     );
   }
   return colorDecided;

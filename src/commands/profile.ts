@@ -6,8 +6,8 @@ import { claudeDesktopStatus, reconcileClaudeDesktopWiring } from "../agents/cla
 import {
   type AgentAdapter,
   configuringLine,
-  decideDefaultMode,
   type DirectWiring,
+  decideDefaultMode,
   type ManagedAgentId,
   probedVerdict,
   type RemoveProfileOptions,
@@ -25,22 +25,22 @@ import { inspectClaudeWiring } from "../claude/config.ts";
 import { renderClaudeDesktopStatus } from "../claude/desktop_status.ts";
 import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
 import { directWiringFor } from "../codex/config.ts";
-import { inspectCodexWiring } from "../codex/inspect.ts";
 import { effectiveCodexHome } from "../codex/host.ts";
+import { inspectCodexWiring } from "../codex/inspect.ts";
 import { codexConfigPath, codexProfileConfigPath } from "../codex/paths.ts";
 import { Credential, ghAuthToken } from "../copilot_api/credential.ts";
 import { type ProxyStatus, proxyStatus, stopTrackedProxy } from "../copilot_api/daemon.ts";
 import { directOverlay, storeProbedPair } from "../copilot_api/direct_pair.ts";
-import { configSetCommand, CopilotEnvConfig } from "../copilot_api/env_config.ts";
+import { CopilotEnvConfig, configSetCommand } from "../copilot_api/env_config.ts";
 import {
+  AUTH_PROVIDERS,
   allProfileNames,
   assertKnownProfile,
-  AUTH_PROVIDERS,
   CopilotEnvState,
   credentialProvider,
-  partialSlotGap,
   type ProfileMode,
   type ProvisionedCredential,
+  partialSlotGap,
   type StoredCredential,
 } from "../copilot_api/env_state.ts";
 import { profileHome, profileHomeNames } from "../copilot_api/paths.ts";
@@ -51,8 +51,8 @@ import {
   agentStopCommand,
   DEFAULT_PROFILE_NAME,
   type Profile,
-  profileLabel,
   type ProfileName,
+  profileLabel,
 } from "../copilot_api/profile.ts";
 import { bold, colorEnabled, gray, statusPaint } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
@@ -106,9 +106,9 @@ function whose(profile: Profile): string {
 const NO_CREDENTIAL_TO_PROBE =
   "no credential to probe with; pass --direct or --proxy, or run without --no-auth";
 
-const AUTH_PROVIDERS_HELP = `--provider <${
-  AUTH_PROVIDERS.join("|")
-}>  (or --set <token>, --gh-user <login>)`;
+const AUTH_PROVIDERS_HELP = `--provider <${AUTH_PROVIDERS.join(
+  "|",
+)}>  (or --set <token>, --gh-user <login>)`;
 
 /** The landing's answer when the probe's verdict differs from the recorded mode: one line says so,
  *  then the question a flag-driven switch asks, defaulting to yes: Enter follows the probe, a "no"
@@ -180,9 +180,10 @@ function printGuidance(
     lines.push("", "At least one agent uses the local proxy.");
     section("Start the proxy", [
       "`agent start` - launch the daemon",
-      `\`${
-        configSetCommand("shell.launchers", "true")
-      }\` - \`cl\` / \`cx\` then auto-start it for you`,
+      `\`${configSetCommand(
+        "shell.launchers",
+        "true",
+      )}\` - \`cl\` / \`cx\` then auto-start it for you`,
       "`agent cost` - report proxy usage",
     ]);
   } else if (bothDirect) {
@@ -190,9 +191,10 @@ function printGuidance(
     lines.push("", `Both agents use GitHub Copilot Direct - no local proxy needed${tail}`);
     section("Run the agents", [
       "Just use `claude` and `codex` - no `agent start` / `agent stop`",
-      `\`${
-        configSetCommand("shell.launchers", "true")
-      }\` - optional \`cl\` / \`co\` / \`cx\` shortcuts`,
+      `\`${configSetCommand(
+        "shell.launchers",
+        "true",
+      )}\` - optional \`cl\` / \`co\` / \`cx\` shortcuts`,
     ]);
     section("Good to know", [
       "`agent cost` reports proxy usage only - Direct usage won't appear",
@@ -276,9 +278,8 @@ export async function addProfile(
   acquire: AcquireNamedCredential = (name) => acquireCredential({ kind: "choose" }, name),
 ): Promise<void> {
   if (profile === null) {
-    const flagged: ManagedAgentMode | null = args.mode === "auto" || args.mode === "unflagged"
-      ? null
-      : args.mode;
+    const flagged: ManagedAgentMode | null =
+      args.mode === "auto" || args.mode === "unflagged" ? null : args.mode;
     return addDefault(args, flagged, credentialStep(null, args, flagged === null), adapters);
   }
   if (args.mode === "auto") return addNamedProbed(profile, args, adapters, acquire);
@@ -328,11 +329,14 @@ async function addDefault(
     // credential. The auto probe below then judges THIS credential's Direct access.
     await ensureAuthenticated();
     const mode: RequestedMode = flagged ?? "auto";
-    const outcome = await configureDefaultAgents({
-      codex: mode,
-      claude: mode,
-      onVerdict: (recorded, verdict) => followProbe(null, recorded, verdict, args),
-    }, adapters);
+    const outcome = await configureDefaultAgents(
+      {
+        codex: mode,
+        claude: mode,
+        onVerdict: (recorded, verdict) => followProbe(null, recorded, verdict, args),
+      },
+      adapters,
+    );
     // configureDefaultAgents wrote only the default's Desktop entry; this covers the named
     // profiles.
     await reconcileClaudeDesktopWiring();
@@ -381,9 +385,10 @@ async function addNamed(
     state.recordProfileMode(name, mode);
     return () => {
       logger.success(
-        `${profileLabel(name)} records ${mode}${
-          switchedFrom(slot.mode, mode)
-        }; both agents wait for its credential.`,
+        `${profileLabel(name)} records ${mode}${switchedFrom(
+          slot.mode,
+          mode,
+        )}; both agents wait for its credential.`,
       );
     };
   }
@@ -432,13 +437,14 @@ async function addNamedProbed(
     // command could read).
     let selection: Promise<DirectWiring> | null = null;
     const chosen = await decideDefaultMode(adapters, token, {
-      resolveDirect: () => selection ??= directWiringFor(name, token, "probe"),
+      resolveDirect: () => (selection ??= directWiringFor(name, token, "probe")),
       credential: { kind: "static", token },
     });
     const verdict = probedVerdict(chosen);
-    const mode = slot.mode === null || slot.mode === verdict
-      ? verdict
-      : await followProbe(name, slot.mode, verdict, args);
+    const mode =
+      slot.mode === null || slot.mode === verdict
+        ? verdict
+        : await followProbe(name, slot.mode, verdict, args);
     await stopIfLeavingProxy(name, slot.mode, mode);
     // A direct verdict resolved the one selection for every agent; a kept direct record over a
     // proxy verdict has no validated pair and lands as `add --direct` does.
@@ -538,7 +544,8 @@ export async function delProfile(name: ProfileName, dryRun: boolean): Promise<vo
   const land = async (): Promise<Narration> => {
     // A foreign same-named settings-<name>.json or a hand-made [model_providers.copilot-env-<name>]
     // is not ours to delete unless the store or home says the profile was real.
-    const existed = new CopilotEnvState().profileSlotStatus(name).exists ||
+    const existed =
+      new CopilotEnvState().profileSlotStatus(name).exists ||
       profileHomeNames().includes(name) ||
       Object.hasOwn(new CopilotEnvConfig().read().profiles, name);
     if (!existed) {
@@ -629,9 +636,9 @@ export async function listProfiles(): Promise<void> {
     // One message, so consola stamps one prefix instead of one per row.
     const hint = gray("   Launch one:  cl --profile <name>  /  cx --profile <name>");
     consola.info(
-      `${rows.length} profile${rows.length === 1 ? "" : "s"}:\n\n${
-        renderProfileTable(rows)
-      }\n\n${hint}\n`,
+      `${rows.length} profile${rows.length === 1 ? "" : "s"}:\n\n${renderProfileTable(
+        rows,
+      )}\n\n${hint}\n`,
     );
   }
 }
@@ -804,13 +811,10 @@ function checkNamedAgent(name: ProfileName, agent: ManagedAgentId): void {
   }
   const home = effectiveCodexHome();
   const profileToml = codexProfileConfigPath(home, name);
-  const status = inspectCodexWiring(
-    fs.readTextResult(codexConfigPath(home)),
-    null,
-    port,
-    false,
-    { profile: name, profileToml: fs.readTextResult(profileToml) },
-  );
+  const status = inspectCodexWiring(fs.readTextResult(codexConfigPath(home)), null, port, false, {
+    profile: name,
+    profileToml: fs.readTextResult(profileToml),
+  });
   printKeyValue("Codex provider mode", modeDetail(status.providerMode));
   printKeyValue(`${name}.config.toml`, profileToml);
   process.exitCode = providerModeExitCode(status.providerMode);

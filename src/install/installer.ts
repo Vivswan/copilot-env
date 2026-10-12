@@ -1,7 +1,7 @@
 // The in-binary `agent install`: finalize an install root around the compiled binary that
 // install.sh / install.ps1 downloaded to <root>/bin/copilot-env(.exe). A plan/apply split, like
-// planImport/applyImportPlan in src/agents/transfer.ts. Assets are read via URLs relative to
-// import.meta.url (the compiled VFS, or the checkout); that source root equalling the install
+// planImport/applyImportPlan in src/agents/transfer.ts. Assets are read under ASSET_ROOT (the
+// binary's embedded virtual filesystem, or the checkout); that source root equalling the install
 // root is what makes a run in-place.
 //
 //   in-place (dev checkout)   -> shell integration only; the checkout's own files are never touched
@@ -14,19 +14,18 @@
 //
 // Every path that outlives a release goes through `<top>/current/...`, so flipping the link is
 // the whole commit of an update and old version dirs can be garbage-collected safely.
-import { spawnSync, type StdioOptions } from "node:child_process";
-import { configSetCommand } from "../copilot_api/env_config.ts";
-import { homedir } from "node:os";
+import { type StdioOptions, spawnSync } from "node:child_process";
 import { basename, dirname, join, resolve } from "node:path";
 import { consola } from "consola";
+import { configSetCommand } from "../copilot_api/env_config.ts";
 
 import { runShellIntegration } from "../shell/integration.ts";
 import { errMessage } from "../utils/error.ts";
 import * as fs from "../utils/fs_facade.ts";
+import { userHomeDir } from "../utils/home.ts";
 import {
   ASSET_ROOT,
   CURRENT_LINK,
-  denoRuntime,
   INSTALL_MANIFEST_FILE,
   type InstallManifest,
   installStateRoot,
@@ -37,17 +36,17 @@ import {
 } from "../utils/root.ts";
 import { stripV } from "../utils/semver.ts";
 import { printWrapped } from "../utils/table.ts";
-import { packageVersion } from "../utils/version.ts";
 import {
   INSTALLED_BINARY_POSIX,
   INSTALLED_BINARY_WINDOWS,
   installedBinaryName,
-} from "./targets.ts";
+} from "../utils/targets.ts";
+import { packageVersion } from "../utils/version.ts";
 
 /** Embedded AND materialized: something outside this process opens these by path (the daemon's
  *  `--preload` shims, the shell payload the rc block sources, the plugin/skill surface other
  *  tools read). `src/scripts` is materialized WHOLE: the daemon loads a per-credential subset of
- *  DAEMON_SHIM_FILES (src/copilot_api/shims.ts) whose entrypoints import siblings, so copying
+ *  the daemon shims (src/copilot_api/shims.ts) whose entrypoints import siblings, so copying
  *  the directory covers the in-dir ones; imports reaching OUTSIDE it are
  *  MATERIALIZED_ASSET_FILES. */
 export const MATERIALIZED_ASSET_DIRS = [
@@ -57,10 +56,10 @@ export const MATERIALIZED_ASSET_DIRS = [
   ".claude-plugin",
 ] as const;
 
-/** Materialized as individual files: the `src/scripts` shims import these, and the sidecar deno
+/** Materialized as individual files: the `src/scripts` shims import these, and the daemon's bun
  *  resolves them on real disk in the install root, so a missing one kills the daemon at module
  *  load. The shims' full local import closure OUTSIDE the materialized dirs, pinned
- *  bidirectionally by test/install/installer_pinning.test.ts. */
+ *  bidirectionally by test/install/installer_pinning.e2e.test.ts. */
 export const MATERIALIZED_ASSET_FILES = [
   "src/copilot_api/config.ts",
   "src/copilot_api/config_registry.ts",
@@ -79,23 +78,23 @@ export const MATERIALIZED_ASSET_FILES = [
   "src/utils/fs_disk.ts",
   "src/utils/fs_facade.ts",
   "src/utils/fs_overlay.ts",
+  "src/utils/home.ts",
   "src/utils/hostname.ts",
   "src/utils/json.ts",
   "src/utils/logger.ts",
+  "src/utils/pid.ts",
   "src/utils/report_write.ts",
   "src/utils/table.ts",
   "src/utils/time.ts",
 ] as const;
 
-/** Embedded and NEVER materialized: read in-process through ASSET_ROOT (the compiled VFS), a
- *  copy in the install root would be read by nothing and drift from the binary. Still verified
- *  present at plan time: absent from the VFS means a broken build.
+/** Embedded and NEVER materialized: read in-process through ASSET_ROOT (the binary's embedded
+ *  virtual filesystem), a copy in the install root would be read by nothing and drift from the
+ *  binary. Still verified present at plan time: absent from the binary means a broken build.
  *
- *    copilot-env.config -> readProjectConfig
- *    .dvmrc             -> readDvmrcPin
- *    deno.json          -> writeDaemonConfig; also a CHECKOUT_MARKERS entry, so on disk it would
- *                          make every install root read as a checkout */
-export const BUNDLED_ONLY_ASSETS = ["copilot-env.config", ".dvmrc", "deno.json"] as const;
+ *    copilot-env.config -> readProjectConfig (the float bounds)
+ *    bunfig.toml        -> readInstallMinimumReleaseAge (the float's default release cooldown) */
+export const BUNDLED_ONLY_ASSETS = ["copilot-env.config", "bunfig.toml"] as const;
 
 // --- The versioned layout ---------------------------------------------------------
 
@@ -262,8 +261,10 @@ export function writeTopLevelShims(top: string, logger: Logger = consola): void 
 /** Markers + .git: the shape of a LIVE source checkout (see CHECKOUT_MARKERS).
  *  Every destructive sweep in this module refuses such a root outright. */
 export function isCheckoutShapedRoot(root: string): boolean {
-  return CHECKOUT_MARKERS.some((marker) => fs.exists(join(root, marker))) &&
-    fs.exists(join(root, ".git"));
+  return (
+    CHECKOUT_MARKERS.some((marker) => fs.exists(join(root, marker))) &&
+    fs.exists(join(root, ".git"))
+  );
 }
 
 /** The bootstrap `copilot-env(.exe)` install.sh / install.ps1 downloaded to `<top>/bin`, superseded
@@ -315,14 +316,13 @@ export function removeVersionDirsExcept(top: string, keep: ReadonlySet<string>):
  *  `<top>/current/bin/agent`, so the version it dispatches is always the live one. The
  *  checkout's bin/agent is the dev variant, and an install never overwrites a checkout, so the
  *  two texts never compete for one file. */
-export const POSIX_SHIM = `#!/bin/sh
+const POSIX_SHIM = `#!/bin/sh
 # copilot-env launcher (installed): dispatch to the compiled agent binary.
 HERE="$(cd "$(dirname "$0")" && pwd)"
 exec "$HERE/${INSTALLED_BINARY_POSIX}" "$@"
 `;
 
-export const POWERSHELL_SHIM =
-  `# copilot-env launcher (installed): dispatch to the compiled agent binary.
+export const POWERSHELL_SHIM = `# copilot-env launcher (installed): dispatch to the compiled agent binary.
 $Here = Split-Path -Parent $MyInvocation.MyCommand.Path
 & (Join-Path $Here '${INSTALLED_BINARY_WINDOWS}') @args
 exit $LASTEXITCODE
@@ -339,8 +339,7 @@ exec "$HERE/../${CURRENT_LINK}/bin/${INSTALLED_BINARY_POSIX}" "$@"
 
 /** Top-level bin/agent.ps1 (Windows twin of POSIX_CURRENT_SHIM; the junction
  *  resolves through every Win32 path API, PowerShell 5.1 included). */
-export const POWERSHELL_CURRENT_SHIM =
-  `# copilot-env launcher (installed): dispatch through the current version link.
+const POWERSHELL_CURRENT_SHIM = `# copilot-env launcher (installed): dispatch through the current version link.
 $Here = Split-Path -Parent $MyInvocation.MyCommand.Path
 & (Join-Path (Split-Path -Parent $Here) '${CURRENT_LINK}\\bin\\${INSTALLED_BINARY_WINDOWS}') @args
 exit $LASTEXITCODE
@@ -361,7 +360,7 @@ export interface InstallOptions {
 
 /** Files only a source checkout carries at its root. With `.git` beside them they mark a live
  *  checkout an installed-mode plan must refuse to clobber. */
-export const CHECKOUT_MARKERS = ["package.json", "deno.json"] as const;
+export const CHECKOUT_MARKERS = ["package.json", "bun.lock"] as const;
 
 /** One shell-integration pass (Windows may need two: per-host and all-hosts profiles are
  *  separate targets). */
@@ -385,34 +384,34 @@ interface Materialization {
 export type InstallPlan =
   | { kind: "in-place"; root: string; shell: ShellWiring | null }
   | {
-    kind: "installed";
-    root: string;
-    writes: FileWrite[];
-    shell: ShellWiring | null;
-  }
+      kind: "installed";
+      root: string;
+      writes: FileWrite[];
+      shell: ShellWiring | null;
+    }
   | {
-    kind: "versioned";
-    top: string;
-    versionName: string;
-    versionRoot: string;
-    writes: FileWrite[];
-    /** Null when the binary is already in the version root, or when no standalone binary is
-     *  running (a dev process aimed at a foreign root has none). */
-    binary: { from: string; to: string } | null;
-    /** The commit step (pointCurrentAt). */
-    currentLink: { path: string; target: string };
-    topShims: FileWrite<string>[];
-    /** The bootstrap binary at `<top>/bin`, swept once the top shims dispatch through the link. */
-    bootstrapBinaryRemovals: string[];
-    /** The version range this install leaves behind, run post-flip by runPostFlipMigrations: the
-     *  version `current` named before (`from`) to this one (`to`). Null when nothing was live
-     *  (a fresh install) or the same version is refreshed in place. */
-    migration: { from: string; to: string } | null;
-    /** Run through the INSTALLED binary post-flip: this process may be rooted at the top itself
-     *  (the bootstrap), so its own PROJECT_ROOT-derived rc paths would not survive the layout
-     *  change. */
-    shellWires: ShellWiring[];
-  };
+      kind: "versioned";
+      top: string;
+      versionName: string;
+      versionRoot: string;
+      writes: FileWrite[];
+      /** Null when the binary is already in the version root, or when no standalone binary is
+       *  running (a dev process aimed at a foreign root has none). */
+      binary: { from: string; to: string } | null;
+      /** The commit step (pointCurrentAt). */
+      currentLink: { path: string; target: string };
+      topShims: FileWrite<string>[];
+      /** The bootstrap binary at `<top>/bin`, swept once the top shims dispatch through the link. */
+      bootstrapBinaryRemovals: string[];
+      /** The version range this install leaves behind, run post-flip by runPostFlipMigrations: the
+       *  version `current` named before (`from`) to this one (`to`). Null when nothing was live
+       *  (a fresh install) or the same version is refreshed in place. */
+      migration: { from: string; to: string } | null;
+      /** Run through the INSTALLED binary post-flip: this process may be rooted at the top itself
+       *  (the bootstrap), so its own PROJECT_ROOT-derived rc paths would not survive the layout
+       *  change. */
+      shellWires: ShellWiring[];
+    };
 
 /** Canonicalize for the unsafe-target guard: the longest existing prefix resolved physically
  *  (symlinks; on Windows also junctions and 8.3 short names, via the OS realpath), the
@@ -444,11 +443,12 @@ function unsafeRootReason(root: string): string | null {
   const canonical = canonicalizeForGuard(root);
   if (canonical === null) return "its canonical path cannot be resolved";
   if (canonical === dirname(canonical)) return "it is a filesystem root";
-  const home = homedir() ? canonicalizeForGuard(homedir()) : null;
+  const home = canonicalizeForGuard(userHomeDir());
   if (home !== null) {
-    const sameAsHome = process.platform === "win32"
-      ? canonical.toLowerCase() === home.toLowerCase()
-      : canonical === home;
+    const sameAsHome =
+      process.platform === "win32"
+        ? canonical.toLowerCase() === home.toLowerCase()
+        : canonical === home;
     if (sameAsHome) return "it is the home directory";
   }
   return null;
@@ -493,9 +493,9 @@ function guardInstalledTarget(root: string): void {
   // a worktree).
   if (isCheckoutShapedRoot(root)) {
     throw new Error(
-      `refusing to install into ${root}: it holds ${
-        CHECKOUT_MARKERS.join(" or ")
-      } beside .git, so it is a source checkout, and installing would overwrite its bin/agent ` +
+      `refusing to install into ${root}: it holds ${CHECKOUT_MARKERS.join(
+        " or ",
+      )} beside .git, so it is a source checkout, and installing would overwrite its bin/agent ` +
         `and working files`,
     );
   }
@@ -510,7 +510,7 @@ function planMaterialization(root: string, sourceRoot: string): Materialization 
   for (const asset of embedded) {
     if (!fs.exists(join(sourceRoot, asset))) {
       throw new Error(
-        `embedded assets are missing ${asset}; deno.json compile.include did not embed it`,
+        `embedded assets are missing ${asset}; the compile step (scripts/compile.ts) did not embed it`,
       );
     }
   }
@@ -537,8 +537,7 @@ function planMaterialization(root: string, sourceRoot: string): Materialization 
 }
 
 function defaultBinarySource(): string | null {
-  if (!isStandaloneBinary()) return null;
-  return denoRuntime()?.execPath() ?? null;
+  return isStandaloneBinary() ? process.execPath : null;
 }
 
 /** Exported for tests; `runInstall` is the composed entry point. */
@@ -548,13 +547,12 @@ export function buildInstallPlan(
   sourceRoot: string = ASSET_ROOT,
   binarySource: string | null = defaultBinarySource(),
 ): InstallPlan {
-  const shell: ShellWiring | null = options.noShellIntegration || options.assetsOnly
-    ? null
-    : { allHosts: options.allHosts };
+  const shell: ShellWiring | null =
+    options.noShellIntegration || options.assetsOnly ? null : { allHosts: options.allHosts };
 
   // The discriminant IS rootMode's, over the arguments: root.ts sets ASSET_ROOT === PROJECT_ROOT
-  // for a checkout and splits them for a compiled binary (VFS vs install root). Gating on
-  // `rootMode()` would ignore the parameters and make the installed branch unreachable from a
+  // for a checkout and splits them for a compiled binary (embedded files vs install root). Gating
+  // on `rootMode()` would ignore the parameters and make the installed branch unreachable from a
   // test, which is exactly the branch worth testing.
   if (resolve(sourceRoot) === resolve(root)) {
     return { kind: "in-place", root, shell };
@@ -583,12 +581,12 @@ export function buildInstallPlan(
   // CANONICAL identity, not lexical: a binary running through the `current` link names its own
   // file twice (`<top>/current/bin/...` vs the version path), and copyFileSync onto the same
   // inode TRUNCATES it before reading.
-  const sameFile = binarySource !== null &&
+  const sameFile =
+    binarySource !== null &&
     canonicalizeForGuard(binarySource) !== null &&
     canonicalizeForGuard(binarySource) === canonicalizeForGuard(binaryTarget);
-  const binary = binarySource !== null && !sameFile
-    ? { from: binarySource, to: binaryTarget }
-    : null;
+  const binary =
+    binarySource !== null && !sameFile ? { from: binarySource, to: binaryTarget } : null;
 
   return {
     kind: "versioned",
@@ -600,9 +598,8 @@ export function buildInstallPlan(
     currentLink: { path: currentLinkPath(top), target: currentLinkTarget(top, versionName) },
     topShims: topLevelShims(top),
     bootstrapBinaryRemovals: bootstrapBinaryPaths(top),
-    migration: previous === null || previous === versionName
-      ? null
-      : { from: previous, to: versionName },
+    migration:
+      previous === null || previous === versionName ? null : { from: previous, to: versionName },
     shellWires: shell === null ? [] : [shell],
   };
 }
@@ -637,9 +634,9 @@ export function runPostFlipMigrations(
   const retry = `re-run it with \`agent ${args.join(" ")}\``;
   if (fs.dryRunActive()) {
     logger.warn(
-      `Would run the new release's migrations through ${binary}: agent ${
-        args.join(" ")
-      } (preview them: agent ${args.join(" ")} --dry-run).`,
+      `Would run the new release's migrations through ${binary}: agent ${args.join(
+        " ",
+      )} (preview them: agent ${args.join(" ")} --dry-run).`,
     );
     return;
   }
@@ -678,9 +675,9 @@ function wireShellsThroughInstalledBinary(
     const args = ["shell", ...(wire.allHosts ? ["--all-hosts"] : [])];
     if (fs.dryRunActive()) {
       consola.info(
-        `Would wire the shell integration through ${binary}: agent ${
-          args.join(" ")
-        } (preview it: agent ${args.join(" ")} --dry-run).`,
+        `Would wire the shell integration through ${binary}: agent ${args.join(
+          " ",
+        )} (preview it: agent ${args.join(" ")} --dry-run).`,
       );
       continue;
     }
@@ -751,9 +748,10 @@ function printEpilogue(options: InstallOptions): void {
   // CLIs first: `agent init` auto-detects Direct by smoke-testing the installed CLI, so a
   // machine without one lands on the proxy.
   printWrapped(
-    `  1. Run 'agent shell --clis' to install the Claude and Codex CLIs ('${
-      configSetCommand("shell.launchers", "true")
-    }' adds the cl/co/cx shortcuts).`,
+    `  1. Run 'agent shell --clis' to install the Claude and Codex CLIs ('${configSetCommand(
+      "shell.launchers",
+      "true",
+    )}' adds the cl/co/cx shortcuts).`,
   );
   printWrapped(
     "  2. Run 'agent init' to set up Codex + Claude (it picks GitHub Copilot Direct or the local proxy), then tells you whether you need 'agent start' (only for the proxy).",

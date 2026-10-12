@@ -8,11 +8,13 @@
 // The fix-up moves each table copilot-env wrote (its model_provider is our `copilot-env-<name>`)
 // into the profile file and drops it from config.toml. Foreign tables and the `profile` key are
 // the user's: left in place, reported with the Codex error they cause.
-import { consola } from "consola";
+
 import { join } from "node:path";
+import { consola } from "consola";
 import { reconcileClaudeDesktopWiring } from "../agents/claude_desktop.ts";
 import { runClaude, runCodex } from "../agents/configure_defaults.ts";
 import { wireBothAgents } from "../agents/profile_wiring.ts";
+import { AUTOUPDATE_FILENAME, autoupdateDir } from "../autoupdate/state.ts";
 import {
   directHelperCommand,
   managedHelperShape,
@@ -42,8 +44,6 @@ import { knownCodexHomes } from "../codex/host.ts";
 import { codexConfigPath, codexProfileConfigPath, codexProviderId } from "../codex/paths.ts";
 import { readCodexToml, saveCodexToml } from "../codex/toml_io.ts";
 import { CopilotApiConfig, ensureDict, JSON_PARSE_DIAGNOSTIC } from "../copilot_api/config.ts";
-import { AUTOUPDATE_FILENAME, autoupdateDir } from "../autoupdate/state.ts";
-import { stopTrackedProxy } from "../copilot_api/daemon.ts";
 import {
   CODEX_IDENTITY_NAME,
   type ConfigKey,
@@ -65,28 +65,27 @@ import {
   DEFAULT_PROFILE_DIR,
   LOCKS_DIR_NAME,
   LOGS_DIR_NAME,
-  profileHome,
-  profileHomeNames,
   PROFILES_DIR_NAME,
   PROXY_CONFIG_FILENAME,
-  resolveRootHome,
-  ROOT_HOME_ENV,
+  profileHome,
+  profileHomeNames,
   RUN_DIR_NAME,
   RUN_STATE_FILENAME,
+  resolveRootHome,
   STATE_STORE_FILENAME,
 } from "../copilot_api/paths.ts";
-import { DAEMON_SIGKILL_GRACE_MS } from "../copilot_api/process.ts";
-import { rootStateStore } from "../copilot_api/state_store.ts";
 import {
   DEFAULT_PROFILE_NAME,
   isReservedProfileWord,
   isValidProfileName,
-  parseProfileName,
   type Profile,
-  profileLabel,
   type ProfileName,
+  parseProfileName,
+  profileLabel,
 } from "../copilot_api/profile.ts";
+import { rootStateStore } from "../copilot_api/state_store.ts";
 import { shellTargetFiles } from "../shell/integration.ts";
+import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import { isEnoentOrNotdir } from "../utils/fs.ts";
 import * as fs from "../utils/fs_facade.ts";
@@ -99,8 +98,9 @@ import {
   proxyTokenCommand,
 } from "../utils/root.ts";
 import { isTomlTable } from "../utils/toml.ts";
-import { failIfAny, FENCE_LINES, LAUNCHERS_MARKER, LAUNCHERS_MARKER_END } from "./4.0.0.ts";
+import { FENCE_LINES, failIfAny, LAUNCHERS_MARKER, LAUNCHERS_MARKER_END } from "./4.0.0.ts";
 import type { Migration } from "./index.ts";
+import { stopLockedDaemon } from "./legacy_daemon.ts";
 
 /** Key-wise, recursing into tables, `over`'s leaves winning: a table's `features.multi_agent`
  *  survives a file that only sets `features.shell_tool`, as Codex itself layers the two. */
@@ -140,7 +140,9 @@ export function moveCodexProfileTables(codexHome: string): void {
   let changed = false;
   const stuck: string[] = [];
   for (const [name, table] of Object.entries(profiles)) {
-    const ours = isValidProfileName(name) && isRecord(table) &&
+    const ours =
+      isValidProfileName(name) &&
+      isRecord(table) &&
       table.model_provider === codexProviderId(parseProfileName(name));
     if (!ours) {
       // The name may be one copilot-env would never mint, so the file is spelled without the brand.
@@ -167,7 +169,7 @@ export function moveCodexProfileTables(codexHome: string): void {
       profilePath,
       {
         ...layer(table, existing.kind === "ok" ? existing.doc : {}),
-        "model_provider": codexProviderId(parseProfileName(name)),
+        model_provider: codexProviderId(parseProfileName(name)),
       },
       `moved from [profiles.${name}] in config.toml`,
     );
@@ -184,7 +186,7 @@ export function moveCodexProfileTables(codexHome: string): void {
 }
 
 /** Every known Codex home; one home's failure is reported and the rest still run. */
-export function moveCodexProfileTablesEverywhere(): void {
+function moveCodexProfileTablesEverywhere(): void {
   const { homes, complete } = knownCodexHomes();
   if (!complete) {
     consola.warn(
@@ -269,7 +271,7 @@ export const PREFERENCE_RENAMES: ReadonlyArray<readonly [string, string, ConfigK
  *  lands in the default's section and in each named profile's (`namedProfiles`, the credential
  *  slots'), a section's own value winning. Idempotent: a document without old keys is returned
  *  unchanged. */
-export function regroupPreferences(
+function regroupPreferences(
   doc: Record<string, unknown>,
   namedProfiles: readonly string[],
 ): Record<string, unknown> {
@@ -280,11 +282,12 @@ export function regroupPreferences(
     const value = out[oldKey];
     delete out[oldKey];
     moved = true;
-    const targets = configScope(key) === "profile"
-      ? [DEFAULT_PROFILE_NAME, ...namedProfiles].map((name) =>
-        ensureDict(ensureDict(out, "profiles"), name)
-      )
-      : [ensureDict(out, "global")];
+    const targets =
+      configScope(key) === "profile"
+        ? [DEFAULT_PROFILE_NAME, ...namedProfiles].map((name) =>
+            ensureDict(ensureDict(out, "profiles"), name),
+          )
+        : [ensureDict(out, "global")];
     for (const map of targets) {
       if (!Object.hasOwn(map, key)) map[key] = value;
     }
@@ -322,9 +325,9 @@ export function dropCodexIdentityPin(): void {
     if (typeof stored !== "string" || stored.trim().toLowerCase() !== CODEX_IDENTITY_NAME) continue;
     new CopilotEnvConfig().delProfile(profile, "identity");
     consola.info(
-      `  dropped ${
-        profileLabel(profile)
-      }'s identity pin \`${stored}\` (Direct's default identity ` +
+      `  dropped ${profileLabel(
+        profile,
+      )}'s identity pin \`${stored}\` (Direct's default identity ` +
         "cannot be pinned; the identity now reads as auto, and Direct wiring rebakes at the next " +
         "`agent init` / `agent profile <name> add`)",
     );
@@ -354,16 +357,16 @@ export function scopeStaticKeyBoolean(): void {
     if (stored) {
       config.setProfile(profile, { "static-key": "all" });
       consola.info(
-        `  ${
-          profileLabel(profile)
-        }: static-key \`true\` is now the scope \`all\` (both agent configs keep the baked value)`,
+        `  ${profileLabel(
+          profile,
+        )}: static-key \`true\` is now the scope \`all\` (both agent configs keep the baked value)`,
       );
     } else {
       config.delProfile(profile, "static-key");
       consola.info(
-        `  ${
-          profileLabel(profile)
-        }: dropped static-key \`false\` (the default, now spelled \`none\`)`,
+        `  ${profileLabel(
+          profile,
+        )}: dropped static-key \`false\` (the default, now spelled \`none\`)`,
       );
     }
   }
@@ -391,9 +394,7 @@ const lineIs = (line: string | undefined, marker: string): boolean =>
  * file terminator). `leftBehind` is the user line directly under an unclosed marker, for the
  * caller to warn about. Exported for the migration test.
  */
-export function stripLaunchersBlocks(
-  content: string,
-): { content: string; leftBehind: string[] } {
+export function stripLaunchersBlocks(content: string): { content: string; leftBehind: string[] } {
   const lines = content.split("\n");
   const skip = new Set<number>();
   const leftBehind: string[] = [];
@@ -416,16 +417,18 @@ export function stripLaunchersBlocks(
     for (let i = idx; i <= end; i++) skip.add(i);
     const after = end + 1;
     if (
-      after < lines.length && lineIs(lines[after], "") &&
+      after < lines.length &&
+      lineIs(lines[after], "") &&
       !(after === lines.length - 1 && lines[after] === "")
-    ) skip.add(after);
+    )
+      skip.add(after);
   });
   if (skip.size === 0) return { content, leftBehind };
   return { content: lines.filter((_, idx) => !skip.has(idx)).join("\n"), leftBehind };
 }
 
 /** Every rc/profile file; a file that cannot be read fails the step after the others ran. */
-export function stripLaunchersRcBlocks(): void {
+function stripLaunchersRcBlocks(): void {
   const failed: string[] = [];
   for (const file of shellTargetFiles()) {
     try {
@@ -547,8 +550,9 @@ function mapHasKey(map: unknown, keys: readonly string[]): boolean {
 }
 
 function anyProfileHasKey(doc: Record<string, unknown>, keys: readonly string[]): boolean {
-  return isRecord(doc.profiles) &&
-    Object.values(doc.profiles).some((slot) => mapHasKey(slot, keys));
+  return (
+    isRecord(doc.profiles) && Object.values(doc.profiles).some((slot) => mapHasKey(slot, keys))
+  );
 }
 
 /** Whether `doc` (state.json) already holds what `store` would fold into it: the store's own
@@ -559,8 +563,9 @@ function alreadyFolded(doc: Record<string, unknown>, store: FoldedStore): boolea
     case "credentials.json":
       return mapHasKey(doc.global, GLOBAL_STATE_KEYS) || anyProfileHasKey(doc, PROFILE_STATE_KEYS);
     case "preferences.json":
-      return mapHasKey(doc.global, GLOBAL_SETTING_KEYS) ||
-        anyProfileHasKey(doc, PROFILE_SETTING_KEYS);
+      return (
+        mapHasKey(doc.global, GLOBAL_SETTING_KEYS) || anyProfileHasKey(doc, PROFILE_SETTING_KEYS)
+      );
     case "ownership.json":
       return Object.hasOwn(doc, "ownership");
   }
@@ -568,9 +573,9 @@ function alreadyFolded(doc: Record<string, unknown>, store: FoldedStore): boolea
 
 function namedProfilesOf(doc: Record<string, unknown>): string[] {
   return isRecord(doc.profiles)
-    ? Object.keys(doc.profiles).filter((name) =>
-      name !== DEFAULT_PROFILE_NAME && isValidProfileName(name)
-    )
+    ? Object.keys(doc.profiles).filter(
+        (name) => name !== DEFAULT_PROFILE_NAME && isValidProfileName(name),
+      )
     : [];
 }
 
@@ -594,9 +599,10 @@ function foldInto(
     d.ownership = doc;
     return;
   }
-  const grouped = store === "preferences.json"
-    ? regroupPreferences(doc, [...new Set([...namedProfilesOf(d), ...namedProfilesOf(doc)])])
-    : doc;
+  const grouped =
+    store === "preferences.json"
+      ? regroupPreferences(doc, [...new Set([...namedProfilesOf(d), ...namedProfilesOf(doc)])])
+      : doc;
   const { profiles, global, ...rest } = grouped;
   const globalMap = ensureDict(d, "global");
   Object.assign(globalMap, rest, isRecord(global) ? global : {});
@@ -641,8 +647,8 @@ export function foldRootStores(rootHome: string = resolveRootHome()): void {
   // A flat preferences.json copies its profile keys into every profile credentials.json names, so
   // it is folded only once credentials.json has been read (or never existed): a source is never
   // deleted while a source it depends on failed validation.
-  const credentialsUnread = fs.exists(join(rootHome, "credentials.json")) &&
-    !docs.has("credentials.json");
+  const credentialsUnread =
+    fs.exists(join(rootHome, "credentials.json")) && !docs.has("credentials.json");
   const prefs = docs.get("preferences.json");
   const held = prefs !== undefined && credentialsUnread && isFlatPreferences(prefs);
   if (held) docs.delete("preferences.json");
@@ -748,7 +754,7 @@ const ROOT_DAEMON_ARTIFACTS: readonly string[] = [
 /** The `.run/<host>/.state.json` files that may belong to a live daemon: another host's recording a
  *  pid (it means nothing on this host, so nothing here can stop it), or any host's that cannot be
  *  read or parsed. Fail closed: a state this host cannot judge is never "no daemon". This host's
- *  own readable record is stopTrackedProxy's to judge. */
+ *  own daemon is the root's lock's to judge (stopRootDaemon). */
 function occupiedRunStates(runDir: string, thisHost: string): string[] {
   let hosts: string[];
   try {
@@ -813,32 +819,35 @@ export async function moveRootDaemonHome(
   }
 }
 
-/** The paths layer resolves the default home through the CURRENT rule (profiles/default), so the
- *  root daemon is reached the way a daemon reaches its own home: with both env pins aimed at the
- *  root for the duration of the stop. Restored whatever happens. */
-async function stopRootDaemon(root: string): Promise<void> {
-  const saved = { home: process.env.COPILOT_API_HOME, rootHome: process.env[ROOT_HOME_ENV] };
-  process.env.COPILOT_API_HOME = root;
-  process.env[ROOT_HOME_ENV] = root;
-  try {
-    const result = await stopTrackedProxy(DAEMON_SIGKILL_GRACE_MS, null);
-    if (!result.stopped) {
-      throw new Error(`the daemon (pid ${result.trackedPid}) running at ${root} would not stop`);
-    }
-    // A migration never starts a daemon (that is the launch pipeline's), so a live one stays down
-    // until the next `agent start`; said here because an autoupdate inside `agent start` reaches
-    // this step right after that start spawned it.
-    if (result.signalled) {
-      consola.warn(
-        `  the default daemon at ${root} was stopped for the move; the next \`agent start\` (or a ` +
-          "launcher) starts it under profiles/default",
+/** The root daemon's home IS the root (the layout before this step), so its lock is read there, and
+ *  it is stopped by the lock alone (stopLockedDaemon): this release's classifier reads the previous
+ *  release's daemon as foreign, so no pid-table judgment could own it. A migration never starts a
+ *  daemon (that is the launch pipeline's), so a live one stays down until the next `agent start`;
+ *  said out loud because an autoupdate inside `agent start` reaches this step right after that
+ *  start spawned it. Exported for the migration test. */
+export async function stopRootDaemon(root: string): Promise<void> {
+  const outcome = await stopLockedDaemon(root);
+  switch (outcome.kind) {
+    case "none":
+      return;
+    case "would-stop":
+      consola.info(`  would stop the daemon (pid ${outcome.pid}) running at ${root} for the move`);
+      return;
+    case "unjudged":
+      throw new Error(
+        `a daemon may still run at ${root}: ${outcome.reason}. Run \`agent stop\` there, then re-run`,
       );
-    }
-  } finally {
-    if (saved.home === undefined) delete process.env.COPILOT_API_HOME;
-    else process.env.COPILOT_API_HOME = saved.home;
-    if (saved.rootHome === undefined) delete process.env[ROOT_HOME_ENV];
-    else process.env[ROOT_HOME_ENV] = saved.rootHome;
+    case "stopped":
+      if (outcome.stillRunning) {
+        throw new Error(`the daemon (pid ${outcome.pid}) running at ${root} would not stop`);
+      }
+      consola.warn(
+        `  the default daemon at ${root} (pid ${outcome.pid}) was stopped for the move; the next ` +
+          "`agent start` (or a launcher) starts it under profiles/default",
+      );
+      return;
+    default:
+      assertNever(outcome);
   }
 }
 
@@ -888,9 +897,8 @@ function renameOf({ from, to }: ProfileMove): { from: ProfileName; to: ProfileNa
   return from !== null && to !== null && from !== to ? { from, to } : null;
 }
 
-/** The first `<base>-<n>` no artifact uses. Exported for the migration test. */
-export function freeProfileName(base: ProfileName, taken: (name: string) => boolean): ProfileName {
-  for (let n = 1;; n++) {
+function freeProfileName(base: ProfileName, taken: (name: string) => boolean): ProfileName {
+  for (let n = 1; ; n++) {
     const candidate = `${base}-${n}`;
     if (isValidProfileName(candidate) && !taken(candidate)) return parseProfileName(candidate);
   }
@@ -958,17 +966,22 @@ function retargetCodex(codexHome: string, { from, to }: ProfileMove): boolean {
         const legacyProxy = agentLauncherCommand(legacyProxyTokenArgs(from));
         const proxy = proxyTokenCommand(from);
         if (
-          legacy !== null && auth.command === legacy.command && sameStrings(auth.args, legacy.args)
+          legacy !== null &&
+          auth.command === legacy.command &&
+          sameStrings(auth.args, legacy.args)
         ) {
           auth.args = agentLauncherCommand(agentAuthGetArgs(to)).args;
           tableChanged = true;
         } else if (
-          auth.command === legacyProxy.command && sameStrings(auth.args, legacyProxy.args)
+          auth.command === legacyProxy.command &&
+          sameStrings(auth.args, legacyProxy.args)
         ) {
           auth.args = proxyTokenCommand(to).args;
           tableChanged = true;
         } else if (
-          from !== to && auth.command === proxy.command && sameStrings(auth.args, proxy.args)
+          from !== to &&
+          auth.command === proxy.command &&
+          sameStrings(auth.args, proxy.args)
         ) {
           auth.args = proxyTokenCommand(to).args;
           tableChanged = true;
@@ -1167,8 +1180,10 @@ async function moveProfile(
   const rename = renameOf(move);
   if (rename !== null) {
     assertMovable(rename, claudeHome, codexHomes);
-    const { stopped } = await stopTrackedProxy(DAEMON_SIGKILL_GRACE_MS, from);
-    if (!stopped) {
+    // By the lock alone, like the root daemon's stop: the previous release's daemon reads as
+    // foreign to this release's classifier.
+    const outcome = await stopLockedDaemon(profileHome(rename.from));
+    if (outcome.kind === "unjudged" || (outcome.kind === "stopped" && outcome.stillRunning)) {
       // The profile's name is a verb, so no command addresses its daemon any more: by hand it is.
       throw new Error(
         `${profileLabel(from)}'s proxy daemon did not stop; stop it by hand (its pid is recorded ` +
@@ -1214,9 +1229,7 @@ export async function moveProfilesToVerbTree(): Promise<void> {
   rewriteDesktopMcpArgv();
   const rawProfiles = rootStateStore().loadStrict().profiles;
   const storeNames = isRecord(rawProfiles) ? Object.keys(rawProfiles) : [];
-  const named = [
-    ...new Set([...storeNames.filter(isValidProfileName), ...profileHomeNames()]),
-  ]
+  const named = [...new Set([...storeNames.filter(isValidProfileName), ...profileHomeNames()])]
     .filter((name) => name !== DEFAULT_PROFILE_NAME)
     .sort()
     .map((name) => parseProfileName(name));
@@ -1229,14 +1242,18 @@ export async function moveProfilesToVerbTree(): Promise<void> {
   }
   const claimed = new Set<string>();
   const taken = (candidate: string): boolean =>
-    claimed.has(candidate) || storeNames.includes(candidate) ||
+    claimed.has(candidate) ||
+    storeNames.includes(candidate) ||
     fs.exists(profileHome(parseProfileName(candidate))) ||
     fs.exists(settingsPathFor(claudeHome, parseProfileName(candidate))) ||
     codexHomes.some((home) => {
       if (fs.exists(codexProfileConfigPath(home, parseProfileName(candidate)))) return true;
       const read = readCodexToml(codexConfigPath(home));
-      return read.kind === "ok" && isRecord(read.doc.model_providers) &&
-        Object.hasOwn(read.doc.model_providers, codexProviderId(parseProfileName(candidate)));
+      return (
+        read.kind === "ok" &&
+        isRecord(read.doc.model_providers) &&
+        Object.hasOwn(read.doc.model_providers, codexProviderId(parseProfileName(candidate)))
+      );
     });
   // The default first: its lines move too, and nothing renames it.
   const moves: ProfileMove[] = [{ from: null, to: null }];

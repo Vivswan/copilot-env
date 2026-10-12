@@ -8,8 +8,8 @@ import { evaluateAll } from "../health/checks.ts";
 import type { HealthFacts } from "../health/facts.ts";
 import { gatherFacts } from "../health/probe.ts";
 import { renderReport } from "../health/report.ts";
-import { HEALTH_SCOPES, type HealthScope } from "../health/types.ts";
 import type { CheckResult } from "../health/types.ts";
+import { HEALTH_SCOPES, type HealthScope } from "../health/types.ts";
 
 interface HealthArgs {
   scope: string;

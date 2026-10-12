@@ -4,6 +4,7 @@
 // oracle for what the index did (parsed whole, reused, tail-parsed, deleted).
 import { appendFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import type { ProbeFetch } from "../../src/copilot_api/integration_identity.ts";
 import { readClaudeSessions } from "../../src/usage/claude_sessions.ts";
 import { readCodexSessions } from "../../src/usage/codex_sessions.ts";
 import {
@@ -16,7 +17,6 @@ import {
 import { ReconcileMeter, runCost } from "../../src/usage/cost.ts";
 import { openUsageIndex, USAGE_INDEX_DB_NAME } from "../../src/usage/index.ts";
 import { captureAllWrites } from "../helpers/output.ts";
-import { CLAUDE_SCENARIOS, CODEX_SCENARIOS } from "../helpers/session_scenarios.ts";
 import {
   assistantLine,
   claudeUsage,
@@ -27,13 +27,14 @@ import {
   writeRollout,
   writeTranscript,
 } from "../helpers/session_fixtures.ts";
-import { afterEach, expect, tempDir, test } from "../helpers/testing.ts";
+import { CLAUDE_SCENARIOS, CODEX_SCENARIOS } from "../helpers/session_scenarios.ts";
+import { afterEach, expect, removeDir, tempDir, test } from "../helpers/testing.ts";
 import { storedIndexPaths } from "../helpers/usage_index.ts";
 
 const dirs: string[] = [];
 
 afterEach(() => {
-  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  for (const dir of dirs.splice(0)) removeDir(dir);
 });
 
 function trackedDir(): string {
@@ -104,9 +105,8 @@ for (const scenario of CODEX_SCENARIOS) {
     const dir = trackedDir();
     const { roots, sinceMs, timeZone } = scenario.build(dir);
     scenario.check(
-      await assertThreeWaysAgree(
-        dir,
-        (reconcile) => readCodexSessions(roots, sinceMs, timeZone, reconcile),
+      await assertThreeWaysAgree(dir, (reconcile) =>
+        readCodexSessions(roots, sinceMs, timeZone, reconcile),
       ),
     );
   });
@@ -117,9 +117,8 @@ for (const scenario of CLAUDE_SCENARIOS) {
     const dir = trackedDir();
     const { roots, sinceMs, timeZone } = scenario.build(dir);
     scenario.check(
-      await assertThreeWaysAgree(
-        dir,
-        (reconcile) => readClaudeSessions(roots, sinceMs, timeZone, reconcile),
+      await assertThreeWaysAgree(dir, (reconcile) =>
+        readClaudeSessions(roots, sinceMs, timeZone, reconcile),
       ),
     );
   });
@@ -171,9 +170,12 @@ const APPEND_CASES = [
       return {
         file,
         read: (reconcile) => readClaudeSessions([root], undefined, undefined, reconcile),
-        appended: `${
-          assistantLine("2026-06-01T10:00:05.000Z", "claude-opus-4-8", "msg_2", claudeUsage(1, 2))
-        }\n`,
+        appended: `${assistantLine(
+          "2026-06-01T10:00:05.000Z",
+          "claude-opus-4-8",
+          "msg_2",
+          claudeUsage(1, 2),
+        )}\n`,
       };
     },
     (report) => report.byModel.get("claude-opus-4.8")?.events,
@@ -190,9 +192,11 @@ const APPEND_CASES = [
       return {
         file,
         read: (reconcile) => readCodexSessions([root], undefined, undefined, reconcile),
-        appended: `${
-          tokenCount("2026-06-01T10:00:09.000Z", codexUsage(30, 0, 3), codexUsage(20, 0, 2))
-        }\n`,
+        appended: `${tokenCount(
+          "2026-06-01T10:00:09.000Z",
+          codexUsage(30, 0, 3),
+          codexUsage(20, 0, 2),
+        )}\n`,
       };
     },
     (report) => report.get("copilot-env")?.byModel.get("gpt-5.6")?.events,
@@ -250,17 +254,20 @@ const pricedFetch = ((): Promise<Response> =>
       }),
       { status: 200, headers: { "Content-Type": "application/json" } },
     ),
-  )) as typeof fetch;
+  )) as ProbeFetch;
 
 async function costJson(
   args: { noIndex?: boolean },
   roots: { codex: string[]; claude: string[] },
 ): Promise<Record<string, unknown>> {
   const out = await captureAllWrites(() =>
-    runCost({ json: true, perDay: true, pricingUrl: PRICE_URL, ...args }, {
-      fetchImpl: pricedFetch,
-      sessionRoots: { codex: () => roots.codex, claude: () => roots.claude },
-    })
+    runCost(
+      { json: true, perDay: true, pricingUrl: PRICE_URL, ...args },
+      {
+        fetchImpl: pricedFetch,
+        sessionRoots: { codex: () => roots.codex, claude: () => roots.claude },
+      },
+    ),
   );
   const payload: unknown = JSON.parse(out.slice(out.indexOf("{")));
   if (typeof payload !== "object" || payload === null) throw new Error("no JSON payload");

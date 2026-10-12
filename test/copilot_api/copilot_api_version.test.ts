@@ -1,23 +1,17 @@
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   installedProxyVersion,
-  PROXY_PACKAGE_NAME,
+  type ProxyVersionStatus,
   proxyVersionBoundsStatus,
   proxyVersionFloorStatus,
-  type ProxyVersionStatus,
 } from "../../src/copilot_api/version.ts";
-import { isRecord } from "../../src/utils/json.ts";
 import type { ProjectConfig } from "../../src/utils/project_config.ts";
-import { PROJECT_ROOT } from "../../src/utils/root.ts";
 import { afterEach, beforeEach, describe, expect, tempDir, test } from "../helpers/testing.ts";
 
 let dir = "";
 
-const CONFIG: ProjectConfig = {
-  "proxyMinVersion": "1.10.0",
-  "proxyMaxVersion": "1.10.30",
-};
+const CONFIG: ProjectConfig = { proxyMinVersion: "1.10.0", proxyMaxVersion: "1.10.30" };
 
 function writeProxyPackage(root: string, versionJson: string): void {
   const pkgDir = join(root, "node_modules", "@jeffreycao", "copilot-api");
@@ -37,14 +31,17 @@ afterEach(() => {
 });
 
 describe("installedProxyVersion", () => {
-  // Only a parseable package.json carrying a version answers; a missing package, unparseable
-  // metadata, or metadata without a version all read as "not installed", never a throw.
+  // Only a parseable package.json carrying a version and a bin answers (the daemon runs the bin,
+  // so a package without one is nothing to run); a missing package, unparseable metadata, or
+  // metadata without either all read as "not installed", never a throw.
   test("reads the installed version, or null for missing, malformed, or versionless metadata", () => {
+    const bin = { "copilot-api": "./dist/main.js" };
     const rows: { pkg: string | null; version: string | null }[] = [
-      { pkg: JSON.stringify({ "version": "1.10.30" }), version: "1.10.30" },
+      { pkg: JSON.stringify({ version: "1.10.30", bin }), version: "1.10.30" },
+      { pkg: JSON.stringify({ version: "1.10.30" }), version: null },
       { pkg: null, version: null },
       { pkg: "{ nope", version: null },
-      { pkg: JSON.stringify({ "name": "@jeffreycao/copilot-api" }), version: null },
+      { pkg: JSON.stringify({ name: "@jeffreycao/copilot-api" }), version: null },
     ];
     for (const [i, { pkg, version }] of rows.entries()) {
       const root = join(dir, String(i));
@@ -88,16 +85,4 @@ describe("proxy version status", () => {
       expect({ ...row, status: checks[row.check](row.version, CONFIG) }).toEqual(row);
     }
   });
-});
-
-// deno.json's import entry is an external contract (deno resolves the proxy by
-// that literal key), so it cannot derive from PROXY_PACKAGE_NAME -- pin the two
-// together instead, so renaming either side fails here rather than at install time.
-test("deno.json tracks the proxy dependency under PROXY_PACKAGE_NAME", () => {
-  const config: unknown = JSON.parse(readFileSync(join(PROJECT_ROOT, "deno.json"), "utf8"));
-  if (!isRecord(config) || !isRecord(config.imports)) {
-    throw new Error("deno.json has no imports table");
-  }
-  expect(Object.keys(config.imports)).toContain(PROXY_PACKAGE_NAME);
-  expect(config.imports[PROXY_PACKAGE_NAME]).toMatch(new RegExp(`^npm:${PROXY_PACKAGE_NAME}@`));
 });

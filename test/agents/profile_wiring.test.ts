@@ -1,3 +1,5 @@
+import { directPairIncomplete, resolveDirectWiring } from "../../src/agents/profile_wiring.ts";
+import { directWiringFor } from "../../src/codex/config.ts";
 import { CopilotEnvConfig } from "../../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../../src/copilot_api/env_state.ts";
 import {
@@ -5,10 +7,8 @@ import {
   setIntegrationProbeFetch,
 } from "../../src/copilot_api/integration_identity.ts";
 import { parseProfileName } from "../../src/copilot_api/profile.ts";
-import { directWiringFor } from "../../src/codex/config.ts";
-import { directPairIncomplete, resolveDirectWiring } from "../../src/agents/profile_wiring.ts";
-import { afterEach, expect, test } from "../helpers/testing.ts";
 import { envSnapshot, isolateProxyHome } from "../helpers/env.ts";
+import { afterEach, expect, test } from "../helpers/testing.ts";
 
 const WORK = parseProfileName("work");
 const PIN = "copilot-developer-cli";

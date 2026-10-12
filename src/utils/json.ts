@@ -1,29 +1,25 @@
+import jsonStableStringify from "json-stable-stringify";
+
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /** `actual` is a parsed document's field, so a non-array is a plain false, never a throw. */
 export function sameStrings(actual: unknown, expected: readonly string[]): boolean {
-  return Array.isArray(actual) && actual.length === expected.length &&
-    expected.every((v, i) => actual[i] === v);
-}
-
-/** `value` with every object's keys sorted at every level, arrays kept in order, so two
- *  payloads with the same content stringify identically. */
-export function sortKeys(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(sortKeys);
-  // fromEntries, not assignment into {}: an own "__proto__" key stays a key.
-  if (isRecord(value)) {
-    return Object.fromEntries(Object.keys(value).sort().map((key) => [key, sortKeys(value[key])]));
-  }
-  return value;
+  return (
+    Array.isArray(actual) &&
+    actual.length === expected.length &&
+    expected.every((v, i) => actual[i] === v)
+  );
 }
 
 /** Sorted-key JSON, two-space indented, no trailing newline: the one form the config store,
  *  the usage goldens and the cost-metrics comparison are written in, so a mismatch diffs line
- *  by line. */
+ *  by line. `collapseEmpty` keeps `[]` and `{}` on one line, as JSON.stringify lays them out. */
 export function stableStringify(value: unknown): string {
-  return JSON.stringify(sortKeys(value), null, 2);
+  const text = jsonStableStringify(value, { space: 2, collapseEmpty: true });
+  if (text === undefined) throw new TypeError("stableStringify: the value has no JSON form");
+  return text;
 }
 
 export function parseJsonRecord(text: string): Record<string, unknown> | null {

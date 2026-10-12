@@ -1,12 +1,19 @@
-// The per-release installer assets: install.sh/install.ps1 pinned to the release tag. Run by
-// update-release.yml.
-import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+// The per-release installer assets: install.sh/install.ps1 pinned to the release tag (prepare and
+// validate, run by update-release.yml and release-gate.yml), and the proof that every compiled
+// release asset is real (assert-assets, run by release-gate.yml after `bun run build`).
+import { spawnSync } from "node:child_process";
+import { chmodSync, copyFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import {
+  currentReleaseTarget,
+  RELEASE_TARGETS,
+  releaseAssetName,
+} from "../../src/utils/targets.ts";
 
 const OUT_DIR = process.env.RELEASE_ASSETS_DIR ?? "release-assets";
 
 function usage(): never {
-  console.error("usage: release-assets.ts prepare|validate <vX.Y.Z>");
+  console.error("usage: release-assets.ts prepare|validate <vX.Y.Z> | assert-assets");
   process.exit(2);
 }
 
@@ -31,7 +38,7 @@ interface InstallerPin {
 }
 
 // `needle` is the unpinned line byte-exact as it sits in the repo installer; prepare() replaces
-// it with `pinned(tag)` and validate() asserts the result. test/install/installer_pinning.test.ts pins
+// it with `pinned(tag)` and validate() asserts the result. test/install/installer_pinning.e2e.test.ts pins
 // the match at PR time, so an installer reformat fails in CI instead of at release.
 export const INSTALLER_PINS: Record<"install.sh" | "install.ps1", InstallerPin[]> = {
   "install.sh": [
@@ -72,8 +79,41 @@ function validate(tag: string): void {
   }
 }
 
+// scripts/compile.ts already fails `bun run build` when a target does not compile. What only this
+// catches is a zero-exit compile that left a stub or a truncated artifact (a bun runtime that
+// failed to embed, a download cut short): the size floor and the host's --help run expose both.
+// The expected names come from the targets' one source of truth (src/utils/targets.ts), since
+// checksums.txt lists only what compile wrote.
+const COMPILED_BINARY_SIZE_FLOOR = 10_000_000;
+
+function assertAssets(): void {
+  for (const target of RELEASE_TARGETS) {
+    const path = `dist/${releaseAssetName(target)}`;
+    const size = statSync(path).size;
+    console.log(`${path}: ${size} bytes`);
+    if (size <= COMPILED_BINARY_SIZE_FLOOR) {
+      console.log(`::error::${path} is ${size} bytes, not a compiled binary`);
+      process.exit(1);
+    }
+  }
+  const host = currentReleaseTarget();
+  if (host === null) throw new Error("no release target for this runner");
+  const hostPath = `./dist/${releaseAssetName(host)}`;
+  chmodSync(hostPath, 0o755);
+  const run = spawnSync(hostPath, ["--help"], { stdio: "inherit" });
+  if (run.error) throw run.error;
+  if (run.status !== 0) {
+    throw new Error(`${hostPath} --help exited with ${run.status ?? `signal ${run.signal}`}`);
+  }
+}
+
 function main(): void {
   const [command, tag] = process.argv.slice(2);
+  if (command === "assert-assets") {
+    if (tag !== undefined) usage();
+    assertAssets();
+    return;
+  }
   if (!command || !tag) usage();
   if (command === "prepare") {
     prepare(tag);
@@ -84,7 +124,7 @@ function main(): void {
   }
 }
 
-// test/install/installer_pinning.test.ts imports INSTALLER_PINS, so nothing runs on import.
+// test/install/installer_pinning.e2e.test.ts imports INSTALLER_PINS, so nothing runs on import.
 if (import.meta.main) {
   try {
     main();

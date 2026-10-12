@@ -2,13 +2,13 @@ import { existsSync, mkdirSync, readFileSync, statSync, symlinkSync, writeFileSy
 import { join } from "node:path";
 import { UPDATE_LOCK_POLICY } from "../../src/autoupdate/lock.ts";
 import { runPreflight } from "../../src/autoupdate/preflight.ts";
-import { autoupdateDir, AutoupdateState, autoupdateStateFile } from "../../src/autoupdate/state.ts";
+import { AutoupdateState, autoupdateDir, autoupdateStateFile } from "../../src/autoupdate/state.ts";
 import { CopilotEnvConfig } from "../../src/copilot_api/env_config.ts";
 import { type LockOutcome, withFileLock } from "../../src/utils/file_lock.ts";
 import { isDue, MILLISECONDS_PER_DAY } from "../../src/utils/time.ts";
 import { packageVersion } from "../../src/utils/version.ts";
-import { afterEach, expect, removeDir, tempDir, test } from "../helpers/testing.ts";
 import { envSnapshot } from "../helpers/env.ts";
+import { afterEach, expect, removeDir, tempDir, test } from "../helpers/testing.ts";
 
 const restoreEnv = envSnapshot();
 let dir = "";
@@ -118,16 +118,18 @@ test("runPreflight honors the auto-update key and ignores a legacy enabled field
     urls.push(String(input));
     return Promise.resolve(
       new Response(
-        JSON.stringify([{
-          "tag_name": `v${packageVersion()}`,
-          "published_at": "2026-01-01T00:00:00Z",
-          "draft": false,
-          "prerelease": false,
-        }]),
+        JSON.stringify([
+          {
+            tag_name: `v${packageVersion()}`,
+            published_at: "2026-01-01T00:00:00Z",
+            draft: false,
+            prerelease: false,
+          },
+        ]),
         { status: 200 },
       ),
     );
-  }) as typeof fetch;
+  }) as unknown as typeof fetch;
   try {
     // The lock seam keeps the run off the install root's real update lock.
     await runPreflight({
@@ -152,7 +154,7 @@ test("runPreflight honors the auto-update key and ignores a legacy enabled field
   const concurrent = { lastCheckMs: now - 1, lastResult: "updated v9.9.9" };
   globalThis.fetch = (() => {
     throw new Error("the under-lock recheck must not reach the network");
-  }) as typeof fetch;
+  }) as unknown as typeof fetch;
   try {
     await runPreflight({
       nowMs: now,

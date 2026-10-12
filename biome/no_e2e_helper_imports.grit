@@ -1,0 +1,150 @@
+// A unit test file may not reach what makes a test realistic: a process, a listener, or a
+// home-shaped sandbox. The unit files are what the pre-commit hook runs on a developer's machine,
+// so a module that spawns or listens is reached from a *.e2e.test.ts file, which the launcher
+// (scripts/run_tests.ts) runs in CI or under --e2e only. The fix for a hit is the rename, never an
+// exemption.
+//
+// biome.json scopes the rule to every .ts under test/ except the *.e2e.test.ts files, the banned
+// helpers themselves, and testing.ts, so a helper that re-exports a banned one is flagged where
+// it is written, not where it is used. testing.ts is exempt for one reason: it imports nothing
+// banned, and the child-spawn rule's scope fixture pins its finding count, which this rule would
+// change. The banned set is the helpers that spawn, listen, or point HOME somewhere, closed under
+// import:
+//   run (node:child_process), net (node:net), fake_model_endpoint (node:http)  -> the roots
+//   fake_codex (plants a codex the code under test spawns), usage_goldens
+//   (points HOME at a generated tree)                                          -> roots by effect
+//   biome_plugin, daemon, fake_endpoint, mcp, scratch_home                      -> import a root
+//
+// The ban is on the import, under every form (a value import, a side-effect import, a re-export,
+// a dynamic import) and under any path spelling that resolves to it (`../helpers/run.ts`,
+// `../../test/helpers/run`, `../helpers/sub/../run.js`), of a banned helper, of node:child_process,
+// or of a listener module (net, http, https, http2, dgram); on reaching Bun's spawn, spawnSync,
+// serve, listen, or connect under any spelling (a member read, a computed member, globalThis, a
+// destructuring of Bun); on every value import from the "bun" module (named, aliased, namespace,
+// default, dynamic, or re-exported: the module's `$` shell spawns too, and an alias makes a name
+// list leaky); and on reaching env.ts's two home-sandbox entry points, isolateAgentHomes
+// and agentHomeEnv, as a named import, a member read off a namespace import, or a destructuring
+// of one. Type-only imports are erased and stay legal; an inline `{ type X }` is a runtime
+// statement under verbatimModuleSyntax and is not. `require` is banned as a bare identifier, as
+// the preload-shim rule bans it: a call shape would miss an alias, and no test file uses it.
+// Teeth pinned by test/utils/e2e_imports_lint.e2e.test.ts.
+language js(typescript)
+
+// Quoted either way, or a substitution-free template literal: `import(\`../helpers/run.ts\`)`
+// is as static as the quoted form. A helper reaches a sibling as `./run.ts`, with no helpers/
+// segment, so a bare `./` path to a banned name counts too.
+pattern banned_source() {
+  r"^[\"'`](?:(?:(?:[^\"'`]*/)?helpers/(?:[^\"'`]*/)?|(?:\./)+)(?:run|daemon|mcp|scratch_home|fake_codex|fake_endpoint|fake_model_endpoint|net|biome_plugin|usage_goldens)(?:\.[cm]?[jt]s)?|(?:node:)?(?:child_process|net|http|https|http2|dgram))[\"'`]$"
+}
+
+// The module itself, under either quote or a substitution-free template literal.
+pattern bun_module() { r"^[\"'`]bun[\"'`]$" }
+
+// An import clause whose braces hold only `type` specifiers, told by its text: a specifier node
+// does not expose its own `type` token to a pattern, so the clause is judged whole.
+pattern type_only_clause() {
+  r"^\{\s*(?:type\s+[\w$]+(?:\s+as\s+[\w$]+)?\s*,\s*)*(?:type\s+[\w$]+(?:\s+as\s+[\w$]+)?\s*,?\s*)?\}$"
+}
+
+pattern bun_api_name() {
+  or {
+    `spawn`,
+    `spawnSync`,
+    `serve`,
+    `listen`,
+    `connect`
+  }
+}
+
+pattern bun_api_key() {
+  or {
+    `spawn`,
+    `spawnSync`,
+    `serve`,
+    `listen`,
+    `connect`,
+    `"spawn"`,
+    `"spawnSync"`,
+    `"serve"`,
+    `"listen"`,
+    `"connect"`
+  }
+}
+
+pattern home_sandbox_name() {
+  or {
+    `isolateAgentHomes`,
+    `agentHomeEnv`
+  }
+}
+
+// The imported name of an aliased specifier is an export-name node, matched by its text.
+pattern home_sandbox_text() { r"^(?:isolateAgentHomes|agentHomeEnv)$" }
+
+pattern home_sandbox_key() {
+  or {
+    `isolateAgentHomes`,
+    `agentHomeEnv`,
+    `"isolateAgentHomes"`,
+    `"agentHomeEnv"`
+  }
+}
+
+or {
+  `import $clause from $source` where {
+    $source <: banned_source(),
+    not $hit <: `import type $c from $s`
+  },
+  `import $source` where { $source <: banned_source() },
+  `import($source)` where { $source <: banned_source() },
+  `export * from $source` where { $source <: banned_source() },
+  `export * as $ns from $source` where { $source <: banned_source() },
+  `export { $specs } from $source` where {
+    $source <: banned_source(),
+    not $hit <: `export type { $sp } from $s`
+  },
+  `require`,
+  `import $clause from $source` where {
+    $source <: bun_module(),
+    not $hit <: `import type $c from $s`,
+    not $clause <: type_only_clause()
+  },
+  `import($source)` where { $source <: bun_module() },
+  `export * from $source` where { $source <: bun_module() },
+  `export * as $ns from $source` where { $source <: bun_module() },
+  `export { $specs } from $source` where {
+    $source <: bun_module(),
+    not $hit <: `export type { $sp } from $s`
+  },
+  `Bun.$m` where { $m <: bun_api_name() },
+  `globalThis.Bun.$m` where { $m <: bun_api_name() },
+  `Bun[$m]` where { $m <: bun_api_key() },
+  `globalThis.Bun[$m]` where { $m <: bun_api_key() },
+  JsVariableDeclarator(id=JsObjectBindingPattern(properties=$props), initializer=JsInitializerClause(expression=or {
+    `Bun`,
+    `globalThis.Bun`
+  })) where {
+    $props <: contains or {
+      JsObjectBindingPatternShorthandProperty(identifier=$id) where { $id <: bun_api_name() },
+      JsObjectBindingPatternProperty(member=$id) where { $id <: bun_api_key() }
+    }
+  },
+  JsNamedImportSpecifier(name=$name) where {
+    $name <: home_sandbox_text(),
+    not $hit <: `type $n as $l`,
+    not $hit <: within `import type $c from $s`
+  },
+  JsShorthandNamedImportSpecifier(local_name=$name) where {
+    $name <: home_sandbox_name(),
+    not $hit <: `type $n`,
+    not $hit <: within `import type $c from $s`
+  },
+  `$obj.$prop` where { $prop <: home_sandbox_name() },
+  `$obj[$prop]` where { $prop <: home_sandbox_key() },
+  JsObjectBindingPatternShorthandProperty(identifier=$id) where { $id <: home_sandbox_name() },
+  JsObjectBindingPatternProperty(member=$id) where { $id <: home_sandbox_key() },
+  JsObjectAssignmentPatternShorthandProperty(identifier=$id) where { $id <: home_sandbox_name() },
+  JsObjectAssignmentPatternProperty(member=$id) where { $id <: home_sandbox_key() }
+} as $hit where {
+  register_diagnostic(span=$hit, message="a unit test may not reach a process, a listener, or a home-shaped sandbox: a file that needs this one is realistic and is named *.e2e.test.ts, which the launcher runs in CI or under --e2e only")
+}

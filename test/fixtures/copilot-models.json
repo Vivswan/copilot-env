@@ -5,9 +5,7 @@
       "name": "GPT-5.4 Fixture",
       "vendor": "OpenAI",
       "model_picker_enabled": true,
-      "supported_endpoints": [
-        "/responses"
-      ],
+      "supported_endpoints": ["/responses"],
       "capabilities": {
         "type": "chat",
         "family": "gpt-5.4-fixture",
@@ -18,11 +16,7 @@
         },
         "supports": {
           "parallel_tool_calls": true,
-          "reasoning_effort": [
-            "low",
-            "medium",
-            "high"
-          ]
+          "reasoning_effort": ["low", "medium", "high"]
         }
       }
     },
@@ -31,9 +25,7 @@
       "name": "Claude Fixture",
       "vendor": "Anthropic",
       "model_picker_enabled": true,
-      "supported_endpoints": [
-        "/v1/messages"
-      ],
+      "supported_endpoints": ["/v1/messages"],
       "capabilities": {
         "type": "chat",
         "limits": {

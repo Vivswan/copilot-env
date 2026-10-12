@@ -6,8 +6,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   CONFIG_REGISTRY,
-  configDefaultValue,
   type ConfigValue,
+  configDefaultValue,
 } from "../../src/copilot_api/config_registry.ts";
 import { formatConfigValue } from "../../src/copilot_api/env_config.ts";
 import { PROJECT_ROOT } from "../../src/utils/root.ts";
@@ -32,7 +32,10 @@ interface DocsRow {
 }
 
 function cells(line: string): string[] {
-  return line.split("|").slice(1, -1).map((cell) => cell.trim());
+  return line
+    .split("|")
+    .slice(1, -1)
+    .map((cell) => cell.trim());
 }
 
 /** Every row of every `| Key | ... | Default | Effect |` table on the page, one key per row. Only

@@ -8,9 +8,9 @@ import { directClientHeaders } from "../copilot_api/integration_identity.ts";
 import type { ClaudeCatalogRow } from "../copilot_api/models.ts";
 import {
   isValidProfileName,
-  parseProfileName,
   type Profile,
   type ProfileName,
+  parseProfileName,
 } from "../copilot_api/profile.ts";
 import { MCP_SERVER_NAME } from "../mcp/server.ts";
 import { isRecord, sameStrings } from "../utils/json.ts";
@@ -68,14 +68,11 @@ export function mcpServeArgs(profile: Profile): string[] {
 function managedMcpServers(profile: Profile, existing: unknown): Record<string, unknown>[] {
   const { command, args } = agentLauncherCommand(mcpServeArgs(profile));
   const foreign = Array.isArray(existing)
-    ? existing.filter((row): row is Record<string, unknown> =>
-      isRecord(row) && row["name"] !== MCP_SERVER_NAME
-    )
+    ? existing.filter(
+        (row): row is Record<string, unknown> => isRecord(row) && row["name"] !== MCP_SERVER_NAME,
+      )
     : [];
-  return [
-    ...foreign,
-    { "name": MCP_SERVER_NAME, "transport": "stdio", "command": command, "args": args },
-  ];
+  return [...foreign, { name: MCP_SERVER_NAME, transport: "stdio", command: command, args: args }];
 }
 
 /** The Direct client header names, the ONE strip both payload branches apply, so a stale managed
@@ -160,11 +157,9 @@ export function desktopConfigPayload(opts: DesktopPayloadOptions): Record<string
       for (const name of MANAGED_HEADER_NAMES) delete doc.inferenceCustomHeaders[name];
     }
     const table = tableAt(doc, "inferenceCustomHeaders");
-    for (
-      const [name, value] of Object.entries(
-        directClientHeaders(codexUserAgent(), opts.direct?.directIntegrationId ?? null),
-      )
-    ) {
+    for (const [name, value] of Object.entries(
+      directClientHeaders(codexUserAgent(), opts.direct?.directIntegrationId ?? null),
+    )) {
       table[name] = value;
     }
     // Copilot Direct 404s /v1/models -- discovery must stay off; the list is the picker.
@@ -183,12 +178,12 @@ export function desktopConfigPayload(opts: DesktopPayloadOptions): Record<string
   // none until the first online wire.
   if (opts.models !== undefined) {
     doc.inferenceModels = opts.models.map((m) => ({
-      "name": m.name,
-      "labelOverride": m.labelOverride,
-      "supports1m": m.supports1m,
-      "prefer1m": m.prefer1m,
-      "anthropicFamilyTier": m.anthropicFamilyTier,
-      "isFamilyDefault": m.isFamilyDefault,
+      name: m.name,
+      labelOverride: m.labelOverride,
+      supports1m: m.supports1m,
+      prefer1m: m.prefer1m,
+      anthropicFamilyTier: m.anthropicFamilyTier,
+      isFamilyDefault: m.isFamilyDefault,
     }));
   }
   return doc;
@@ -218,14 +213,14 @@ export function recordedModelRows(existing: Record<string, unknown>): DesktopMod
     parsed.push({
       name: row.name,
       // Rows written before labels existed heal on the quiet path too.
-      labelOverride: typeof row.labelOverride === "string" && row.labelOverride !== ""
-        ? row.labelOverride
-        : desktopModelLabel(row.name),
+      labelOverride:
+        typeof row.labelOverride === "string" && row.labelOverride !== ""
+          ? row.labelOverride
+          : desktopModelLabel(row.name),
       supports1m: row.supports1m === true,
       prefer1m: row.prefer1m === true,
-      anthropicFamilyTier: typeof row.anthropicFamilyTier === "string"
-        ? row.anthropicFamilyTier
-        : "",
+      anthropicFamilyTier:
+        typeof row.anthropicFamilyTier === "string" ? row.anthropicFamilyTier : "",
       isFamilyDefault: row.isFamilyDefault === true,
     });
   }
@@ -253,7 +248,8 @@ export function launcherSubcommandArgs(args: readonly unknown[]): unknown[] {
   const prefix = agentLauncherCommand([]).args;
   const fileIdx = prefix.indexOf("-File");
   if (fileIdx === -1) return [...args];
-  const flagged = prefix.slice(0, fileIdx + 1).every((a, i) => args[i] === a) &&
+  const flagged =
+    prefix.slice(0, fileIdx + 1).every((a, i) => args[i] === a) &&
     typeof args[fileIdx + 1] === "string";
   return flagged ? args.slice(prefix.length) : [...args];
 }

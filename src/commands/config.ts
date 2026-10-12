@@ -3,25 +3,26 @@
 // view of the face (the machine's keys and the shared defaults, or one profile's keys); `agent
 // config --help` prints the config view. The key registry is src/copilot_api/config_registry.ts.
 import { consola } from "consola";
-import { anyTrackedDaemonAlive, trackedDaemonAlive } from "../copilot_api/daemon.ts";
+import stringWidth from "string-width";
 import {
   CONFIG_GROUPS,
   CONFIG_REGISTRY,
-  configDefaultValue,
   type ConfigGroup,
-  configGroup,
   type ConfigKeyDef,
-  configKeyDef,
   type ConfigScope,
   type ConfigValueTypes,
+  configDefaultValue,
+  configGroup,
+  configKeyDef,
   isProxyProjected,
 } from "../copilot_api/config_registry.ts";
+import { anyTrackedDaemonAlive, trackedDaemonAlive } from "../copilot_api/daemon.ts";
 import {
+  CopilotEnvConfig,
+  type CopilotEnvConfigData,
   configDelCommand,
   configGetCommand,
   configSetCommand,
-  CopilotEnvConfig,
-  type CopilotEnvConfigData,
   formatConfigValue,
   isStoredSource,
   isStoredValueInert,
@@ -46,7 +47,6 @@ import { colorEnabled, paintFor } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import { terminalWidth, wrapMessage } from "../utils/table.ts";
-import stringWidth from "string-width";
 import { runDryRun } from "./dry_run.ts";
 
 /** Which face called: `agent config` (the machine's keys and the shared default of every
@@ -105,9 +105,9 @@ export function refuseProfileKey(key: string): void {
   const def = configKeyDef(key);
   if (def === undefined || def.scope !== "profile") return;
   throw new Error(
-    `'${def.key}' is a profile preference (it follows the credential), not a machine key: \`${
-      configGetCommand(def.key)
-    }\`, \`${configSetCommand(def.key, "<value>")}\`, or \`${configDelCommand(def.key)}\` (a ` +
+    `'${def.key}' is a profile preference (it follows the credential), not a machine key: \`${configGetCommand(
+      def.key,
+    )}\`, \`${configSetCommand(def.key, "<value>")}\`, or \`${configDelCommand(def.key)}\` (a ` +
       "named profile's: `agent profile <name> ...`)",
   );
 }
@@ -137,9 +137,9 @@ export function resolveSetPair(
 /** The daemon that reads a projected or launch-time key is the profile's own, so the restart the
  *  hint names is that daemon's. Hints stay shell-neutral (no `&&`) for Windows PowerShell 5.1. */
 function proxyRestartHint(profile: Profile): string {
-  return `Applies on the next proxy start; restart it: \`${agentStopCommand(profile)}\`, then \`${
-    agentStartCommand(profile)
-  }\`.`;
+  return `Applies on the next proxy start; restart it: \`${agentStopCommand(profile)}\`, then \`${agentStartCommand(
+    profile,
+  )}\`.`;
 }
 
 /** Shared with `agent settings --import`, whose bundle may touch every profile's knobs. */
@@ -169,7 +169,7 @@ export function runConfig(
   // hidden value with no reader.
   const profile = viewProfile(action.view);
   if (profile !== null) assertKnownProfile(profile);
-  const run = (): () => void => {
+  const run = (): (() => void) => {
     switch (action.kind) {
       case "set":
         return runSet(action.key, action.value, profile, platform);
@@ -191,12 +191,7 @@ function targetSuffix(target: SettingTarget): string {
   return target.kind === "global" ? "" : ` (${profileLabel(target.profile)})`;
 }
 
-function runSet(
-  key: string,
-  raw: string,
-  profile: Profile,
-  platform: NodeJS.Platform,
-): () => void {
+function runSet(key: string, raw: string, profile: Profile, platform: NodeJS.Platform): () => void {
   refuseStateKey(key);
   const def = configKeyDef(key);
   if (def === undefined) throw unknownKeyError(key);
@@ -229,9 +224,10 @@ function runUnset(key: string, profile: Profile): () => void {
   const now = config.resolve(def.key, {
     profile: target.kind === "global" ? null : target.profile,
   });
-  const reads = now.value === undefined
-    ? "unset"
-    : `${formatConfigValue(now.value)} (${originLabel(def, now.source, profile)})`;
+  const reads =
+    now.value === undefined
+      ? "unset"
+      : `${formatConfigValue(now.value)} (${originLabel(def, now.source, profile)})`;
   return () => {
     consola.success(`unset ${def.key}${targetSuffix(target)}; now ${reads}`);
     noteHowItApplies(def, target);
@@ -297,12 +293,7 @@ const HEADER_GAP = "  |  ";
 
 /** Never splits an item: one longer than `columns` stands on its own line. The one wrap rule for
  *  the header's parts, the description's words, and the right column's cells alike. */
-function packToWidth<T>(
-  items: T[],
-  length: (item: T) => number,
-  columns: number,
-  gap = 1,
-): T[][] {
+function packToWidth<T>(items: T[], length: (item: T) => number, columns: number, gap = 1): T[][] {
   const lines: T[][] = [];
   let current: T[] = [];
   let used = 0;
@@ -389,8 +380,9 @@ export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions
     ];
   };
   const wrapNote = (note: string): string[] =>
-    packToWidth(note.split(" "), stringWidth, rightWidth)
-      .map((words) => paint.dim(words.join(" ")));
+    packToWidth(note.split(" "), stringWidth, rightWidth).map((words) =>
+      paint.dim(words.join(" ")),
+    );
 
   // The shared layer a profile override hides: the global map's value, else the built-in default.
   const globalLayer: Partial<ConfigValueTypes> = data.global;
@@ -412,11 +404,12 @@ export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions
     }
     if (overrides) {
       cells.push({
-        text: shared !== undefined
-          ? `(overrides the shared default ${formatConfigValue(shared)})`
-          : `(overrides the built-in default ${
-            row.fallback === undefined ? UNSET_VALUE : formatConfigValue(row.fallback)
-          })`,
+        text:
+          shared !== undefined
+            ? `(overrides the shared default ${formatConfigValue(shared)})`
+            : `(overrides the built-in default ${
+                row.fallback === undefined ? UNSET_VALUE : formatConfigValue(row.fallback)
+              })`,
         paint: paint.dim,
       });
     } else if (inherits && row.resolved.source === "global") {
@@ -425,20 +418,22 @@ export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions
     if (isStoredValueInert(def, row.resolved, opts.platform)) {
       cells.push({ text: "(inert on this platform)", paint: paint.dim });
     }
-    const right = packToWidth(cells, (cell) => stringWidth(cell.text), rightWidth)
-      .map((line) => line.map((cell) => cell.paint(cell.text)).join(" "));
+    const right = packToWidth(cells, (cell) => stringWidth(cell.text), rightWidth).map((line) =>
+      line.map((cell) => cell.paint(cell.text)).join(" "),
+    );
     const daemonReads = isProxyProjected(def) || def.restartToApply === true;
     const up = row.resolved.source === "profile" ? opts.profileDaemonUp : opts.daemonUp;
     if (row.stored && up && daemonReads) right.push(paint.dim(paint.green(RESTART_LINE)));
     right.push(...wrapNote(def.describe));
-    const shownValue = row.value === UNSET_VALUE
-      ? paint.dim(UNSET_VALUE)
-      : row.stored
-      ? paint.bold(paint.green(row.value))
-      : paint.green(row.value);
-    const lead = `${" ".repeat(row.indent)}${row.stored ? paint.green("*") : " "} ${
-      paint.cyan(def.key)
-    }=${shownValue}`;
+    const shownValue =
+      row.value === UNSET_VALUE
+        ? paint.dim(UNSET_VALUE)
+        : row.stored
+          ? paint.bold(paint.green(row.value))
+          : paint.green(row.value);
+    const lead = `${" ".repeat(row.indent)}${row.stored ? paint.green("*") : " "} ${paint.cyan(
+      def.key,
+    )}=${shownValue}`;
     return layout(lead, row.leadLength, right);
   };
 
@@ -446,15 +441,17 @@ export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions
   // profile-default group reaches them on its own.
   const inherited = [
     ...new Set(
-      CONFIG_REGISTRY.filter((def) => def.scope === "profile-default")
-        .map((def) => `${configGroup(def.key)}.*`),
+      CONFIG_REGISTRY.filter((def) => def.scope === "profile-default").map(
+        (def) => `${configGroup(def.key)}.*`,
+      ),
     ),
   ].join(" / ");
   const storedCount = rows.filter((row) => row.stored).length;
   // The face's own verbs, then where the keys it does not list live.
-  const face = opts.view.kind === "config"
-    ? "agent config"
-    : `agent profile${profile === null ? "" : ` ${profile}`}`;
+  const face =
+    opts.view.kind === "config"
+      ? "agent config"
+      : `agent profile${profile === null ? "" : ` ${profile}`}`;
   const headerParts = [
     `${storedCount} of ${rows.length} keys set (*).`,
     `${face} set <key> <value> (or <key>=<value>)`,
@@ -468,8 +465,7 @@ export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions
     .flatMap((parts) => {
       const [only = ""] = parts;
       return parts.length === 1 && only.length > opts.width
-        ? packToWidth(only.split(" "), stringWidth, opts.width)
-          .map((words) => words.join(" "))
+        ? packToWidth(only.split(" "), stringWidth, opts.width).map((words) => words.join(" "))
         : [parts.join(HEADER_GAP)];
     })
     .map((line) => paint.dim(line))
@@ -502,7 +498,8 @@ export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions
         banner(
           `${groupIndent}${group}:`,
           `${profileDefaultConsumer(group)}; the shared default is agent config's`,
-        )),
+        ),
+      ),
     ].join("\n\n");
     return [header, profileBlock].join("\n\n");
   }

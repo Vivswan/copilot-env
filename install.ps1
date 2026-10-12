@@ -70,7 +70,7 @@ if ($PSVersionTable.PSVersion.Major -lt 6) {
 }
 
 # The next line is rewritten to the release tag by .github/scripts/release-assets.ts
-# (byte-exact needle; test/install/installer_pinning.test.ts guards the match).
+# (byte-exact needle; test/install/installer_pinning.e2e.test.ts guards the match).
 $InstallRef = if ($env:COPILOT_ENV_INSTALL_REF) { $env:COPILOT_ENV_INSTALL_REF } else { 'latest' }
 $Repo = 'Vivswan/copilot-env'
 $BinaryName = 'copilot-env.exe'
@@ -211,7 +211,7 @@ $InstallDir = Resolve-SafeInstallDir
 # before the bin write touches the root; a worktree's .git is a file, so no -PathType.
 # Markers without .git are not a checkout, so the install proceeds.
 if (Test-Path -LiteralPath (Join-Path $InstallDir '.git')) {
-    foreach ($marker in @('package.json', 'deno.json')) {
+    foreach ($marker in @('package.json', 'bun.lock')) {
         if (Test-Path -LiteralPath (Join-Path $InstallDir $marker)) {
             throw "Refusing to install into ${InstallDir}: it holds $marker and .git, so it is a source checkout; choose another target with -InstallDir or `$env:COPILOT_ENV_DIR."
         }

@@ -17,14 +17,44 @@ export type ProxyVersionStatus =
   | ProxyVersionFloorStatus
   | { ok: false; reason: "aboveCeiling"; version: string; ceiling: string };
 
-export function installedProxyVersion(root: string = PROJECT_ROOT): string | null {
-  const packagePath = join(root, "node_modules", ...PROXY_PACKAGE_NAME.split("/"), "package.json");
+/** An installed copy of the proxy under `<root>/node_modules`, as its own manifest describes it. */
+export interface InstalledProxyPackage {
+  version: string;
+  /** The absolute path of the package's `bin` entry: what the daemon runs. */
+  entry: string;
+}
+
+/** The package's `bin`, as npm admits it: one string (the bin is named after the package), or a
+ *  map, read at the unscoped package name. A copy declaring neither reads as not installed: the
+ *  daemon would have nothing to run. */
+function binEntry(manifest: Record<string, unknown>): string | null {
+  const bin = manifest.bin;
+  if (typeof bin === "string") return bin;
+  if (typeof bin !== "object" || bin === null) return null;
+  const unscoped = PROXY_PACKAGE_NAME.split("/").at(-1) as string;
+  const named = (bin as Record<string, unknown>)[unscoped];
+  return typeof named === "string" ? named : null;
+}
+
+/** `root` is a tree holding the proxy under node_modules: the checkout (bun install put it
+ *  there), or the proxy home the float installs into (src/proxy_float.ts). Null is "no usable
+ *  copy": absent, unreadable, or a manifest with no version or bin. */
+export function installedProxyPackage(root: string = PROJECT_ROOT): InstalledProxyPackage | null {
+  const packageDir = join(root, "node_modules", ...PROXY_PACKAGE_NAME.split("/"));
+  let manifest: Record<string, unknown> | null;
   try {
-    const parsed = parseJsonRecord(fs.readText(packagePath));
-    return typeof parsed?.version === "string" ? parsed.version : null;
+    manifest = parseJsonRecord(fs.readText(join(packageDir, "package.json")));
   } catch {
     return null;
   }
+  if (manifest === null || typeof manifest.version !== "string") return null;
+  const bin = binEntry(manifest);
+  if (bin === null) return null;
+  return { version: manifest.version, entry: join(packageDir, bin) };
+}
+
+export function installedProxyVersion(root: string = PROJECT_ROOT): string | null {
+  return installedProxyPackage(root)?.version ?? null;
 }
 
 export function proxyVersionFloorStatus(

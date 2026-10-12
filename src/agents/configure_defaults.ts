@@ -17,8 +17,9 @@
 // An `auto` landing probes EVERY run; when the verdict differs from the recorded mode, the caller's
 // `onVerdict` (the CLI's question) says which one lands. A failed write leaves the previous record,
 // and the guidance names the agent that did not move and the repair.
-import { codexAdapter } from "../codex/config.ts";
+
 import { claudeAdapter } from "../claude/config.ts";
+import { codexAdapter } from "../codex/config.ts";
 import { Credential } from "../copilot_api/credential.ts";
 import { directOverlay, storeProbedPair } from "../copilot_api/direct_pair.ts";
 import { CopilotEnvState, type ProfileMode } from "../copilot_api/env_state.ts";
@@ -178,9 +179,10 @@ export async function configureDefaultAgents(
       for (const [id, mode] of await decideDefaultMode(adapters, ghToken)) chosen.set(id, mode);
       const verdict = probedVerdict(chosen);
       const recorded = new CopilotEnvState().readProfileSlot(null).mode;
-      const landing = recorded === null || recorded === verdict || request.onVerdict === undefined
-        ? verdict
-        : await request.onVerdict(recorded, verdict);
+      const landing =
+        recorded === null || recorded === verdict || request.onVerdict === undefined
+          ? verdict
+          : await request.onVerdict(recorded, verdict);
       if (landing !== verdict) {
         // The record stays: the same landing `agent init --<recorded>` runs, selection included.
         chosen.clear();
@@ -197,12 +199,18 @@ export async function configureDefaultAgents(
     logger.log(bold(`▸ ${adapter.label}`));
     try {
       if (!bothNamed) {
-        landed[adapter.id] = await runAgentConfig(adapter, { kind: "configure", mode }, {
-          ghToken,
-        }, adapters) ?? "none";
+        landed[adapter.id] =
+          (await runAgentConfig(
+            adapter,
+            { kind: "configure", mode },
+            {
+              ghToken,
+            },
+            adapters,
+          )) ?? "none";
         continue;
       }
-      const resolved = chosen.get(adapter.id) ?? await resolveDefaultMode(adapter, mode, ghToken);
+      const resolved = chosen.get(adapter.id) ?? (await resolveDefaultMode(adapter, mode, ghToken));
       chosen.set(adapter.id, resolved);
       await writeDefaultAgent(adapter, resolved, ghToken);
       landed[adapter.id] = resolved.mode;
@@ -215,9 +223,8 @@ export async function configureDefaultAgents(
   if (bothNamed) {
     // The repair names the mode the request spelled; `auto` asked for no mode, so its repair is
     // the bare command (the probes decide again).
-    const requested = request.codex === request.claude && request.codex !== "auto"
-      ? request.codex
-      : null;
+    const requested =
+      request.codex === request.claude && request.codex !== "auto" ? request.codex : null;
     commitDefaultWiring(adapters, chosen, failedAgents, requested);
   }
   return { ...landed, failures, failedAgents };
@@ -240,11 +247,13 @@ function commitDefaultWiring(
   const previous = state.readProfileSlot(null).mode;
   const modes = adapters.map((adapter) => chosen.get(adapter.id)?.mode ?? null);
   const decided: ProfileMode | null = modes.every((mode) => mode !== null && mode === modes[0])
-    ? modes[0] ?? null
+    ? (modes[0] ?? null)
     : null;
   if (failedAgents.length > 0 || decided === null) {
-    const stayed = adapters.filter((adapter) => failedAgents.includes(adapter.id))
-      .map((adapter) => adapter.label).join(" and ");
+    const stayed = adapters
+      .filter((adapter) => failedAgents.includes(adapter.id))
+      .map((adapter) => adapter.label)
+      .join(" and ");
     // A resolve that threw leaves its agent out of `chosen`, so `decided` is null even when the
     // request spelled one mode; the repair still names that mode.
     const repair = decided ?? requested;

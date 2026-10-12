@@ -16,16 +16,15 @@ import { knownCodexHomes } from "../codex/host.ts";
 import { CODEX_PROVIDER_ID, codexConfigPath } from "../codex/paths.ts";
 import { readCodexToml, saveCodexToml } from "../codex/toml_io.ts";
 import { CopilotApiConfig } from "../copilot_api/config.ts";
-import { WIN } from "../utils/fs.ts";
 import {
   isValidProfileName,
-  parseProfileName,
   type Profile,
   type ProfileName,
+  parseProfileName,
 } from "../copilot_api/profile.ts";
 import { MARKER, MARKER_END, shellTargetFiles } from "../shell/integration.ts";
 import { errMessage } from "../utils/error.ts";
-import { isEnoent } from "../utils/fs.ts";
+import { isEnoent, WIN } from "../utils/fs.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { isRecord, parseJsonRecord } from "../utils/json.ts";
 import type { Migration } from "./index.ts";
@@ -198,10 +197,13 @@ function isScriptShapedProxyAuth(auth: unknown, profile: Profile): boolean {
   if (!isRecord(auth) || !Array.isArray(auth.args)) return false;
   const args = auth.args.filter((a): a is string => typeof a === "string");
   if (args.length !== auth.args.length) return false;
-  const lead = auth.command === "/bin/sh" ? 0 : auth.command === "powershell" &&
-      args.slice(0, 4).join(" ") === "-NoProfile -ExecutionPolicy Bypass -File"
-    ? 4
-    : -1;
+  const lead =
+    auth.command === "/bin/sh"
+      ? 0
+      : auth.command === "powershell" &&
+          args.slice(0, 4).join(" ") === "-NoProfile -ExecutionPolicy Bypass -File"
+        ? 4
+        : -1;
   if (lead === -1) return false;
   const script = args[lead];
   const ext = auth.command === "/bin/sh" ? "sh" : "ps1";
@@ -212,8 +214,7 @@ function isScriptShapedProxyAuth(auth: unknown, profile: Profile): boolean {
     return false;
   }
   const tail = profile === null ? ["--yes"] : ["--yes", "--profile", profile];
-  return args.length === lead + 1 + tail.length &&
-    tail.every((t, i) => args[lead + 1 + i] === t);
+  return args.length === lead + 1 + tail.length && tail.every((t, i) => args[lead + 1 + i] === t);
 }
 
 /** Every managed `copilot-env[-<name>]` table still wired the pre-4.0.0 way (the script-shaped
@@ -228,8 +229,8 @@ export function rewriteLegacyCodexTables(doc: Record<string, unknown>): boolean 
   for (const [id, table] of Object.entries(providers)) {
     const profile = profileOfProviderId(id);
     if (profile === undefined || !isRecord(table)) continue;
-    const legacyProxy = table.env_key === "OPENAI_API_KEY" ||
-      isScriptShapedProxyAuth(table.auth, profile);
+    const legacyProxy =
+      table.env_key === "OPENAI_API_KEY" || isScriptShapedProxyAuth(table.auth, profile);
     if (legacyProxy && typeof table.base_url === "string") {
       const userKeys = { ...table };
       delete userKeys.env_key;
@@ -315,8 +316,7 @@ function releasedHelperBodies(mode: "direct" | "proxy", profile: Profile): RegEx
   const cmd = (path: string, args: string) =>
     // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp -- our helper body, our paths
     new RegExp(
-      String
-        .raw`^@echo off\r\npowershell -NoProfile -ExecutionPolicy Bypass -File "(?:[^"%\r\n]|%%)*${path}" ${args}\r\n$`,
+      String.raw`^@echo off\r\npowershell -NoProfile -ExecutionPolicy Bypass -File "(?:[^"%\r\n]|%%)*${path}" ${args}\r\n$`,
     );
   const shProfile = profile === null ? "" : ` '--profile' '${profile}'`;
   const cmdProfile = profile === null ? "" : ` --profile ${profile}`;

@@ -37,8 +37,9 @@ function authMatches(
   auth: unknown,
   expected: { command: string; args: readonly string[] },
 ): boolean {
-  return isRecord(auth) && auth.command === expected.command &&
-    sameStrings(auth.args, expected.args);
+  return (
+    isRecord(auth) && auth.command === expected.command && sameStrings(auth.args, expected.args)
+  );
 }
 
 function isManagedDirectAuth(auth: unknown, profile: Profile = null): boolean {
@@ -54,8 +55,11 @@ function isManagedProxyAuth(auth: unknown, profile: Profile = null): boolean {
 function isStaticAuthorization(table: unknown): boolean {
   if (!isRecord(table) || table.auth !== undefined) return false;
   const headers = table.http_headers;
-  return isRecord(headers) && typeof headers[AUTHORIZATION_HEADER] === "string" &&
-    STATIC_AUTHORIZATION_SHAPE.test(headers[AUTHORIZATION_HEADER]);
+  return (
+    isRecord(headers) &&
+    typeof headers[AUTHORIZATION_HEADER] === "string" &&
+    STATIC_AUTHORIZATION_SHAPE.test(headers[AUTHORIZATION_HEADER])
+  );
 }
 
 /** Which managed credential shape the table carries; "none" is a foreign or missing one. */
@@ -100,9 +104,7 @@ export type CodexOtherReason =
 /** What selects the inspected wiring: config.toml's top-level key for the default, and for a
  *  named profile the top-level key of its `<name>.config.toml`, read alongside config.toml. A
  *  named inspection without its profile read is unrepresentable. */
-type CodexSelectionRead =
-  | { profile: null }
-  | { profile: ProfileName; profileToml: TextReadResult };
+type CodexSelectionRead = { profile: null } | { profile: ProfileName; profileToml: TextReadResult };
 
 /** Read from different files than config.toml, so independent of how it classifies. A named
  *  profile's provider never reads an env var (managed auth.command only), so envKeyInDotenv,
@@ -118,75 +120,74 @@ interface CodexTokenFacts {
 /** Discriminated on providerMode so a pair the classifier never mints (a wired "none", a direct
  *  table without the Direct base URL, a direct-auth verdict outside direct mode) is
  *  unrepresentable. The shared fields are documented once, on the direct arm. */
-export type CodexWiringStatus =
-  & CodexTokenFacts
-  & (
+export type CodexWiringStatus = CodexTokenFacts &
+  (
     | {
-      providerMode: "direct";
-      configExists: true;
-      /** The inspected selection's `model_provider` (config.toml's top-level key for the default,
-       *  `<name>.config.toml`'s for a named profile); on "other", the foreign value, or null when
-       *  unknowable. */
-      modelProvider: string;
-      providerSelected: true;
-      /** Direct classification requires a Copilot host (isDirectBaseUrl), so the match is pinned
-       *  at the type and the host itself rides along. */
-      baseUrl: string;
-      baseUrlMatches: true;
-      /** Direct carries no env_key contract, so only a named table's forbidden env_key (drift the
-       *  writer never emits; Codex rejects `auth` + `env_key`) can make it false. */
-      envKeyMatches: boolean;
-      /** A named profile's credential shape must be the managed one addressed at THAT profile
-       *  (never a fallback), or the static bearer. */
-      providerWired: boolean;
-      credential: CodexManagedCredential;
-      /** The table carries the managed `auth.command`. Whether a `gh` login is needed is a STORE
-       *  question the health probe answers. */
-      directUsesToken: boolean;
-      otherReason: null;
-    }
+        providerMode: "direct";
+        configExists: true;
+        /** The inspected selection's `model_provider` (config.toml's top-level key for the default,
+         *  `<name>.config.toml`'s for a named profile); on "other", the foreign value, or null when
+         *  unknowable. */
+        modelProvider: string;
+        providerSelected: true;
+        /** Direct classification requires a Copilot host (isDirectBaseUrl), so the match is pinned
+         *  at the type and the host itself rides along. */
+        baseUrl: string;
+        baseUrlMatches: true;
+        /** Direct carries no env_key contract, so only a named table's forbidden env_key (drift the
+         *  writer never emits; Codex rejects `auth` + `env_key`) can make it false. */
+        envKeyMatches: boolean;
+        /** A named profile's credential shape must be the managed one addressed at THAT profile
+         *  (never a fallback), or the static bearer. */
+        providerWired: boolean;
+        credential: CodexManagedCredential;
+        /** The table carries the managed `auth.command`. Whether a `gh` login is needed is a STORE
+         *  question the health probe answers. */
+        directUsesToken: boolean;
+        otherReason: null;
+      }
     | {
-      providerMode: "proxy";
-      configExists: true;
-      modelProvider: string;
-      providerSelected: true;
-      baseUrl: string | null;
-      baseUrlMatches: boolean;
-      envKeyMatches: boolean;
-      providerWired: boolean;
-      credential: CodexManagedCredential;
-      directUsesToken: false;
-      otherReason: null;
-    }
+        providerMode: "proxy";
+        configExists: true;
+        modelProvider: string;
+        providerSelected: true;
+        baseUrl: string | null;
+        baseUrlMatches: boolean;
+        envKeyMatches: boolean;
+        providerWired: boolean;
+        credential: CodexManagedCredential;
+        directUsesToken: false;
+        otherReason: null;
+      }
     | {
-      providerMode: "none";
-      /** False = no config.toml at all; true = a config with no `model_provider`. */
-      configExists: boolean;
-      modelProvider: null;
-      providerSelected: false;
-      baseUrl: null;
-      baseUrlMatches: false;
-      envKeyMatches: false;
-      providerWired: false;
-      credential: "none";
-      directUsesToken: false;
-      otherReason: null;
-    }
+        providerMode: "none";
+        /** False = no config.toml at all; true = a config with no `model_provider`. */
+        configExists: boolean;
+        modelProvider: null;
+        providerSelected: false;
+        baseUrl: null;
+        baseUrlMatches: false;
+        envKeyMatches: false;
+        providerWired: false;
+        credential: "none";
+        directUsesToken: false;
+        otherReason: null;
+      }
     | {
-      providerMode: "other";
-      /** False only for a named inspection whose `<name>.config.toml` is broken while config.toml
-       *  is absent: presence stays a fact of its own, apart from the classification. */
-      configExists: boolean;
-      modelProvider: string | null;
-      providerSelected: false;
-      baseUrl: null;
-      baseUrlMatches: false;
-      envKeyMatches: false;
-      providerWired: false;
-      credential: "none";
-      directUsesToken: false;
-      otherReason: CodexOtherReason;
-    }
+        providerMode: "other";
+        /** False only for a named inspection whose `<name>.config.toml` is broken while config.toml
+         *  is absent: presence stays a fact of its own, apart from the classification. */
+        configExists: boolean;
+        modelProvider: string | null;
+        providerSelected: false;
+        baseUrl: null;
+        baseUrlMatches: false;
+        envKeyMatches: false;
+        providerWired: false;
+        credential: "none";
+        directUsesToken: false;
+        otherReason: CodexOtherReason;
+      }
   );
 
 /** Path `/v1`, what openaiBaseUrl writes; the grammar lives in port.ts next to the writers. */
@@ -210,12 +211,14 @@ export function inspectCodexWiring(
   envKeyInEnviron: boolean,
   selection: CodexSelectionRead = { profile: null },
 ): CodexWiringStatus {
-  const read: TextReadResult = typeof configToml === "string"
-    ? { kind: "text", text: configToml }
-    : configToml ?? { kind: "absent" };
+  const read: TextReadResult =
+    typeof configToml === "string"
+      ? { kind: "text", text: configToml }
+      : (configToml ?? { kind: "absent" });
   const profile = selection.profile;
   const providerId = codexProviderId(profile);
-  const envKeyInDotenv = profile === null &&
+  const envKeyInDotenv =
+    profile === null &&
     envText !== null &&
     new RegExp(`^\\s*(?:export\\s+)?${CODEX_ENV_KEY}\\s*=\\s*\\S`, "m").test(envText);
   const envKeyExported = profile === null && envKeyInEnviron;
@@ -287,9 +290,8 @@ export function inspectCodexWiring(
   }
   if (read.kind === "absent") return none(false);
   if (selection.profile !== null && selection.profileToml.kind === "absent") return none(true);
-  const modelProvider = typeof selector?.model_provider === "string"
-    ? selector.model_provider
-    : null;
+  const modelProvider =
+    typeof selector?.model_provider === "string" ? selector.model_provider : null;
   if (modelProvider === null) return none(true);
   if (modelProvider !== providerId) return other("custom", modelProvider);
 
@@ -299,8 +301,8 @@ export function inspectCodexWiring(
   const baseUrl = isRecord(table) && typeof table.base_url === "string" ? table.base_url : null;
   // The writer strips env_key from a named table (MANAGED_PROVIDER_KEYS) and Codex rejects `auth` +
   // `env_key` on one provider, so a present one is drift the writer would never produce.
-  const namedTableCarriesEnvKey = profile !== null && isRecord(table) &&
-    table.env_key !== undefined;
+  const namedTableCarriesEnvKey =
+    profile !== null && isRecord(table) && table.env_key !== undefined;
 
   if (tableMode === "direct") {
     const envKeyMatches = !namedTableCarriesEnvKey;
@@ -310,8 +312,8 @@ export function inspectCodexWiring(
     const credential: CodexManagedCredential = directUsesToken
       ? "command"
       : isStaticAuthorization(table)
-      ? "static"
-      : "none";
+        ? "static"
+        : "none";
     return {
       ...tokenFacts,
       providerMode: "direct",
@@ -337,8 +339,8 @@ export function inspectCodexWiring(
     isRecord(table) && isManagedProxyAuth(table.auth, profile)
       ? "command"
       : isStaticAuthorization(table)
-      ? "static"
-      : "none";
+        ? "static"
+        : "none";
   const baseUrlMatches = baseUrl !== null && baseUrlMatchesProxy(baseUrl, expectedPort);
   const envKeyMatches = !namedTableCarriesEnvKey && credential !== "none";
   return {

@@ -1,6 +1,6 @@
+import { Database } from "bun:sqlite";
 import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import {
   discoverUsageDbs,
   foldUsageRequests,
@@ -65,11 +65,6 @@ test("parseUsageRow normalizes every count, canonicalizes the model, and drops r
     model: "claude-opus-4.8",
     buckets: { input: 10, output: 20, cacheRead: 30, cacheCreation: 40 },
   });
-
-  // A bigint column (node:sqlite hands one back for an integer a double cannot hold, and
-  // for every column under readBigInts) becomes a plain number, never leaks downstream.
-  expect(parseUsageRow({ tsMs: 5n, model: "m", input: 7n })?.buckets.input).toBe(7);
-  expect(parseUsageRow({ tsMs: 5n, model: "m" })?.tsMs).toBe(5);
 
   const clamped = parseUsageRow({
     tsMs: null,
@@ -246,8 +241,8 @@ test("the proxy reader: an unattributable row is dropped, hostile counts clamp, 
   dir = tempDir("copilot-usage-");
   const path = join(dir, "copilot-api.sqlite");
   // No column constraints: the reader must survive a corrupt file, not just the daemon's.
-  const db = new DatabaseSync(path);
-  db.exec(`CREATE TABLE token_usage_events (
+  const db = new Database(path);
+  db.run(`CREATE TABLE token_usage_events (
     model, input_tokens, output_tokens, cache_read_input_tokens,
     cache_creation_input_tokens, created_at_ms, created_at_utc
   )`);
@@ -260,7 +255,7 @@ test("the proxy reader: an unattributable row is dropped, hostile counts clamp, 
   // floating third-party package. A row without it cannot be placed on a local day, but its
   // tokens must still reach the totals.
   insert.run("gpt-5.5", 7, 0, 0, 0, null, at);
-  db.close();
+  db.close(true);
 
   const report = readProxy([path]);
 
@@ -285,8 +280,8 @@ test("the proxy reader: an unattributable row is dropped, hostile counts clamp, 
 });
 
 function seedUsageDb(path: string): void {
-  const db = new DatabaseSync(path);
-  db.exec(`CREATE TABLE token_usage_events (
+  const db = new Database(path);
+  db.run(`CREATE TABLE token_usage_events (
     model TEXT NOT NULL,
     input_tokens INTEGER,
     output_tokens INTEGER,
@@ -301,7 +296,7 @@ function seedUsageDb(path: string): void {
   insert.run("claude-opus-4.8", 100, 50, 0, 0, ms(day1), day1);
   insert.run("claude-opus-4.8", 100, 50, 10, 0, ms(day1), day1);
   insert.run("gpt-5.5", 200, 0, 0, 0, ms(day2), day2);
-  db.close();
+  db.close(true);
 }
 
 test("the proxy reader sums tokens per canonical model across DBs and splits them by local day, the split reconciling with byModel", () => {
@@ -313,8 +308,8 @@ test("the proxy reader sums tokens per canonical model across DBs and splits the
   // B shares a model and a day with A, plus a fresh model and a fresh day: SUM, not overwrite,
   // and a UNION of days, not a per-DB reset. Its shared model is spelled the Anthropic dashed,
   // Copilot dotted, and dated-snapshot ways: one canonical row, never three.
-  const db = new DatabaseSync(pathB);
-  db.exec(`CREATE TABLE token_usage_events (
+  const db = new Database(pathB);
+  db.run(`CREATE TABLE token_usage_events (
     model TEXT NOT NULL,
     input_tokens INTEGER,
     output_tokens INTEGER,
@@ -330,7 +325,7 @@ test("the proxy reader sums tokens per canonical model across DBs and splits the
   insert.run("claude-opus-4.8", 10, 20, 0, 0, ms(day1), day1);
   insert.run("claude-opus-4-8-20260101", 100, 200, 0, 0, ms(day1), day1);
   insert.run("gemini-3.0", 9, 0, 0, 0, ms(day3), day3);
-  db.close();
+  db.close(true);
 
   const report = readProxy([pathA, pathB]);
 
@@ -339,7 +334,11 @@ test("the proxy reader sums tokens per canonical model across DBs and splits the
   const gpt = { input: 200, output: 0, cacheRead: 0, cacheCreation: 0, events: 1 };
   const gemini = { input: 9, output: 0, cacheRead: 0, cacheCreation: 0, events: 1 };
   expect(report.byModel).toEqual(
-    new Map([["claude-opus-4.8", claude], ["gpt-5.5", gpt], ["gemini-3.0", gemini]]),
+    new Map([
+      ["claude-opus-4.8", claude],
+      ["gpt-5.5", gpt],
+      ["gemini-3.0", gemini],
+    ]),
   );
   // Every model's usage sits on one day, so each day's row is that model's byModel row.
   expect(report.perDay).toEqual(
@@ -368,8 +367,8 @@ test("the proxy reader sinceMs filters older rows from token totals and active d
 test("the proxy reader buckets by the user's local day, not the UTC day", () => {
   dir = tempDir("copilot-usage-");
   const path = join(dir, "copilot-api.sqlite");
-  const db = new DatabaseSync(path);
-  db.exec(`CREATE TABLE token_usage_events (
+  const db = new Database(path);
+  db.run(`CREATE TABLE token_usage_events (
     model TEXT NOT NULL,
     input_tokens INTEGER,
     output_tokens INTEGER,
@@ -389,13 +388,14 @@ test("the proxy reader buckets by the user's local day, not the UTC day", () => 
     ms(at),
     at,
   );
-  db.close();
+  db.close(true);
 
   // The zone is NAMED rather than pinned through process.env.TZ, so this runs on Windows too
   // (deno honours the TZ env var on unix only). The SAME row in two zones keeps the teeth: a
   // reader that ignored the zone or sliced by UTC would return one key for both.
-  expect([...readProxy([path], undefined, "America/New_York").perDay.keys()])
-    .toEqual(["2026-06-01"]);
+  expect([...readProxy([path], undefined, "America/New_York").perDay.keys()]).toEqual([
+    "2026-06-01",
+  ]);
   expect([...readProxy([path], undefined, "UTC").perDay.keys()]).toEqual(["2026-06-02"]);
 });
 

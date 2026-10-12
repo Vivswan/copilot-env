@@ -13,7 +13,7 @@ import type { CountedUsage, OnCounted, TokenBuckets, UsageRequest } from "./usag
  *  sit seconds apart; the minute absorbs a stalled write on either side. The token counts do the
  *  discriminating: two requests with identical counts in all four buckets within a minute of each
  *  other are not seen in practice. */
-export const OVERLAP_WINDOW_MS = 60_000;
+const OVERLAP_WINDOW_MS = 60_000;
 
 /** The client's clock over the lines that make up one request: a Codex token_count is one line, a
  *  Claude message streams over several, first to last, a final line that only repeats the counts
@@ -53,10 +53,13 @@ export class ClientRequests {
     request.buckets.cacheRead += usage.buckets.cacheRead;
     request.buckets.cacheCreation += usage.buckets.cacheCreation;
     if (usage.tsMs !== null) {
-      request.span = request.span === null ? { firstMs: usage.tsMs, lastMs: usage.tsMs } : {
-        firstMs: Math.min(request.span.firstMs, usage.tsMs),
-        lastMs: Math.max(request.span.lastMs, usage.tsMs),
-      };
+      request.span =
+        request.span === null
+          ? { firstMs: usage.tsMs, lastMs: usage.tsMs }
+          : {
+              firstMs: Math.min(request.span.firstMs, usage.tsMs),
+              lastMs: Math.max(request.span.lastMs, usage.tsMs),
+            };
     }
   };
 
@@ -89,15 +92,16 @@ export function dropRequestsLoggedByClients(
   for (const spans of unpaired.values()) spans.sort((a, b) => a.lastMs - b.lastMs);
 
   const dated = proxy.flatMap((request, index) =>
-    request.tsMs === null ? [] : [{ index, tsMs: request.tsMs, request }]
+    request.tsMs === null ? [] : [{ index, tsMs: request.tsMs, request }],
   );
   dated.sort((a, b) => a.tsMs - b.tsMs);
   const pairedIndexes = new Set<number>();
   for (const { index, tsMs, request } of dated) {
     const spans = unpaired.get(requestKey(request.model, request.buckets));
-    const at = spans?.findIndex((s) =>
-      s.firstMs - OVERLAP_WINDOW_MS <= tsMs && tsMs <= s.lastMs + OVERLAP_WINDOW_MS
-    ) ?? -1;
+    const at =
+      spans?.findIndex(
+        (s) => s.firstMs - OVERLAP_WINDOW_MS <= tsMs && tsMs <= s.lastMs + OVERLAP_WINDOW_MS,
+      ) ?? -1;
     if (at >= 0) {
       spans?.splice(at, 1);
       pairedIndexes.add(index);

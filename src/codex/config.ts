@@ -5,8 +5,8 @@
 import {
   type AgentAdapter,
   type CredentialWiring,
-  directNeedsCredentialError,
   type DirectWiring,
+  directNeedsCredentialError,
   directWiring,
   type ManagedWrite,
   reservePlannedPort,
@@ -17,13 +17,13 @@ import { Credential } from "../copilot_api/credential.ts";
 import { staticKeyDetail } from "../copilot_api/credential_detail.ts";
 import { directOverlay, landDirectPair } from "../copilot_api/direct_pair.ts";
 import { directSmoke, type EndpointSmoke } from "../copilot_api/endpoint_smoke.ts";
-import { configSetCommand, CopilotEnvConfig } from "../copilot_api/env_config.ts";
-import { isReducedGpt } from "../copilot_api/models.ts";
+import { CopilotEnvConfig, configSetCommand } from "../copilot_api/env_config.ts";
 import {
   DEFAULT_COPILOT_API_BASE,
   directClientHeaders,
   selectDirectIdentityAndHost,
 } from "../copilot_api/integration_identity.ts";
+import { isReducedGpt } from "../copilot_api/models.ts";
 import { OwnershipLedger } from "../copilot_api/ownership.ts";
 import { CopilotApiPaths } from "../copilot_api/paths.ts";
 import { copilotApiResolvePort, openaiBaseUrl } from "../copilot_api/port.ts";
@@ -110,16 +110,16 @@ function credentialTables(
 ): { http_headers?: Record<string, string>; auth?: Record<string, unknown> } {
   if (credential.kind === "static") {
     return {
-      "http_headers": { ...httpHeaders, [AUTHORIZATION_HEADER]: `Bearer ${credential.token}` },
+      http_headers: { ...httpHeaders, [AUTHORIZATION_HEADER]: `Bearer ${credential.token}` },
     };
   }
   return {
-    ...(Object.keys(httpHeaders).length > 0 ? { "http_headers": httpHeaders } : {}),
-    "auth": {
-      "command": auth.command,
-      "args": [...auth.args],
-      "timeout_ms": auth.timeoutMs,
-      "refresh_interval_ms": 300000,
+    ...(Object.keys(httpHeaders).length > 0 ? { http_headers: httpHeaders } : {}),
+    auth: {
+      command: auth.command,
+      args: [...auth.args],
+      timeout_ms: auth.timeoutMs,
+      refresh_interval_ms: 300000,
     },
   };
 }
@@ -141,12 +141,12 @@ function managedDirectProvider(
   // `copilot-developer-cli`.
   const httpHeaders = directClientHeaders(userAgent, directIntegrationId);
   return {
-    "name": codexProviderId(profile),
-    "base_url": directBaseUrl,
-    "wire_api": "responses",
-    "supports_websockets": false,
-    "requires_openai_auth": false,
-    // The launcher may cold-start deno; warm calls take well under a second, and Codex refreshes
+    name: codexProviderId(profile),
+    base_url: directBaseUrl,
+    wire_api: "responses",
+    supports_websockets: false,
+    requires_openai_auth: false,
+    // The launcher may cold-start the runtime; warm calls take well under a second, and Codex refreshes
     // lazily. The catalog refresh runs at wiring and launch, never inside this command.
     ...credentialTables(
       credential,
@@ -165,11 +165,11 @@ export function managedProxyProvider(
 ) {
   const auth = proxyTokenCommand(profile);
   return {
-    "name": codexProviderId(profile),
-    "base_url": baseUrl,
-    "wire_api": "responses",
-    "requires_openai_auth": false,
-    "supports_websockets": false,
+    name: codexProviderId(profile),
+    base_url: baseUrl,
+    wire_api: "responses",
+    requires_openai_auth: false,
+    supports_websockets: false,
     // Cold-starting the proxy runs a full child `agent start`: runtime startup, the daemon's
     // readiness wait (up to a ~120s ceiling), THEN model-alias sync and version logging before
     // the key prints. The first auth attempt must not time out after the proxy is ready.
@@ -207,9 +207,9 @@ const MANAGED_PROVIDER_KEYS: ReadonlySet<string> = new Set([
 // nothing to drift.
 function defaultConfig(): Record<string, unknown> {
   return {
-    "model_provider": CODEX_PROVIDER_ID,
-    "analytics": { "enabled": false },
-    "feedback": { "enabled": false },
+    model_provider: CODEX_PROVIDER_ID,
+    analytics: { enabled: false },
+    feedback: { enabled: false },
   };
 }
 
@@ -267,10 +267,13 @@ export function configureCodexConfig(codexHome: string, request: CodexWriteReque
   const doc: Doc = current ?? defaultConfig();
   // Loaded BEFORE anything is saved, so a profile file this write refuses to clobber fails the
   // write whole rather than after config.toml already changed.
-  const profileFile = profile === null ? null : {
-    path: codexProfileConfigPath(codexHome, profile),
-    doc: loadProfileConfig(codexHome, profile),
-  };
+  const profileFile =
+    profile === null
+      ? null
+      : {
+          path: codexProfileConfigPath(codexHome, profile),
+          doc: loadProfileConfig(codexHome, profile),
+        };
 
   // Every managed field is (re)written on every run, so a stale value or a missing managed key
   // heals; other providers, [analytics]/[feedback], and unknown top-level keys are left untouched.
@@ -317,7 +320,8 @@ export function configureCodexConfig(codexHome: string, request: CodexWriteReque
       doc.model_catalog_json = catalogFile;
       catalogRef = "written";
       if (previousRef !== catalogFile) {
-        catalogRefLine = `model_catalog_json = "${catalogFile}" set` +
+        catalogRefLine =
+          `model_catalog_json = "${catalogFile}" set` +
           (verdict === "unverifiable" ? UNVERIFIED_SUFFIX : "");
       }
     } else {
@@ -346,9 +350,8 @@ export function configureCodexConfig(codexHome: string, request: CodexWriteReque
   // The write's own line carries what the write means and lands before the fallible ledger
   // bookkeeping. Every profile shares this one file and the seam names a path once per process, so
   // the detail says nothing profile-specific (`agent profile` prints the launch hint).
-  const credentialLine = request.credential.kind === "command"
-    ? null
-    : staticKeyDetail(request.mode, profile, "cx");
+  const credentialLine =
+    request.credential.kind === "command" ? null : staticKeyDetail(request.mode, profile, "cx");
   const detail = ["Codex config", credentialLine, catalogRefLine].filter(Boolean).join("; ");
 
   // Reserved only now that the text is computed: a throw above leaves no reservation behind.
@@ -443,12 +446,13 @@ export async function directWiringFor(
   // The one identity-then-host rule (selectDirectIdentityAndHost, which the landing runs too): a
   // literal skips the HOST probe, never the identity selection, and a host `auto` moved to re-runs
   // the selection there.
-  const { integrationId, apiBase } = landing === "land"
-    ? await landDirectPair(profile, resolved, userAgent, overlay)
-    : await selectDirectIdentityAndHost(resolved, userAgent, {
-      pinned: overlay.pinned,
-      fixedHost: overlay.literal,
-    });
+  const { integrationId, apiBase } =
+    landing === "land"
+      ? await landDirectPair(profile, resolved, userAgent, overlay)
+      : await selectDirectIdentityAndHost(resolved, userAgent, {
+          pinned: overlay.pinned,
+          fixedHost: overlay.literal,
+        });
   return directWiring(integrationId, apiBase);
 }
 
@@ -465,10 +469,7 @@ function checkCodexConfig(): void {
     if (drift !== null) printWrapped(codexHostDriftLine(drift));
     // "direct" was classified from this very text, so it parses.
     if (status.providerMode === "direct" && read.kind === "text") {
-      printKeyValue(
-        "service_tier",
-        serviceTierDetail(parseToml(read.text)),
-      );
+      printKeyValue("service_tier", serviceTierDetail(parseToml(read.text)));
     }
     process.exitCode = providerModeExitCode(status.providerMode);
   } catch (e) {
@@ -488,8 +489,10 @@ function serviceTierDetail(doc: Record<string, unknown>): string {
   const tier = doc.service_tier;
   if (tier === undefined) return "not pinned";
   if (tier === COPILOT_REJECTED_SERVICE_TIER) {
-    return `"${tier}" (Copilot Direct rejects it; the opt-in codex.model-catalog stops Codex from ` +
-      `sending any tier, else set service_tier = "default" or "flex" in config.toml)`;
+    return (
+      `"${tier}" (Copilot Direct rejects it; the opt-in codex.model-catalog stops Codex from ` +
+      `sending any tier, else set service_tier = "default" or "flex" in config.toml)`
+    );
   }
   if (typeof tier === "string" && COPILOT_ACCEPTED_SERVICE_TIERS.has(tier)) {
     return `"${tier}" (accepted by Copilot Direct)`;
@@ -602,19 +605,23 @@ function writeCodexProbeConfig(
   direct: DirectWiring,
   credential: CredentialWiring,
 ): void {
-  saveCodexToml(codexConfigPath(tmpHome), {
-    ...defaultConfig(),
-    "model_provider": CODEX_PROBE_PROVIDER_ID,
-    "model_providers": {
-      [CODEX_PROBE_PROVIDER_ID]: managedDirectProvider(
-        credential,
-        null,
-        direct.directIntegrationId,
-        codexUserAgent(),
-        direct.directBaseUrl,
-      ),
+  saveCodexToml(
+    codexConfigPath(tmpHome),
+    {
+      ...defaultConfig(),
+      model_provider: CODEX_PROBE_PROVIDER_ID,
+      model_providers: {
+        [CODEX_PROBE_PROVIDER_ID]: managedDirectProvider(
+          credential,
+          null,
+          direct.directIntegrationId,
+          codexUserAgent(),
+          direct.directBaseUrl,
+        ),
+      },
     },
-  }, "Codex probe config");
+    "Codex probe config",
+  );
 }
 
 /** With no codex CLI on the machine the endpoint smoke judges the credential instead. False means
@@ -628,18 +635,20 @@ export function detectCodexDirect(
   return probeDirectWorks(
     CODEX_PROBE,
     (tmpHome) => writeCodexProbeConfig(tmpHome, direct, credential),
-    ghToken === null ? null : directSmoke(
-      CODEX_ENDPOINT_SMOKE,
-      ghToken,
-      codexUserAgent(),
-      direct.directIntegrationId,
-      direct.directBaseUrl,
-      {
-        fetchImpl: deps?.fetchImpl,
-        pinnedModel: new CopilotEnvConfig().resolve("probe.codex-model", { profile: null }).value ??
-          null,
-      },
-    ),
+    ghToken === null
+      ? null
+      : directSmoke(
+          CODEX_ENDPOINT_SMOKE,
+          ghToken,
+          codexUserAgent(),
+          direct.directIntegrationId,
+          direct.directBaseUrl,
+          {
+            fetchImpl: deps?.fetchImpl,
+            pinnedModel:
+              new CopilotEnvConfig().resolve("probe.codex-model", { profile: null }).value ?? null,
+          },
+        ),
     deps,
   );
 }
@@ -658,7 +667,7 @@ export function codexAdapter(): AgentAdapter {
       }
       // The farm derivation records the home only after the write lands in it.
       await withCodexHostFarm((codexHome) =>
-        applyCodexConfig(codexHome, write, options.directToken ?? null, null)
+        applyCodexConfig(codexHome, write, options.directToken ?? null, null),
       );
     },
     removeProfile(name) {

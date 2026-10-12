@@ -2,21 +2,18 @@
 // what the attestation says and who may sign it. Loaded lazily by the update pipeline's default
 // verifier: the sigstore stack is well over a megabyte of CommonJS and `agent profile env` runs at every
 // shell start.
-//
-// The digest shim MUST load before the first sigstore import: tuf-js and @sigstore/core call
-// node:crypto verify() without a digest, which Deno rejects.
-import "../utils/node_crypto_digest_shim.ts";
+
+import { join } from "node:path";
 import { bundleFromJSON } from "@sigstore/bundle";
 import type { TrustedRoot } from "@sigstore/protobuf-specs";
 import { getTrustedRoot } from "@sigstore/tuf";
 import { toSignedEntity, toTrustMaterial, Verifier } from "@sigstore/verify";
-import { join } from "node:path";
 import { resolveRootHome } from "../copilot_api/paths.ts";
 import { errMessage } from "../utils/error.ts";
 import {
-  assertSubjectsAttested,
   ATTESTATION_NAME,
   type AttestedSubject,
+  assertSubjectsAttested,
   cannotVerifyMessage,
   IN_TOTO_PAYLOAD_TYPE,
   parseStatement,
@@ -27,11 +24,11 @@ import {
 
 /** Sigstore's public-good TUF mirror, passed explicitly so the trust root's origin is ours to
  *  read here, never the dependency's default. */
-export const TUF_MIRROR_URL = "https://tuf-repo-cdn.sigstore.dev";
+const TUF_MIRROR_URL = "https://tuf-repo-cdn.sigstore.dev";
 
-/** A subsystem cache under copilot-env's own root home (like the proxy float's deno cache), so
+/** A subsystem cache under copilot-env's own root home (like the proxy float's bun cache), so
  *  `agent uninstall`'s home sweep removes it. */
-export function tufCachePath(rootHome: string = resolveRootHome()): string {
+function tufCachePath(rootHome: string = resolveRootHome()): string {
   return join(rootHome, "sigstore", "tuf");
 }
 
@@ -83,11 +80,12 @@ export async function verifyReleaseProvenance(
 
   let trustedRoot: TrustedRoot;
   try {
-    trustedRoot = opts.trustedRoot ??
-      await getTrustedRoot({
+    trustedRoot =
+      opts.trustedRoot ??
+      (await getTrustedRoot({
         mirrorURL: TUF_MIRROR_URL,
         cachePath: opts.cachePath ?? tufCachePath(),
-      });
+      }));
   } catch (e) {
     throw new Error(
       cannotVerifyMessage(

@@ -2,11 +2,13 @@
 // through `agent migrate <from> <to>`: runPostFlipMigrations (src/install/installer.ts) spawns it
 // on the NEW binary after `agent update` or a reinstall flips `current`, so the migrations load
 // from the new code, not the already-running old process. A dev checkout may run it directly:
-//   deno run -P=cli src/migrations/index.ts <fromVersion> <toVersion>
+//   bun src/migrations/index.ts <fromVersion> <toVersion>
 import "../utils/dotenv.ts";
 import { consola } from "consola";
 import { errMessage } from "../utils/error.ts";
+import { dryRunActive } from "../utils/fs_facade.ts";
 import { configureConsolaOutput } from "../utils/logger.ts";
+import { PROJECT_ROOT } from "../utils/root.ts";
 import { type SemverString, stripV, toSemverString, versionLessThan } from "../utils/semver.ts";
 import { v400AutoupdateFlag, v400ClaudeWiring, v400CodexWiring, v400ShellFence } from "./4.0.0.ts";
 import { v402DesktopHelpers, v402GhAccountPin, v402RootLayout } from "./4.0.2.ts";
@@ -21,8 +23,7 @@ import {
   v409StateFold,
   v409StaticKeyScope,
 } from "./4.0.9.ts";
-import { dryRunActive } from "../utils/fs_facade.ts";
-import { PROJECT_ROOT } from "../utils/root.ts";
+import { v501DenoLeftovers, v501OsLockSidecars } from "./5.0.1.ts";
 
 /** One step, named for the release it migrates AWAY FROM (authored against the current release,
  *  with no future number to predict). It runs when an update leaves that version behind:
@@ -62,6 +63,8 @@ const MIGRATIONS: Migration[] = [
   v409IdentityCache,
   v409LaunchersBlock,
   v409ProfileVerbTree,
+  v501OsLockSidecars,
+  v501DenoLeftovers,
 ];
 
 // versionLessThan tolerates unparseable input by answering "not less-than", so a
@@ -96,9 +99,14 @@ export function dueMigrations(
   const layoutRank = (m: Migration) => (m.layout === true ? 0 : 1);
   return migrations
     .filter((m) => !versionLessThan(m.version, f) && versionLessThan(m.version, t))
-    .sort((a, b) =>
-      layoutRank(a) - layoutRank(b) ||
-      (versionLessThan(a.version, b.version) ? -1 : versionLessThan(b.version, a.version) ? 1 : 0)
+    .sort(
+      (a, b) =>
+        layoutRank(a) - layoutRank(b) ||
+        (versionLessThan(a.version, b.version)
+          ? -1
+          : versionLessThan(b.version, a.version)
+            ? 1
+            : 0),
     );
 }
 
@@ -137,7 +145,7 @@ if (import.meta.main) {
   configureConsolaOutput();
   const [from, to] = process.argv.slice(2);
   if (!from || !to) {
-    consola.error("usage: deno run -P=cli src/migrations/index.ts <fromVersion> <toVersion>");
+    consola.error("usage: bun src/migrations/index.ts <fromVersion> <toVersion>");
     process.exitCode = 2;
   } else {
     runMigrations(from, to).catch((e: unknown) => {

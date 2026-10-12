@@ -1,7 +1,5 @@
 // Idempotent: a second run finds nothing and exits 0.
-import { homedir } from "node:os";
 import { consola } from "consola";
-import { prompt } from "../utils/logger.ts";
 import { claudeProfileArtifacts, removeClaudeDefaultWiring } from "../claude/config.ts";
 import {
   type ClaudeDesktopOwnedArtifacts,
@@ -21,11 +19,14 @@ import { stopTrackedProxy } from "../copilot_api/daemon.ts";
 import { allProfileNames } from "../copilot_api/env_state.ts";
 import { resolveRootHome } from "../copilot_api/paths.ts";
 import { DAEMON_SIGKILL_GRACE_MS } from "../copilot_api/process.ts";
-import { profileLabel, type ProfileName } from "../copilot_api/profile.ts";
+import { type ProfileName, profileLabel } from "../copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../copilot_api/run_state.ts";
 import { proxyFloatArtifactPaths, removeProxyFloatArtifacts } from "../proxy_float.ts";
 import { ownedShellTargets, removeShellIntegrationFrom } from "../shell/integration.ts";
 import { errMessage } from "../utils/error.ts";
+import * as fs from "../utils/fs_facade.ts";
+import { userHomeDir } from "../utils/home.ts";
+import { prompt } from "../utils/logger.ts";
 import {
   installStateRoot,
   isProtectedRoot,
@@ -34,7 +35,6 @@ import {
   rootMode,
 } from "../utils/root.ts";
 import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
-import * as fs from "../utils/fs_facade.ts";
 import { runDryRun } from "./dry_run.ts";
 import { deleteProfileEverywhere } from "./profile.ts";
 
@@ -189,8 +189,7 @@ function uninstallSteps(ctx: UninstallContext): UninstallStep[] {
     // wiring gone nothing can.
     async () => {
       await stopAllDaemons(ctx.profiles);
-      // Before the home goes: a sidecar install can put the float's cache OUTSIDE the home, and
-      // deleting the home alone would strand it.
+      // Named one by one ahead of the home sweep: the plan lists them, so the removal matches it.
       removeProxyFloatArtifacts(ctx.rootHome, ctx.targets.floatArtifacts);
       fs.rm(ctx.rootHome, { recursive: true, force: true, detail: "the copilot-api home" });
     },
@@ -221,7 +220,7 @@ function uninstallSteps(ctx: UninstallContext): UninstallStep[] {
       // Out of the doomed tree first; a dry run deletes nothing and moves nothing.
       if (!fs.dryRunActive()) {
         try {
-          process.chdir(homedir());
+          process.chdir(userHomeDir());
         } catch {
           // deletion may still succeed from the current cwd
         }
@@ -250,9 +249,10 @@ export function resolveUninstallContext(
   const { homes: codexHomes, complete: codexSweepComplete } = knownCodexHomes();
   // A versioned install's compiled root is the `<top>/current` link; the DELETE target is the TOP
   // root (versions/, bin/, and the link itself).
-  const deleteRoot: RootMode = installRoot.kind === "compiled"
-    ? { kind: "compiled", root: installStateRoot(installRoot.root) }
-    : installRoot;
+  const deleteRoot: RootMode =
+    installRoot.kind === "compiled"
+      ? { kind: "compiled", root: installStateRoot(installRoot.root) }
+      : installRoot;
   const rootHome = resolveRootHome();
   const claudeHome = resolveClaudeHome();
   const profiles = allProfileNames();
@@ -331,8 +331,7 @@ export async function runUninstall(
     consola.success("copilot-env is uninstalled. Restart your shell to finish.");
   }
   consola.info(
-    "Not removed: the agent CLIs themselves (claude / copilot / codex npm globals), " +
-      "a deno installed for a source checkout (and its PATH entry), the " +
+    "Not removed: the agent CLIs themselves (claude / copilot / codex npm globals), the " +
       "PowerShell execution policy, Codex's " +
       "sandbox_workspace_write.network_access key, other hosts' ~/.codex/hosts/* dirs " +
       "on a shared home, and the agents' own session history.",

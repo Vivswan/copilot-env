@@ -35,7 +35,7 @@ const COMMENT_FILE = "comment.md";
 const VERDICT_FILE = "verdict";
 const COMMENT_OUTPUT = "comment";
 
-const COST_ARGS = ["-P=cli", "src/cli.ts", "cost", "--json", "--per-day"];
+const COST_ARGS = ["run", "src/cli.ts", "cost", "--json", "--per-day"];
 
 /** The one top-level key that describes the run, not the cost; dropped before the comparison. */
 const RUNTIME_KEY = "runtime";
@@ -52,7 +52,7 @@ const FAILURE_SUMMARY_BYTES = 8 * 1024;
 const DEFAULT_TREE_MB = 1024;
 const DEFAULT_SEED = 1;
 const DEFAULT_FIXTURES_SCRIPT = "scripts/usage/fixtures.ts";
-/** A child that outlives this has wedged; `deno ci` and a 1 GB scan both finish well inside. */
+/** A child that outlives this has wedged; `bun install` and a 1 GB scan both finish well inside. */
 const DEFAULT_CHILD_TIMEOUT_MS = 20 * 60 * 1000;
 
 const REPO_ROOT = resolve(fileURLToPath(new URL("../../", import.meta.url)));
@@ -62,8 +62,9 @@ const SHA = /^[0-9a-f]{7,40}$/;
 /** `intended` is a differing JSON the PR declared on purpose with INTENDED_LABEL: a pass. */
 type Verdict = "match" | "differs" | "intended";
 
-/** The PR label that declares a differing JSON intended; the workflow passes the PR's labels in
- *  PR_LABELS, comma-separated, so `measure` never asks GitHub. */
+/** The PR label that declares a differing JSON intended, and with it a base that produces no
+ *  payload at all (its install or its cost run fails: the head is then measured alone); the
+ *  workflow passes the PR's labels in PR_LABELS, comma-separated, so `measure` never asks GitHub. */
 const INTENDED_LABEL = "cost-metrics: intended";
 
 interface MeasureOptions {
@@ -120,15 +121,19 @@ interface Window {
 /**
  * How a window's head payloads relate to the base's; `differs` alone fails the job. The
  * labels are the differing runs, first one first; the diff is that first run against the base.
+ * `head-only`: the base produced no payload (`reason` is its failure's first stderr line) and
+ * the PR declared the difference intended, so the head's numbers stand alone.
  */
 type Outcome =
   | { kind: "match" }
   | { kind: "transient"; labels: [string, ...string[]] }
-  | { kind: "differs"; labels: [string, ...string[]]; diff: string };
+  | { kind: "differs"; labels: [string, ...string[]]; diff: string }
+  | { kind: "head-only"; reason: string };
 
 export interface WindowResult {
   window: string;
-  base: SideMetrics;
+  /** Undefined when the base produced no payload. */
+  base: SideMetrics | undefined;
   head: SideMetrics;
   outcome: Outcome;
   /** Whether any run's payload carried RUNTIME_KEY (dropped before the comparison). */
@@ -192,8 +197,8 @@ function parseMeasureOptions(argv: readonly string[]): MeasureOptions {
     headSha,
     mb: mb === undefined ? DEFAULT_TREE_MB : nonNegativeInt(mb, "the tree size (MB)"),
     seed: nonNegativeInt(flags.get("seed") ?? String(DEFAULT_SEED), "--seed"),
-    fixturesScript: setting(flags, "fixtures", "COST_METRICS_FIXTURES_SCRIPT") ??
-      DEFAULT_FIXTURES_SCRIPT,
+    fixturesScript:
+      setting(flags, "fixtures", "COST_METRICS_FIXTURES_SCRIPT") ?? DEFAULT_FIXTURES_SCRIPT,
     intended: (setting(flags, "labels", "PR_LABELS") ?? "").split(",").includes(INTENDED_LABEL),
   };
 }
@@ -222,8 +227,8 @@ export interface RunOptions {
 }
 
 /**
- * Deno.Command with clearEnv, not node:child_process: deno's polyfill MERGES `env` into the
- * parent's. The kill is manual because Deno's own `signal` option only SIGTERMs.
+ * Bun.spawn: a given `env` IS the child's environment (nothing of the parent's leaks in), and
+ * the kill is manual because the timeout must SIGKILL, not SIGTERM.
  */
 export async function run(
   command: string,
@@ -231,24 +236,21 @@ export async function run(
   opts: RunOptions,
 ): Promise<RunResult> {
   // Spawn first: a missing executable throws here, synchronously, with nothing yet to clean up.
-  const child = new Deno.Command(command, {
-    args: [...args],
+  const child = Bun.spawn([command, ...args], {
     cwd: opts.cwd ?? REPO_ROOT,
     env: opts.env,
-    clearEnv: true,
-    stdin: "null",
-    stdout: "piped",
-    stderr: "piped",
-  }).spawn();
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
+  });
   const timeoutMs = opts.timeoutMs ?? DEFAULT_CHILD_TIMEOUT_MS;
   const timeout = new AbortController();
   const timer = setTimeout(
     () => timeout.abort(new Error(`timed out after ${timeoutMs} ms`)),
     timeoutMs,
   );
-  const signal = opts.signal === undefined
-    ? timeout.signal
-    : AbortSignal.any([timeout.signal, opts.signal]);
+  const signal =
+    opts.signal === undefined ? timeout.signal : AbortSignal.any([timeout.signal, opts.signal]);
   const kill = (): void => {
     try {
       child.kill("SIGKILL");
@@ -258,9 +260,15 @@ export async function run(
   };
   if (signal.aborted) kill();
   else signal.addEventListener("abort", kill, { once: true });
-  let output: Deno.CommandOutput;
+  let stdout: string;
+  let stderr: string;
+  let status: number;
   try {
-    output = await child.output();
+    [stdout, stderr, status] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
   } finally {
     clearTimeout(timer);
     signal.removeEventListener("abort", kill);
@@ -268,12 +276,7 @@ export async function run(
   if (signal.aborted) {
     throw new Error(`${command} ${args.join(" ")} was killed: ${String(signal.reason)}`);
   }
-  const decoder = new TextDecoder();
-  return {
-    status: output.code,
-    stdout: decoder.decode(output.stdout),
-    stderr: decoder.decode(output.stderr),
-  };
+  return { status, stdout, stderr };
 }
 
 async function mustRun(
@@ -301,13 +304,11 @@ export function childEnv(extra: Record<string, string>): Record<string, string> 
   return { ...env, ...extra };
 }
 
-/** The environment for the setup commands (git, deno ci, deno info): the runner's own homes. */
+/** The environment for the setup commands (git, bun install): the runner's own home. */
 function setupEnv(): Record<string, string> {
-  const extra: Record<string, string> = { DENO_NO_UPDATE_CHECK: "1" };
-  for (const name of ["HOME", "DENO_DIR"]) {
-    const value = process.env[name];
-    if (value !== undefined) extra[name] = value;
-  }
+  const extra: Record<string, string> = {};
+  const home = process.env.HOME;
+  if (home !== undefined) extra.HOME = home;
   return childEnv(extra);
 }
 
@@ -332,33 +333,15 @@ function shortSha(sha: string): string {
   return sha.slice(0, 7);
 }
 
-/** The deno cache dir, pinned explicitly because the measured runs get a fresh HOME. */
-async function denoDir(): Promise<string> {
-  const result = await mustRun("deno", ["info", "--json"], { env: setupEnv() });
-  const info: unknown = JSON.parse(result.stdout);
-  if (
-    typeof info !== "object" || info === null || !("denoDir" in info) ||
-    typeof info.denoDir !== "string"
-  ) {
-    throw new Error("deno info --json did not report denoDir");
-  }
-  return info.denoDir;
-}
-
-/** `deno run` pinned to a checkout's own deno.json: deno otherwise looks for the config from
- *  the SCRIPT's directory, so a fixtures script outside the checkout would find none. */
-function denoRun(checkoutDir: string): string[] {
-  return ["run", "--config", join(checkoutDir, "deno.json")];
-}
-
+/** `cache` is bun's transpiler cache, pinned explicitly because the measured runs get a fresh
+ *  HOME and the default lives under it. */
 function treeEnv(treeHome: string, copilotEnvHome: string, cache: string): Record<string, string> {
   return childEnv({
     HOME: treeHome,
     CODEX_HOME: join(treeHome, ".codex"),
     CLAUDE_CONFIG_DIR: join(treeHome, ".claude"),
     COPILOT_API_HOME: copilotEnvHome,
-    DENO_DIR: cache,
-    DENO_NO_UPDATE_CHECK: "1",
+    BUN_RUNTIME_TRANSPILER_CACHE_PATH: cache,
   });
 }
 
@@ -372,8 +355,10 @@ function localMidnightMs(day: string, what: string): number {
   const date = new Date(Number(y), Number(m) - 1, Number(d));
   // Years 0..99 would otherwise be read as 1900..1999.
   if (y !== undefined) date.setFullYear(Number(y));
-  const valid = match !== null &&
-    date.getFullYear() === Number(y) && date.getMonth() === Number(m) - 1 &&
+  const valid =
+    match !== null &&
+    date.getFullYear() === Number(y) &&
+    date.getMonth() === Number(m) - 1 &&
     date.getDate() === Number(d);
   if (!valid) throw new Error(`${what} is not a calendar YYYY-MM-DD day: ${JSON.stringify(day)}`);
   return date.getTime();
@@ -413,17 +398,11 @@ function parseTreeSummary(line: string): TreeSummary {
 async function generateTree(opts: MeasureOptions, treeHome: string): Promise<TreeSummary> {
   const script = resolve(REPO_ROOT, opts.fixturesScript);
   if (!existsSync(script)) throw new Error(`fixtures script not found: ${script}`);
-  const result = await mustRun("deno", [
-    ...denoRun(REPO_ROOT),
-    "-P=test",
-    script,
-    "--out",
-    treeHome,
-    "--mb",
-    String(opts.mb),
-    "--seed",
-    String(opts.seed),
-  ], { env: setupEnv() });
+  const result = await mustRun(
+    "bun",
+    [script, "--out", treeHome, "--mb", String(opts.mb), "--seed", String(opts.seed)],
+    { env: setupEnv() },
+  );
   const lines = result.stdout.trim().split("\n");
   return parseTreeSummary(lines[lines.length - 1] ?? "");
 }
@@ -461,7 +440,7 @@ function treeEntries(root: string): { rel: string; path: string }[] {
       const path = join(entry.parentPath, entry.name);
       return { rel: relative(root, path), path };
     })
-    .sort((a, b) => a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0);
+    .sort((a, b) => (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0));
 }
 
 /** Read-only tree while it is measured: a cost run must not write the sessions it reads. */
@@ -495,12 +474,34 @@ function treeDigest(root: string): string {
   return hash.digest("hex");
 }
 
+/** The first stderr line of a failed child, as mustRun and measure phrase their errors (the
+ *  command's own line first, the child's stderr after it); a one-line error is its own line. */
+export function failureLine(error: unknown): string {
+  const lines = (error instanceof Error ? error.message : String(error))
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "");
+  return lines[1] ?? lines[0] ?? "no detail";
+}
+
+/** Nothing the base runs may fail under the declared intent: the base then reads as producing
+ *  no payload, with the failure's first stderr line, and the head is measured alone. Without
+ *  INTENDED_LABEL the failure is the error it always was. */
+async function underIntent<T>(
+  intended: boolean,
+  step: () => Promise<T>,
+): Promise<{ kind: "ran"; value: T } | { kind: "no-payload"; reason: string }> {
+  try {
+    return { kind: "ran", value: await step() };
+  } catch (error: unknown) {
+    if (!intended) throw error;
+    return { kind: "no-payload", reason: failureLine(error) };
+  }
+}
+
 /** Whether the checkout's `cost` command knows NO_INDEX_FLAG; a failing --help is an error. */
 async function supportsNoIndex(dir: string, env: Record<string, string>): Promise<boolean> {
-  const help = await mustRun("deno", [...denoRun(dir), "-P=cli", "src/cli.ts", "cost", "--help"], {
-    cwd: dir,
-    env,
-  });
+  const help = await mustRun("bun", ["run", "src/cli.ts", "cost", "--help"], { cwd: dir, env });
   return help.stdout.includes(NO_INDEX_FLAG);
 }
 
@@ -515,10 +516,7 @@ async function measure(
   env: Record<string, string>,
 ): Promise<Measurement> {
   const started = performance.now();
-  const result = await mustRun("deno", [...denoRun(checkout.dir), ...COST_ARGS, ...args], {
-    cwd: checkout.dir,
-    env,
-  });
+  const result = await mustRun("bun", [...COST_ARGS, ...args], { cwd: checkout.dir, env });
   const ms = Math.round(performance.now() - started);
   if (result.stdout.trim() === "") {
     throw new Error(`${checkout.label}: cost --json printed nothing\n${result.stderr.trimEnd()}`);
@@ -544,10 +542,11 @@ function totalUsd(section: unknown): number {
 }
 
 /**
- * A base payload with no session usage inside the window, or none of it priced, would make
- * every match vacuous: the first leaves nothing to compare, the second compares only zeros.
+ * A payload with no session usage inside the window, or none of it priced, would make every
+ * match vacuous: the first leaves nothing to compare, the second compares only zeros. `side` is
+ * the checkout the payload came from.
  */
-function assertWindowHasUsage(window: string, json: Record<string, unknown>): void {
+function assertWindowHasUsage(window: string, side: string, json: Record<string, unknown>): void {
   const sources = [
     json.claudeSessions,
     ...Object.values(record(record(json.codexSessions)?.providers) ?? {}),
@@ -560,7 +559,7 @@ function assertWindowHasUsage(window: string, json: Record<string, unknown>): vo
   }
   if (!(sources.reduce((sum: number, source) => sum + totalUsd(source), 0) > 0)) {
     throw new Error(
-      `${window}: the base priced nothing (pricing unavailable?), so a base/head match ` +
+      `${window}: the ${side} priced nothing (pricing unavailable?), so a base/head match ` +
         "would prove nothing about cost",
     );
   }
@@ -651,12 +650,7 @@ const BLOCK_MIN_LINES = 3;
  * A fenced block of `text` whose RENDERED form fits `maxLines` lines and `maxBytes` bytes.
  * A budget too small for even an empty block is a caller bug and throws.
  */
-function boundedBlock(
-  text: string,
-  info: string,
-  maxLines: number,
-  maxBytes: number,
-): string {
+function boundedBlock(text: string, info: string, maxLines: number, maxBytes: number): string {
   const minOverhead = 3 + byteLength(info) + 1 + 1 + 3;
   if (maxLines < BLOCK_MIN_LINES || maxBytes < minOverhead) {
     throw new RangeError(
@@ -712,22 +706,21 @@ async function unifiedDiff(scratch: string, baseText: string, headText: string):
   writeFileSync(join(scratch, "head.json"), headText);
   // --no-index compares two paths outside any repo; exit 1 is "they differ".
   // Relative names from the scratch dir keep the temp path out of the header.
-  const result = await run("git", [
-    "diff",
-    "--no-index",
-    "--no-color",
-    "--unified=3",
-    "--",
-    "base.json",
-    "head.json",
-  ], { cwd: scratch, env: setupEnv() });
+  const result = await run(
+    "git",
+    ["diff", "--no-index", "--no-color", "--unified=3", "--", "base.json", "head.json"],
+    { cwd: scratch, env: setupEnv() },
+  );
   if (result.status > 1) throw new Error(`git diff exited ${result.status}\n${result.stderr}`);
   return result.stdout;
 }
 
 interface Bench {
-  base: Checkout;
+  /** The base checkout, or the reason it produced no payload before any window ran. */
+  base: { kind: "ran"; value: Checkout } | { kind: "no-payload"; reason: string };
   head: Checkout;
+  /** The PR carries INTENDED_LABEL: a base that fails to produce a payload reads as absent. */
+  intended: boolean;
   treeHome: string;
   cache: string;
   scratch: string;
@@ -808,41 +801,77 @@ function sideMetrics(runs: SideRuns): SideMetrics {
   };
 }
 
+type BaseRuns =
+  | { kind: "ran"; checkout: Checkout; runs: SideRuns }
+  | { kind: "no-payload"; reason: string };
+
+/** The base's priming and timed runs, with the head's priming between them so both sides are
+ *  warm alike; a base that fails under the declared intent reads as producing no payload. */
+async function baseRunsUnderIntent(
+  bench: Bench,
+  window: Window,
+  env: (home: string) => Record<string, string>,
+  primeHead: () => Promise<void>,
+): Promise<BaseRuns> {
+  if (bench.base.kind === "no-payload") {
+    await primeHead();
+    return bench.base;
+  }
+  const checkout = bench.base.value;
+  const primed = await underIntent(bench.intended, () =>
+    measure(checkout, window.args, env(bench.freshHome("prime-base"))),
+  );
+  await primeHead();
+  if (primed.kind === "no-payload") return primed;
+  const runs = await underIntent(bench.intended, () => measureSide(bench, checkout, window));
+  return runs.kind === "ran" ? { kind: "ran", checkout, runs: runs.value } : runs;
+}
+
 async function measureWindow(bench: Bench, window: Window): Promise<WindowResult> {
   const env = (home: string): Record<string, string> => treeEnv(bench.treeHome, home, bench.cache);
-  const { base, head } = bench;
+  const { head } = bench;
 
   // Untimed priming of BOTH checkouts in throwaway homes: the timed runs then find the tree
   // in the OS file cache and each checkout's modules already emitted, so neither side pays
-  // for the disk or for deno's first-run work.
-  console.log(`${window.label}: priming`);
-  await measure(base, window.args, env(bench.freshHome("prime-base")));
-  await measure(head, window.args, env(bench.freshHome("prime-head")));
-
-  console.log(`${window.label}: measuring`);
-  const baseRuns = await measureSide(bench, base, window);
-  assertWindowHasUsage(window.label, baseRuns.cold.json);
+  // for the disk or for bun's first-run transpile.
+  console.log(`${window.label}: priming and measuring`);
+  const baseRuns = await baseRunsUnderIntent(bench, window, env, async () => {
+    await measure(head, window.args, env(bench.freshHome("prime-head")));
+  });
   const headRuns = await measureSide(bench, head, window);
+  if (baseRuns.kind === "no-payload") {
+    console.log(`${window.label}: the base produced no payload (${baseRuns.reason}); head only`);
+    assertWindowHasUsage(window.label, head.label, headRuns.cold.json);
+    return {
+      window: window.label,
+      base: undefined,
+      head: sideMetrics(headRuns),
+      outcome: { kind: "head-only", reason: baseRuns.reason },
+      runtimeKeyPresent: sideRunList(headRuns).some(({ run }) => RUNTIME_KEY in run.json),
+    };
+  }
+  const { checkout: base, runs: baseSide } = baseRuns;
+  assertWindowHasUsage(window.label, base.label, baseSide.cold.json);
   let recheckRun: Measurement | undefined;
   const { outcome } = await classifyPayloads(
-    baseRuns.cold.text,
+    baseSide.cold.text,
     sideRunList(headRuns).map(({ label, run }) => ({ label: `head ${label}`, text: run.text })),
     async () => {
       console.log(`${window.label}: a head payload differs, re-running base`);
       recheckRun = await measure(base, window.args, env(bench.freshHome("base-recheck")));
       return recheckRun.text;
     },
-    (headText) => unifiedDiff(bench.scratch, baseRuns.cold.text, headText),
+    (headText) => unifiedDiff(bench.scratch, baseSide.cold.text, headText),
   );
 
   const allRuns = [
-    ...sideRunList(baseRuns).map(({ run }) => run),
+    ...sideRunList(baseSide).map(({ run }) => run),
     ...sideRunList(headRuns).map(({ run }) => run),
     ...(recheckRun ? [recheckRun] : []),
   ];
   return {
     window: window.label,
-    base: sideMetrics(baseRuns),
+    base: sideMetrics(baseSide),
     head: sideMetrics(headRuns),
     outcome,
     runtimeKeyPresent: allRuns.some(({ json }) => RUNTIME_KEY in json),
@@ -857,6 +886,8 @@ function verdictCell(outcome: Outcome): string {
       return "match (after a base re-run)";
     case "differs":
       return `DIFFERS (${outcome.labels.join(", ")})`;
+    case "head-only":
+      return "no base payload (declared intended)";
   }
 }
 
@@ -875,7 +906,7 @@ export function deltaCell(
   const signed = (value: number, digits: number): string =>
     `${value < 0 ? "-" : "+"}${Math.abs(value).toFixed(digits)}`;
   if (base === 0) return `${signed(delta, 0)}${unit}`;
-  const percent = Number((delta / base * 100).toFixed(1));
+  const percent = Number(((delta / base) * 100).toFixed(1));
   return `${signed(delta, 0)}${unit} (${signed(percent, 1)}%)`;
 }
 
@@ -889,11 +920,13 @@ const MEASURE_ROWS: readonly [string, (side: SideMetrics) => number | undefined,
 export function renderWindowTable(result: WindowResult): string[] {
   const value = (v: number | undefined, unit: string): string =>
     v === undefined ? "n/a" : `${v}${unit}`;
+  const base = (pick: (side: SideMetrics) => number | undefined): number | undefined =>
+    result.base === undefined ? undefined : pick(result.base);
   const rows = MEASURE_ROWS.map(([label, pick, unit]) => [
     label,
-    value(pick(result.base), unit),
+    value(base(pick), unit),
     value(pick(result.head), unit),
-    deltaCell(pick(result.head), pick(result.base), unit),
+    deltaCell(pick(result.head), base(pick), unit),
   ]);
   rows.push(["JSON vs base", "", "", verdictCell(result.outcome)]);
   return [
@@ -914,30 +947,48 @@ function renderComment(
 ): string {
   if (results.length === 0) throw new Error("no windows measured");
   const anyDiffers = results.some((result) => result.outcome.kind === "differs");
-  const headLabel = opts.headSha !== undefined && shortSha(opts.headSha) !== shortSha(measuredSha)
-    ? `${shortSha(measuredSha)} (merge of PR head ${shortSha(opts.headSha)})`
-    : shortSha(measuredSha);
+  const headOnly = results.flatMap((result) =>
+    result.outcome.kind === "head-only" ? [result.outcome.reason] : [],
+  );
+  const headLabel =
+    opts.headSha !== undefined && shortSha(opts.headSha) !== shortSha(measuredSha)
+      ? `${shortSha(measuredSha)} (merge of PR head ${shortSha(opts.headSha)})`
+      : shortSha(measuredSha);
   const lines = [
     COMMENT_MARKER,
-    `## Cost metrics: ${anyDiffers ? "JSON DIFFERS from base" : "JSON matches base"}`,
+    `## Cost metrics: ${
+      headOnly.length > 0
+        ? "head only"
+        : anyDiffers
+          ? "JSON DIFFERS from base"
+          : "JSON matches base"
+    }`,
     "",
+    ...headOnly.flatMap((reason) => [
+      `base \`${shortSha(baseSha)}\` produced no payload (${reason}); the PR declares the ` +
+        `difference intended (\`${INTENDED_LABEL}\`); head only.`,
+      "",
+    ]),
     ...(anyDiffers && opts.intended
       ? [
-        `The diff is declared intended via the \`${INTENDED_LABEL}\` label, so the check passes.`,
-        "",
-      ]
+          `The diff is declared intended via the \`${INTENDED_LABEL}\` label, so the check passes.`,
+          "",
+        ]
       : []),
-    "`agent cost --json --per-day` over one synthetic tree, base and head back to back on one runner.",
+    `\`agent cost --json --per-day\` over one synthetic tree, ${
+      headOnly.length > 0 ? "head alone" : "base and head back to back"
+    } on one runner.`,
     "",
     ...results.flatMap((result) => [...renderWindowTable(result), ""]),
     `- base \`${shortSha(baseSha)}\`, head \`${headLabel}\``,
     `- tree: ${opts.mb} MB requested, seed ${opts.seed}; ${tree.files} files, ${tree.bytes} bytes, ` +
-    `days ${tree.firstDay}..${tree.lastDay}`,
+      `days ${tree.firstDay}..${tree.lastDay}`,
     "- cold: first run in a fresh copilot-env home; warm: second run in the same home; " +
-    `${NO_INDEX_FLAG}: a third run there with the index bypassed. Both checkouts were primed ` +
-    "untimed first, so the numbers compare the scans, not the disk.",
+      `${NO_INDEX_FLAG}: a third run there with the index bypassed. ${
+        headOnly.length > 0 ? "The checkout was" : "Both checkouts were"
+      } primed untimed first, so the numbers measure the scans, not the disk.`,
   ];
-  if (results.some((result) => result.runtimeKeyPresent)) {
+  if (headOnly.length === 0 && results.some((result) => result.runtimeKeyPresent)) {
     lines.push(`- compared with the \`${RUNTIME_KEY}\` key dropped`);
   }
   for (const result of results) {
@@ -994,9 +1045,8 @@ async function runMeasure(opts: MeasureOptions): Promise<void> {
   try {
     const baseSha = await resolveCommit(opts.base);
     const measuredSha = (await git(["rev-parse", "HEAD"])).stdout.trim();
-    const cache = await denoDir();
-
     const scratch = mkdtempSync(join(tmpdir(), "cost-metrics-"));
+    const cache = join(scratch, "transpiler-cache");
     teardown.push({
       what: "remove scratch",
       run: () => rmSync(scratch, { recursive: true, force: true }),
@@ -1014,7 +1064,9 @@ async function runMeasure(opts: MeasureOptions): Promise<void> {
         await git(["worktree", "remove", "--force", baseDir]);
       },
     });
-    await mustRun("deno", ["ci"], { cwd: baseDir, env: setupEnv() });
+    const installed = await underIntent(opts.intended, () =>
+      mustRun("bun", ["install", "--frozen-lockfile"], { cwd: baseDir, env: setupEnv() }),
+    );
 
     console.log(`generating a ${opts.mb} MB tree (seed ${opts.seed}) into ${treeHome}`);
     const tree = await generateTree(opts, treeHome);
@@ -1026,13 +1078,28 @@ async function runMeasure(opts: MeasureOptions): Promise<void> {
     const digest = treeDigest(treeHome);
 
     const probeEnv = treeEnv(treeHome, freshHome("probe"), cache);
+    const base =
+      installed.kind === "ran"
+        ? await underIntent(
+            opts.intended,
+            async (): Promise<Checkout> => ({
+              label: "base",
+              dir: baseDir,
+              noIndex: await supportsNoIndex(baseDir, probeEnv),
+            }),
+          )
+        : installed;
+    if (base.kind === "no-payload") {
+      console.log(`base ${shortSha(baseSha)} produced no payload (${base.reason}); head only`);
+    }
     const bench: Bench = {
-      base: { label: "base", dir: baseDir, noIndex: await supportsNoIndex(baseDir, probeEnv) },
+      base,
       head: { label: "head", dir: REPO_ROOT, noIndex: await supportsNoIndex(REPO_ROOT, probeEnv) },
       treeHome,
       cache,
       scratch,
       freshHome,
+      intended: opts.intended,
     };
     const results = [await measureWindow(bench, window)];
     if (treeDigest(treeHome) !== digest) {
@@ -1040,9 +1107,14 @@ async function runMeasure(opts: MeasureOptions): Promise<void> {
     }
 
     const body = renderComment(results, opts, baseSha, measuredSha, tree);
+    // A head-only window exists only under the label, so it is the declared intent too.
     const verdict: Verdict = results.some((result) => result.outcome.kind === "differs")
-      ? (opts.intended ? "intended" : "differs")
-      : "match";
+      ? opts.intended
+        ? "intended"
+        : "differs"
+      : results.some((result) => result.outcome.kind === "head-only")
+        ? "intended"
+        : "match";
     console.log(body);
     mkdirSync(opts.out, { recursive: true });
     const commentFile = join(opts.out, COMMENT_FILE);
@@ -1094,7 +1166,7 @@ async function main(argv: readonly string[]): Promise<number> {
   }
 }
 
-// test/usage/cost_metrics.test.ts imports the pure functions, so nothing runs on import.
+// test/usage/cost_metrics.e2e.test.ts imports the pure functions, so nothing runs on import.
 if (import.meta.main) {
   try {
     process.exit(await main(process.argv.slice(2)));

@@ -5,15 +5,15 @@ import {
   CopilotApiPaths,
   defaultDaemonHome,
   profileHome,
-  resolveHome,
   RUN_DIR_NAME,
+  resolveHome,
   SQLITE_DB_FILENAME,
   usageDbsUnderHome,
 } from "../../src/copilot_api/paths.ts";
-import { parseProfileName, type Profile } from "../../src/copilot_api/profile.ts";
+import { type Profile, parseProfileName } from "../../src/copilot_api/profile.ts";
 import { getSanitizedHostname } from "../../src/utils/hostname.ts";
-import { afterEach, expect, tempDir, test } from "../helpers/testing.ts";
 import { envSnapshot, isolateProxyHome } from "../helpers/env.ts";
+import { afterEach, expect, tempDir, test } from "../helpers/testing.ts";
 
 const restoreEnv = envSnapshot();
 let dir = "";
@@ -23,7 +23,7 @@ afterEach(() => {
 });
 
 test("resolveHome prefers COPILOT_API_HOME and falls back to the documented ~/.local/share/copilot-env (empty included)", () => {
-  // The fallback is spelled out, not read from DEFAULT_HOME: AGENTS.md documents this path as
+  // The fallback is spelled out, not read from defaultHome(): AGENTS.md documents this path as
   // the truth root, and a constant moved elsewhere would otherwise carry the test with it.
   const documented = join(homedir(), ".local", "share", "copilot-env");
   process.env.COPILOT_API_HOME = "/tmp/copilot-env-paths-home";
@@ -50,8 +50,10 @@ test("the default daemon home is profiles/default whatever the root holds: the r
   for (const { name, seed } of roots) {
     dir = isolateProxyHome("copilot-env-paths-");
     seed(dir);
-    expect({ name, home: defaultDaemonHome() })
-      .toEqual({ name, home: join(dir, "profiles", "default") });
+    expect({ name, home: defaultDaemonHome() }).toEqual({
+      name,
+      home: join(dir, "profiles", "default"),
+    });
   }
 });
 
@@ -123,12 +125,7 @@ test("account-wide files resolve to the ROOT home, never a daemon home or .run/<
   expect(paths.stateStoreLock).toBe(join(dir, "locks", "state.json.lock"));
   expect(paths.codexModelCatalogFile).toBe(join(dir, "codex-model-catalog.json"));
 
-  for (
-    const rootFile of [
-      paths.stateStoreFile,
-      paths.codexModelCatalogFile,
-    ]
-  ) {
+  for (const rootFile of [paths.stateStoreFile, paths.codexModelCatalogFile]) {
     expect(rootFile.startsWith(paths.home)).toBe(false);
     expect(rootFile.startsWith(paths.runDir)).toBe(false);
     expect(rootFile.startsWith(dir)).toBe(true);

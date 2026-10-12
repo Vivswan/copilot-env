@@ -1,11 +1,11 @@
 // The disk side of the fs seam (fs_facade.ts): the one file in src/ that touches the filesystem,
 // reads included. Every write outside copilot-env's own homes is named on stderr through the ledger
 // in report_write.ts, and a write that failed is named only for what a before/after look PROVES
-// changed. test/lint/no_unreported_fs_writes.ts refuses a raw node:fs or Deno filesystem call
+// changed. test/lint/no_unreported_fs_writes.ts refuses a raw node:fs filesystem call
 // anywhere else, bar the lock protocol's internals (file_lock.ts), the dry-run marker (dry_run.ts),
 // the preloads that run before the seam or patch the proxy's own stream (src/scripts/), the usage
-// scanners' partial reads (src/usage/), the two read handles no run plans (install/checksums.ts,
-// copilot_api/process.ts), and src/migrations/.
+// scanners' partial reads (src/usage/), the daemon spawn's raw `/dev/null` handle
+// (copilot_api/process.ts), and src/migrations/.
 //
 // What does not print:
 //
@@ -13,11 +13,15 @@
 //   scratch this process creates and removes     -> silent
 //   a recipe's transient side (a temp file)      -> silent
 //   a write that failed                          -> only what a before/after look PROVES changed
+
+import { once } from "node:events";
 import {
   chmodSync,
   closeSync,
   copyFileSync,
   cpSync,
+  createReadStream,
+  createWriteStream,
   fsyncSync,
   lstatSync,
   mkdirSync,
@@ -36,6 +40,7 @@ import {
   writeSync,
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
+import { Readable, Writable } from "node:stream";
 import { isEnoentOrNotdir, isOpenHandleRefusal, retryOpenHandleRefusal } from "./fs.ts";
 import {
   forgetReported,
@@ -104,12 +109,9 @@ export function realpath(path: string): string {
  *  fabricated from it; a dangling symlink IS present. A deep look fingerprints the whole tree keyed
  *  by full relative path, so moving an entry between levels changes it even when no directory
  *  metadata does. */
-export type Look =
-  | { kind: "present"; fingerprint: string }
-  | { kind: "absent" }
-  | { kind: "unknown" };
+type Look = { kind: "present"; fingerprint: string } | { kind: "absent" } | { kind: "unknown" };
 
-export function look(path: string, deep = false): Look {
+function look(path: string, deep = false): Look {
   let stat: Stats;
   try {
     stat = lstatSync(path);
@@ -186,13 +188,14 @@ const ERRNO_TEXT: Record<string, string> = {
   ELOOP: "too many symbolic links encountered",
 };
 
-/** An error shaped as node:fs throws it, so `(e as NodeJS.ErrnoException).code` reads the same. */
-export function errno(code: string, syscall: string, path: string, dest?: string): Error {
-  const target = dest === undefined ? `'${path}'` : `'${path}' -> '${dest}'`;
-  const e: NodeJS.ErrnoException = new Error(`${code}: ${ERRNO_TEXT[code]}, ${syscall} ${target}`);
+/** An error shaped as node:fs throws it, so `(e as NodeJS.ErrnoException).code` reads the same.
+ *  `path` null renders the message without a target, as bun's Windows write onto a directory does. */
+export function errno(code: string, syscall: string, path: string | null, dest?: string): Error {
+  const target = path === null ? "" : dest === undefined ? ` '${path}'` : ` '${path}' -> '${dest}'`;
+  const e: NodeJS.ErrnoException = new Error(`${code}: ${ERRNO_TEXT[code]}, ${syscall}${target}`);
   e.code = code;
   e.syscall = syscall;
-  e.path = path;
+  if (path !== null) e.path = path;
   return e;
 }
 
@@ -212,17 +215,19 @@ export function rmDirectoryRefused(path: string): Error {
  * the entry mkdir trips on. An existing entry that is NOT a directory (a regular file where a home
  * should be, a dangling link at `~/.local`) is the error mkdir would raise, thrown here with
  * mkdir's own code and message, so the walk fails exactly where the create would: EEXIST for the
- * path itself or for a dangling link above it, ENOTDIR for a file above it. A stat that failed for
- * another reason (EACCES) reads as present: the create itself then says what is wrong.
+ * path itself, ENOTDIR for a file above it, ENOENT for a dangling link anywhere on the way (node
+ * reports the link's missing target). A stat that failed for another reason (EACCES) reads as
+ * present: the create itself then says what is wrong.
  */
 export function missingDirectories(path: string): string[] {
   const missing: string[] = [];
-  for (let cur = path;; cur = dirname(cur)) {
+  for (let cur = path; ; cur = dirname(cur)) {
     const entry = lookEntry(cur);
     if (entry === "unreadable") return missing;
     if (entry !== "absent") {
-      if (entry !== "dangling" && entry.isDirectory()) return missing;
-      throw errno(cur === path || entry === "dangling" ? "EEXIST" : "ENOTDIR", "mkdir", path);
+      if (entry === "dangling") throw errno("ENOENT", "mkdir", path);
+      if (entry.isDirectory()) return missing;
+      throw errno(cur === path ? "EEXIST" : "ENOTDIR", "mkdir", path);
     }
     missing.unshift(cur);
     if (dirname(cur) === cur) return missing;
@@ -264,7 +269,7 @@ export function assertNotDirectory(path: string): void {
 // --- the writes ------------------------------------------------------------------------------------
 
 export interface WriteOptions {
-  /** Set on the file whether it is fresh or exists (Deno chmods after the write). */
+  /** Set on the file whether it is fresh or exists: the write chmods after it lands. */
   mode?: number;
   /** Staged beside the target and renamed over it (the default); `false` writes in place, through
    *  a link, for a file another process holds open or a path that may be a user's own symlink. */
@@ -291,6 +296,9 @@ function writeInPlace(path: string, data: string | Uint8Array, options: WriteOpt
   const was = look(path);
   try {
     writeFileSync(path, data, { mode: options.mode });
+    // node applies `mode` to a fresh inode only; the seam's contract is that an explicit mode
+    // lands on an existing file too.
+    if (options.mode !== undefined) chmodSync(path, options.mode);
   } catch (err) {
     reportTransition(path, was, "write failed");
     throw err;
@@ -315,14 +323,14 @@ function writeStaged(path: string, data: string | Uint8Array, options: WriteOpti
     const bytes = typeof data === "string" ? new TextEncoder().encode(data) : data;
     const fd = openSync(tmp, "w", options.mode);
     try {
-      for (let written = 0; written < bytes.length;) {
+      for (let written = 0; written < bytes.length; ) {
         written += writeSync(fd, bytes, written, bytes.length - written);
       }
       fsyncSync(fd);
     } finally {
       closeSync(fd);
     }
-    // The open applied the umask; an explicit mode lands exactly, as Deno's own write does.
+    // The open applied the umask; an explicit mode lands exactly (the seam's contract).
     if (options.mode !== undefined) chmodSync(tmp, options.mode);
   } catch (err) {
     dropTransient(tmp, tmpWas);
@@ -474,12 +482,25 @@ export function atomicSymlink(target: string, link: string): void {
   reportWrite("linked", link, `to ${target}`);
 }
 
-/** The one way runtime code streams bytes to a path (a release download, the daemon's log). */
-export async function openWritable(path: string): Promise<Deno.FsFile> {
+/** The one way runtime code streams bytes to a path (a release download): a web stream, so a fetched body pipes straight in, and `pipeTo` closes the file with
+ *  the stream on success and on abort alike. The open is awaited so a path that cannot be opened
+ *  fails here, not inside the pipe. */
+export async function openWritable(path: string): Promise<WritableStream<Uint8Array>> {
   const was = look(path);
-  const file = await Deno.open(path, { write: true, create: true, truncate: true });
+  const file = createWriteStream(path);
+  await once(file, "open");
   reportWrite(kindOf(was), path);
-  return file;
+  return Writable.toWeb(file) as WritableStream<Uint8Array>;
+}
+
+/** The one way runtime code streams bytes FROM a path (a downloaded release's digest). The open is
+ *  awaited so a path that cannot be opened fails here, not inside the consumer's read. */
+export async function openReadable(path: string): Promise<ReadableStream<Uint8Array>> {
+  const file = createReadStream(path);
+  await once(file, "open");
+  // bun-types answers ReadableStream<any>, whose reader overloads do not narrow to the byte stream
+  // a file read is.
+  return Readable.toWeb(file) as unknown as ReadableStream<Uint8Array>;
 }
 
 /** openWritable as a node fd, for a child's stdio. */
@@ -510,7 +531,10 @@ export function removeScratchDir(dir: ScratchDir): void {
  *  is reported. The one failure a caller may answer with a direct write (the installer's launcher
  *  shims); every other failure propagates as itself. */
 export class RenameRefusedError extends Error {
-  constructor(readonly path: string, cause: unknown) {
+  constructor(
+    readonly path: string,
+    cause: unknown,
+  ) {
     super(`rename over ${path} refused (the file is held open)`, { cause });
     this.name = "RenameRefusedError";
   }

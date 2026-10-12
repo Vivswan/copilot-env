@@ -1,19 +1,24 @@
 # Nightly CI: written once from repo-platform's starter (files/nightly/.github/workflows/nightly.yml
-# at `stable`), repo-owned from then on and never overwritten by a sync. The `checks` job is this
-# repository's: the CURRENT claude and codex releases against the fake model endpoint
+# at `stable`), repo-owned from then on and never overwritten by a sync. Two jobs are this
+# repository's. `checks`: the CURRENT claude and codex releases against the fake model endpoint
 # (test/helpers/fake_model_endpoint.ts), no credential and no network past the installs.
+# `release-gate`: release-gate.yml, the checks required before a release that run nowhere on PRs
+# or main, so a break there shows the next morning instead of on the release PR.
 #
 # What a red night points at, in order of likelihood:
-#   the test step red        -> a claude or codex release changed the output shape our Direct probe
-#                               and health checks parse (the `nightly-evidence` artifact holds the
-#                               CLI versions and the test log)
-#   the install step red     -> npm could not download or install a CLI release; the versions were
-#                               never recorded, so there is no artifact
-#   `deno ci` or setup red   -> the registry or the runner, not the CLIs
-#   the job CANCELLED        -> a hang hit timeout-minutes; the report job reads it as red too
+#   checks: the test step red     -> a claude or codex release changed the output shape our Direct
+#                                    probe and health checks parse (the `nightly-evidence` artifact
+#                                    holds the CLI versions and the test log)
+#   checks: the install step red  -> npm could not download or install a CLI release; the versions
+#                                    were never recorded, so there is no artifact
+#   release-assets red            -> a cross-compile target, a bun runtime download, or the installer
+#                                    pinning (release-gate.yml names the steps)
+#   `bun install` or setup red    -> the registry or the runner, not the CLIs
+#   a job CANCELLED               -> a hang hit timeout-minutes; the report job reads it as red too
 # The report job files one label-deduplicated tracking issue for any of these and closes it on
 # the next green (repo-platform docs/nightly.md, docs/tracking-issues.md). It gates no merge; the
-# same tests run inside checks.yml on every PR against that day's releases.
+# same tests run inside checks.yml on every PR against that day's releases, and the same gate
+# blocks the release PR through ci.yml.
 name: Nightly
 
 on:
@@ -32,18 +37,21 @@ jobs:
   checks:
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    env:
-      DENO_NO_UPDATE_CHECK: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          deno-version-file: .dvmrc
-          cache: true
+          bun-version-file: .bun-version
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('**/bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
 
       - name: Install dependencies
-        run: deno ci
+        run: bun install --frozen-lockfile
 
       # UNPINNED on purpose: the latest release is the drift this run exists to catch. The same
       # install checks.yml runs, so the nightly and the PR gate never install differently.
@@ -62,7 +70,7 @@ jobs:
           COPILOT_ENV_LIVE_CLIS: "1"
         run: |
           set -o pipefail
-          timeout --kill-after=30 10m deno test -P=test test/health/claude_cli_live.test.ts test/health/codex_cli_live.test.ts 2>&1 \
+          timeout --kill-after=30 10m bun run test test/health/claude_cli_live.e2e.test.ts test/health/codex_cli_live.e2e.test.ts 2>&1 \
             | tee nightly-evidence/test-log.txt
 
       # The tracking issue links this run; the run carries the evidence.
@@ -74,11 +82,14 @@ jobs:
           path: nightly-evidence/
           if-no-files-found: ignore
 
-  # A CANCELLED checks job counts as red: hitting the timeout cancels
-  # rather than fails, and a hang is exactly what a nightly exists to
-  # catch.
+  release-gate:
+    uses: ./.github/workflows/release-gate.yml
+
+  # A CANCELLED job counts as red: hitting the timeout cancels rather than fails, and a hang is
+  # exactly what a nightly exists to catch. The issue opens when either job is red and resolves
+  # only when both are green.
   report:
-    needs: [checks]
+    needs: [checks, release-gate]
     if: always()
     runs-on: ubuntu-latest
     # A hung reporter is the residual silence window; keep this tight.
@@ -88,7 +99,9 @@ jobs:
       issues: write
     steps:
       - name: File or update the nightly issue
-        if: needs.checks.result == 'failure' || needs.checks.result == 'cancelled'
+        if: >-
+          needs.checks.result == 'failure' || needs.checks.result == 'cancelled' ||
+          needs.release-gate.result == 'failure' || needs.release-gate.result == 'cancelled'
         uses: Vivswan/repo-platform/actions/fuzz-issue@stable
         with:
           mode: report
@@ -99,7 +112,7 @@ jobs:
           stream: generic
 
       - name: Close the nightly issue on a green night
-        if: needs.checks.result == 'success'
+        if: needs.checks.result == 'success' && needs.release-gate.result == 'success'
         uses: Vivswan/repo-platform/actions/fuzz-issue@stable
         with:
           mode: resolve

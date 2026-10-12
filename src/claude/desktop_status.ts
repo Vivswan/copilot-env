@@ -32,8 +32,8 @@ import {
   sameBaseUrl,
 } from "./desktop_library.ts";
 import {
-  desktopConfigPayload,
   type DesktopCredential,
+  desktopConfigPayload,
   entryProfileAt,
   recordedModelRows,
 } from "./desktop_payload.ts";
@@ -84,22 +84,22 @@ export type ClaudeDesktopStatus =
    *  document could not be read: no entry is judged and none may be swept as an orphan. */
   | (DesktopStatusBase & { kind: "unjudged"; reason: string })
   | (DesktopStatusBase & {
-    kind: "inspected";
-    libraryDir: string;
-    /** Every owned entry the library lists, whatever the key says. */
-    owned: DesktopOwnedEntry[];
-    /** One verdict per target; empty when the key is off or the app is absent. */
-    entries: DesktopEntryStatus[];
-    /** Owned entries matching no target; empty when the key is off or the app is absent. */
-    orphans: DesktopOwnedEntry[];
-    /** Ledger claims under the library `_meta.json` no longer lists (interrupted removals),
-     *  attributed like the listed entries. */
-    unlisted: DesktopClaim[];
-    /** The entry `_meta.json` names as applied: the one the app uses at launch. Null when it names
-     *  none or a missing row. */
-    applied: { path: string; name: string } | null;
-    app: DesktopAppState;
-  });
+      kind: "inspected";
+      libraryDir: string;
+      /** Every owned entry the library lists, whatever the key says. */
+      owned: DesktopOwnedEntry[];
+      /** One verdict per target; empty when the key is off or the app is absent. */
+      entries: DesktopEntryStatus[];
+      /** Owned entries matching no target; empty when the key is off or the app is absent. */
+      orphans: DesktopOwnedEntry[];
+      /** Ledger claims under the library `_meta.json` no longer lists (interrupted removals),
+       *  attributed like the listed entries. */
+      unlisted: DesktopClaim[];
+      /** The entry `_meta.json` names as applied: the one the app uses at launch. Null when it names
+       *  none or a missing row. */
+      applied: { path: string; name: string } | null;
+      app: DesktopAppState;
+    });
 
 /** Read-only port resolution: nothing is written or reserved. The caller supplies the targets (the
  *  default's and the profiles' modes come from the store, read above this module). */
@@ -132,9 +132,10 @@ export function inspectClaudeDesktopWiring(
     entries: [],
     orphans: [],
     unlisted,
-    applied: appliedRow === undefined
-      ? null
-      : { path: join(dir, `${appliedRow.id}.json`), name: appliedRow.name },
+    applied:
+      appliedRow === undefined
+        ? null
+        : { path: join(dir, `${appliedRow.id}.json`), name: appliedRow.name },
     app: readDesktopAppState(),
   };
   if (!base.enabled || !base.installed) return status;
@@ -186,8 +187,7 @@ function entryVerdict(
       kind: "stale",
       path,
       reason: `${matches.length} owned entries serve this wiring`,
-      fix:
-        "delete the duplicate copilot-env entries in Claude Desktop's config picker, then re-run `agent profile sync --claude`",
+      fix: "delete the duplicate copilot-env entries in Claude Desktop's config picker, then re-run `agent profile sync --claude`",
     };
   }
   let raw: string | null;
@@ -212,8 +212,8 @@ function entryVerdict(
         "lands it together with both agents' files",
     );
   }
-  const expectedBase = rendered?.directBaseUrl ??
-    proxyLoopbackOrigin(copilotApiResolvePort(target.profile));
+  const expectedBase =
+    rendered?.directBaseUrl ?? proxyLoopbackOrigin(copilotApiResolvePort(target.profile));
   if (!sameBaseUrl(gateway, expectedBase)) {
     return stale(`gateway ${String(gateway)}, expected ${expectedBase}`);
   }
@@ -221,9 +221,8 @@ function entryVerdict(
   if ("stale" in recordedCredential) return stale(recordedCredential.stale);
   // Wired means the QUIET rewire (recorded rows, the pair above, no probe) would be a
   // byte-identical no-op: the same bytes the entry writer compares before it writes.
-  const write: ManagedMode = rendered === null
-    ? { mode: "proxy" }
-    : { mode: "direct", direct: rendered };
+  const write: ManagedMode =
+    rendered === null ? { mode: "proxy" } : { mode: "direct", direct: rendered };
   const rewrite = desktopConfigPayload({
     ...write,
     profile: target.profile,
@@ -292,9 +291,10 @@ function desktopEntryFix(profile: Profile): string {
   return profile === null ? "agent profile sync --claude" : `agent profile ${profile} add`;
 }
 
-export function renderClaudeDesktopStatus(
-  status: ClaudeDesktopStatus,
-): { lines: string[]; fix: string | null } {
+export function renderClaudeDesktopStatus(status: ClaudeDesktopStatus): {
+  lines: string[];
+  fix: string | null;
+} {
   if (status.kind === "unreadable") {
     return {
       lines: [`${status.metaPath} has an unexpected shape; the config library is left alone`],
@@ -314,12 +314,15 @@ export function renderClaudeDesktopStatus(
     const owned = status.kind === "inspected" ? status.owned : [];
     const unlisted = status.kind === "inspected" ? status.unlisted : [];
     const unmanaged = [
-      ...owned.filter((e) => e.profile === null).map((e) =>
-        `"${e.name}" present at ${e.path}, unmanaged (claude.desktop false)`
-      ),
-      ...unlisted.filter((c) => c.profile === null).map((c) =>
-        `${c.path} present but not listed in ${META_FILENAME}, unmanaged (claude.desktop false)`
-      ),
+      ...owned
+        .filter((e) => e.profile === null)
+        .map((e) => `"${e.name}" present at ${e.path}, unmanaged (claude.desktop false)`),
+      ...unlisted
+        .filter((c) => c.profile === null)
+        .map(
+          (c) =>
+            `${c.path} present but not listed in ${META_FILENAME}, unmanaged (claude.desktop false)`,
+        ),
     ];
     // A claim of unknown wiring is one the key-off sweep deliberately keeps (it may be the
     // default's), so only the key-on reconcile (which removes it as an orphan) or uninstall clears
@@ -341,8 +344,8 @@ export function renderClaudeDesktopStatus(
       ...(left.length > 0 ? ["agent profile sync --claude"] : []),
       ...(unknown.length > 0
         ? [
-          "for the entries of unknown wiring: set claude.desktop true and re-run `agent profile sync --claude` (it removes them as orphans), or `agent uninstall`",
-        ]
+            "for the entries of unknown wiring: set claude.desktop true and re-run `agent profile sync --claude` (it removes them as orphans), or `agent uninstall`",
+          ]
         : []),
     ];
     return {

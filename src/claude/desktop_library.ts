@@ -15,13 +15,13 @@
 // what the app itself writes when the user clicks through; see prepareClaudeDesktopAppFiles):
 //   Claude-3p/claude_desktop_config.json  deploymentMode "3p"  -> boots third-party, no sign-in chooser
 //   Claude/developer_settings.json        allowDevTools true   -> Developer menu (the 3p copy too)
-import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { type Profile, WINDOWS_DEVICE_NAME_RE } from "../copilot_api/profile.ts";
-import { appRunning, type AppScan } from "../utils/app_scan.ts";
+import { type AppScan, appRunning } from "../utils/app_scan.ts";
 import { errMessage } from "../utils/error.ts";
 import { isEnoentOrNotdir } from "../utils/fs.ts";
 import * as fs from "../utils/fs_facade.ts";
+import { userHomeDir } from "../utils/home.ts";
 import { isRecord } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 
@@ -69,9 +69,10 @@ export function desktopDirsFor(platform: string, home: string, env: DesktopEnv):
       return {
         data: env.localAppData ? join(env.localAppData, "Claude-3p") : null,
         standard: env.appData ? join(env.appData, "Claude") : null,
-        app: env.localAppData === undefined
-          ? []
-          : [join(env.localAppData, "AnthropicClaude", "claude.exe")],
+        app:
+          env.localAppData === undefined
+            ? []
+            : [join(env.localAppData, "AnthropicClaude", "claude.exe")],
       };
     case "linux": {
       const xdg = env.xdgConfigHome;
@@ -92,10 +93,10 @@ function desktopEnv(): DesktopEnv {
 }
 
 function desktopDirs(): DesktopDirs {
-  return desktopDirsFor(process.platform, homedir(), desktopEnv());
+  return desktopDirsFor(process.platform, userHomeDir(), desktopEnv());
 }
 
-/** The `-1p` spelling is a contract with test/claude/claude_desktop.test.ts. */
+/** The `-1p` spelling is a contract with test/claude/claude_desktop.e2e.test.ts. */
 function resolveDesktopDataDirs(): { data: string; standard: string } | null {
   const seam = seamDir();
   if (seam !== null) return { data: seam, standard: `${seam}-1p` };
@@ -138,7 +139,7 @@ export function desktopAppInstalledFor(
 export function claudeDesktopInstalled(): boolean {
   const seam = seamDir();
   if (seam !== null) return fs.exists(seam);
-  return desktopAppInstalledFor(process.platform, fs.exists, homedir(), desktopEnv());
+  return desktopAppInstalledFor(process.platform, fs.exists, userHomeDir(), desktopEnv());
 }
 
 // --- entry naming + classification ----------------------------------------------
@@ -261,7 +262,7 @@ export function writeDesktopMeta(
 ): boolean {
   const doc: Doc = { ...meta.extra };
   if (meta.appliedId !== null) doc.appliedId = meta.appliedId;
-  doc.entries = meta.entries.map((e) => ({ ...e.extra, "id": e.id, "name": e.name }));
+  doc.entries = meta.entries.map((e) => ({ ...e.extra, id: e.id, name: e.name }));
   return writeJson(
     join(dir, META_FILENAME),
     currentRaw,
@@ -325,15 +326,15 @@ export function prepareClaudeDesktopAppFiles(): () => void {
   const merges = [
     prepareAppFileMerge(
       join(dirs.data, APP_CONFIG_FILENAME),
-      { "deploymentMode": "3p" },
+      { deploymentMode: "3p" },
       "Claude Desktop starts in third-party mode, no sign-in chooser",
     ),
     ...[dirs.standard, dirs.data].map((dir) =>
       prepareAppFileMerge(
         join(dir, DEVELOPER_SETTINGS_FILENAME),
-        { "allowDevTools": true },
+        { allowDevTools: true },
         "Claude Desktop Developer Mode on",
-      )
+      ),
     ),
   ];
   return () => {
@@ -347,13 +348,11 @@ export function readDesktopAppState(): DesktopAppState {
   const dirs = resolveDesktopDataDirs();
   if (dirs === null) return { kind: "read", developerMode: false, deploymentMode: null };
   const docs: Record<string, unknown>[] = [];
-  for (
-    const path of [
-      join(dirs.data, APP_CONFIG_FILENAME),
-      join(dirs.standard, DEVELOPER_SETTINGS_FILENAME),
-      join(dirs.data, DEVELOPER_SETTINGS_FILENAME),
-    ]
-  ) {
+  for (const path of [
+    join(dirs.data, APP_CONFIG_FILENAME),
+    join(dirs.standard, DEVELOPER_SETTINGS_FILENAME),
+    join(dirs.data, DEVELOPER_SETTINGS_FILENAME),
+  ]) {
     const loaded = loadAppFile(path);
     if (typeof loaded === "string") return { kind: "unreadable", path, reason: loaded };
     docs.push(loaded.doc);

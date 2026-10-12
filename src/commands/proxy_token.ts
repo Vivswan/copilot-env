@@ -10,22 +10,23 @@
 //   child stdin   -> ignored on the managed branch: nothing in `agent start` reads it (with no stored
 //                    credential the child refuses and names `agent auth`; nothing prompts)
 import { spawnSync } from "node:child_process";
+import { createInterface } from "node:readline";
 import { CopilotApiConfig } from "../copilot_api/config.ts";
 import { proxyStatus, recordHeartbeat } from "../copilot_api/daemon.ts";
-import { configSetCommand, CopilotEnvConfig } from "../copilot_api/env_config.ts";
+import { CopilotEnvConfig, configSetCommand } from "../copilot_api/env_config.ts";
 import {
   agentAuthCommand,
   agentStartCommand,
-  parseProfileFlag,
   type Profile,
+  parseProfileFlag,
 } from "../copilot_api/profile.ts";
 import { assertNever } from "../utils/assert.ts";
 import { withPowershellChildEnv } from "../utils/command.ts";
+import { promptRefusedInDryRun } from "../utils/dry_run.ts";
 import { errMessage } from "../utils/error.ts";
+import { dryRunActive } from "../utils/fs_facade.ts";
 import { agentLauncherCommand } from "../utils/root.ts";
 import { printWrappedToStderr, terminalWidth, wrapMessage } from "../utils/table.ts";
-import { promptRefusedInDryRun } from "../utils/dry_run.ts";
-import { dryRunActive } from "../utils/fs_facade.ts";
 import { runDryRun } from "./dry_run.ts";
 import { runStart } from "./start.ts";
 
@@ -62,7 +63,7 @@ export interface ProxyTokenDeps {
   notify(line: string): void;
 }
 
-/** Through bin/agent rather than in-process, so a dev checkout bootstraps deno and deps there.
+/** Through bin/agent rather than in-process, so a dev checkout bootstraps its dependencies there.
  *   the child's stdio  -> placed so the caller's stdout stays untouched
  *   the exit status    -> unread; the follow-up proxyUp probe is the verdict
  *   `agent profile launch`     -> injects this as its own launchProxy dependency */
@@ -94,32 +95,22 @@ export function launchProxy(profile: Profile, output: LaunchOutput): void | Prom
 }
 
 /**
- * Raw stdin events, not readline's question(): the query goes to stderr, since stdout stays
- * key-only and both readline's prompt and consola.prompt write to stdout.
- *   stdin already closed, no line coming  -> rl.question never settles, the `end` event does
- *   EOF                                   -> "", which means START (the apiKeyHelper case)
+ * The line and close events rather than rl.question(): on a stdin already at EOF, question's
+ * callback never runs, while close fires.
+ *   EOF  -> "", which means START (the apiKeyHelper case)
+ *
+ * @public test/commands/proxy_token.e2e.test.ts imports it from a generated child script, which knip
+ * cannot follow.
  */
 export function readStartAnswer(query: string): Promise<string> {
   process.stderr.write(wrapMessage(query, terminalWidth(process.stderr)));
   return new Promise((resolve) => {
-    // String chunks split on character boundaries; per-chunk Buffer.toString could mangle a
-    // straddling UTF-8 sequence.
-    process.stdin.setEncoding("utf8");
-    let buf = "";
-    const finish = (answer: string): void => {
-      process.stdin.off("data", onData);
-      process.stdin.off("end", onEnd);
-      process.stdin.pause(); // release the event loop; the process must be able to exit
-      resolve(answer);
-    };
-    const onData = (chunk: string): void => {
-      buf += chunk;
-      const newline = buf.indexOf("\n");
-      if (newline !== -1) finish(buf.slice(0, newline).replace(/\r$/, ""));
-    };
-    const onEnd = (): void => finish(buf);
-    process.stdin.on("data", onData);
-    process.stdin.once("end", onEnd);
+    const rl = createInterface({ input: process.stdin, output: process.stderr, terminal: false });
+    rl.once("line", (line) => {
+      resolve(line);
+      rl.close();
+    });
+    rl.once("close", () => resolve(""));
   });
 }
 
@@ -193,7 +184,7 @@ export async function resolveProxyToken(
     }
   }
   deps.recordHeartbeat(profile);
-  if (plannedStart || await deps.proxyUp(profile)) {
+  if (plannedStart || (await deps.proxyUp(profile))) {
     await deps.printProxyToken(profile);
     return 0;
   }

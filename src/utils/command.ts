@@ -38,28 +38,18 @@ export type PowershellExe = "powershell" | "pwsh";
 
 /** Windows PowerShell 5.1 spawned from pwsh 7 inherits pwsh's PSModulePath and its in-box cmdlets
  *  fail to autoload, so a `powershell` child gets the variable under no casing and `pwsh` keeps
- *  its own. Deno's spawnSync merges `env` over the parent's, so the key leaves process.env for the
- *  span. */
+ *  its own. */
 export function withPowershellChildEnv<T>(
   exe: PowershellExe,
   spawn: (env: Record<string, string>) => T,
 ): T {
   const env: Record<string, string> = {};
-  const parentKeys: [string, string][] = [];
   for (const [key, value] of Object.entries(process.env)) {
     if (value === undefined) continue;
-    if (exe === "powershell" && key.toUpperCase() === "PSMODULEPATH") {
-      parentKeys.push([key, value]);
-      delete process.env[key];
-      continue;
-    }
+    if (exe === "powershell" && key.toUpperCase() === "PSMODULEPATH") continue;
     env[key] = value;
   }
-  try {
-    return spawn(env);
-  } finally {
-    for (const [key, value] of parentKeys) process.env[key] = value;
-  }
+  return spawn(env);
 }
 
 /** A PowerShell process writes its profile scaffolding (AppData\\Roaming, the PSReadLine history)
@@ -95,7 +85,8 @@ export function findCommand(command: string): CommandLook {
             `if (Get-Command ${command} -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }`,
           ],
           { stdio: "ignore", env: { ...env, ...profile.env } },
-        ));
+        ),
+      );
       return commandLookFromSpawn(result, () => command);
     } finally {
       profile.dispose();
@@ -239,15 +230,20 @@ function windowsWhereCandidates(pattern: string): string[] {
     windowsHide: true,
   });
   if (result.error || result.status !== 0) return [];
-  return (result.stdout ?? "").split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  return (result.stdout ?? "")
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
 }
 
 /** A shim script cannot stand in for a binary another process spawns as its runtime. */
 function pickWindowsExecutable(candidates: string[]): string | null {
-  return candidates.find((candidate) => {
-    const lower = candidate.toLowerCase();
-    return lower.endsWith(".exe") || lower.endsWith(".com");
-  }) ?? null;
+  return (
+    candidates.find((candidate) => {
+      const lower = candidate.toLowerCase();
+      return lower.endsWith(".exe") || lower.endsWith(".com");
+    }) ?? null
+  );
 }
 
 /** A relative PATH entry makes `command -v` print a relative path, which reads null here: a

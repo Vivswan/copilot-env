@@ -1,7 +1,8 @@
 import { consola } from "consola";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
-import { errMessage } from "../utils/error.ts";
+import type { ProbeFetch } from "../copilot_api/integration_identity.ts";
 import { colorEnabled, paintFor } from "../utils/ansi.ts";
+import { errMessage } from "../utils/error.ts";
 import { type Align, printTable, printWrapped, printWrappedToStderr } from "../utils/table.ts";
 import { formatDuration } from "../utils/time.ts";
 import { discoverClaudeSessionRoots, readClaudeSessions } from "./claude_sessions.ts";
@@ -16,24 +17,24 @@ import {
   activeDayCoverage,
   computeDayMetrics,
   type DayMetrics,
-  daysCutoffMs,
   type DaysWindow,
   type DayTotals,
+  daysCutoffMs,
   describeDaysWindow,
   median,
   parseWindowFlags,
   perDayRows,
   UNDATED_DAY_LABEL,
 } from "./day_metrics.ts";
-import { openUsageIndex } from "./index.ts";
 import { loadGitHubRateCard, type RateCardSource } from "./github_rate_card.ts";
+import { openUsageIndex } from "./index.ts";
 import {
   type CostEstimate,
   estimateCost,
   loadPricing,
   type ModelCost,
   nanoAiuToUsd,
-  PriceList,
+  type PriceList,
   type PricingTier,
   roundUsd,
   withGitHubRates,
@@ -51,8 +52,8 @@ import {
   type ReadonlyUsageReport,
   readUsageRequests,
   type UsageReport,
-  usageReport,
   type UsageRequest,
+  usageReport,
 } from "./usage.ts";
 
 const SOURCES_INTRO =
@@ -63,11 +64,13 @@ const DISCLAIMER =
   "(GitHub's own where the two differ); " +
   "actual billing may differ.";
 /** The combined table pairs a proxied request's two records; the per-source tables are each whole. */
-const COMBINED_NOTE = SOURCES_INTRO +
+const COMBINED_NOTE =
+  SOURCES_INTRO +
   "The table merges all three; a request both the proxy and a client log recorded " +
   "(same model, token counts, and time) is counted once. Use --sources for per-source tables." +
   DISCLAIMER;
-const SOURCES_NOTE = SOURCES_INTRO +
+const SOURCES_NOTE =
+  SOURCES_INTRO +
   "Each table is whole, so summing them double counts traffic that went through the proxy; " +
   "the default view counts such a request once." +
   DISCLAIMER;
@@ -89,7 +92,7 @@ const DEFAULT_SESSION_ROOTS: SessionRootDiscovery = {
 /** Tests inject a fetch and their own session roots, because the default discovery sweeps the real
  *  Codex and Claude homes. */
 export interface CostDeps {
-  fetchImpl?: typeof fetch;
+  fetchImpl?: ProbeFetch;
   sessionRoots?: SessionRootDiscovery;
   /** The clock every `runtime.timing` figure is read from, in ms. */
   now?: () => number;
@@ -181,7 +184,7 @@ export class ReconcileMeter {
 }
 
 /** Flag, else the stored `cost.pricing-url` key, else the built-in (the accessor folds the last two). */
-export function resolvePricingUrl(
+function resolvePricingUrl(
   flag: string | undefined,
   config: CopilotEnvConfig = new CopilotEnvConfig(),
 ): string {
@@ -213,7 +216,7 @@ interface CostRun {
   pricingUrl: string;
   /** The stored `cost.github-pricing-url` key, else the built-in. */
   rateCardUrl: string;
-  fetchImpl: typeof fetch | undefined;
+  fetchImpl: ProbeFetch | undefined;
 }
 
 async function reportCost(
@@ -272,9 +275,9 @@ async function reportCost(
     if (card.kind === "card") priced = withGitHubRates(list.pricing, card.card, card.from);
     if (list.source === "stale-cache") {
       consola.warn(
-        `WARNING: could not refresh OpenRouter pricing (${list.fetchError}); using the cached price list from ${
-          formatDuration(Date.now() - list.fetchedAtMs)
-        } ago.`,
+        `WARNING: could not refresh OpenRouter pricing (${list.fetchError}); using the cached price list from ${formatDuration(
+          Date.now() - list.fetchedAtMs,
+        )} ago.`,
       );
     }
     if (list.source === "fetched" && list.cacheWriteError !== undefined) {
@@ -288,9 +291,9 @@ async function reportCost(
       );
     } else if (card.problem !== undefined) {
       consola.warn(
-        `GitHub rate card could not be read today (${card.problem}); using cached ${
-          isoDay(card.from.fetchedAtMs)
-        } rates.`,
+        `GitHub rate card could not be read today (${card.problem}); using cached ${isoDay(
+          card.from.fetchedAtMs,
+        )} rates.`,
       );
     }
     if (card.kind === "card" && card.cacheWriteError !== undefined) {
@@ -389,9 +392,9 @@ async function reportCost(
   if (priced !== undefined && priced.card.unmapped.length > 0) {
     printWrapped(
       paintFor(colorEnabled()).dim(
-        `  GitHub's rate card also lists models with no id here (unmapped): ${
-          priced.card.unmapped.join(", ")
-        }`,
+        `  GitHub's rate card also lists models with no id here (unmapped): ${priced.card.unmapped.join(
+          ", ",
+        )}`,
       ),
     );
     console.log("");
@@ -430,10 +433,10 @@ async function readSessionLogs(
     const meter = new ReconcileMeter(index?.reconcile ?? parseEveryCandidate, now);
     const clients = collectClients ? new ClientRequests() : null;
     const codexByProvider = await meter.read((reconcile) =>
-      readCodexSessions(codexRoots, sinceMs, undefined, reconcile, clients?.onCounted)
+      readCodexSessions(codexRoots, sinceMs, undefined, reconcile, clients?.onCounted),
     );
     const claudeReport = await meter.read((reconcile) =>
-      readClaudeSessions(claudeRoots, sinceMs, undefined, reconcile, clients?.onCounted)
+      readClaudeSessions(claudeRoots, sinceMs, undefined, reconcile, clients?.onCounted),
     );
     return {
       codexByProvider,
@@ -448,9 +451,9 @@ async function readSessionLogs(
 }
 
 function describeIndexRun(stats: IndexStats): string {
-  return `usage index: ${stats.filesReused} files reused, ${stats.filesParsedTail} tail-parsed, ${stats.filesParsedWhole} whole-parsed, ${
-    formatBytesCompact(stats.bytesRead)
-  } read`;
+  return `usage index: ${stats.filesReused} files reused, ${stats.filesParsedTail} tail-parsed, ${stats.filesParsedWhole} whole-parsed, ${formatBytesCompact(
+    stats.bytesRead,
+  )} read`;
 }
 
 function billedUsd(report: ReadonlyUsageReport): number {
@@ -476,9 +479,10 @@ function printBilledCheck(
     nanoAiu += b.nanoAiu;
   }
   const estimate = estimateCost({ byModel: billed }, pricing);
-  const ours = estimate.unpriced.length > 0
-    ? `unpriced (${estimate.unpriced.join(", ")})`
-    : formatCurrency(estimate.totalUsd);
+  const ours =
+    estimate.unpriced.length > 0
+      ? `unpriced (${estimate.unpriced.join(", ")})`
+      : formatCurrency(estimate.totalUsd);
   printWrapped(
     `GitHub billed ${formatCurrency(nanoAiuToUsd(nanoAiu))} for the ${requests} request${
       requests === 1 ? "" : "s"
@@ -589,9 +593,8 @@ function printCombinedView(
   printCostReport(merged, estimate, opts, {
     title: "Usage by model",
     sourceLabel: parts.join(" + "),
-    requestsNote: paired > 0
-      ? ` (${paired} seen in both a proxy row and a client log, counted once)`
-      : "",
+    requestsNote:
+      paired > 0 ? ` (${paired} seen in both a proxy row and a client log, counted once)` : "",
   });
   if (opts.perDay) {
     printPerDayReport(merged, opts.pricing, estimate, "Per-day breakdown");
@@ -852,11 +855,12 @@ function printCostReport(
   console.log("");
   const period = describeDaysWindow(opts.window);
   const coverage = activeDayCoverage(report);
-  const activeDaysLabel = activeDays > 0
-    ? `${activeDays} active day${
-      activeDays === 1 ? "" : "s"
-    } (${coverage.percent}% of a ${coverage.spanDays}-day span)`
-    : "0 active days";
+  const activeDaysLabel =
+    activeDays > 0
+      ? `${activeDays} active day${
+          activeDays === 1 ? "" : "s"
+        } (${coverage.percent}% of a ${coverage.spanDays}-day span)`
+      : "0 active days";
   printWrapped(
     paintFor(colorEnabled()).bold(
       `${view.title} - ${period} | ${view.sourceLabel} | ${sum.reqs} requests${
@@ -882,9 +886,9 @@ function printCostReport(
     console.log("");
     printWrapped(
       paintFor(colorEnabled()).dim(
-        `  Priced at GitHub's rate card (fetched ${
-          isoDay(opts.rateCard.fetchedAtMs)
-        }), not OpenRouter's: ${estimate.githubRated.join(", ")}`,
+        `  Priced at GitHub's rate card (fetched ${isoDay(
+          opts.rateCard.fetchedAtMs,
+        )}), not OpenRouter's: ${estimate.githubRated.join(", ")}`,
       ),
     );
   }
@@ -1001,38 +1005,37 @@ export function buildSourceJson(
     medianCostPerDayUsd: activeDays > 0 ? roundUsd(median(dayCosts)) : null,
     ...(opts.perDay
       ? {
-        perDay: [...dayMetrics]
-          .sort((a, b) => a.day.localeCompare(b.day))
-          .map((d) => ({
-            day: d.day,
-            requests: d.reqs,
-            input: d.input,
-            output: d.output,
-            cacheRead: d.cacheRead,
-            cacheCreation: d.cacheWrite,
-            total: d.total,
-            costUsd: roundUsd(d.cost),
-          })),
-      }
+          perDay: [...dayMetrics]
+            .sort((a, b) => a.day.localeCompare(b.day))
+            .map((d) => ({
+              day: d.day,
+              requests: d.reqs,
+              input: d.input,
+              output: d.output,
+              cacheRead: d.cacheRead,
+              cacheCreation: d.cacheWrite,
+              total: d.total,
+              costUsd: roundUsd(d.cost),
+            })),
+        }
       : {}),
     unpriced: estimate.unpriced,
   };
 }
 
-function completeRuntime(
-  measured: MeasuredRun,
-  rateCard: RateCardSource | undefined,
-): CostRuntime {
+function completeRuntime(measured: MeasuredRun, rateCard: RateCardSource | undefined): CostRuntime {
   return {
     indexed: measured.indexed,
     index: measured.index,
     timing: { ...measured.timing, total: Math.round(measured.now() - measured.startedAt) },
-    ...(rateCard === undefined ? {} : {
-      githubRates: {
-        source: rateCard.source,
-        fetchedAt: new Date(rateCard.fetchedAtMs).toISOString(),
-      },
-    }),
+    ...(rateCard === undefined
+      ? {}
+      : {
+          githubRates: {
+            source: rateCard.source,
+            fetchedAt: new Date(rateCard.fetchedAtMs).toISOString(),
+          },
+        }),
   };
 }
 
@@ -1059,7 +1062,8 @@ function buildCostJson(
     ...buildSourceJson(report, estimate, pricing, { perDay }),
     codexSessions,
     claudeSessions,
-    note: "approximate numbers gathered from local logs and keyed by canonical model spellings " +
+    note:
+      "approximate numbers gathered from local logs and keyed by canonical model spellings " +
       "(dashed/dated claude ids fold into the dotted form), priced at public OpenRouter rates, GitHub's own where the two differ (actual billing may differ); " +
       "top-level keys cover proxied traffic only, while codexSessions/claudeSessions cover each agent's FULL traffic " +
       "(proxy and Direct), so they overlap the proxy keys when an agent is proxy-wired -- never sum them",

@@ -15,14 +15,14 @@
 //   codex_exec UA with any id                       -> 33-41 models, no Fable
 //   the proxy's own editor UA, with or without id   -> 40-41 models, no Fable
 import { consola } from "consola";
-import { narrationMuted } from "../utils/logger.ts";
 import { errMessage } from "../utils/error.ts";
 import { defaultFetch } from "../utils/fetch.ts";
 import { isRecord } from "../utils/json.ts";
+import { narrationMuted } from "../utils/logger.ts";
+import { COPILOT_ENV_USER_AGENT } from "../utils/user_agent.ts";
 import { CODEX_IDENTITY_NAME, isLoopbackHostname } from "./config_registry.ts";
 import type { AuthProvider } from "./env_state.ts";
 import { fetchModelCatalog, type ModelCatalogOutcome } from "./models_fetch.ts";
-import { COPILOT_ENV_USER_AGENT } from "../utils/user_agent.ts";
 
 /** The gating header. Its VALUES below are external contracts: never rename. */
 export const INTEGRATION_ID_HEADER = "Copilot-Integration-Id";
@@ -61,9 +61,15 @@ export function isDirectBaseUrl(url: string): boolean {
   const parsed = new URL(url);
   // The same origin-only shape the `host` validator enforces: a path, query, or userinfo
   // is some other API, and a loopback https origin is nobody's Copilot host.
-  return parsed.protocol === "https:" && !isLoopbackHostname(parsed.hostname) &&
-    (parsed.pathname === "/" || parsed.pathname === "") && parsed.search === "" &&
-    parsed.hash === "" && parsed.username === "" && parsed.password === "";
+  return (
+    parsed.protocol === "https:" &&
+    !isLoopbackHostname(parsed.hostname) &&
+    (parsed.pathname === "/" || parsed.pathname === "") &&
+    parsed.search === "" &&
+    parsed.hash === "" &&
+    parsed.username === "" &&
+    parsed.password === ""
+  );
 }
 
 const PROBE_TIMEOUT_MS = 5000;
@@ -225,9 +231,10 @@ async function accountApiBase(
     const endpoints = isRecord(body) ? body.endpoints : undefined;
     const api = isRecord(endpoints) ? endpoints.api : undefined;
     // The origin alone, so the value compares with the `host` literal and a baked base URL.
-    const apiBase = typeof api === "string" && api.startsWith("https://") && URL.canParse(api)
-      ? new URL(api).origin
-      : DEFAULT_COPILOT_API_BASE;
+    const apiBase =
+      typeof api === "string" && api.startsWith("https://") && URL.canParse(api)
+        ? new URL(api).origin
+        : DEFAULT_COPILOT_API_BASE;
     return { apiBase, inconclusive: false };
   } catch {
     return { apiBase: DEFAULT_COPILOT_API_BASE, inconclusive: true };
@@ -399,22 +406,21 @@ export async function surveyIntegrationIdentities(
 ): Promise<IdentitySurvey> {
   const fetchImpl = deps.fetchImpl ?? defaultProbeFetch;
   const timeoutMs = deps.timeoutMs ?? PROBE_TIMEOUT_MS;
-  const surveyHost = async (
-    apiBase: string,
-    role: SurveyHostRole,
-  ): Promise<IdentityHostSurvey> => {
-    const verdicts = await Promise.all(candidates.map(async (candidate) => ({
-      name: candidate.name,
-      verdict: await probeCandidate(
-        token,
-        apiBase,
-        candidate,
-        fetchImpl,
-        timeoutMs,
-        deps.signal,
-        memoizable(deps),
-      ),
-    })));
+  const surveyHost = async (apiBase: string, role: SurveyHostRole): Promise<IdentityHostSurvey> => {
+    const verdicts = await Promise.all(
+      candidates.map(async (candidate) => ({
+        name: candidate.name,
+        verdict: await probeCandidate(
+          token,
+          apiBase,
+          candidate,
+          fetchImpl,
+          timeoutMs,
+          deps.signal,
+          memoizable(deps),
+        ),
+      })),
+    );
     return { apiBase, role, verdicts };
   };
   const designated = await accountApiBase(token, fetchImpl, timeoutMs, deps.signal);
@@ -524,10 +530,11 @@ async function resolveAutoHost(
   if (generic.kind === "kept") return { apiBase: DEFAULT_COPILOT_API_BASE, note: null };
   const designated = await accountApiBase(token, fetchImpl, timeoutMs, deps.signal);
   const genericHost = new URL(DEFAULT_COPILOT_API_BASE).host;
-  const note = designated.apiBase === DEFAULT_COPILOT_API_BASE
-    ? `Copilot API host: ${genericHost} answered ${generic.detail} and the account host lookup ` +
-      "gave no other host; staying on it."
-    : `Copilot API host: ${designated.apiBase} (${genericHost} answered ${generic.detail}).`;
+  const note =
+    designated.apiBase === DEFAULT_COPILOT_API_BASE
+      ? `Copilot API host: ${genericHost} answered ${generic.detail} and the account host lookup ` +
+        "gave no other host; staying on it."
+      : `Copilot API host: ${designated.apiBase} (${genericHost} answered ${generic.detail}).`;
   return { apiBase: designated.apiBase, note };
 }
 
@@ -616,17 +623,16 @@ async function acceptedIdentity(
  *  generic host, a literal, or the host `auto` moved to): no mode can use this credential, and the
  *  landing (a rewire, a daemon start) fails with the message. */
 class IdentityRejectedError extends Error {
-  constructor(readonly apiBase: string, message: string) {
+  constructor(
+    readonly apiBase: string,
+    message: string,
+  ) {
     super(message);
   }
 }
 
 /** Narrated once, so `agent start`/`init` explain a surprising id. */
-function narrateIdentity(
-  chosen: string,
-  pinned: boolean,
-  narrator: HostNarrator = consola,
-): void {
+function narrateIdentity(chosen: string, pinned: boolean, narrator: HostNarrator = consola): void {
   if (pinned) {
     narrator.info(
       `Copilot integration identity: ${chosen} (pinned via the \`identity\` config key).`,
@@ -697,7 +703,9 @@ export async function selectDirectIdentityAndHost(
     signal: identityOpts.signal,
     narrator: identityOpts.narrator,
   });
-  const moved = fixedHost === null && (identityOpts.pinned ?? null) === null &&
+  const moved =
+    fixedHost === null &&
+    (identityOpts.pinned ?? null) === null &&
     apiBase !== DEFAULT_COPILOT_API_BASE;
   return { integrationId: moved ? await identityOn(apiBase) : first, apiBase };
 }

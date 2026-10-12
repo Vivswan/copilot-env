@@ -1,10 +1,9 @@
 import { randomBytes } from "node:crypto";
-import { taggedLogger } from "../utils/logger.ts";
-
 import { BOUNDED_LOCK_POLICY, withRequiredFileLockSync } from "../utils/file_lock.ts";
 import { isEnoentOrNotdir } from "../utils/fs.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { dottedKey, isRecord, stableStringify } from "../utils/json.ts";
+import { taggedLogger } from "../utils/logger.ts";
 import { CopilotApiPaths } from "./paths.ts";
 import type { Profile } from "./profile.ts";
 

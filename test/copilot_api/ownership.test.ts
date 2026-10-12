@@ -3,8 +3,8 @@ import { dirname } from "node:path";
 import { OwnershipLedger } from "../../src/copilot_api/ownership.ts";
 import { CopilotApiPaths } from "../../src/copilot_api/paths.ts";
 import { deferWriteReports, flushWriteReports } from "../../src/utils/report_write.ts";
-import { afterEach, expect, removeDir, test } from "../helpers/testing.ts";
 import { envSnapshot, isolateProxyHome } from "../helpers/env.ts";
+import { afterEach, expect, removeDir, test } from "../helpers/testing.ts";
 
 const restoreEnv = envSnapshot();
 let dir = "";
@@ -63,18 +63,18 @@ test("reads write nothing on a fresh home (no lock sidecar); a mutation takes th
       throw e;
     }
   };
-  expect(reported(() => {
-    expect(ledger.owns("claudeDesktop", "/lib/uuid.json")).toBe(false);
-    expect(ledger.ownedPaths("codexCatalog")).toEqual([]);
-  })).toEqual([]);
+  expect(
+    reported(() => {
+      expect(ledger.owns("claudeDesktop", "/lib/uuid.json")).toBe(false);
+      expect(ledger.ownedPaths("codexCatalog")).toEqual([]);
+    }),
+  ).toEqual([]);
   expect(readdirSync(dirname(paths.stateStoreFile)).sort()).toEqual(before);
-  // The control, on disk: a mutation takes the store's one lock (its sidecar lands under
-  // locks/) and writes the ledger -- bookkeeping inside the data home, so it
-  // prints nothing either.
-  const sidecar = `${paths.stateStoreLock}.oslock`;
-  expect(existsSync(sidecar)).toBe(false);
+  // The control, on disk: a mutation takes the store's one lock (the marker under locks/, released
+  // on return) and writes the ledger -- bookkeeping inside the data home, so it prints nothing
+  // either.
   expect(reported(() => ledger.record("claudeDesktop", "/lib/uuid.json"))).toEqual([]);
-  expect(existsSync(sidecar)).toBe(true);
+  expect(existsSync(paths.stateStoreLock)).toBe(false);
   expect(existsSync(paths.stateStoreFile)).toBe(true);
 });
 
@@ -82,15 +82,13 @@ test("a junk-degraded ledger owns less, never crashes; survivors come back trimm
   const paths = isolate();
   writeFileSync(
     paths.stateStoreFile,
-    `${
-      JSON.stringify({
-        ownership: {
-          webSearchDenyPaths: ["/a/settings.json", 7, "", null, "  /b/settings.json  "],
-          codexCatalogConfigPaths: { bogus: true },
-          unknownKey: "ignored",
-        },
-      })
-    }\n`,
+    `${JSON.stringify({
+      ownership: {
+        webSearchDenyPaths: ["/a/settings.json", 7, "", null, "  /b/settings.json  "],
+        codexCatalogConfigPaths: { bogus: true },
+        unknownKey: "ignored",
+      },
+    })}\n`,
   );
   const ledger = new OwnershipLedger();
   expect(ledger.ownedPaths("webSearchDeny")).toEqual(["/a/settings.json", "/b/settings.json"]);

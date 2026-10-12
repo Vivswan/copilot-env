@@ -4,13 +4,13 @@
 // edge points one way (agent file -> here <- writers) and cannot cycle.
 import { CopilotApiConfig } from "../copilot_api/config.ts";
 import { Credential } from "../copilot_api/credential.ts";
-import { configSetCommand, CopilotEnvConfig } from "../copilot_api/env_config.ts";
+import { CopilotEnvConfig, configSetCommand } from "../copilot_api/env_config.ts";
 import { wiringPortFor } from "../copilot_api/port.ts";
 import {
   agentAuthCommand,
   type Profile,
-  profileLabel,
   type ProfileName,
+  profileLabel,
 } from "../copilot_api/profile.ts";
 import { bold } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
@@ -99,16 +99,19 @@ export function resolveCredentialWiring(
   if (mode === "proxy") {
     return { kind: "static", token: CopilotApiConfig.forProfile(profile).ensureApiKey() };
   }
-  const resolved = typeof directToken === "string"
-    ? { token: directToken, reason: null }
-    : new Credential(undefined, profile).resolveWithReason();
+  const resolved =
+    typeof directToken === "string"
+      ? { token: directToken, reason: null }
+      : new Credential(undefined, profile).resolveWithReason();
   if (resolved.token === null) {
     const authCommand = agentAuthCommand(profile);
     throw new Error(
       `static-key is ${config.staticKeyScope(profile)} but no credential resolves to bake: ` +
-        `${resolved.reason}. Run \`${authCommand}\`, or \`${
-          configSetCommand("static-key", "none", profile)
-        }\` ` +
+        `${resolved.reason}. Run \`${authCommand}\`, or \`${configSetCommand(
+          "static-key",
+          "none",
+          profile,
+        )}\` ` +
         "to go back to the resolver command.",
     );
   }
@@ -238,9 +241,8 @@ export async function writeDefaultAgent(
 ): Promise<void> {
   logger.log(configuringLine(adapter.label, chosen.mode));
   const credential = resolveCredentialWiring(adapter.id, chosen.mode, null, ghToken);
-  const write: ManagedWrite = chosen.mode === "direct"
-    ? { ...chosen, credential }
-    : { mode: "proxy", credential };
+  const write: ManagedWrite =
+    chosen.mode === "direct" ? { ...chosen, credential } : { mode: "proxy", credential };
   await adapter.configureProfile(null, write, { quiet: false, directToken: ghToken });
 }
 

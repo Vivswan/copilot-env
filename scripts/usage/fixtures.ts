@@ -5,7 +5,7 @@ import { localDayKey } from "../../src/utils/time.ts";
 import { DEFAULT_DAYS, DEFAULT_END, generateUsageTree } from "../../test/helpers/usage_fixtures.ts";
 
 function usage(): string {
-  return `Usage: deno run -P=test scripts/usage/fixtures.ts --out DIR --mb N --seed N [--days N] [--end ISO] [--no-adversarial]
+  return `Usage: bun scripts/usage/fixtures.ts --out DIR --mb N --seed N [--days N] [--end ISO] [--no-adversarial]
 
 Writes <DIR>/.codex/sessions/... and <DIR>/.claude/projects/... totalling about
 N MiB, deterministic for a given seed. Point agent cost at the tree with
@@ -20,7 +20,7 @@ COPILOT_API_HOME=<DIR>/.copilot-env.
 
 function die(message: string): never {
   console.error(message);
-  Deno.exit(1);
+  process.exit(1);
 }
 
 interface Args {
@@ -48,7 +48,7 @@ function parseArgs(argv: string[]): Args {
       case "--help":
       case "-h":
         console.log(usage());
-        Deno.exit(0);
+        process.exit(0);
         break;
       case "--out":
         if (value === undefined) die("--out needs a directory");
@@ -86,7 +86,7 @@ function parseArgs(argv: string[]): Args {
 }
 
 async function main(): Promise<void> {
-  const args = parseArgs(Deno.args);
+  const args = parseArgs(process.argv.slice(2));
   const startedAt = performance.now();
   const tree = await generateUsageTree({
     root: args.out,
@@ -97,16 +97,18 @@ async function main(): Promise<void> {
     adversarial: args.adversarial,
   });
   const bytes = tree.files.reduce((sum, file) => sum + file.bytes, 0);
-  console.log(JSON.stringify({
-    root: tree.root,
-    files: tree.files.length,
-    bytes,
-    mb: args.mb,
-    seed: args.seed,
-    firstDay: localDayKey(tree.firstEventMs, "UTC"),
-    lastDay: localDayKey(tree.lastEventMs, "UTC"),
-    seconds: Math.round((performance.now() - startedAt) / 10) / 100,
-  }));
+  console.log(
+    JSON.stringify({
+      root: tree.root,
+      files: tree.files.length,
+      bytes,
+      mb: args.mb,
+      seed: args.seed,
+      firstDay: localDayKey(tree.firstEventMs, "UTC"),
+      lastDay: localDayKey(tree.lastEventMs, "UTC"),
+      seconds: Math.round((performance.now() - startedAt) / 10) / 100,
+    }),
+  );
 }
 
 await main();

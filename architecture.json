@@ -55,15 +55,7 @@
     "usage": ["claude", "codex", "copilot_api", "utils"],
     "shell": ["utils"],
     "mcp": ["copilot_api", "utils"],
-    "migrations": [
-      "agents",
-      "autoupdate",
-      "claude",
-      "codex",
-      "copilot_api",
-      "shell",
-      "utils"
-    ],
+    "migrations": ["agents", "autoupdate", "claude", "codex", "copilot_api", "shell", "utils"],
     "scripts": ["copilot_api"],
     "utils": ["copilot_api"]
   }

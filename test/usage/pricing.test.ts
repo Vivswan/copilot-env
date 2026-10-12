@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { canonicalPricingUrl } from "../../src/copilot_api/config_registry.ts";
+import type { ProbeFetch } from "../../src/copilot_api/integration_identity.ts";
 import type { GitHubRateCard, RateCardSource } from "../../src/usage/github_rate_card.ts";
 import {
   canonicalModelName,
@@ -9,8 +10,8 @@ import {
   fetchPricing,
   loadPricing,
   type ModelCost,
-  pricingCachePath,
   type PricingTier,
+  pricingCachePath,
   resolvePricingId,
   roundUsd,
   type UsageTokens,
@@ -192,12 +193,15 @@ const ESTIMATES: {
   {
     name: "cache buckets are priced and included in the totals",
     pricing: new Map([
-      ["anthropic/claude-opus-4.8", {
-        input: 15,
-        output: 75,
-        cacheRead: 1.5,
-        cacheCreation: 18.75,
-      }],
+      [
+        "anthropic/claude-opus-4.8",
+        {
+          input: 15,
+          output: 75,
+          cacheRead: 1.5,
+          cacheCreation: 18.75,
+        },
+      ],
     ]),
     usage: new Map([
       [
@@ -234,12 +238,15 @@ const ESTIMATES: {
   {
     name: "known models are priced and unpriceable ones listed",
     pricing: new Map([
-      ["anthropic/claude-opus-4.8", {
-        input: 15,
-        output: 75,
-        cacheRead: 1.5,
-        cacheCreation: 18.75,
-      }],
+      [
+        "anthropic/claude-opus-4.8",
+        {
+          input: 15,
+          output: 75,
+          cacheRead: 1.5,
+          cacheCreation: 18.75,
+        },
+      ],
     ]),
     usage: new Map([
       ["claude-opus-4.8", { input: 1_000_000, output: 1_000_000, cacheRead: 0, cacheCreation: 0 }],
@@ -310,17 +317,22 @@ test("withGitHubRates prices gpt-5.6-sol at GitHub's card, leaves the list and e
     ["anthropic/claude-fable-5.1", { input: 10, output: 50, cacheRead: 0.25, cacheCreation: 12.5 }],
   ]);
   const card = cardOf({
-    rates: new Map([["openai/gpt-5.6-sol", {
-      input: 4,
-      output: 20,
-      cacheRead: 0.4,
-      cacheCreation: 5,
-    }]]),
+    rates: new Map([
+      [
+        "openai/gpt-5.6-sol",
+        {
+          input: 4,
+          output: 20,
+          cacheRead: 0.4,
+          cacheCreation: 5,
+        },
+      ],
+    ]),
   });
-  const usage = new Map([["gpt-5.6-sol", ONE_MILLION_EACH], [
-    "claude-fable-5.1",
-    ONE_MILLION_EACH,
-  ]]);
+  const usage = new Map([
+    ["gpt-5.6-sol", ONE_MILLION_EACH],
+    ["claude-fable-5.1", ONE_MILLION_EACH],
+  ]);
   const estimate = estimateCost({ byModel: usage }, withGitHubRates(list, card, FETCHED));
   expect(estimate.perModel["gpt-5.6-sol"]).toEqual({
     pricingReference: "openai/gpt-5.6-sol",
@@ -346,26 +358,33 @@ test("withGitHubRates prices gpt-5.6-sol at GitHub's card, leaves the list and e
   const agreeing = cardOf({
     rates: new Map([["anthropic/claude-fable-5.1", list.get("anthropic/claude-fable-5.1")!]]),
   });
-  expect(estimateCost({ byModel: usage }, withGitHubRates(list, agreeing, FETCHED)).githubRated)
-    .toEqual([]);
+  expect(
+    estimateCost({ byModel: usage }, withGitHubRates(list, agreeing, FETCHED)).githubRated,
+  ).toEqual([]);
 });
 
 test("withGitHubRates merges a card tier bucket by bucket and reads a float-ulp difference as the same price", () => {
   // The list's per-token strings scaled to per-million: 0.0000002 * 1e6 is not 0.2 to a float.
   const listRate = (perToken: number) => perToken * 1_000_000;
   const list = new Map<string, PricingTier>([
-    ["google/gemini-3.6-flash", {
-      input: listRate(0.00000075),
-      output: listRate(0.00000375),
-      cacheRead: listRate(0.000000075),
-      cacheCreation: listRate(0.0000009),
-    }],
-    ["openai/gpt-5.6-luna", {
-      input: listRate(0.0000002),
-      output: listRate(0.0000012),
-      cacheRead: listRate(0.00000002),
-      cacheCreation: listRate(0.00000025),
-    }],
+    [
+      "google/gemini-3.6-flash",
+      {
+        input: listRate(0.00000075),
+        output: listRate(0.00000375),
+        cacheRead: listRate(0.000000075),
+        cacheCreation: listRate(0.0000009),
+      },
+    ],
+    [
+      "openai/gpt-5.6-luna",
+      {
+        input: listRate(0.0000002),
+        output: listRate(0.0000012),
+        cacheRead: listRate(0.00000002),
+        cacheCreation: listRate(0.00000025),
+      },
+    ],
   ]);
   // The card prices gemini without a cache-write rate ("Not applicable") and luna at the same
   // numbers the list carries, spelled exactly.
@@ -375,10 +394,10 @@ test("withGitHubRates merges a card tier bucket by bucket and reads a float-ulp 
       ["openai/gpt-5.6-luna", { input: 0.2, output: 1.2, cacheRead: 0.02, cacheCreation: 0.25 }],
     ]),
   });
-  const usage = new Map([["gemini-3.6-flash", ONE_MILLION_EACH], [
-    "gpt-5.6-luna",
-    ONE_MILLION_EACH,
-  ]]);
+  const usage = new Map([
+    ["gemini-3.6-flash", ONE_MILLION_EACH],
+    ["gpt-5.6-luna", ONE_MILLION_EACH],
+  ]);
   const estimate = estimateCost({ byModel: usage }, withGitHubRates(list, card, FETCHED));
   // Gemini's cache writes stay priced at the list's rate rather than becoming unpriced.
   expect(estimate.unpriced).toEqual([]);
@@ -390,30 +409,49 @@ test("withGitHubRates merges a card tier bucket by bucket and reads a float-ulp 
 
 test("estimateCost bills an OpenAI long-context share at its tier and an Anthropic one flat", () => {
   const card = cardOf({
-    longContext: new Map([["openai/gpt-6-astra", {
-      promptTokens: 272_000,
-      tier: { input: 20, output: 75, cacheRead: 2, cacheCreation: 25 },
-    }]]),
+    longContext: new Map([
+      [
+        "openai/gpt-6-astra",
+        {
+          promptTokens: 272_000,
+          tier: { input: 20, output: 75, cacheRead: 2, cacheCreation: 25 },
+        },
+      ],
+    ]),
   });
   const pricing = withGitHubRates(
     new Map<string, PricingTier>([
       ["openai/gpt-6-astra", { input: 10, output: 50, cacheRead: 1, cacheCreation: 12.5 }],
-      ["anthropic/claude-fable-5.1", {
-        input: 10,
-        output: 50,
-        cacheRead: 0.25,
-        cacheCreation: 12.5,
-      }],
+      [
+        "anthropic/claude-fable-5.1",
+        {
+          input: 10,
+          output: 50,
+          cacheRead: 0.25,
+          cacheCreation: 12.5,
+        },
+      ],
     ]),
     card,
     FETCHED,
   );
   const total = { input: 1_000_000, output: 100_000, cacheRead: 2_000_000, cacheCreation: 0 };
   const long = { input: 400_000, output: 40_000, cacheRead: 1_000_000, cacheCreation: 0 };
-  const { perModel, githubRated } = estimateCost({
-    byModel: new Map([["gpt-6-astra", total], ["claude-fable-5.1", total]]),
-    longContext: { byModel: new Map([["gpt-6-astra", long], ["claude-fable-5.1", long]]) },
-  }, pricing);
+  const { perModel, githubRated } = estimateCost(
+    {
+      byModel: new Map([
+        ["gpt-6-astra", total],
+        ["claude-fable-5.1", total],
+      ]),
+      longContext: {
+        byModel: new Map([
+          ["gpt-6-astra", long],
+          ["claude-fable-5.1", long],
+        ]),
+      },
+    },
+    pricing,
+  );
   // astra: 600K input at 10 + 400K at 20; 60K output at 50 + 40K at 75; 1M reads at 1 + 1M at 2.
   expect(perModel["gpt-6-astra"]?.inputCostUsd).toBeCloseTo(0.6 * 10 + 0.4 * 20, 10);
   expect(perModel["gpt-6-astra"]?.outputCostUsd).toBeCloseTo(0.06 * 50 + 0.04 * 75, 10);
@@ -426,16 +464,26 @@ test("estimateCost bills an OpenAI long-context share at its tier and an Anthrop
 
 test("estimateCost bills a rate the long-context tier leaves out at the card's base rate for the model, not the list's", () => {
   const card = cardOf({
-    rates: new Map([["openai/gpt-6-astra", {
-      input: 10,
-      output: 50,
-      cacheRead: 1,
-      cacheCreation: 5,
-    }]]),
-    longContext: new Map([["openai/gpt-6-astra", {
-      promptTokens: 272_000,
-      tier: { input: 20, output: 75, cacheRead: 2 },
-    }]]),
+    rates: new Map([
+      [
+        "openai/gpt-6-astra",
+        {
+          input: 10,
+          output: 50,
+          cacheRead: 1,
+          cacheCreation: 5,
+        },
+      ],
+    ]),
+    longContext: new Map([
+      [
+        "openai/gpt-6-astra",
+        {
+          promptTokens: 272_000,
+          tier: { input: 20, output: 75, cacheRead: 2 },
+        },
+      ],
+    ]),
   });
   const pricing = withGitHubRates(
     new Map<string, PricingTier>([
@@ -445,10 +493,13 @@ test("estimateCost bills a rate the long-context tier leaves out at the card's b
     FETCHED,
   );
   const writes = { input: 0, output: 0, cacheRead: 0, cacheCreation: 1_000_000 };
-  const { perModel, githubRated } = estimateCost({
-    byModel: new Map([["gpt-6-astra", writes]]),
-    longContext: { byModel: new Map([["gpt-6-astra", { ...writes, cacheCreation: 400_000 }]]) },
-  }, pricing);
+  const { perModel, githubRated } = estimateCost(
+    {
+      byModel: new Map([["gpt-6-astra", writes]]),
+      longContext: { byModel: new Map([["gpt-6-astra", { ...writes, cacheCreation: 400_000 }]]) },
+    },
+    pricing,
+  );
   expect(perModel["gpt-6-astra"]).toEqual({
     pricingReference: "openai/gpt-6-astra",
     inputCostUsd: 0,
@@ -481,8 +532,8 @@ function openRouterBody(id: string, promptPerToken: string): unknown {
         pricing: {
           prompt: promptPerToken,
           completion: "0.000075",
-          "input_cache_read": "0.0000015",
-          "input_cache_write": "0.00001875",
+          input_cache_read: "0.0000015",
+          input_cache_write: "0.00001875",
         },
       },
     ],
@@ -494,7 +545,7 @@ function openRouterBody(id: string, promptPerToken: string): unknown {
 function fakeFetch(
   body: unknown,
   opts: { fail?: boolean } = {},
-): { fetch: typeof fetch; calls: number } {
+): { fetch: ProbeFetch; calls: number } {
   const state = {
     calls: 0,
     fetch: ((input: string | URL | Request, init?: RequestInit): Promise<Response> => {
@@ -509,7 +560,7 @@ function fakeFetch(
           headers: { "Content-Type": "application/json" },
         }),
       );
-    }) as typeof fetch,
+    }) as ProbeFetch,
   };
   return state;
 }
@@ -645,8 +696,8 @@ test("loadPricing treats a cache file that is not JSON or was written for anothe
       "[]",
       // A valid record written for ANOTHER url under this file name.
       JSON.stringify({
-        "url_sha256": sha256(OTHER_URL),
-        "fetched_at_ms": now,
+        url_sha256: sha256(OTHER_URL),
+        fetched_at_ms: now,
         tiers: { "x/y": { input: 1 } },
       }),
     ];
@@ -659,15 +710,16 @@ test("loadPricing treats a cache file that is not JSON or was written for anothe
       // ... and a failing refresh has nothing to fall back on.
       writeFileSync(path, text);
       const down = fakeFetch(null, { fail: true });
-      await expect(loadPricing(PRICE_URL, { cacheDir, nowMs: now, fetchImpl: down.fetch })).rejects
-        .toThrow("pricing request failed");
+      await expect(
+        loadPricing(PRICE_URL, { cacheDir, nowMs: now, fetchImpl: down.fetch }),
+      ).rejects.toThrow("pricing request failed");
     }
     // Negative control: the same record with a valid shape IS a cache hit.
     writeFileSync(
       path,
       JSON.stringify({
-        "url_sha256": digest,
-        "fetched_at_ms": now,
+        url_sha256: digest,
+        fetched_at_ms: now,
         tiers: { "x/y": { input: 1 } },
       }),
     );
@@ -793,8 +845,9 @@ test("loadPricing treats a response with no priced model as a failed refresh", (
     const now = 1_700_000_000_000;
     // No cache yet: an empty list is an error, not a price list, and nothing is written.
     const empty = fakeFetch({ data: [] });
-    await expect(loadPricing(PRICE_URL, { cacheDir, nowMs: now, fetchImpl: empty.fetch })).rejects
-      .toThrow("pricing response has no priced models");
+    await expect(
+      loadPricing(PRICE_URL, { cacheDir, nowMs: now, fetchImpl: empty.fetch }),
+    ).rejects.toThrow("pricing response has no priced models");
     expect(readdirSync(cacheDir)).toEqual([]);
 
     const seed = fakeFetch(openRouterBody("anthropic/claude-opus-4.8", "0.000015"));
@@ -881,7 +934,7 @@ test("the flag and the stored key share one URL rule: https only, canonical befo
     const recording = ((input: string | URL | Request) => {
       requested = String(input);
       return net.fetch(input);
-    }) as typeof fetch;
+    }) as ProbeFetch;
     await fetchPricing(loud, recording);
     expect(requested).toBe(quiet);
 
@@ -905,8 +958,9 @@ test("the flag and the stored key share one URL rule: https only, canonical befo
       }
       expect(message).toBe(expected);
       await expect(fetchPricing(bad, net.fetch)).rejects.toThrow(message);
-      await expect(loadPricing(bad, { cacheDir, nowMs: now, fetchImpl: net.fetch })).rejects
-        .toThrow(message);
+      await expect(
+        loadPricing(bad, { cacheDir, nowMs: now, fetchImpl: net.fetch }),
+      ).rejects.toThrow(message);
     }
     expect(net.calls).toBe(2);
   }));
@@ -918,8 +972,14 @@ test("loadPricing never echoes the URL in its errors", () =>
 
     // Transport failure, no cache: the rejection carries neither the URL nor the token.
     const down = fakeFetch(null, { fail: true });
-    const rejected = await loadPricing(secretUrl, { cacheDir, nowMs: now, fetchImpl: down.fetch })
-      .then(() => null, (e: unknown) => (e instanceof Error ? e.message : String(e)));
+    const rejected = await loadPricing(secretUrl, {
+      cacheDir,
+      nowMs: now,
+      fetchImpl: down.fetch,
+    }).then(
+      () => null,
+      (e: unknown) => (e instanceof Error ? e.message : String(e)),
+    );
     expect(rejected).toBe("pricing request failed");
 
     // A transport error's NAME is as untrusted as its message.
@@ -928,9 +988,10 @@ test("loadPricing never echoes the URL in its errors", () =>
       const e = new Error(`boom ${secretUrl}`);
       e.name = secretUrl;
       return Promise.reject(e);
-    }) as typeof fetch;
-    await expect(loadPricing(secretUrl, { cacheDir, nowMs: now, fetchImpl: named.fetch })).rejects
-      .toThrow(/^pricing request failed$/);
+    }) as ProbeFetch;
+    await expect(
+      loadPricing(secretUrl, { cacheDir, nowMs: now, fetchImpl: named.fetch }),
+    ).rejects.toThrow(/^pricing request failed$/);
 
     // HTTP failure (a server's status text can echo the request) and a non-JSON
     // body: summarized without either.
@@ -938,13 +999,15 @@ test("loadPricing never echoes the URL in its errors", () =>
     denied.fetch = (() =>
       Promise.resolve(
         new Response("nope", { status: 401, statusText: `Unauthorized ${secretUrl}` }),
-      )) as typeof fetch;
-    await expect(loadPricing(secretUrl, { cacheDir, nowMs: now, fetchImpl: denied.fetch })).rejects
-      .toThrow(/^pricing request returned HTTP 401$/);
+      )) as ProbeFetch;
+    await expect(
+      loadPricing(secretUrl, { cacheDir, nowMs: now, fetchImpl: denied.fetch }),
+    ).rejects.toThrow(/^pricing request returned HTTP 401$/);
     const html = fakeFetch(null);
-    html.fetch = (() => Promise.resolve(new Response("<html>", { status: 200 }))) as typeof fetch;
-    await expect(loadPricing(secretUrl, { cacheDir, nowMs: now, fetchImpl: html.fetch })).rejects
-      .toThrow("pricing response was not valid JSON");
+    html.fetch = (() => Promise.resolve(new Response("<html>", { status: 200 }))) as ProbeFetch;
+    await expect(
+      loadPricing(secretUrl, { cacheDir, nowMs: now, fetchImpl: html.fetch }),
+    ).rejects.toThrow("pricing response was not valid JSON");
 
     // Stale fallback: the recorded fetchError is equally URL-free, and so is the file.
     const seed = fakeFetch(openRouterBody("anthropic/claude-opus-4.8", "0.000015"));
@@ -959,8 +1022,8 @@ test("loadPricing never echoes the URL in its errors", () =>
       fetchedAtMs: now,
       fetchError: "pricing request failed",
     });
-    const text = JSON.stringify(stale) +
-      readFileSync(pricingCachePath(secretUrl, cacheDir), "utf8");
+    const text =
+      JSON.stringify(stale) + readFileSync(pricingCachePath(secretUrl, cacheDir), "utf8");
     expect(text).not.toContain("SECRET-TOKEN");
     expect(text).not.toContain("pricing.example");
     // Negative control: the fake transport's own error DOES carry the token.

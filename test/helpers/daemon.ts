@@ -1,12 +1,16 @@
 // A live daemon and its neighbours as fixtures: the credential resolution `agent start` runs, a
-// real detached fake daemon over a home, the waits that bound themselves by the test deadline,
-// and the shared-home stop refusal.
+// real detached fake daemon over a home, daemon-side children run the way the daemon runs (the
+// running bun as a bun CLI, a shim under `--preload`), the waits that bound themselves by the test
+// deadline, and the shared-home stop refusal.
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+import { abortable, delay } from "@std/async";
+import { acquireDaemonLockForLife, daemonLockPath } from "../../src/copilot_api/daemon_lock.ts";
 import { CopilotEnvConfig } from "../../src/copilot_api/env_config.ts";
 import {
-  daemonClientHeaders,
   DEFAULT_COPILOT_API_BASE,
+  daemonClientHeaders,
 } from "../../src/copilot_api/integration_identity.ts";
 import {
   type DaemonLaunchAuth,
@@ -14,16 +18,16 @@ import {
   readLaunchToken,
   resolveLaunchCredential,
 } from "../../src/copilot_api/launch.ts";
-import type { DaemonCredential } from "../../src/copilot_api/process.ts";
-import { launchDaemon } from "../../src/copilot_api/process.ts";
+import { resolveRootHome } from "../../src/copilot_api/paths.ts";
+import { BUN_CLI_ENV, type DaemonCredential, launchDaemon } from "../../src/copilot_api/process.ts";
 import type { Profile, ProfileName } from "../../src/copilot_api/profile.ts";
-import { parseAbsolutePath } from "../../src/copilot_api/sidecar.ts";
-import { acquireDaemonLockForLife, daemonLockPath } from "../../src/copilot_api/daemon_lock.ts";
+import { PROXY_PACKAGE_NAME } from "../../src/copilot_api/version.ts";
+import { proxyHome, proxyInstallDir, renderProxyManifest } from "../../src/proxy_float.ts";
 import { releaseFileLock } from "../../src/utils/file_lock.ts";
 import { pidAlive } from "../../src/utils/pid.ts";
 import { writeRunState } from "./fixtures.ts";
-import { denoRunArgs, ROOT, spawnChild } from "./run.ts";
-import { testAbortSignal } from "./testing.ts";
+import { bunRunArgs, ROOT, type RunOptions, runSync, spawnChild } from "./run.ts";
+import { tempDir, testAbortSignal } from "./testing.ts";
 
 /** `agent start`'s two credential steps as one call, the refusal gate and the resolution it feeds,
  *  so a decision table holds refusals and resolved credentials side by side (a refusal rejects). */
@@ -48,8 +52,54 @@ export const FAKE_DAEMON_CREDENTIAL: DaemonCredential = {
 };
 export const FAKE_DAEMON_HOST = DEFAULT_COPILOT_API_BASE;
 
+/** The fake proxy as a file entry under the resolved root home's proxy home, the shape
+ *  COPILOT_API_ENTRY resolves to. */
+export function fakeProxyEntry(): {
+  kind: "file";
+  path: string;
+  proxyHome: string;
+  nodeModules: string;
+} {
+  const rootHome = resolveRootHome();
+  return {
+    kind: "file",
+    path: join(ROOT, "test", "copilot-api-fake.mjs"),
+    proxyHome: proxyHome(rootHome),
+    nodeModules: join(proxyInstallDir(rootHome), "node_modules"),
+  };
+}
+
+/**
+ * A complete install tree in `rootHome`'s proxy home, as a float leaves it: this build's manifest
+ * for `version` (null: the shims-only tree), a lockfile, the proxy package's own manifest naming
+ * its bin and that file, and every shim package's manifest. Returns the proxy's entry path.
+ */
+export function plantProxyInstall(rootHome: string, version: string | null): string {
+  const dir = proxyInstallDir(rootHome);
+  const manifest = renderProxyManifest(version);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "package.json"), manifest);
+  writeFileSync(join(dir, "bun.lock"), "{}\n");
+  const dependencies = (JSON.parse(manifest) as { dependencies: Record<string, string> })
+    .dependencies;
+  for (const [name, range] of Object.entries(dependencies)) {
+    const packageDir = join(dir, "node_modules", ...name.split("/"));
+    mkdirSync(join(packageDir, "dist"), { recursive: true });
+    writeFileSync(
+      join(packageDir, "package.json"),
+      JSON.stringify({
+        name,
+        version: name === PROXY_PACKAGE_NAME ? range : "0.0.0",
+        bin: { "copilot-api": "./dist/main.js" },
+      }),
+    );
+    writeFileSync(join(packageDir, "dist", "main.js"), "");
+  }
+  return join(dir, "node_modules", ...PROXY_PACKAGE_NAME.split("/"), "dist", "main.js");
+}
+
 /** A real detached daemon over `home`, preloads included, so it takes the daemon.lock at boot like
- *  production. */
+ *  production: the running bun spawned as the daemon's runtime. */
 export function launchFakeDaemon(home: string, port: number): number {
   mkdirSync(home, { recursive: true });
   const logFile = join(home, "daemon.log");
@@ -63,46 +113,73 @@ export function launchFakeDaemon(home: string, port: number): number {
     idleWatchdog: false,
     muteProxyLogs: false,
     copilotHost: FAKE_DAEMON_HOST,
-    entry: {
-      kind: "file",
-      path: join(ROOT, "test", "copilot-api-fake.mjs"),
-      configFile: join(ROOT, "deno.json"),
-    },
-    denoBin: parseAbsolutePath(Deno.execPath()),
+    entry: fakeProxyEntry(),
+  });
+}
+
+/**
+ * A process the owner-filtered scan classifies as our daemon: the running bun (the runtime name
+ * the classifier gates on) running `entry`, whose basename starts with `copilot-api`, with `start`
+ * next on its argv, and a `--preload` file under this root home's proxy home, the mark only our
+ * spawn leaves (here one importing the parent-exit preload, so a decoy also dies with the test).
+ * Nothing else in the process table qualifies: the suite's own bun processes, and another test
+ * file's decoy under its own scratch root home. `stderr` is inherited so a child that dies says
+ * why in the run. The decoy's stdin is a pipe this process holds: the parent-exit preload exits on
+ * stdin's EOF, so an ignored stdin (an immediate EOF) would end the decoy before its entry ran;
+ * the pipe's write end is released once the decoy is gone.
+ */
+export function spawnDaemonShapedChild(
+  entry: string,
+  args: string[] = ["start"],
+  env: Record<string, string> = {},
+): Bun.Subprocess<"pipe", "ignore", "inherit"> {
+  const preload = join(proxyHome(resolveRootHome()), "decoy_preload.ts");
+  mkdirSync(join(preload, ".."), { recursive: true });
+  writeFileSync(
+    preload,
+    `import ${JSON.stringify(pathToFileURL(join(ROOT, "test", "helpers", "exit_with_parent_preload.ts")).href)};\n`,
+  );
+  const child = spawnChild(process.execPath, {
+    args: [...bunRunArgs("--preload", preload), entry, ...args],
+    env: { ...env, ...BUN_CLI_ENV },
+    stdin: "pipe",
+    stdout: "ignore",
+    stderr: "inherit",
+  });
+  void child.exited.then(() => child.stdin.end());
+  return child;
+}
+
+/** `source` written under a fresh temp dir and run with `--preload shim` ahead of it, the way the
+ *  daemon launcher loads the shims; `args` follow the target on its argv. */
+export function runWithPreload(
+  shim: string,
+  source: string,
+  opts: RunOptions & { args?: string[] } = {},
+): ReturnType<typeof runSync> {
+  const target = join(tempDir("preload-target-"), "target.ts");
+  writeFileSync(target, source);
+  const { args = [], ...run } = opts;
+  return runSync(process.execPath, [...bunRunArgs("--preload", shim), target, ...args], {
+    ...run,
+    env: { ...(run.env ?? process.env), ...BUN_CLI_ENV },
   });
 }
 
 /**
  * Resolves once `probe` answers true. No clock of its own: the test deadline is the one budget.
- * A pending probe or sleep rejects the moment it fires, so a `finally` behind the wait runs before
- * the runner can exit; a sync probe already true is still answered after it, so an abandoned
- * body's `finally` finishes the cleanup it can.
+ * A pending probe or sleep rejects with the deadline's reason the moment it fires, so a `finally`
+ * behind the wait runs before the runner can exit; a sync probe already true is still answered
+ * after it, so an abandoned body's `finally` finishes the cleanup it can.
  */
 export async function until(probe: () => boolean | Promise<boolean>): Promise<void> {
   const signal = testAbortSignal();
   if (signal === undefined) throw new Error("until: no test deadline to bound the wait");
   for (;;) {
     const answer = probe();
-    if (typeof answer === "boolean" ? answer : await unlessAborted(answer, signal)) return;
-    await unlessAborted(new Promise((resolve) => setTimeout(resolve, 50)), signal);
+    if (typeof answer === "boolean" ? answer : await abortable(answer, signal)) return;
+    await delay(50, { signal });
   }
-}
-
-/** Settles as `pending` does, or rejects with the signal's reason the moment it aborts, probe and
- *  sleep alike: the runner exits once the last test settles, and a wait still pending then would
- *  miss its cleanup. */
-function unlessAborted<T>(pending: T | Promise<T>, signal: AbortSignal): Promise<T> {
-  return new Promise((resolve, reject) => {
-    if (signal.aborted) {
-      reject(signal.reason);
-      return;
-    }
-    const onAbort = (): void => reject(signal.reason);
-    signal.addEventListener("abort", onAbort, { once: true });
-    Promise.resolve(pending)
-      .then(resolve, reject)
-      .finally(() => signal.removeEventListener("abort", onAbort));
-  });
 }
 
 /** Returns once the pid is gone: a daemon outliving its test would hold the temp home open into
@@ -117,16 +194,14 @@ export async function killAndAwaitExit(pid: number): Promise<void> {
 }
 
 /**
- * The thrower mimics Deno's NotCapable (name "NotCapable", `code` undefined), what a permission set
- * without --allow-run really throws; test/utils/pid.test.ts pins that shape. Inside `body` every
- * pidLiveness read is "unproven" and every signal fails as it does in the daemon.
+ * The thrower carries no errno `code`, the one shape pidLiveness (src/utils/pid.ts) reads as
+ * "unproven" rather than alive or dead. Inside `body` every liveness read is "unproven" and every
+ * signal fails, as they do for a daemon whose probe cannot run.
  */
 export async function withUnprovablePidProbe(body: () => Promise<void>): Promise<void> {
   const realKill = process.kill;
   process.kill = ((_pid: number, _signal?: string | number): true => {
-    throw Object.assign(new Error("Requires run access to signal processes"), {
-      name: "NotCapable",
-    });
+    throw new Error("the liveness probe cannot run");
   }) as typeof process.kill;
   try {
     await body();
@@ -153,10 +228,10 @@ export function stageRefusedStop(home: string, profile?: ProfileName): RefusedSt
   mkdirSync(home, { recursive: true });
   const script = join(home, "bystander.ts");
   writeFileSync(script, "setInterval(() => {}, 60_000);\n");
-  const child = spawnChild(Deno.execPath(), {
-    args: [...denoRunArgs(), script],
-    stdout: "null",
-    stderr: "null",
+  const child = spawnChild(process.execPath, {
+    args: [...bunRunArgs(), script],
+    stdout: "ignore",
+    stderr: "ignore",
   });
   if (!acquireDaemonLockForLife(home, { waitMs: 0 })) {
     throw new Error(`could not hold ${home}'s daemon.lock for the refused-stop fixture`);

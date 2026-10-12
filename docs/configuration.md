@@ -107,12 +107,13 @@ The [architecture page](architecture.md#identity-and-host-state-in-the-slot-rend
 | `proxy.messages-api`                 | `profile-default` | `true`       | Prefer the native Messages API |
 | `proxy.responses.context-management` | `profile-default` | `false`      | Responses context management   |
 | `proxy.responses.websearch`          | `profile-default` | `true`       | Responses API web search       |
-| `proxy.responses.websocket`          | `profile-default` | `true`       | Responses API over WebSocket   |
+| `proxy.responses.websocket`          | `profile-default` | `false`      | Responses WebSocket, proxy ID  |
 | `proxy.small-model`                  | `profile-default` | `gpt-5-mini` | The proxy's small/fast model   |
 
 **The `proxy.*` keys** are projected into the proxy's own `config.json` at `agent start`, resolved for the daemon's profile, so changing one needs that daemon restarted. That file sits in the daemon's profile home, `~/.local/share/copilot-env/profiles/<name>/config.json`, with `default` as the default profile's name.
 
 - One exception: the MCP `web_search` tool reads `proxy.message-websearch-model` fresh on every call ([web search](usage.md#web-search-for-claude-code)).
+- `proxy.responses.websocket` is off by default, against the proxy's own default: the WebSocket handshake cannot carry the resolved client identity (the proxy's `WebSocket` is bun's native class, out of the preload shims' reach), so Codex's `/responses` streams over HTTP, where every call carries that identity. `true` restores the WebSocket transport at the cost of the proxy's own identity on it. Either way the daemon picks the value up at its next start.
 
 ## codex
 
@@ -230,4 +231,4 @@ copilot-env loads local defaults from root `.env` when running its TypeScript en
 - `COPILOT_API_MIN_RELEASE_AGE=<seconds>`: the cooldown window (`0` = no cooldown). Beats the `daemon.release-cooldown` config key.
 - `COPILOT_CREDITS_TARGET=<credits>`: the monthly credits `agent credits` paces against. Beats the `cost.credits-target` config key; `agent credits --target` beats both for one run.
 
-Without a pin, the proxy float reads npm publish times, picks the newest version at least the cooldown window old, and clamps it to the bounds in `copilot-env.config`. The window is the env var, else `daemon.release-cooldown`, else the 7-day default that tracks `deno.json`'s `minimumDependencyAge`.
+Without a pin, the proxy float reads npm publish times, picks the newest version at least the cooldown window old, and clamps it to the bounds in `copilot-env.config`. The window is the env var, else `daemon.release-cooldown`, else the 7-day default that tracks `minimumReleaseAge` under `[install]` in `bunfig.toml`.

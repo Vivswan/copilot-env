@@ -22,11 +22,11 @@ import { errMessage } from "../../src/utils/error.ts";
 import { dayKeyIn } from "../../src/utils/time.ts";
 import { captureAllWrites } from "../helpers/output.ts";
 import {
-  codexUsage as usage,
   rolloutLine,
   sessionMeta,
   tokenCount,
   turnContext,
+  codexUsage as usage,
   writeRollout,
 } from "../helpers/session_fixtures.ts";
 import { CODEX_SCENARIOS, scenarioNamed } from "../helpers/session_scenarios.ts";
@@ -38,7 +38,8 @@ test("readCodexSessions counts an unterminated final line once its LF lands", as
   scenario.check(await readCodexSessions(roots, undefined, undefined, parseEveryCandidate));
   appendFileSync(files![0]!, "\n");
   expect(
-    (await readCodexSessions(roots, undefined, undefined, parseEveryCandidate)).get("copilot-env")
+    (await readCodexSessions(roots, undefined, undefined, parseEveryCandidate))
+      .get("copilot-env")
       ?.byModel.get("gpt-5.6"),
   ).toEqual({
     input: 30,
@@ -81,8 +82,10 @@ test("readCodexSessions warns about a corrupt archive and still counts the valid
 
 test("walkCodexSessions under a NaN cutoff keeps every file a candidate", () => {
   // A NaN cutoff fails every comparison, so no file is skipped by its date.
-  const { roots } = scenarioNamed(CODEX_SCENARIOS, "under a NaN cutoff counts nothing, as before")
-    .build(tempDir("codex-sessions-"));
+  const { roots } = scenarioNamed(
+    CODEX_SCENARIOS,
+    "under a NaN cutoff counts nothing, as before",
+  ).build(tempDir("codex-sessions-"));
   expect(walkCodexSessions(roots, Number.NaN).map((f) => f.candidate)).toEqual([true]);
 });
 
@@ -170,7 +173,7 @@ test("walkCodexSessions reports every rollout with its candidacy verdict, in fol
 });
 
 // File symlinks need a privilege on Windows that CI runners do not always hold.
-test.skipIf(Deno.build.os === "windows")(
+test.skipIf(process.platform === "win32")(
   "walkCodexSessions warns about a rollout it cannot stat and leaves it out",
   async () => {
     const dir = tempDir("codex-sessions-");
@@ -235,10 +238,15 @@ test("foldCodex books a request over 272K prompt tokens as long-context and one 
     ]),
     {
       rates: new Map(),
-      longContext: new Map([["openai/gpt-6-astra", {
-        promptTokens: 272_000,
-        tier: { input: 20, output: 75, cacheRead: 2, cacheCreation: 25 },
-      }]]),
+      longContext: new Map([
+        [
+          "openai/gpt-6-astra",
+          {
+            promptTokens: 272_000,
+            tier: { input: 20, output: 75, cacheRead: 2, cacheCreation: 25 },
+          },
+        ],
+      ]),
       unmapped: [],
     },
     { source: "fetched", fetchedAtMs: Date.parse("2026-06-01T00:00:00.000Z") },
@@ -256,7 +264,7 @@ test("parseCodexWhole honours session_meta until an id is known, then ignores la
   const dir = tempDir("codex-sessions-");
   const path = writeRollout(join(dir, "s"), "2026-06-01", "aaa", [
     // No id: the gate stays open, so the NEXT meta line still applies.
-    rolloutLine("2026-06-01T10:00:00.000Z", "session_meta", { "model_provider": "first" }),
+    rolloutLine("2026-06-01T10:00:00.000Z", "session_meta", { model_provider: "first" }),
     tokenCount("2026-06-01T10:00:01.000Z", usage(1, 0, 1), usage(1, 0, 1)),
     sessionMeta("2026-06-01T10:00:02.000Z", "aaa", { provider: "second", forkedFrom: "p" }),
     tokenCount("2026-06-01T10:00:03.000Z", usage(3, 0, 3), usage(2, 0, 2)),

@@ -1,19 +1,79 @@
-# Runs this repository's release acceptance tests: the tier that is critical for a release but need not run on every
-# merge (slow, environment-heavy, or network-bound). The managed ci.yml calls it on the release PR and on a dispatch,
-# where all-green blocks on it; the nightly starter calls it on the schedule (docs/all-green.md, "The release-gate hook").
+# Repo-owned release gate: the checks required before a release that run nowhere on a PR or a
+# push to main. Everything that runs on a PR stays in checks.yml; this file holds only what would
+# otherwise first run after the tag exists (update-release.yml's upload-assets job). The managed
+# ci.yml calls it on the release-please PR and on a workflow_dispatch, where all-green blocks on
+# it; nightly.yml calls it on the schedule so a break shows the next morning instead of on the
+# release PR. checks.yml never calls it: ci.yml already does, and a second call runs every job
+# twice.
 #
-# This file is repo-owned, seeded once by the fleet sync and never overwritten by a later sync.
+#   release-assets -> the installer assets pinned to a synthetic tag and validated, the five
+#                     cross-compiled binaries with dist/checksums.txt verified, every asset
+#                     present at a real size, the host's binary running --help
 #
-# Replace the no-op job with this repository's tiers; the caller grants no secrets and caps at contents: read.
+# The caller's contract: workflow_call only, no inputs, no secrets, contents: read, every job
+# bounded by timeout-minutes (test/utils/release_gate.test.ts).
 
 name: Release Gate
 
 on:
   workflow_call:
 
+permissions:
+  contents: read
+
 jobs:
-  noop:
+  # The build and validation half of update-release.yml's upload-assets job, run before any tag
+  # exists. The tag is synthetic: release-assets.ts only rewrites the installers' INSTALL_REF line
+  # to it and asserts the rewrite, with no network, so the version in package.json stands in for
+  # the one release-please is about to cut.
+  release-assets:
+    name: release assets build and validation
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # Five cross-compiles, each downloading its target's bun runtime on a cold cache.
+    timeout-minutes: 45
     steps:
-      - run: echo "release-gate hook - nothing configured"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('**/bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # Read through the repository's one version owner (src/utils/version.ts), not a second
+      # package.json reader.
+      - name: Name the synthetic release tag
+        id: tag
+        run: |
+          version="$(bun -e 'import { packageVersion } from "./src/utils/version.ts"; console.log(packageVersion())')"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+
+      - name: Create installer assets
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: bun .github/scripts/release-assets.ts prepare "$TAG"
+
+      - name: Validate installer assets
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          bun .github/scripts/release-assets.ts validate "$TAG"
+          bash -n release-assets/install.sh
+          pwsh -NoProfile -Command "[scriptblock]::Create((Get-Content -Raw release-assets/install.ps1)) | Out-Null"
+
+      - name: Compile agent binaries (all targets)
+        run: |
+          bun run build
+          (cd dist && sha256sum -c checksums.txt)
+
+      # The size floor and the host's --help run live in release-assets.ts (assert-assets): a
+      # zero-exit compile that left a stub or a truncated artifact is what they catch.
+      - name: Prove every release asset exists and the host's runs
+        run: bun .github/scripts/release-assets.ts assert-assets

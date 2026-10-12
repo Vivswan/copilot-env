@@ -2,10 +2,10 @@
 import { copyFileSync, existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { ledger, writeFile } from "./cli.ts";
-import { registry, runTurn } from "./children.ts";
-import type { MinuteStraddle } from "./fake.ts";
 import { isRecord, parseJsonRecord } from "../../../src/utils/json.ts";
+import { registry, runTurn } from "./children.ts";
+import { ledger, writeFile } from "./cli.ts";
+import type { MinuteStraddle } from "./fake.ts";
 import { filesFor } from "./transcripts.ts";
 
 const CODEX_MODEL = "gpt-5.4";
@@ -58,7 +58,7 @@ export async function recordCodex(
   if (baseUrl !== null) {
     writeFile(join(codexHome, "config.toml"), codexConfigToml(baseUrl));
   } else {
-    const auth = join(Deno.env.get("CODEX_HOME") ?? join(homedir(), ".codex"), "auth.json");
+    const auth = join(process.env.CODEX_HOME ?? join(homedir(), ".codex"), "auth.json");
     if (existsSync(auth)) {
       copyFileSync(auth, join(codexHome, "auth.json"));
       ledger.written.push("home/.codex/auth.json");
@@ -132,7 +132,10 @@ export function codexEvidenceFailures(
   const failures: string[] = [];
   const files = [...recordsByFile.keys()];
   if (
-    ids.first === null || ids.resumed === null || ids.tool === null || ids.afterTool === null ||
+    ids.first === null ||
+    ids.resumed === null ||
+    ids.tool === null ||
+    ids.afterTool === null ||
     ids.fork === null
   ) {
     return ["codex: not every turn produced a thread id"];
@@ -142,12 +145,11 @@ export function codexEvidenceFailures(
     failures.push("codex: the resume after the tool turn did not continue the tool session");
   }
   const firstFiles = filesFor(files, ids.first, "codex");
-  for (
-    const [label, id] of [["session 1", ids.first], ["the tool session", ids.tool], [
-      "the fork",
-      ids.fork,
-    ]]
-  ) {
+  for (const [label, id] of [
+    ["session 1", ids.first],
+    ["the tool session", ids.tool],
+    ["the fork", ids.fork],
+  ]) {
     const count = filesFor(files, id!, "codex").length;
     if (count !== 1) failures.push(`codex: ${label} has ${count} rollouts, expected 1`);
   }
@@ -155,20 +157,24 @@ export function codexEvidenceFailures(
   for (const file of firstFiles) {
     for (const record of recordsByFile.get(file) ?? []) {
       if (
-        record.type === "event_msg" && isRecord(record.payload) &&
+        record.type === "event_msg" &&
+        isRecord(record.payload) &&
         record.payload.type === "token_count"
-      ) tokenCounts++;
+      )
+        tokenCounts++;
     }
   }
   if (tokenCounts < 2) {
     failures.push("codex: session 1's rollout does not hold the resumed turn's token_count");
   }
   const forkFiles = filesFor(files, ids.fork, "codex");
-  const forkMeta = forkFiles.flatMap((file) => recordsByFile.get(file) ?? []).find(
-    (record) => record.type === "session_meta",
-  );
+  const forkMeta = forkFiles
+    .flatMap((file) => recordsByFile.get(file) ?? [])
+    .find((record) => record.type === "session_meta");
   if (
-    ids.fork === ids.first || forkMeta === undefined || !isRecord(forkMeta.payload) ||
+    ids.fork === ids.first ||
+    forkMeta === undefined ||
+    !isRecord(forkMeta.payload) ||
     forkMeta.payload.forked_from_id !== ids.first
   ) {
     failures.push("codex: the fork's rollout does not name session 1 in forked_from_id");

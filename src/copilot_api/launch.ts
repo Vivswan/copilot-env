@@ -4,32 +4,36 @@
 import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { consola } from "consola";
-import { floatProxy, proxyFloatVerifyStatus } from "../proxy_float.ts";
+import {
+  ensureShimDependencies,
+  floatProxy,
+  type ProxyFloatDeps,
+  proxyFloatVerifyStatus,
+} from "../proxy_float.ts";
+import { colorEnabled, paintFor } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import { withFileLock } from "../utils/file_lock.ts";
-import { pidAlive } from "../utils/pid.ts";
+import * as fs from "../utils/fs_facade.ts";
 import { isRecord } from "../utils/json.ts";
+import { pidAlive } from "../utils/pid.ts";
 import { type ProjectConfig, readProjectConfig } from "../utils/project_config.ts";
+import { rootMode } from "../utils/root.ts";
+import { formatTable, terminalWidth } from "../utils/table.ts";
 import { CopilotAdminClient } from "./admin.ts";
 import { CopilotApiConfig, ensureDict } from "./config.ts";
-import { Credential } from "./credential.ts";
-import { assertProfileSlot, type AuthProvider } from "./env_state.ts";
-import { directOverlay, landDirectPair, renderDirectPair } from "./direct_pair.ts";
 import type { ConfigValue, ProxyConfigPath } from "./config_registry.ts";
-import { configSetCommand, CopilotEnvConfig, projectedProxyConfig } from "./env_config.ts";
+import { Credential } from "./credential.ts";
+import { directOverlay, landDirectPair, renderDirectPair } from "./direct_pair.ts";
+import { CopilotEnvConfig, configSetCommand, projectedProxyConfig } from "./env_config.ts";
+import { type AuthProvider, assertProfileSlot } from "./env_state.ts";
 import {
   daemonClientHeaders,
   type selectDirectIdentityAndHost,
   usePatPassthrough,
 } from "./integration_identity.ts";
 import { generateAliases } from "./models.ts";
-import { CopilotApiPaths, DAEMON_KEEP_PORT_ENV, resolveRootHome, ROOT_HOME_ENV } from "./paths.ts";
-import { isStandaloneBinary } from "../utils/root.ts";
-import { colorEnabled, paintFor } from "../utils/ansi.ts";
-import { formatTable, terminalWidth } from "../utils/table.ts";
-import * as fs from "../utils/fs_facade.ts";
-import { detectSidecar, ensureSidecar, resolveDenoBin } from "./sidecar.ts";
+import { CopilotApiPaths, DAEMON_KEEP_PORT_ENV, ROOT_HOME_ENV, resolveRootHome } from "./paths.ts";
 import {
   checkProxyPort,
   copilotApiFindPort,
@@ -45,6 +49,7 @@ import {
   LAUNCH_SETTLE_MS,
   launchDaemon,
   printLogTail,
+  type RunnableEntry,
   resolveCopilotApiEntry,
 } from "./process.ts";
 import { agentAuthCommand, type Profile } from "./profile.ts";
@@ -68,26 +73,30 @@ export function startLockPath(): string {
 
 /** The wait is UNBOUNDED and never proceeds unlocked, which could let a waiter reap the holder's daemon.
  *  Only a DEAD holder is reclaimed (staleMs Infinity), so a live holder keeps every other start waiting for
- *  as long as it runs -- and an unopenable `.start.lock.oslock` (EACCES) retries forever, with no holder.
+ *  as long as it runs -- and an uncreatable `.start.lock` (EACCES) retries forever, with no holder.
  *  So fn ALWAYS runs held: the launch critical section (ensureProxyFloor, cleanupExistingProxies) runs
  *  inside it, an order its one caller (commands/start.ts) keeps. */
 export function withStartLock<T>(fn: () => Promise<T>): Promise<T> {
   const lockPath = startLockPath();
   fs.mkdir(dirname(lockPath));
-  return withFileLock(lockPath, {
-    staleMs: Number.POSITIVE_INFINITY,
-    waitMs: Number.POSITIVE_INFINITY,
-    retryMs: START_LOCK_RETRY_MS,
-    noticeAfterMs: START_LOCK_NOTICE_MS,
-    onWait: () =>
-      consola.info("Another `agent start` is in progress; waiting for it to finish ..."),
-  }, fn);
+  return withFileLock(
+    lockPath,
+    {
+      staleMs: Number.POSITIVE_INFINITY,
+      waitMs: Number.POSITIVE_INFINITY,
+      retryMs: START_LOCK_RETRY_MS,
+      noticeAfterMs: START_LOCK_NOTICE_MS,
+      onWait: () =>
+        consola.info("Another `agent start` is in progress; waiting for it to finish ..."),
+    },
+    fn,
+  );
 }
 
 // --- the proxy freshness + floor gate ---------------------------------------------
 
-/** null when the version cannot be known ahead of the launch: a mapped entry whose node_modules copy
- *  is missing, or a file override that runs whatever the file is (the CI fake has no version at all). */
+/** null when the version cannot be known ahead of the launch: nothing resolved, or a file override
+ *  that runs whatever the file is (the CI fake has no version at all). */
 export function entryProxyVersion(entry: CopilotApiEntry): string | null {
   switch (entry.kind) {
     case "floated":
@@ -95,6 +104,7 @@ export function entryProxyVersion(entry: CopilotApiEntry): string | null {
     case "package":
       return installedProxyVersion();
     case "file":
+    case "unresolved":
       return null;
     default:
       return assertNever(entry);
@@ -106,54 +116,51 @@ export function entryProxyVersion(entry: CopilotApiEntry): string | null {
  * concurrent starts never re-warm the float's cache over each other, and BEFORE spawnConfiguredDaemon,
  * which runs the entry judged here. The float is best-effort (offline keeps what is cached), but the
  * floor is a hard contract: fail-closed, before disturbing any running daemon. A `COPILOT_API_ENTRY`
- * override skips both: it runs a file we did not resolve or version.
+ * override skips both: it runs a file we did not resolve or version. Because the gate runs ahead of
+ * the cleanup, the float never swaps under the daemon that is still running (proxy_float.ts
+ * runningDaemon): the caller runs the gate once more after the cleanup stopped it. `deps` are the
+ * float's seams (the registry fetch, the installer), for the tests.
  */
-export async function ensureProxyFloor(): Promise<CopilotApiEntry> {
+export async function ensureProxyFloor(deps: ProxyFloatDeps = {}): Promise<RunnableEntry> {
   const preflight = resolveCopilotApiEntry();
-  if (preflight.kind === "file") return preflight;
+  if (preflight.kind === "file") {
+    // The shims' packages come from the proxy home on a compiled install; a checkout resolves
+    // them from its own node_modules, so it installs nothing for a file entry.
+    if (rootMode().kind === "compiled") await ensureShimDependencies(deps);
+    return preflight;
+  }
 
-  // A compiled build's own executable is not a deno CLI, so SOME deno (PATH or a provisioned sidecar)
-  // must exist before the float can warm a cache or the daemon can launch. A no-op from a checkout.
-  const sidecar = await ensureSidecar(resolveRootHome());
-  if (isStandaloneBinary()) consola.info(`Using deno for proxy work: ${sidecar}`);
-
-  const status = await proxyFloatVerifyStatus();
+  const status = await proxyFloatVerifyStatus(deps);
   if (!status.upToDate) {
     consola.info(status.message);
     try {
-      await floatProxy();
+      await floatProxy(deps);
     } catch (e) {
       consola.warn(`proxy float failed (${errMessage(e)}); checking what is already available`);
     }
   }
 
-  // A successful float just wrote the record, which moves the entry from the mapped fallback to the
-  // floated version.
+  // A successful float just wrote the record and the install, which moves the entry from the
+  // checkout fallback to the floated version.
   return judgeProxyFloor();
 }
 
 /** The start preview's floor gate, at the point in the order the live gate holds: the verify look
- *  (read-only but for the daemon config it re-renders, which lands on the overlay) and the same
- *  judgment of the resolved entry, without the float that would warm the real cache. The live gate
- *  provisions a sidecar deno first; the preview downloads nothing, so with no deno to hand the look
- *  (which spawns one) is skipped and the recorded entry alone is judged. A refusal is the live
- *  gate's, word for word. */
+ *  (read-only) and the same judgment of the resolved entry, without the float that would install
+ *  into the real proxy home. A refusal is the live gate's, word for word. */
 export async function previewProxyFloor(): Promise<void> {
   if (resolveCopilotApiEntry().kind === "file") return;
-  if (detectSidecar(resolveRootHome()).kind !== "absent") {
-    const status = await proxyFloatVerifyStatus();
-    if (!status.upToDate) consola.info(status.message);
-  }
+  const status = await proxyFloatVerifyStatus();
+  if (!status.upToDate) consola.info(status.message);
   judgeProxyFloor();
 }
 
-function judgeProxyFloor(): CopilotApiEntry {
+function judgeProxyFloor(): RunnableEntry {
   const entry = resolveCopilotApiEntry();
   const version = entryProxyVersion(entry);
-  if (version === null) {
+  if (entry.kind === "unresolved" || version === null) {
     throw new Error(
-      `${PROXY_PACKAGE_NAME} is not resolved or installed - run 'agent start' online to float it, ` +
-        "or 'deno install' to restore the baseline.",
+      `${PROXY_PACKAGE_NAME} is not resolved or installed - run 'agent start' online to float it.`,
     );
   }
   let config: ProjectConfig;
@@ -193,9 +200,10 @@ export async function resolveStartPort(
       case "out-of-range":
         throw new Error(
           `requested port ${pinned} is out of range; the proxy port must be between ${min} and ${max} ` +
-            `(\`${configSetCommand("daemon.min-port", "<n>")}\` / \`${
-              configSetCommand("daemon.max-port", "<n>")
-            }\` change the range).`,
+            `(\`${configSetCommand("daemon.min-port", "<n>")}\` / \`${configSetCommand(
+              "daemon.max-port",
+              "<n>",
+            )}\` change the range).`,
         );
       case "busy":
         throw new Error(
@@ -216,8 +224,7 @@ export async function resolveStartPort(
     const name = policy.port.name;
     const recorded = CopilotEnvRunState.forProfile(name).read().port;
     honoredReservation = recorded !== undefined;
-    def = recorded ??
-      (reserve ? reserveProfilePort(name) : Number(copilotApiResolvePort(name)));
+    def = recorded ?? (reserve ? reserveProfilePort(name) : Number(copilotApiResolvePort(name)));
   }
   switch (await checkProxyPort(def)) {
     case "free":
@@ -229,9 +236,10 @@ export async function resolveStartPort(
       }
       throw new Error(
         `configured port ${def} is outside the allowed range ${min}-${max}; run ` +
-          `\`${
-            configSetCommand("daemon.port", "<n>")
-          }\` within the range, or adjust daemon.min-port/daemon.max-port.`,
+          `\`${configSetCommand(
+            "daemon.port",
+            "<n>",
+          )}\` within the range, or adjust daemon.min-port/daemon.max-port.`,
       );
     case "busy":
       break;
@@ -332,11 +340,12 @@ export async function resolveLaunchCredential(
   }
   // A half the slot never probed is landed here, BEFORE launching, so an unusable credential fails
   // with the real reason instead of an opaque daemon-side "Failed to get models".
-  const { integrationId, apiBase } = renderDirectPair(profile, overlay) ??
-    await landDirectPair(profile, githubToken, deps.userAgent, {
+  const { integrationId, apiBase } =
+    renderDirectPair(profile, overlay) ??
+    (await landDirectPair(profile, githubToken, deps.userAgent, {
       ...overlay,
       selectIdentity: deps.selectIdentity,
-    });
+    }));
   const clientHeaders = daemonClientHeaders(deps.userAgent, integrationId);
   return {
     credential: patPassthrough
@@ -385,12 +394,11 @@ export function spawnConfiguredDaemon(opts: {
   copilotHost: string;
   /** The entry ensureProxyFloor judged (the caller runs that gate first); every bind-race relaunch
    *  runs exactly it. */
-  entry: CopilotApiEntry;
+  entry: RunnableEntry;
   config?: CopilotEnvConfig;
 }): SpawnedDaemon {
   const { port, logFile, profile, paths, credential, copilotHost, entry } = opts;
   const config = opts.config ?? new CopilotEnvConfig();
-  const denoBin = resolveDenoBin();
   const daemonEnv = daemonLifecycleEnv(profile, paths);
   // The idle watchdog lives in the daemon process, so server and watchdog are one unit (no orphan
   // either way) and every (re)start re-attaches it. With `daemon.auto-start` off there is no watchdog.
@@ -416,7 +424,6 @@ export function spawnConfiguredDaemon(opts: {
       idleWatchdog,
       muteProxyLogs,
       entry,
-      denoBin,
     });
   };
   return { pid: relaunch(port), idleWatchdog, relaunch };
@@ -431,9 +438,11 @@ function copilotTokenFailureHint(log: string, profile: Profile): string | null {
   const authCommand = agentAuthCommand(profile);
   return (
     "The credential was not accepted by Copilot's token exchange. For a gh-cli or PAT credential, " +
-    `enable passthrough (\`${
-      configSetCommand("passthrough", "on", profile)
-    }\`); otherwise re-authenticate with a ` +
+    `enable passthrough (\`${configSetCommand(
+      "passthrough",
+      "on",
+      profile,
+    )}\`); otherwise re-authenticate with a ` +
     `Copilot-capable login (\`${authCommand} --provider copilot\`).`
   );
 }

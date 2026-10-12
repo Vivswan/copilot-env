@@ -8,7 +8,6 @@ import type { CodexWiringStatus } from "../codex/inspect.ts";
 import type { AuthProvider, ProfileMode } from "../copilot_api/env_state.ts";
 import type { CopilotApiPaths } from "../copilot_api/paths.ts";
 import type { Profile, ProfileName } from "../copilot_api/profile.ts";
-import type { SidecarStatus } from "../copilot_api/sidecar.ts";
 import type { ProxyVersionStatus } from "../copilot_api/version.ts";
 import type { CommandLook } from "../utils/command.ts";
 
@@ -151,20 +150,23 @@ export interface WatchdogFacts {
 
 export interface BootstrapFacts {
   cliVersion: string;
-  /** The runtime health itself runs on. */
-  denoVersion: string;
+  /** The bun release this process runs on: the CLI's runtime and the proxy daemon's, which is
+   *  spawned from `runtimePath`, this very executable, as a bun CLI. */
+  runtimeVersion: string;
+  runtimePath: string;
   /** null when running as a compiled binary: dependencies are embedded, so there
    *  is no node_modules to judge. */
   nodeModules: { present: boolean; fresh: boolean } | null;
 }
 
-/** The proxy float's resolved-version record, as health reads it back. */
+/** The proxy float's resolution as health reads it: the version from the install tree in place
+ *  when one is complete (the version that runs), else the record's. */
 interface ProxyResolvedFacts {
   version: string;
+  /** The record's; 0 when a complete tree stands with no record (a record write the swap outran). */
   resolvedAtMs: number;
-  denoDir: string;
-  /** True when the recorded cache directory is actually on disk. */
-  cached: boolean;
+  /** True when the proxy home's install tree is complete for `version`. */
+  installed: boolean;
 }
 
 export interface ProxyFacts {
@@ -178,11 +180,12 @@ export interface ProxyFacts {
   // proxyUnusedEverywhere in src/agents/wiring.ts). When it skips, the version
   // bounds are unenforceable and must not read as a failure.
   floatSkips: boolean;
-  // The float's record, or null when it has never resolved here (a fresh checkout
-  // or a Direct-only install, where the deno.json baseline is what would run).
+  // The float's record, or null when it has never resolved here (a fresh checkout or a
+  // Direct-only install: nothing has installed the proxy into the proxy home yet).
   resolved: ProxyResolvedFacts | null;
-  // The deno binary every proxy spawn runs on.
-  sidecar: SidecarStatus;
+  /** True when the running process is a compiled binary: no node_modules exists to read an
+   *  installed proxy version from, so the proxy runs only once floated. */
+  standalone: boolean;
 }
 
 export interface ShellFileFact {
@@ -229,22 +232,20 @@ type GhProbeMiss = { command: null } | { command: string; ghDetail: string };
  *    unproven  -> the probe never RAN to completion (the command probe failed, or `gh auth token`
  *                 spawned but errored / was timeout-killed): renderers say "could not check",
  *                 never a confident "not found"/"not authenticated" or `gh auth login` advice */
-export type CodexDirectAuthFacts =
-  & {
-    /** The pinned gh account the probe asked about (`gh auth token --user`). Absent/null = gh's
-     *  active account, so renderers can name the account a pinned verdict is about. Optional so
-     *  hand-built fixtures stay valid. */
-    ghUser?: string | null;
-    /** AUTO slots only: the github.com login gh's active credential belongs to, when the account
-     *  list was readable, so the report names the account an auto slot follows. Naming only,
-     *  never a verdict. */
-    ghActiveLogin?: string | null;
-  }
-  & (
-    | { kind: "found"; command: string; ghCommand: string }
-    | ({ kind: "absent" } & GhProbeMiss)
-    | ({ kind: "unproven" } & GhProbeMiss)
-  );
+export type CodexDirectAuthFacts = {
+  /** The pinned gh account the probe asked about (`gh auth token --user`). Absent/null = gh's
+   *  active account, so renderers can name the account a pinned verdict is about. Optional so
+   *  hand-built fixtures stay valid. */
+  ghUser?: string | null;
+  /** AUTO slots only: the github.com login gh's active credential belongs to, when the account
+   *  list was readable, so the report names the account an auto slot follows. Naming only,
+   *  never a verdict. */
+  ghActiveLogin?: string | null;
+} & (
+  | { kind: "found"; command: string; ghCommand: string }
+  | ({ kind: "absent" } & GhProbeMiss)
+  | ({ kind: "unproven" } & GhProbeMiss)
+);
 
 /** Why a live probe did not run: the CLI is proven not installed (not a failure), or the look
  *  for it never completed (a could-not-check, never a proven absence). */
@@ -356,38 +357,36 @@ export type ProfileAuthFacts = {
  *  a named profile's own slot, which never falls back to the default. Direct resolves the
  *  credential at fetch time via `agent auth --get`, provider-driven (`gh-cli` -> `gh`,
  *  `copilot`/`gh-token`/`gh-env` -> the stored token; no provider -> nothing). */
-export type AuthFacts =
-  & {
-    storedToken: boolean;
-    ghAuthenticated: boolean;
-    /** The pinned gh account the probe asked about (`gh auth token --user`). Absent/null = gh's
-     *  active account, so the check can name the account a pinned verdict is about. Optional so
-     *  fixtures stay valid. */
-    ghUser?: string | null;
-    /** An auto slot's followed account (see CodexDirectAuthFacts.ghActiveLogin). */
-    ghActiveLogin?: string | null;
-    /** The gh call that served the token (see CodexDirectAuthFacts.ghCommand). */
-    ghCommand?: string;
-    /** Why the look ended without a token: the gh call that failed or timed out, quoted, with what
-     *  the completed calls before it said (CodexDirectAuthFacts.ghDetail). */
-    ghDetail?: string;
-    /** The gh probe never ran to completion (CodexDirectAuthFacts kind "unproven"): ghAuthenticated
-     *  false is then UNPROVEN, so the check says "could not check", never "gh is unauthenticated"
-     *  plus `gh auth login` advice. Optional so hand-built fixtures stay valid. */
-    ghAuthUnproven?: true;
-  }
-  & (
-    | {
+export type AuthFacts = {
+  storedToken: boolean;
+  ghAuthenticated: boolean;
+  /** The pinned gh account the probe asked about (`gh auth token --user`). Absent/null = gh's
+   *  active account, so the check can name the account a pinned verdict is about. Optional so
+   *  fixtures stay valid. */
+  ghUser?: string | null;
+  /** An auto slot's followed account (see CodexDirectAuthFacts.ghActiveLogin). */
+  ghActiveLogin?: string | null;
+  /** The gh call that served the token (see CodexDirectAuthFacts.ghCommand). */
+  ghCommand?: string;
+  /** Why the look ended without a token: the gh call that failed or timed out, quoted, with what
+   *  the completed calls before it said (CodexDirectAuthFacts.ghDetail). */
+  ghDetail?: string;
+  /** The gh probe never ran to completion (CodexDirectAuthFacts kind "unproven"): ghAuthenticated
+   *  false is then UNPROVEN, so the check says "could not check", never "gh is unauthenticated"
+   *  plus `gh auth login` advice. Optional so hand-built fixtures stay valid. */
+  ghAuthUnproven?: true;
+} & (
+  | {
       profile: null;
       provider: AuthProvider | null;
       profiles: Record<ProfileName, ProfileAuthFacts>;
       /** The `identity` config pin (integration_identity.ts), or null when probing. */
       pinnedIntegrationId: string | null;
     }
-    | {
+  | {
       profile: ProfileName;
       /** The store slot (never tokens); null when the store carries no slot for the profile (a
        *  half-created, home-only profile). */
       slot: ProfileAuthFacts | null;
     }
-  );
+);

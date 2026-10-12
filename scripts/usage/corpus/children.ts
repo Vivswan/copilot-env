@@ -4,8 +4,8 @@ import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { childPathPrepending, verbatimCliSpawn } from "../../../src/utils/command.ts";
-import { log, writeFile } from "./cli.ts";
 import { isRecord } from "../../../src/utils/json.ts";
+import { log, writeFile } from "./cli.ts";
 
 const TURN_TIMEOUT_MS = 40_000;
 /** How long a killed child tree may take to report its exit before that counts as a failure. */
@@ -89,18 +89,22 @@ class ChildRegistry {
     return this.stopped;
   }
 
-  spawn(file: string, args: string[], opts: {
-    shell: boolean;
-    env: Record<string, string>;
-    cwd: string;
-  }): ChildProcess {
+  spawn(
+    file: string,
+    args: string[],
+    opts: {
+      shell: boolean;
+      env: Record<string, string>;
+      cwd: string;
+    },
+  ): ChildProcess {
     // nosemgrep: javascript.lang.security.audit.spawn-shell-true.spawn-shell-true -- Windows-only, for .cmd shims; the spec quotes args
     const child = spawn(file, args, {
       shell: opts.shell,
       env: opts.env,
       cwd: opts.cwd,
       stdio: ["ignore", "pipe", "pipe"],
-      detached: Deno.build.os !== "windows",
+      detached: process.platform !== "win32",
       windowsHide: true,
     });
     this.live.add(child);
@@ -112,7 +116,7 @@ class ChildRegistry {
   /** Signal the whole tree rooted at `pid` (the process group on POSIX). True when the signal
    *  landed or nothing was left to signal; false when the tree may still be there. */
   signalTree(pid: number): boolean {
-    if (Deno.build.os === "windows") {
+    if (process.platform === "win32") {
       // Bounded like the close wait; exit 128 is taskkill's "no such process".
       const result = spawnSync("taskkill", ["/pid", String(pid), "/t", "/f"], {
         stdio: "ignore",

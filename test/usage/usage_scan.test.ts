@@ -60,9 +60,9 @@ function scanBytesOneAtATime(
 
 function hexOfTail(content: string, parsedThrough: number): string {
   const bytes = Buffer.from(content);
-  return bytes.subarray(Math.max(0, parsedThrough - TAIL_PROBE_BYTES), parsedThrough).toString(
-    "hex",
-  );
+  return bytes
+    .subarray(Math.max(0, parsedThrough - TAIL_PROBE_BYTES), parsedThrough)
+    .toString("hex");
 }
 
 /** Whole-file scans: what a line must contain to be delivered, and the bytes it spans. Every
@@ -111,11 +111,13 @@ const LINE_CONTENT: {
       content: `${utf8First}${utf8Matched}TOKEN plain\n`,
       needles: ['"type":"assistant"'],
       bufferBytes: 5,
-      hits: [{
-        line: utf8Matched.slice(0, -1),
-        byteStart: Buffer.byteLength(utf8First),
-        byteEnd: Buffer.byteLength(utf8First) + Buffer.byteLength(utf8Matched),
-      }],
+      hits: [
+        {
+          line: utf8Matched.slice(0, -1),
+          byteStart: Buffer.byteLength(utf8First),
+          byteEnd: Buffer.byteLength(utf8First) + Buffer.byteLength(utf8Matched),
+        },
+      ],
     },
     {
       name: "a needle found inside another line's content is delivered",
@@ -246,11 +248,8 @@ for (const { name, content, fromByte = 0, bufferBytes, oneByteReads, lines } of 
     let partial: { hits: ScanHit[]; result: ReturnType<typeof scanLines> };
     if (oneByteReads) {
       const hits: ScanHit[] = [];
-      const result = scanBytesOneAtATime(
-        Buffer.from(content),
-        fromByte,
-        ["TOKEN"],
-        (h) => hits.push(h),
+      const result = scanBytesOneAtATime(Buffer.from(content), fromByte, ["TOKEN"], (h) =>
+        hits.push(h),
       );
       partial = { hits, result };
     } else {
@@ -335,7 +334,10 @@ test("scanLines nested inside another scan's callback delivers both files correc
     inner.push(lines);
   });
   expect(outer).toEqual(["TOKEN o1", "TOKEN o2"]);
-  expect(inner).toEqual([["TOKEN i1", "TOKEN i2"], ["TOKEN i1", "TOKEN i2"]]);
+  expect(inner).toEqual([
+    ["TOKEN i1", "TOKEN i2"],
+    ["TOKEN i1", "TOKEN i2"],
+  ]);
   expect(result.parsedThrough).toBe(24);
 });
 
@@ -360,6 +362,6 @@ test("scanLines propagates filesystem errors: missing file, directory, failing s
       ["TOKEN"],
       () => {},
       {},
-    )
+    ),
   ).toThrow("disk gone");
 });

@@ -6,9 +6,11 @@
 //
 // Dedup is per path, with a delete as the epoch boundary: five saves of one path print once, and a
 // delete re-arms it.
+import { writeSync } from "node:fs";
 import { resolve, sep } from "node:path";
 import type { ScratchDir } from "./fs_disk.ts";
 import { terminalWidth, wrapMessage } from "./table.ts";
+import { sleepSync } from "./time.ts";
 
 type WriteKind = "created" | "rewritten" | "deleted" | "moved" | "linked";
 
@@ -37,8 +39,8 @@ function fold(path: string): string {
  *  bookkeeping, which the import's confirmation lists only when it overwrites. */
 export function underInternalRoot(path: string): boolean {
   const target = fold(path);
-  return INTERNAL_ROOTS.map((root) => fold(root())).some((root) =>
-    target === root || target.startsWith(root + sep)
+  return INTERNAL_ROOTS.map((root) => fold(root())).some(
+    (root) => target === root || target.startsWith(root + sep),
   );
 }
 
@@ -70,8 +72,11 @@ export function underScratch(path: string): boolean {
 
 const ENCODER = new TextEncoder();
 
+const STDERR_FD = 2;
+
 /** Synchronous and in full: a buffered stream write could still be pending when a process.exit()
- *  ends the process. */
+ *  ends the process. A stderr the parent left non-blocking answers EAGAIN when its pipe is full;
+ *  the write waits it out rather than dropping the line. */
 function emit(line: string): void {
   if (deferred !== null) {
     deferred.push(line);
@@ -79,7 +84,14 @@ function emit(line: string): void {
   }
   const bytes = ENCODER.encode(`${wrapMessage(line, terminalWidth(process.stderr))}\n`);
   let written = 0;
-  while (written < bytes.length) written += Deno.stderr.writeSync(bytes.subarray(written));
+  while (written < bytes.length) {
+    try {
+      written += writeSync(STDERR_FD, bytes, written, bytes.length - written);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "EAGAIN") throw e;
+      sleepSync(1);
+    }
+  }
 }
 
 /** The primitive for a writer whose mutation happens through another API (the tree a spawned

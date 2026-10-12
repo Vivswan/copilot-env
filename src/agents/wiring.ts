@@ -3,8 +3,8 @@
 // bottom answer two DIFFERENT questions: pick by question, not by name.
 import { type ClaudeWiringStatus, inspectClaudeWiring } from "../claude/config.ts";
 import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
-import { type CodexWiringStatus, inspectCodexWiring } from "../codex/inspect.ts";
 import { effectiveCodexHome } from "../codex/host.ts";
+import { type CodexWiringStatus, inspectCodexWiring } from "../codex/inspect.ts";
 import { codexConfigPath } from "../codex/paths.ts";
 import { isDirectBaseUrl } from "../copilot_api/integration_identity.ts";
 import { profileHomeNames } from "../copilot_api/paths.ts";
@@ -71,7 +71,8 @@ export function proxyUnusedEverywhere(opts: AgentWiringOptions = {}): boolean {
     return (
       codex.providerMode === "direct" &&
       claude.providerMode === "direct" &&
-      claude.baseUrl !== null && isDirectBaseUrl(claude.baseUrl)
+      claude.baseUrl !== null &&
+      isDirectBaseUrl(claude.baseUrl)
     );
   } catch {
     return false;

@@ -1,5 +1,5 @@
 // Tolerant on purpose: a ragged (`1.2`) or `v`-prefixed input never throws.
-import { format, lessThan, type SemVer, tryParse } from "semver";
+import { format, lessThan, type SemVer, tryParse } from "@std/semver";
 
 /** A compile-time tripwire, not a proof of parseability: a literal `x.y.z` assigns structurally, an
  *  arbitrary runtime string must pass through `toSemverString` first, and boundaries still parse.
@@ -12,7 +12,7 @@ export type SemverString =
 /** `v1.10` -> `1.10.0`. Null rather than a throw, so each boundary can name its own offender. */
 export function toSemverString(v: string): SemverString | null {
   const parsed = toSemver(v);
-  return parsed === null ? null : format(parsed) as SemverString;
+  return parsed === null ? null : (format(parsed) as SemverString);
 }
 
 /** tryParse takes the `v` prefix and whitespace itself but rejects a partial core, so `1.2` is
@@ -41,7 +41,7 @@ export function isUpToDate(current: string, target: string): boolean {
 }
 
 /** A plain `x.y.z` release: no `v`, no prerelease or build suffix. */
-export function isStableVersion(v: string): boolean {
+function isStableVersion(v: string): boolean {
   return /^\d+\.\d+\.\d+$/.test(v);
 }
 

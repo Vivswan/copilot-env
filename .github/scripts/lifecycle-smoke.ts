@@ -1,13 +1,11 @@
 // End-to-end daemon lifecycle against the fake proxy (COPILOT_API_ENTRY -> test/copilot-api-fake.mjs),
 // so no Copilot auth is needed. It rewires agent configs in whatever HOME it sees, so it refuses
 // to run outside a container or a CI runner. On a developer machine:
-//   deno task test:docker --lifecycle
+//   bun run test:docker --lifecycle
 //
 //   start -> health --scope runtime must pass -> stop -> health --scope runtime must FAIL
 // start/stop and the probe verify each other, so neither can pass alone.
-//
-// `--allow-run` is unscoped: the pid probe signals the daemon's pid, which `--allow-run=deno`
-// cannot express.
+import { writeSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
 import { parseProfileName } from "../../src/copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../../src/copilot_api/run_state.ts";
@@ -31,12 +29,8 @@ function readProfilePid(): number | undefined {
   return CopilotEnvRunState.forProfile(PROFILE).read().pid;
 }
 
-/** Whether the daemon at `pid` is still there. A probe that could not judge (no run
- *  permission) fails the smoke by name instead of reading as a survivor. */
 function daemonAlive(pid: number): boolean {
-  const liveness = pidLiveness(pid);
-  if (liveness === "unproven") failOn(`could not probe pid ${pid}; the smoke needs --allow-run`);
-  return liveness === "alive";
+  return pidLiveness(pid) === "alive";
 }
 
 // `agent start` and every wiring command need a credential first; the fake proxy never reads the
@@ -57,7 +51,7 @@ cliOrExit(["health", "--scope", "runtime"]);
 cliOrExit(["config", "set", "daemon.auto-start", "true"]);
 const pidBefore = readPid();
 const redundantStart = cliOrExit(["start"], { stdout: "piped" });
-Deno.stdout.writeSync(new TextEncoder().encode(redundantStart));
+writeSync(1, redundantStart);
 if (!redundantStart.includes("[start:noop]")) failOn("managed redundant start did not no-op");
 const pidAfter = readPid();
 if (pidBefore !== pidAfter) {

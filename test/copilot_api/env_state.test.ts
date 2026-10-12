@@ -3,8 +3,8 @@ import { join } from "node:path";
 import { CopilotEnvState } from "../../src/copilot_api/env_state.ts";
 import { parseProfileName } from "../../src/copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../../src/copilot_api/run_state.ts";
-import { afterEach, expect, removeDir, test } from "../helpers/testing.ts";
 import { envSnapshot, isolateProxyHome } from "../helpers/env.ts";
+import { afterEach, expect, removeDir, test } from "../helpers/testing.ts";
 
 // CopilotEnvState reads/writes the SHARED store under COPILOT_API_HOME, so isolate
 // each test in a temp home (not the per-host .run state).
@@ -206,8 +206,9 @@ test("run-state clearIfPid clears the daemon tracking ONLY when the tracked pid 
 test("setCredential on an unknown named profile errors instead of creating a half profile", () => {
   tmpHome();
   const state = new CopilotEnvState();
-  expect(() => state.setCredential(WORK, { kind: "stored", provider: "gh-token", token: "ghp_x" }))
-    .toThrow(/no such profile 'work'/);
+  expect(() =>
+    state.setCredential(WORK, { kind: "stored", provider: "gh-token", token: "ghp_x" }),
+  ).toThrow(/no such profile 'work'/);
   expect(state.profileNames()).toEqual([]);
   // The default slot is not a profile: it always accepts a credential.
   state.setCredential(null, { kind: "gh-cli", ghUser: null });
@@ -243,10 +244,9 @@ test("a gh-cli account pin round-trips; an absent/blank stored pin reads as auto
   // A blank or ill-shaped pin is rejected at the same write choke point as a
   // blank token, and the pin is trimmed on the way in.
   for (const bad of ["  ", "%USERNAME%", "a b"]) {
-    expect(() => state.setCredential(null, { kind: "gh-cli", ghUser: bad }))
-      .toThrow(
-        "a gh-cli account pin must be a GitHub login (1-39 letters, digits, dashes, or underscores)",
-      );
+    expect(() => state.setCredential(null, { kind: "gh-cli", ghUser: bad })).toThrow(
+      "a gh-cli account pin must be a GitHub login (1-39 letters, digits, dashes, or underscores)",
+    );
   }
   state.setCredential(null, { kind: "gh-cli", ghUser: " work-bot " });
   expect(state.read().ghUser).toBe("work-bot");

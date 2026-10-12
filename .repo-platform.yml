@@ -1,6 +1,6 @@
 # Written once by repo-platform and repo-owned from then on: the sync reads this file and never rewrites it.
 modules:
-  - deno
+  - bun
   - release-please
   - pr-title
   - custom-license

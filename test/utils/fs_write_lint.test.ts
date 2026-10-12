@@ -1,23 +1,37 @@
-import { fileURLToPath } from "node:url";
-import fsPlugin from "../lint/no_unreported_fs_writes.ts";
+import { readFileSync } from "node:fs";
+import { join, relative } from "node:path";
+import { PROJECT_ROOT } from "../../src/utils/root.ts";
 import { expect, test } from "../helpers/testing.ts";
+import { tsFilesUnder } from "../helpers/tree.ts";
+import { READS_RULE, scanFsReach, WRITES_RULE } from "../lint/no_unreported_fs_writes.ts";
 
-// The rules are what catch a NEW raw write or read silently bypassing the seam, so their teeth
-// and their scoping are pinned here rather than assumed from a quiet `deno lint`.
+// The scanner is what catches a NEW raw write or read silently bypassing the seam, so the tree
+// is swept here, and the scanner's teeth and scoping are pinned against doctored sources rather
+// than assumed from a quiet sweep.
 
 const GUARDED = "src/commands/example.ts";
 
-const WRITES = "copilot-env-src/no-unreported-fs-writes";
-const READS = "copilot-env-src/no-raw-fs-reads";
-
-/** The diagnostics for `source`, counted per rule. */
+/** The findings for `source`, counted per rule. */
 function lint(source: string, file = GUARDED): { writes: number; reads: number } {
-  const diagnostics = Deno.lint.runPlugin(fsPlugin, file, source);
+  const findings = scanFsReach(file, source);
   return {
-    writes: diagnostics.filter((d) => d.id === WRITES).length,
-    reads: diagnostics.filter((d) => d.id === READS).length,
+    writes: findings.filter((f) => f.rule === WRITES_RULE).length,
+    reads: findings.filter((f) => f.rule === READS_RULE).length,
   };
 }
+
+test("no file under src/ reaches the filesystem around the seam", () => {
+  const offenders: string[] = [];
+  for (const file of tsFilesUnder(join(PROJECT_ROOT, "src"))) {
+    const path = relative(PROJECT_ROOT, file).replaceAll("\\", "/");
+    const source = readFileSync(file, "utf8");
+    for (const finding of scanFsReach(path, source)) {
+      const line = source.slice(0, finding.start).split("\n").length;
+      offenders.push(`${path}:${line} ${finding.rule}: ${finding.message}`);
+    }
+  }
+  expect(offenders).toEqual([]);
+});
 
 const CASES: readonly (readonly [string, number, number])[] = [
   // Named imports of a write API, sync and promise spellings alike.
@@ -47,12 +61,18 @@ const CASES: readonly (readonly [string, number, number])[] = [
   ['export { default as fs } from "node:fs";', 1, 1],
   ['export { default as fsp } from "node:fs/promises";', 1, 1],
   ['export { readFileSync, rmSync } from "node:fs";', 1, 1],
-  // The Deno namespace, spelled every way.
+  // The Deno namespace, spelled every way: nothing in src/ runs under it any more.
   ['Deno.writeTextFileSync("x", "y");', 1, 0],
   ['await globalThis.Deno.remove("x");', 1, 0],
   ["const { makeTempDirSync } = Deno;", 1, 0],
   ['const deno = Deno; deno.removeSync("x");', 1, 0],
   ['Deno.chownSync("x", 1, 1);', 1, 0],
+  // Bun's own file APIs: a write, and a handle that reads (and writes through its writer).
+  ['await Bun.write("x", "y");', 1, 0],
+  ['const f = Bun.file("x"); await f.text();', 1, 1],
+  ['const bun = Bun; await bun.write("x", "y");', 1, 0],
+  ["const { write } = Bun;", 1, 0],
+  ['globalThis.Bun.file("x");', 1, 1],
   // Reads, every way of reaching one.
   ['import { existsSync, readFileSync, readdirSync } from "node:fs";', 0, 3],
   ['import * as fs from "node:fs"; fs.readFileSync("x", "utf8");', 0, 1],
@@ -85,8 +105,10 @@ const CASES: readonly (readonly [string, number, number])[] = [
   ['import * as fs from "../utils/fs_facade.ts"; fs.writeText("x", "y"); fs.readText("x");', 0, 0],
   ['export { writeText } from "../utils/fs_facade.ts";', 0, 0],
   ['const store = new Map(); store.rm("x"); store.stat("x");', 0, 0],
+  ['Bun.which("deno"); const { env } = Bun;', 0, 0],
   // A child process running a filesystem command: the command itself, a shell's command line, an
-  // exec command line, or Deno.Command; a computed command passes (the rule cannot read it).
+  // exec command line, Deno.Command, or Bun.spawn; a computed command passes (the rule cannot
+  // read it).
   ['import { spawnSync } from "node:child_process"; spawnSync("rm", ["-rf", "x"]);', 1, 0],
   ['import { spawn } from "node:child_process"; spawn("/bin/mv", ["a", "b"]);', 1, 0],
   [
@@ -109,6 +131,12 @@ const CASES: readonly (readonly [string, number, number])[] = [
   ['import * as cp from "node:child_process"; cp.spawnSync("rmdir", ["x"]);', 1, 0],
   ['new Deno.Command("rm", { args: ["x"] }).outputSync();', 1, 0],
   ['new Deno.Command("sh", { "args": ["-c", "rm x"] }).outputSync();', 1, 0],
+  ['Bun.spawn(["rm", "-rf", "x"]);', 1, 0],
+  ['Bun.spawnSync({ cmd: ["sh", "-c", "ls && rm x"] });', 1, 0],
+  ['const bun = Bun; bun.spawn(["mv", "a", "b"]);', 1, 0],
+  ['Bun.spawn(["gh", "auth", "token"]); Bun.spawn([bin, "rm"]);', 0, 0],
+  // Parentheses around a receiver do not hide it.
+  ['import * as fs from "node:fs"; (fs).rmSync("x"); (fs.openSync)("y", "w");', 2, 1],
   [
     'import { spawnSync } from "node:child_process"; spawnSync("gh", ["auth", "token"]); spawnSync("sh", ["-c", "ls"]); spawnSync(bin, ["rm"]);',
     0,
@@ -117,29 +145,21 @@ const CASES: readonly (readonly [string, number, number])[] = [
 ];
 
 test("every way of reaching a write or a read API is refused by its rule, and nothing else is", () => {
-  for (const [source, writes, reads] of CASES) {
-    expect(lint(source), source).toEqual({ writes, reads });
-  }
+  const rows = CASES.map(([source, writes, reads]) => ({ source, writes, reads }));
+  expect(rows.map((row) => ({ source: row.source, ...lint(row.source) }))).toEqual(rows);
 });
 
 test("scoped to src/, minus each rule's own exemptions", () => {
   const write = 'import { writeFileSync } from "node:fs";';
   const read = 'import { readFileSync } from "node:fs";';
-  // The absolute spellings deno lint passes, built the way the plugin builds its scope.
-  const abs = (relative: string): string => fileURLToPath(new URL(relative, import.meta.url));
-  expect(lint(write, abs("../../src/commands/example.ts")).writes).toBe(1);
-  expect(lint(write, abs("../../src/utils/fs_disk.ts")).writes).toBe(0);
-
   // Both directions: the disk side, the marker, the lock layer, and migrations.
-  for (
-    const exempt of [
-      "src/utils/fs_disk.ts",
-      "src/utils/dry_run.ts",
-      "src/utils/file_lock.ts",
-      "src/scripts/log_mute_preload.ts",
-      "src/migrations/4.0.0.ts",
-    ]
-  ) {
+  for (const exempt of [
+    "src/utils/fs_disk.ts",
+    "src/utils/dry_run.ts",
+    "src/utils/file_lock.ts",
+    "src/scripts/log_mute_preload.ts",
+    "src/migrations/4.0.0.ts",
+  ]) {
     expect(lint(write + read, exempt), exempt).toEqual({ writes: 0, reads: 0 });
   }
   // Reads alone: the usage scanners and the preload that runs before the seam; a write-capable
@@ -157,28 +177,28 @@ test("scoped to src/, minus each rule's own exemptions", () => {
     expect(lint(write + read, handle), handle).toEqual({ writes: 1, reads: 1 });
     expect(lint(writeOpen, handle), handle).toEqual({ writes: 1, reads: 0 });
   }
+  // The report writes its line to fd 2 raw; a path write there is still a write.
+  const fdWrite = 'import { writeSync } from "node:fs"; writeSync(2, "x");';
+  expect(lint(fdWrite, "src/utils/report_write.ts")).toEqual({ writes: 0, reads: 0 });
+  expect(lint(fdWrite, "src/commands/example.ts")).toEqual({ writes: 1, reads: 0 });
   // The seam's overlay and report read the disk through fs_disk.ts, not around it.
-  for (
-    const seam of [
-      "src/utils/fs_facade.ts",
-      "src/utils/fs_overlay.ts",
-      "src/utils/dry_run_report.ts",
-      "src/utils/report_write.ts",
-    ]
-  ) {
+  for (const seam of [
+    "src/utils/fs_facade.ts",
+    "src/utils/fs_overlay.ts",
+    "src/utils/dry_run_report.ts",
+    "src/utils/report_write.ts",
+  ]) {
     expect(lint(write + read, seam), seam).toEqual({ writes: 1, reads: 1 });
   }
-  // Nested src paths and the windows-style separator are still in scope.
+  // Nested src paths are in scope.
   expect(lint(write, "src/scripts/inference_activity.ts").writes).toBe(1);
-  expect(lint(read, "src\\install\\installer.ts").reads).toBe(1);
+  expect(lint(read, "src/install/installer.ts").reads).toBe(1);
   // Tests, repo scripts and the CI helpers own their own files.
-  for (
-    const outside of [
-      "test/helpers/env.ts",
-      "scripts/compile.ts",
-      ".github/scripts/release-assets.ts",
-    ]
-  ) {
+  for (const outside of [
+    "test/helpers/env.ts",
+    "scripts/compile.ts",
+    ".github/scripts/release-assets.ts",
+  ]) {
     expect(lint(write + read, outside), outside).toEqual({ writes: 0, reads: 0 });
   }
 });

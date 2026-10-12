@@ -60,7 +60,7 @@ The seam is synchronous and node:fs-shaped: the codes on the thrown errors (`ENO
 
 Demonstrated by: [test/utils/fs_facade.test.ts](../test/utils/fs_facade.test.ts).
 
-Two lint rules in `test/lint/no_unreported_fs_writes.ts` keep it the one seam: `no-unreported-fs-writes` refuses a raw node:fs or Deno write anywhere else in `src/`, and `no-raw-fs-reads` refuses a raw read (a file handle included, whatever its flags).
+Two rules in `test/lint/no_unreported_fs_writes.ts`, run over `src/` by `test/utils/fs_write_lint.test.ts`, keep it the one seam: `no-unreported-fs-writes` refuses a raw node:fs write anywhere else in `src/`, and `no-raw-fs-reads` refuses a raw read (a file handle included, whatever its flags).
 
 Both rules exempt `fs_disk.ts`, the dry-run marker, the lock protocol, the preload that patches the proxy's stream, and `src/migrations/`. The read rule also exempts `src/usage/` (partial reads through a fd on the `agent cost` hot path, over inputs no dry run touches) and the preload that runs before the seam exists.
 
@@ -102,7 +102,7 @@ A rename onto an existing destination replaces it without a refusal: every write
 
 Windows differs where its node:fs does: a lookup under a file is `ENOENT`, a staged write onto a directory surfaces the `RenameRefusedError` the installer answers. The code Windows raises for a rename whose destination parent is a file is unverified; no writer issues one.
 
-Modes land as Deno lands them: a file's explicit mode exactly, a directory's and every default with the umask applied. Windows keeps one bit: `0666` for anything writable, `0444` otherwise, so a `chmod 0700` there is no change.
+A file's explicit mode lands exactly; a directory's mode and every default land with the umask applied. Windows keeps one bit: `0666` for anything writable, `0444` otherwise, so a `chmod 0700` there is no change.
 
 Keys are canonical paths, so an alias and its target are one entry and a read through either sees the planned state; a staged write lands over the link itself. The report prints the path the run spelled.
 

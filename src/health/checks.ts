@@ -1,14 +1,13 @@
 // Pure evaluators: HealthFacts -> CheckResult[]. No I/O -- every input is a fact
 // gathered by probe.ts, so each check is independently unit-testable.
-import { type StoredCredential, storedCredentialKind } from "../copilot_api/env_state.ts";
+
 import { configGetCommand, configSetCommand } from "../copilot_api/env_config.ts";
-import { SIDECAR_DENO_ENV } from "../copilot_api/sidecar.ts";
+import { type StoredCredential, storedCredentialKind } from "../copilot_api/env_state.ts";
+import { lastActivityMs } from "../copilot_api/idle_watchdog.ts";
 import { agentAuthCommand, agentStartCommand, agentStopCommand } from "../copilot_api/profile.ts";
 import { PROXY_PACKAGE_NAME, type ProxyVersionStatus } from "../copilot_api/version.ts";
-import { lastActivityMs } from "../copilot_api/idle_watchdog.ts";
 import { assertNever } from "../utils/assert.ts";
 import type { CommandLook } from "../utils/command.ts";
-import { versionLessThan } from "../utils/semver.ts";
 import { formatDuration, SECONDS_PER_DAY } from "../utils/time.ts";
 import { filterByScope } from "./aggregate.ts";
 import {
@@ -49,7 +48,7 @@ function credentialResolves(kind: StoredCredential["kind"], ghAuthenticated: boo
   }
 }
 
-export function checkCliVersion(f: BootstrapFacts): CheckResult {
+function checkCliVersion(f: BootstrapFacts): CheckResult {
   return {
     ...meta("bootstrap.version"),
     profile: null,
@@ -59,14 +58,15 @@ export function checkCliVersion(f: BootstrapFacts): CheckResult {
   };
 }
 
-/** Health runs on Deno, so the runtime is always present: the row names its version. */
-export function checkDeno(f: BootstrapFacts): CheckResult {
+/** Health runs on bun, so the runtime is always present, and the proxy daemon runs from the same
+ *  executable (src/copilot_api/process.ts spawns it as a bun CLI): one row names both. */
+export function checkRuntime(f: BootstrapFacts): CheckResult {
   return {
-    ...meta("bootstrap.deno"),
+    ...meta("bootstrap.runtime"),
     profile: null,
     status: "ok",
-    detail: `deno ${f.denoVersion}`,
-    value: { available: true, version: f.denoVersion },
+    detail: `bun ${f.runtimeVersion}; the proxy daemon runs from this executable\n${f.runtimePath}`,
+    value: { available: true, version: f.runtimeVersion, executable: f.runtimePath },
   };
 }
 
@@ -89,7 +89,7 @@ export function checkNodeModules(f: BootstrapFacts): CheckResult {
       ...base,
       status: "fail",
       detail: "node_modules is missing",
-      fix: "deno install --frozen",
+      fix: "bun install --frozen-lockfile",
       value,
     };
   }
@@ -98,7 +98,7 @@ export function checkNodeModules(f: BootstrapFacts): CheckResult {
       ...base,
       status: "warn",
       detail: "node_modules is stale (older than the lockfile)",
-      fix: "deno install --frozen",
+      fix: "bun install --frozen-lockfile",
       value,
     };
   }
@@ -125,14 +125,14 @@ export function checkProxyPackage(f: ProxyFacts): CheckResult {
     // Version and cooldown as separate lines: the report renders each as its own sub-item.
     outcome = {
       status: "ok",
-      detail: `${PROXY_PACKAGE_NAME} ${bounds.version}\nfloat ${
-        floatCooldownLabel(f.cooldownSeconds)
-      }`,
+      detail: `${PROXY_PACKAGE_NAME} ${bounds.version}\nfloat ${floatCooldownLabel(
+        f.cooldownSeconds,
+      )}`,
     };
   } else if (bounds.reason === "missing") {
-    if (f.sidecar.standalone) {
-      // A compiled install ships no deno.json baseline: the float resolves the proxy into its
-      // own cache at `agent start`, so "missing" is the normal pre-start state, not a broken
+    if (f.standalone) {
+      // A compiled install ships no node_modules: the float installs the proxy into the proxy
+      // home at `agent start`, so "missing" is the normal pre-start state, not a broken
       // install.
       standaloneMissing = true;
       outcome = {
@@ -146,14 +146,14 @@ export function checkProxyPackage(f: ProxyFacts): CheckResult {
       outcome = {
         status: "fail",
         detail: `${PROXY_PACKAGE_NAME} is not installed`,
-        fix: "deno install --frozen",
+        fix: "bun install --frozen-lockfile",
       };
     }
   } else if (bounds.reason === "belowFloor") {
     outcome = {
       status: "fail",
       detail: `proxy ${bounds.version} is below the floor ${bounds.floor}`,
-      fix: "deno install --frozen",
+      fix: "bun install --frozen-lockfile",
     };
   } else {
     outcome = {
@@ -170,8 +170,7 @@ export function checkProxyPackage(f: ProxyFacts): CheckResult {
     exempted = true;
     outcome = {
       status: "ok",
-      detail:
-        `${outcome.detail}; not enforced (Codex + Claude are both direct, so the proxy float skips)`,
+      detail: `${outcome.detail}; not enforced (Codex + Claude are both direct, so the proxy float skips)`,
     };
   }
   return {
@@ -195,65 +194,8 @@ function floatCooldownLabel(seconds: number | null): string {
   return `cooldown ${seconds}s`;
 }
 
-/** A checkout runs on its own runtime; a compiled binary is not a deno CLI, so it needs one from
- *  PATH, the SIDECAR_DENO_ENV override, or the provisioned copy, and having none of the three is
- *  a failure, not a note. */
-export function checkProxySidecar(f: ProxyFacts): CheckResult {
-  const base = { ...meta("proxy.sidecar"), profile: null };
-  const { kind, referenceVersion, denoBin, version, standalone } = f.sidecar;
-  if (kind === "absent") {
-    if (f.floatSkips) {
-      // Direct-only: nothing spawns the proxy, so a missing deno is idle capacity, not a
-      // failure. A proxy rewire re-enables the requirement.
-      return {
-        ...base,
-        status: "ok",
-        detail:
-          "no deno found; not required (Codex + Claude are both direct, so the proxy is unused)",
-        value: { kind, referenceVersion, standalone, floatSkips: true },
-      };
-    }
-    return {
-      ...base,
-      status: standalone ? "fail" : "warn",
-      detail: `no deno found (PATH or provisioned)${
-        standalone ? "; a compiled build cannot spawn the proxy without one" : ""
-      }`,
-      fix: "install deno (https://deno.com), or `agent start` to provision one",
-      value: { kind, referenceVersion, standalone },
-    };
-  }
-  // A PATH/override deno older than the tested reference still works: warn, never block
-  // (upgrading is the user's job). An unreadable version is not a verdict, so it reads ok.
-  const behind = version !== null && versionLessThan(version, referenceVersion);
-  const named = version === null ? "deno (version unknown)" : `deno ${version}`;
-  const source = kind === "dev"
-    ? "running on this checkout's own deno"
-    : kind === "override"
-    ? `${named} via ${SIDECAR_DENO_ENV}`
-    : kind === "path"
-    ? `${named} on PATH`
-    : `${named} provisioned`;
-  if (behind) {
-    return {
-      ...base,
-      status: "warn",
-      detail: `${source} is older than the tested ${referenceVersion}\n${denoBin}`,
-      fix: "upgrade deno (`deno upgrade`, or your package manager)",
-      value: { kind, referenceVersion, version, standalone },
-    };
-  }
-  return {
-    ...base,
-    status: "ok",
-    detail: `${source}\n${denoBin}`,
-    value: { kind, referenceVersion, version, standalone },
-  };
-}
-
-/** Not resolved yet reads ok: a checkout falls back to the deno.json baseline, a compiled
- *  install waits for `agent start`. A RECORDED version whose cache has gone missing fails,
- *  because the launch asks for that exact version offline. */
+/** Not resolved yet reads ok: the proxy waits for `agent start` to float it in. A RECORDED version
+ *  whose install has gone missing fails, because the launch runs that exact version from it. */
 export function checkProxyResolved(f: ProxyFacts): CheckResult {
   const base = { ...meta("proxy.resolved"), profile: null };
   const resolved = f.resolved;
@@ -263,27 +205,26 @@ export function checkProxyResolved(f: ProxyFacts): CheckResult {
       status: "ok",
       detail: f.floatSkips
         ? "not floated; Codex + Claude are both direct, so the proxy is unused"
-        : f.sidecar.standalone
-        ? "not floated yet; `agent start` resolves it (a compiled install has no baseline)"
-        : "not floated yet; the deno.json baseline would run instead",
+        : "not floated yet; `agent start` resolves it",
       value: { resolved: false },
     };
   }
-  if (!resolved.cached) {
+  if (!resolved.installed) {
     return {
       ...base,
       status: "fail",
-      detail: `${PROXY_PACKAGE_NAME} ${resolved.version} is recorded, but its cache ` +
-        `${resolved.denoDir} is missing`,
+      detail:
+        `${PROXY_PACKAGE_NAME} ${resolved.version} is recorded, but its install under the ` +
+        "proxy home is missing",
       fix: "agent start",
-      value: { resolved: true, version: resolved.version, cached: false },
+      value: { resolved: true, version: resolved.version, installed: false },
     };
   }
   return {
     ...base,
     status: "ok",
-    detail: `${PROXY_PACKAGE_NAME} ${resolved.version}\ncached in ${resolved.denoDir}`,
-    value: { resolved: true, version: resolved.version, cached: true },
+    detail: `${PROXY_PACKAGE_NAME} ${resolved.version}\ninstalled in the proxy home`,
+    value: { resolved: true, version: resolved.version, installed: true },
   };
 }
 
@@ -312,13 +253,15 @@ export function checkRuntimePort(f: RuntimeTarget, p: DaemonProbeFacts): CheckRe
     };
   }
   const value = { port: f.port, reachable: p.reachable };
-  return p.reachable ? { ...base, status: "ok", detail: `listening on port ${f.port}`, value } : {
-    ...base,
-    status: "fail",
-    detail: `nothing reachable on port ${f.port}`,
-    fix: agentStartCommand(f.profile),
-    value,
-  };
+  return p.reachable
+    ? { ...base, status: "ok", detail: `listening on port ${f.port}`, value }
+    : {
+        ...base,
+        status: "fail",
+        detail: `nothing reachable on port ${f.port}`,
+        fix: agentStartCommand(f.profile),
+        value,
+      };
 }
 
 export function checkRuntimePid(f: RuntimeTarget, p: DaemonProbeFacts): CheckResult {
@@ -420,9 +363,9 @@ export function checkRuntimeWatchdog(f: RuntimeTarget): CheckResult {
   const ago = (at: number | null): string =>
     at === null ? "none" : `${formatDuration(w.now - at)} ago`;
   const detail = [
-    `auto-stops in ${remainingMs === null ? "unknown" : formatDuration(remainingMs)} (idle window ${
-      formatDuration(w.idleTimeoutMs)
-    })`,
+    `auto-stops in ${remainingMs === null ? "unknown" : formatDuration(remainingMs)} (idle window ${formatDuration(
+      w.idleTimeoutMs,
+    )})`,
     `idle for ${idleMs === null ? "unknown (no activity recorded yet)" : formatDuration(idleMs)}`,
     `last beat ${ago(w.lastEnsureAt)}`,
     `last request ${ago(w.lastRequestMs)}`,
@@ -470,8 +413,7 @@ export function checkRuntimeIdentity(f: RuntimeTarget, p: DaemonProbeFacts): Che
   return {
     ...base,
     status: "warn",
-    detail:
-      `a non-copilot-api service is listening on port ${f.port} (no x-trace-id); agent requests would misroute to it`,
+    detail: `a non-copilot-api service is listening on port ${f.port} (no x-trace-id); agent requests would misroute to it`,
     fix: `free the port (stop the foreign process), then ${agentStartCommand(f.profile)}`,
     value: { reachable: true, confirmed: false },
   };
@@ -525,21 +467,18 @@ export function checkRuntimeOrphan(f: RuntimeTarget, p: DaemonProbeFacts): Check
         return {
           ...base,
           status: "warn",
-          detail:
-            `a process is on port ${f.port}, but the tracked pid ${p.trackedPid} could not be verified (the process scan failed) - it may be the tracked daemon`,
+          detail: `a process is on port ${f.port}, but the tracked pid ${p.trackedPid} could not be verified (the process scan failed) - it may be the tracked daemon`,
           fix: "re-run `agent health` from a shell that can read the process table",
           value: { orphan: null, trackedPid: p.trackedPid, scanUnproven: true },
         };
       }
       // Identity confirmed copilot-api, or indeterminate (probe failed): never over-claim.
-      const what = state.identity === "confirmed"
-        ? "copilot-api"
-        : "a process (identity unconfirmed)";
+      const what =
+        state.identity === "confirmed" ? "copilot-api" : "a process (identity unconfirmed)";
       return {
         ...base,
         status: "warn",
-        detail:
-          `${what} is on port ${f.port} but is not the tracked daemon (orphaned -- started outside 'agent start', or the run-state was cleared)`,
+        detail: `${what} is on port ${f.port} but is not the tracked daemon (orphaned -- started outside 'agent start', or the run-state was cleared)`,
         fix: `${stopFix}, then ${agentStartCommand(f.profile)} (re-tracks the daemon)`,
         value: { orphan: true, trackedPid: p.trackedPid },
       };
@@ -575,19 +514,19 @@ export function checkProfileConsistency(f: NamedRuntimeTarget): CheckResult {
     const fix = `agent profile ${name} add --direct|--proxy (or agent profile ${name} del)`;
     return homeExists
       ? {
-        ...base,
-        status: "warn",
-        detail: "profile home exists but no store slot (half-created)",
-        fix,
-      }
+          ...base,
+          status: "warn",
+          detail: "profile home exists but no store slot (half-created)",
+          fix,
+        }
       : {
-        // Only reachable when the profile vanished between the sweep and this read (its name
-        // came from the slots+homes union).
-        ...base,
-        status: "warn",
-        detail: "no store slot and no daemon home (profile no longer exists)",
-        fix,
-      };
+          // Only reachable when the profile vanished between the sweep and this read (its name
+          // came from the slots+homes union).
+          ...base,
+          status: "warn",
+          detail: "no store slot and no daemon home (profile no longer exists)",
+          fix,
+        };
   }
   if (slot.mode === null) {
     return {
@@ -605,14 +544,15 @@ export function checkProfileConsistency(f: NamedRuntimeTarget): CheckResult {
       fix: profileAddFix(name),
     };
   }
-  const detail = slot.mode === "proxy"
-    ? f.portPersisted
-      ? "store slot (proxy) and daemon home agree"
-      : "store slot (proxy) and daemon home agree; no port recorded on this host yet, " +
-        `so the daemon was not probed (${agentStartCommand(name)} records one)`
-    : homeExists
-    ? "store slot (direct); the leftover daemon home is unused"
-    : "store slot (direct); no daemon home needed";
+  const detail =
+    slot.mode === "proxy"
+      ? f.portPersisted
+        ? "store slot (proxy) and daemon home agree"
+        : "store slot (proxy) and daemon home agree; no port recorded on this host yet, " +
+          `so the daemon was not probed (${agentStartCommand(name)} records one)`
+      : homeExists
+        ? "store slot (direct); the leftover daemon home is unused"
+        : "store slot (direct); no daemon home needed";
   return { ...base, status: "ok", detail };
 }
 
@@ -653,16 +593,16 @@ export function checkLaunchers(f: ShellFacts): CheckResult {
   };
   return f.launchersWired
     ? {
-      ...base,
-      status: "ok",
-      detail: "enabled (the `shell.launchers` config key; `agent profile env` defines them)",
-    }
+        ...base,
+        status: "ok",
+        detail: "enabled (the `shell.launchers` config key; `agent profile env` defines them)",
+      }
     : {
-      ...base,
-      status: "warn",
-      detail: "not enabled (optional)",
-      fix: configSetCommand("shell.launchers", "true"),
-    };
+        ...base,
+        status: "warn",
+        detail: "not enabled (optional)",
+        fix: configSetCommand("shell.launchers", "true"),
+      };
 }
 
 /** One PATH-look row, shared by the CLI census (checkCli) and the node/npm tools: only the
@@ -722,9 +662,8 @@ export function checkCli(c: CliFacts): CheckResult {
  */
 export function checkAuth(f: AuthFacts): CheckResult {
   const name = f.profile;
-  const slot: ProfileAuthFacts | null = f.profile === null
-    ? { provider: f.provider, mode: null }
-    : f.slot;
+  const slot: ProfileAuthFacts | null =
+    f.profile === null ? { provider: f.provider, mode: null } : f.slot;
   const resolution = {
     storedToken: f.storedToken,
     ghAuthenticated: f.ghAuthenticated,
@@ -736,36 +675,35 @@ export function checkAuth(f: AuthFacts): CheckResult {
   const tail: string[] = [];
   if (f.profile === null) {
     const profileEntries = Object.entries(f.profiles).sort(([a], [b]) =>
-      a < b ? -1 : a > b ? 1 : 0
+      a < b ? -1 : a > b ? 1 : 0,
     );
     if (profileEntries.length > 0) {
       tail.push(
-        `named profiles: ${
-          profileEntries
-            .map(([entry, s]) => `${entry} (${s.provider ?? "no auth"}, ${s.mode ?? "no mode"})`)
-            .join(", ")
-        }`,
+        `named profiles: ${profileEntries
+          .map(([entry, s]) => `${entry} (${s.provider ?? "no auth"}, ${s.mode ?? "no mode"})`)
+          .join(", ")}`,
       );
     }
     if (f.pinnedIntegrationId !== null) {
       tail.push(
-        `Copilot integration id pinned to '${f.pinnedIntegrationId}' (\`${
-          configGetCommand("identity")
-        }\`)`,
+        `Copilot integration id pinned to '${f.pinnedIntegrationId}' (\`${configGetCommand(
+          "identity",
+        )}\`)`,
       );
     }
   }
   const base = {
     ...meta("setup.auth"),
     profile: name,
-    value: f.profile === null
-      ? {
-        ...resolution,
-        provider: f.provider,
-        profiles: f.profiles,
-        pinnedIntegrationId: f.pinnedIntegrationId,
-      }
-      : { provider: slot?.provider ?? null, mode: slot?.mode ?? null, ...resolution },
+    value:
+      f.profile === null
+        ? {
+            ...resolution,
+            provider: f.provider,
+            profiles: f.profiles,
+            pinnedIntegrationId: f.pinnedIntegrationId,
+          }
+        : { provider: slot?.provider ?? null, mode: slot?.mode ?? null, ...resolution },
   };
   const authFix = agentAuthCommand(name);
   // Provider classification is storedCredentialKind()'s (env_state.ts); a chosen-but-unresolved
@@ -792,9 +730,10 @@ export function checkAuth(f: AuthFacts): CheckResult {
         `no credential recorded for profile '${name}'`,
         "named profiles never fall back to the default credential",
       ].join("\n"),
-      fix: slot === null || slot.mode === null
-        ? `agent profile ${name} add --direct|--proxy`
-        : profileAddFix(name),
+      fix:
+        slot === null || slot.mode === null
+          ? `agent profile ${name} add --direct|--proxy`
+          : profileAddFix(name),
     };
   }
   const provider = slot.provider;
@@ -813,9 +752,12 @@ export function checkAuth(f: AuthFacts): CheckResult {
     const unproven = provider === "gh-cli" && f.ghAuthUnproven === true;
     const where = name === null ? "is selected" : `is recorded for profile '${name}'`;
     // The default's other way out is another provider; a named slot is re-provisioned.
-    const orElse = name === null
-      ? pin === null ? "`agent auth` to switch provider" : "`agent auth` to switch"
-      : "re-provision the profile";
+    const orElse =
+      name === null
+        ? pin === null
+          ? "`agent auth` to switch provider"
+          : "`agent auth` to switch"
+        : "re-provision the profile";
     return {
       ...base,
       status: "warn",
@@ -827,34 +769,36 @@ export function checkAuth(f: AuthFacts): CheckResult {
           ? unproven
             ? ghCouldNotCheck(f.ghDetail, accountClause)
             : pin === null
-            ? `\`gh\` is unauthenticated (${accountClause}) - run \`gh auth login\`, or ${orElse}`
-            : `\`gh\` is not authenticated as account '${pin}' - run \`gh auth login\` for that account, or ${orElse}`
+              ? `\`gh\` is unauthenticated (${accountClause}) - run \`gh auth login\`, or ${orElse}`
+              : `\`gh\` is not authenticated as account '${pin}' - run \`gh auth login\` for that account, or ${orElse}`
           : name === null
-          ? "the stored token is missing - run `agent auth` to re-provision"
-          : `the slot's stored token is missing - run \`${authFix}\` to re-provision`,
+            ? "the stored token is missing - run `agent auth` to re-provision"
+            : `the slot's stored token is missing - run \`${authFix}\` to re-provision`,
         ...tail,
       ].join("\n"),
       fix: authFix,
     };
   }
-  const how = provider === "gh-cli"
-    ? pin !== null
-      ? f.ghCommand === undefined
-        ? `gh CLI (\`gh auth token --user ${pin}\`)`
-        : `gh CLI (\`${f.ghCommand}\`, account ${pin})`
-      : followed !== null
-      ? `gh CLI (\`gh auth token\`, AUTO - currently account ${followed})`
-      : "gh CLI (`gh auth token`, AUTO - follows gh's active account)"
-    : "stored GitHub token";
-  const usage = name === null
-    ? "resolved by `agent auth --get` for Direct; passed to the proxy on `agent start`"
-    : slot.mode === "proxy"
-    ? `resolved by \`${authFix} --get\`; passed to the profile's daemon on \`${
-      agentStartCommand(name)
-    }\``
-    : slot.mode === "direct"
-    ? `resolved by \`${authFix} --get\` for Direct`
-    : `resolved by \`${authFix} --get\``;
+  const how =
+    provider === "gh-cli"
+      ? pin !== null
+        ? f.ghCommand === undefined
+          ? `gh CLI (\`gh auth token --user ${pin}\`)`
+          : `gh CLI (\`${f.ghCommand}\`, account ${pin})`
+        : followed !== null
+          ? `gh CLI (\`gh auth token\`, AUTO - currently account ${followed})`
+          : "gh CLI (`gh auth token`, AUTO - follows gh's active account)"
+      : "stored GitHub token";
+  const usage =
+    name === null
+      ? "resolved by `agent auth --get` for Direct; passed to the proxy on `agent start`"
+      : slot.mode === "proxy"
+        ? `resolved by \`${authFix} --get\`; passed to the profile's daemon on \`${agentStartCommand(
+            name,
+          )}\``
+        : slot.mode === "direct"
+          ? `resolved by \`${authFix} --get\` for Direct`
+          : `resolved by \`${authFix} --get\``;
   return {
     ...base,
     status: "ok",
@@ -900,16 +844,12 @@ export function evaluateAll(scope: HealthScope, facts: HealthFacts): CheckResult
   if (facts.bootstrap) {
     out.push(
       checkCliVersion(facts.bootstrap),
-      checkDeno(facts.bootstrap),
+      checkRuntime(facts.bootstrap),
       checkNodeModules(facts.bootstrap),
     );
   }
   if (facts.proxy) {
-    out.push(
-      checkProxyPackage(facts.proxy),
-      checkProxyResolved(facts.proxy),
-      checkProxySidecar(facts.proxy),
-    );
+    out.push(checkProxyPackage(facts.proxy), checkProxyResolved(facts.proxy));
   }
   // One runtime block per target, in gather order. Per-daemon rows render exactly for the
   // targets whose daemon was interrogated (the probe's `probed` arm), so a row can never

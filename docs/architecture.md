@@ -57,7 +57,7 @@ flowchart TD
 - **No implicit `gh` fallback:** a `none` slot resolves to null and the caller asks (`agent profile auth`); a named profile's reason names the profile.
 - **`static-key` is the one opt-in that bakes the value** ([authentication: static key](authentication.md#static-key) owns it): `resolveCredentialWiring()` resolves it once per agent at the write, and an unresolvable static credential is a failed write, never a silent return to the command shape.
 
-Demonstrated by: [test/agents/configure.test.ts](../test/agents/configure.test.ts), [test/commands/auth.test.ts](../test/commands/auth.test.ts), [test/codex/codex_config.test.ts](../test/codex/codex_config.test.ts).
+Demonstrated by: [test/agents/configure.test.ts](../test/agents/configure.test.ts), [test/commands/auth.e2e.test.ts](../test/commands/auth.e2e.test.ts), [test/codex/codex_config.e2e.test.ts](../test/codex/codex_config.e2e.test.ts).
 
 ## Identity and host: state in the slot, rendered into the agent files
 
@@ -102,7 +102,7 @@ flowchart TD
 - **A credential write takes the previous pair with it,** so a definitive refusal leaves the files as they were and an empty pair: a credential refused under every identity works under none, and the next Direct landing probes again.
 - **A pin is configuration, an overlay:** it is rendered over the stored pair and never enters it, so setting or clearing it applies at the next re-render; a landing under a pin or literal stores only the half the probe answered, and the other half is probed once when the overlay is cleared.
 
-Demonstrated by: [test/copilot_api/integration_identity.test.ts](../test/copilot_api/integration_identity.test.ts), [test/copilot_api/copilot_host.test.ts](../test/copilot_api/copilot_host.test.ts), [test/copilot_api/profiles.test.ts](../test/copilot_api/profiles.test.ts).
+Demonstrated by: [test/copilot_api/integration_identity.test.ts](../test/copilot_api/integration_identity.test.ts), [test/copilot_api/copilot_host.e2e.test.ts](../test/copilot_api/copilot_host.e2e.test.ts), [test/copilot_api/profiles.e2e.test.ts](../test/copilot_api/profiles.e2e.test.ts).
 
 ## Profiles are atomic units
 
@@ -133,7 +133,7 @@ flowchart LR
 - **The default is a profile too,** under the reserved `default` key. Its `mode` is the one mode both agents share. `commitDefaultWiring()` in `src/agents/configure_defaults.ts` records it (and the probed pair) after BOTH agents' writes succeeded, so a failed write leaves the previous record; `add` with no credential yet records the mode alone.
 - **A single-agent command re-renders the default** and never moves its record: with a pair stored it renders that pair; with no record, or a Direct record whose pair a credential write took, it lands both agents as `agent profile add` would. The record has two writers: the landing after both agents wrote, and `add` with no credential yet, which records the mode alone.
 
-Demonstrated by: [test/copilot_api/profiles.test.ts](../test/copilot_api/profiles.test.ts), [test/codex/codex_profile_wiring.test.ts](../test/codex/codex_profile_wiring.test.ts).
+Demonstrated by: [test/copilot_api/profiles.e2e.test.ts](../test/copilot_api/profiles.e2e.test.ts), [test/codex/codex_profile_wiring.e2e.test.ts](../test/codex/codex_profile_wiring.e2e.test.ts).
 
 ## The proxy floats; runtime needs are preload shims
 
@@ -141,35 +141,35 @@ Demonstrated by: [test/copilot_api/profiles.test.ts](../test/copilot_api/profile
 flowchart LR
   registry[["GET https://registry.npmjs.org/@jeffreycao%2Fcopilot-api"]]
   prefs[("~/.local/share/copilot-env/state.json (global and profiles.<name>: the settings)")]
-  float["src/proxy_float.ts<br>floatProxy() selectProxyVersion() writeResolvedVersionRecord() readResolvedVersionRecord()"]
-  shims["src/copilot_api/shims.ts<br>DAEMON_SHIM_FILES shimPath() allShimPaths()"]
-  spawn["src/copilot_api/process.ts<br>DaemonSpec daemonArgv() daemonEnvironment() launchDaemon()"]
-  preloads["src/scripts/node_compat_preload.ts<br>src/scripts/daemon_lock_preload.ts<br>src/scripts/token_argv_preload.ts<br>src/scripts/daemon_runtime_preload.ts<br>src/scripts/copilot_host_preload.ts<br>src/scripts/client_headers_preload.ts<br>src/scripts/pat_passthrough_preload.ts<br>src/scripts/idle_watchdog_preload.ts<br>src/scripts/log_mute_preload.ts"]
-  cache[("~/.local/share/copilot-env/deno/cache<br>the daemon's DENO_DIR")]
+  float["src/proxy_float.ts<br>floatProxy() ensureShimDependencies() selectProxyVersion() renderProxyManifest() writeResolvedVersionRecord() readResolvedVersionRecord()"]
+  shims["src/copilot_api/shims.ts<br>DAEMON_SHIM_DEPENDENCIES shimPath()"]
+  spawn["src/copilot_api/process.ts<br>DaemonSpec resolveCopilotApiEntry() daemonArgv() daemonEnvironment() launchDaemon()"]
+  preloads["src/scripts/daemon_lock_preload.ts<br>src/scripts/token_argv_preload.ts<br>src/scripts/daemon_runtime_preload.ts<br>src/scripts/copilot_host_preload.ts<br>src/scripts/client_headers_preload.ts<br>src/scripts/pat_passthrough_preload.ts<br>src/scripts/idle_watchdog_preload.ts<br>src/scripts/log_mute_preload.ts"]
+  cache[("~/.local/share/copilot-env/bun/cache<br>bun's download cache for the proxy home")]
   record[("~/.local/share/copilot-env/proxy/resolved-version.json")]
-  pcfg[("copilot-env.config and deno.json, embedded in the binary: PROXY_MIN_VERSION, PROXY_MAX_VERSION, the import map")]
-  dcfg[("~/.local/share/copilot-env/proxy/deno.json and deno.lock, ~/.local/share/copilot-env/.npmrc<br>the daemon's import map, its transitive pins, trust-policy=no-downgrade")]
-  daemonproc[["the daemon: deno run --config ... --preload ... npm:@jeffreycao/copilot-api@{version}, COPILOT_API_HOME={the profile's daemon home}"]]
+  pcfg[("copilot-env.config, bunfig.toml and package.json, embedded in the binary: PROXY_MIN_VERSION, PROXY_MAX_VERSION, the default cooldown, the shims' dependency ranges")]
+  phome[("~/.local/share/copilot-env/proxy/install: package.json, bun.lock, bunfig.toml, node_modules<br>the proxy at the resolved version plus the shims' dependencies; the lock pins the transitive tree; [install] minimumReleaseAge is the cooldown; built in install.next, verified, swapped in by rename")]
+  daemonproc[["the daemon: process.execPath run --no-env-file --no-install --preload {proxy home}/daemon_preload.ts {proxy home}/install/node_modules/@jeffreycao/copilot-api/dist/main.js start, BUN_BE_BUN=1, cwd {proxy home}, NODE_PATH {proxy home}/install/node_modules, COPILOT_API_HOME={the profile's daemon home}"]]
   registry -->|"reads versions and publish times"| float
   prefs -->|"reads proxy-version, release-cooldown"| float
-  pcfg -->|"reads the version bounds, and imports plus compilerOptions for the daemon's config"| float
-  shims -->|"every shim, warmed into the cache"| float
-  float -->|"writes the import map and a marked .npmrc once, deno cache pins the lock"| dcfg
-  float -->|"deno cache: the package and the shims"| cache
-  float -->|"writes the version and its DENO_DIR"| record
-  record -->|"reads the daemon's entry"| spawn
-  dcfg -->|"reads --config"| spawn
+  pcfg -->|"reads the version bounds, the default cooldown, and the dependency ranges"| float
+  shims -->|"the dependencies every shim imports"| float
+  float -->|"stages package.json and bunfig.toml, bun install writes the lock and node_modules, the verified tree is swapped in"| phome
+  float -->|"BUN_INSTALL_CACHE_DIR, one dir per version"| cache
+  float -->|"writes the version and the time, after the swap; the record follows the tree at every float entry"| record
+  phome -->|"reads the installed package's version and bin, through the float's own verifier (floatedProxyEntry)"| spawn
   shims -->|"the subset DaemonSpec derives"| spawn
-  spawn -->|"--preload, in order"| preloads
-  spawn -->|"launchDaemon(): COPILOT_ENV_ROOT_HOME, COPILOT_ENV_DAEMON_KEEP_PORT, --cached-only"| daemonproc
+  spawn -->|"writes daemon_preload.ts in the proxy home, one import per shim in load order, and passes it as the one --preload (daemonPreloadFile, renderDaemonPreload)"| preloads
+  spawn -->|"launchDaemon(): COPILOT_ENV_ROOT_HOME, COPILOT_ENV_DAEMON_KEEP_PORT"| daemonproc
   preloads -->|"run inside it before the package's entry"| daemonproc
 ```
 
-- **We never patch the package:** every shim wraps a runtime seam (`globalThis.fetch`, undici's global dispatcher, `fs.createWriteStream`, `process.argv`) and touches none of copilot-api's files, so none of them pins the floated version.
-- **`--cached-only` at spawn gives no second chance,** which is why the float warms the cache; every spawn carries the token, host, and client-header shims, since a launch without a credential is refused.
-- **The secret-carrying shims stay import-free** (`test/lint/no_shim_imports.ts`): a runtime import would drag CLI modules into the daemon process.
+- **The daemon runs from the binary itself:** `process.execPath` spawned as a bun CLI (`BUN_BE_BUN=1` in the child's environment; without it a compiled binary would re-run its own entry). A checkout's execPath is bun already. Nothing else is downloaded.
+- **We never patch the package:** every shim wraps a runtime seam (`globalThis.fetch`, `Bun.serve`, `fs.createWriteStream`, `process.argv`) and touches none of copilot-api's files, so none of them pins the floated version. One seam has no bun form: the /responses WebSocket handshake (copilot-api's `WebSocket` from bun's built-in undici is the native class), which runs under the proxy's own identity.
+- **`--no-install` at spawn gives no second chance,** which is why the float installs the shims' dependencies beside the proxy (and a compiled install running a `COPILOT_API_ENTRY` file installs them alone); every spawn carries the token, host, and client-header shims, since a launch without a credential is refused.
+- **The secret-carrying shims stay import-free** (`biome/no_shim_imports.grit`): a runtime import would drag CLI modules into the daemon process.
 
-Demonstrated by: [test/copilot_api/proxy_float.test.ts](../test/copilot_api/proxy_float.test.ts), [test/copilot_api/daemon_spawn.test.ts](../test/copilot_api/daemon_spawn.test.ts), [test/copilot_api/daemon_env_keys.test.ts](../test/copilot_api/daemon_env_keys.test.ts).
+Demonstrated by: [test/copilot_api/proxy_float.e2e.test.ts](../test/copilot_api/proxy_float.e2e.test.ts), [test/copilot_api/daemon_spawn.e2e.test.ts](../test/copilot_api/daemon_spawn.e2e.test.ts), [test/copilot_api/daemon_env_keys.test.ts](../test/copilot_api/daemon_env_keys.test.ts).
 
 ## The config store: flag, then stored, then default
 
@@ -194,13 +194,13 @@ flowchart LR
 - **`CopilotEnvConfig.read()` is strict:** an unreadable store throws, because wiring, the proxy pin, and the port knobs must never act on an unproven empty. The three accessors the daemon-side gates reach read degraded instead (`autoStartEnabled()`, `autoUpdateEnabled()`, `idleTimeoutSeconds()`): a throw there would kill the serving daemon, and their flatten is the safe direction (lifecycle off, default window, no self-update).
 - **One registry** (`CONFIG_REGISTRY`) owns each key's CLI name, storage key, parser, default, and description; [docs/configuration.md](configuration.md) is pinned against it by `test/copilot_api/docs_config.test.ts`.
 
-Demonstrated by: [test/copilot_api/env_config.test.ts](../test/copilot_api/env_config.test.ts), [test/install/update_apply.test.ts](../test/install/update_apply.test.ts).
+Demonstrated by: [test/copilot_api/env_config.test.ts](../test/copilot_api/env_config.test.ts), [test/install/update_apply.e2e.test.ts](../test/install/update_apply.e2e.test.ts).
 
 ## Install, update, provenance
 
 ```mermaid
 flowchart TD
-  assets[("the binary's embedded assets<br>materialized: the bin and shell payloads, the daemon shims<br>read in place: deno.json, .dvmrc, copilot-env.config")]
+  assets[("the binary's embedded assets<br>materialized: the bin and shell payloads, the daemon shims<br>read in place: copilot-env.config and bunfig.toml, the proxy version bounds and the default cooldown")]
   releases[["GET https://api.github.com/repos/Vivswan/copilot-env/releases?per_page=100"]]
   download[["https://github.com/Vivswan/copilot-env/releases/download/{tag}: copilot-env-{triple} (.exe on Windows), checksums.txt, attestation.json"]]
   tuf[["https://tuf-repo-cdn.sigstore.dev: the Sigstore trust root"]]
@@ -212,7 +212,7 @@ flowchart TD
   preflight["src/autoupdate/preflight.ts<br>runPreflight()"]
   release["src/install/resolve-release.ts<br>resolveTarget() pickAged()"]
   apply["src/autoupdate/apply.ts<br>applyUpdate() resolveProvenanceDecision() ProvenanceDecision"]
-  prov["src/install/provenance.ts<br>verifyReleaseProvenance() TUF_MIRROR_URL"]
+  prov["src/install/provenance.ts<br>verifyReleaseProvenance()"]
   att["src/install/attestation.ts<br>RELEASE_SIGNER_POLICY parseStatement() assertSubjectsAttested()"]
   layout[("{top}/versions/vX.Y.Z, {top}/current, {top}/bin/agent and agent.ps1")]
   rcfile[("~/.bashrc, ~/.zshrc, or the PowerShell $PROFILE")]
@@ -239,7 +239,7 @@ flowchart TD
 - **Trust on first use:** the installer never verifies the release it was fetched from (that would be circular). `agent update` proves origin with Sigstore and fails closed; `--no-verify` and the `update.verify-provenance` key are the two opt-outs, and the skip warning names the way back.
 - **Nothing before the commit is best-effort;** past the `current` flip the install has moved forward, so `agent migrate` and the GC (one previous version kept) may fail without stranding it.
 
-Demonstrated by: [test/install/installer.test.ts](../test/install/installer.test.ts), [test/install/update_apply.test.ts](../test/install/update_apply.test.ts), [test/install/provenance.test.ts](../test/install/provenance.test.ts).
+Demonstrated by: [test/install/installer.e2e.test.ts](../test/install/installer.e2e.test.ts), [test/install/update_apply.e2e.test.ts](../test/install/update_apply.e2e.test.ts), [test/install/provenance.test.ts](../test/install/provenance.test.ts).
 
 ## The launch path
 
@@ -276,11 +276,11 @@ flowchart LR
 - **The managed values are re-read after wiring, never taken from the shell:** the wiring step may have moved a port or built the Codex host farm, and nothing refreshes the shell's env between wiring and exec inside one process. The rest of the environment passes through.
 - **No execve:** the agent runs as a child and its exit code (or 128 + signal) passes through; the wiring's write reports are deferred until the agent hands the terminal back.
 
-Demonstrated by: [test/commands/launch.test.ts](../test/commands/launch.test.ts), [test/commands/env.test.ts](../test/commands/env.test.ts), [test/shell/shell_integration.test.ts](../test/shell/shell_integration.test.ts).
+Demonstrated by: [test/commands/launch.e2e.test.ts](../test/commands/launch.e2e.test.ts), [test/commands/env.e2e.test.ts](../test/commands/env.e2e.test.ts), [test/shell/shell_integration.e2e.test.ts](../test/shell/shell_integration.e2e.test.ts).
 
 ## The module map
 
-Each node is one layer, labelled with the paths it owns; an arrow means the layer imports the other. Rendered from `architecture.json` by `deno task docs:arch` (`--check` fails on drift), and the lint in `test/utils/architecture.test.ts` keeps that declaration equal to the import graph under `src/`:
+Each node is one layer, labelled with the paths it owns; an arrow means the layer imports the other. Rendered from `architecture.json` by `bun run docs:arch` (`--check` fails on drift), and the lint in `test/utils/architecture.test.ts` keeps that declaration equal to the import graph under `src/`:
 
 | Lint message                                                                     | What to do                                                                 |
 | -------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
@@ -291,7 +291,7 @@ Each node is one layer, labelled with the paths it owns; an arrow means the laye
 
 An edge is any relative import: runtime, type-only, re-export, side-effect, or a string-literal `import()`. Imports inside one layer are not edges, and a layer absent from `edges` imports nothing outside itself.
 
-<!-- BEGIN GENERATED: architecture-map (deno task docs:arch; derived from architecture.json) -->
+<!-- BEGIN GENERATED: architecture-map (bun run docs:arch; derived from architecture.json) -->
 
 ```mermaid
 graph TD

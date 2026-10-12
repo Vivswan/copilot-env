@@ -1,7 +1,7 @@
 // One `token_usage_events` row per request, in a per-host DB, so a home shared across machines
 // holds several DBs. The layout is src/copilot_api/paths.ts's; this module only sweeps it.
 
-import { DatabaseSync } from "node:sqlite";
+import { Database } from "bun:sqlite";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { consola } from "consola";
@@ -14,9 +14,9 @@ import {
 import { isValidProfileName } from "../copilot_api/profile.ts";
 import { errMessage } from "../utils/error.ts";
 import { isEnoentOrNotdir } from "../utils/fs.ts";
+import * as fs from "../utils/fs_facade.ts";
 import { isRecord } from "../utils/json.ts";
 import { type DayKey, dayKeyIn } from "../utils/time.ts";
-import * as fs from "../utils/fs_facade.ts";
 import { canonicalModelName } from "./pricing.ts";
 
 /** The four priced token buckets every usage source reduces one event to. */
@@ -63,15 +63,12 @@ export interface UsageRequest {
   buckets: TokenBuckets;
 }
 
-/** node:sqlite hands back a `bigint` for an integer a double cannot hold exactly, so both shapes
- *  arrive here. */
 function numberOrNull(value: unknown): number | null {
-  const asNumber = typeof value === "bigint" ? Number(value) : value;
-  return typeof asNumber === "number" && Number.isFinite(asNumber) ? asNumber : null;
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
-/** The boundary between untyped SQLite output and the report: no later step re-checks for bigints,
- *  nulls, or hostile values. A row with no usable `model` cannot be attributed and is dropped.
+/** The boundary between untyped SQLite output and the report: no later step re-checks for nulls
+ *  or hostile values. A row with no usable `model` cannot be attributed and is dropped.
  *  Exported for tests. */
 export function parseUsageRow(raw: unknown): UsageRequest | null {
   if (!isRecord(raw)) return null;
@@ -90,7 +87,7 @@ export function parseUsageRow(raw: unknown): UsageRequest | null {
 }
 
 /** The roll-up and its per-day split, folded from the same rows. */
-export interface UsageTotals {
+interface UsageTotals {
   /** Derived from the same rows as `perDay`; kept so callers do not recompute it. */
   byModel: Map<string, ModelUsage>;
   /** Keyed by LOCAL calendar day, YYYY-MM-DD in the user's timezone. */
@@ -273,12 +270,12 @@ export function discoverUsageDbs(home: string = resolveHome()): string[] {
   });
 }
 
-function withReadOnlyDb<T>(path: string, query: (db: DatabaseSync) => T): T {
-  const db = new DatabaseSync(path, { readOnly: true });
+function withReadOnlyDb<T>(path: string, query: (db: Database) => T): T {
+  const db = new Database(path, { readonly: true });
   try {
     return query(db);
   } finally {
-    db.close();
+    db.close(true);
   }
 }
 
@@ -287,7 +284,7 @@ const SQLITE_SIDECAR_SUFFIXES = ["-wal", "-shm"] as const;
 
 /** A read-only filesystem lets SQLite consult a -wal only if it can create the -shm beside it,
  *  which it can in a temp copy. */
-function withDbCopy<T>(path: string, query: (db: DatabaseSync) => T): T {
+function withDbCopy<T>(path: string, query: (db: Database) => T): T {
   const dir = fs.scratchDir(join(tmpdir(), "copilot-usage-"));
   try {
     const copy = join(dir, basename(path));
@@ -310,7 +307,7 @@ function withDbCopy<T>(path: string, query: (db: DatabaseSync) => T): T {
 /** The daemon only checkpoints on close, so the live open (which consults the -wal) comes first;
  *  SQLite can defer a -shm error to prepare time, so the query is inside the try too. The FIRST
  *  error propagates when both fail: it describes the real database, not the copy. */
-function openSqliteReadOnlyWithWalFallback<T>(path: string, query: (db: DatabaseSync) => T): T {
+function openSqliteReadOnlyWithWalFallback<T>(path: string, query: (db: Database) => T): T {
   try {
     return withReadOnlyDb(path, query);
   } catch (first) {
@@ -347,7 +344,11 @@ export function readUsageRequests(dbPaths: string[], sinceMs?: number): UsageReq
       rows = openSqliteReadOnlyWithWalFallback(
         path,
         // An unparseable row drops out here rather than reaching a report as a zero-filled phantom.
-        (db) => db.prepare(QUERY).all(since).flatMap((raw) => parseUsageRow(raw) ?? []),
+        (db) =>
+          db
+            .prepare(QUERY)
+            .all(since)
+            .flatMap((raw) => parseUsageRow(raw) ?? []),
       );
     } catch (e) {
       consola.warn(`could not read ${path} (${errMessage(e)}).`);
@@ -360,7 +361,7 @@ export function readUsageRequests(dbPaths: string[], sinceMs?: number): UsageReq
 }
 
 /** `dayKey` is injectable so the per-day slicing is assertable without pinning the process `TZ`,
- *  which deno honors on unix only. */
+ *  which the suite does on unix only (TZ_PINNABLE in test/helpers/testing.ts). */
 export function foldUsageRequests(
   requests: Iterable<UsageRequest>,
   dayKey: DayKey = dayKeyIn(),
@@ -369,12 +370,10 @@ export function foldUsageRequests(
   for (const request of requests) {
     // The daemon writes created_at_ms on every row, so a null tsMs is not expected; record still
     // totals such a row, just outside the per-day split. The day is the user's local one.
-    record(
-      report,
-      request.tsMs !== null ? dayKey(request.tsMs) : null,
-      request.model,
-      { ...request.buckets, events: 1 },
-    );
+    record(report, request.tsMs !== null ? dayKey(request.tsMs) : null, request.model, {
+      ...request.buckets,
+      events: 1,
+    });
   }
   return report;
 }
@@ -436,7 +435,10 @@ export function undatedUsage(report: ReadonlyUsageTotals): Map<string, ModelUsag
   }
   for (const [model, r] of rest) {
     if (
-      r.input === 0 && r.output === 0 && r.cacheRead === 0 && r.cacheCreation === 0 &&
+      r.input === 0 &&
+      r.output === 0 &&
+      r.cacheRead === 0 &&
+      r.cacheCreation === 0 &&
       r.events === 0
     ) {
       rest.delete(model);

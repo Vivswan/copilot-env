@@ -1,8 +1,8 @@
 import { consola } from "consola";
 import {
   applyUpdate,
-  previewUpdate,
   type ProvenanceDecision,
+  previewUpdate,
   resolveProvenanceDecision,
 } from "../autoupdate/apply.ts";
 import { withUpdateLock } from "../autoupdate/lock.ts";
@@ -116,13 +116,15 @@ function runAutoStatus(config: CopilotEnvConfig): void {
 }
 
 async function runManualUpdate(
-  args: { check: true; cooldown: number | null; force: false } | {
-    check: false;
-    cooldown: number | null;
-    force: boolean;
-    provenance: ProvenanceDecision;
-    dryRun: boolean;
-  },
+  args:
+    | { check: true; cooldown: number | null; force: false }
+    | {
+        check: false;
+        cooldown: number | null;
+        force: boolean;
+        provenance: ProvenanceDecision;
+        dryRun: boolean;
+      },
 ): Promise<void> {
   // `v` prefix to match the upstream tag format.
   const current = `v${packageVersion()}`;
@@ -163,9 +165,10 @@ async function runManualUpdate(
           args.provenance.kind === "verify" ? " and build provenance" : ""
         }, let the new binary lay down its runtime files, flip \`current\`, refresh the launcher ` +
           `shims, and run the migrations ${current} -> ${target.tag} ` +
-          `(preview them: agent migrate ${current.replace(/^v/, "")} ${
-            target.tag.replace(/^v/, "")
-          } --dry-run).`,
+          `(preview them: agent migrate ${current.replace(/^v/, "")} ${target.tag.replace(
+            /^v/,
+            "",
+          )} --dry-run).`,
       );
       previewUpdate(target);
       return Promise.resolve();

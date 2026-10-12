@@ -6,7 +6,7 @@
 set -eu
 
 # The next line is rewritten to the release tag by .github/scripts/release-assets.ts
-# (byte-exact needle; test/install/installer_pinning.test.ts guards the match).
+# (byte-exact needle; test/install/installer_pinning.e2e.test.ts guards the match).
 INSTALL_REF="${COPILOT_ENV_INSTALL_REF:-latest}"
 REPO="Vivswan/copilot-env"
 BINARY_NAME="copilot-env"
@@ -218,7 +218,7 @@ resolve_safe_install_dir "$INSTALL_DIR"
 #   a marker and .git (a file in a worktree, so `-e`)  -> a live source checkout  -> refused
 #   a marker, no .git                                  -> not a checkout           -> proceeds
 if [ -e "$INSTALL_DIR/.git" ]; then
-    for _marker in package.json deno.json; do
+    for _marker in package.json bun.lock; do
         if [ -e "$INSTALL_DIR/$_marker" ]; then
             _reason="it holds $_marker and .git, so it is a source checkout"
             die "refusing to install into $INSTALL_DIR: $_reason; choose another target with --dir or COPILOT_ENV_DIR."

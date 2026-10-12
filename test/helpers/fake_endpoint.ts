@@ -25,6 +25,7 @@ import {
   startFakeModelEndpoint,
 } from "./fake_model_endpoint.ts";
 import { spawnChild } from "./run.ts";
+import { outputOf } from "./subprocess.ts";
 
 const FAKE_CLAUDE_TOKEN = "fake-token-claude";
 const FAKE_CODEX_TOKEN = "fake-token-codex";
@@ -47,9 +48,9 @@ const AIMOCK_CUT_OFFSET = 1;
 
 /** Every scenario a test can name. The error bodies are the vendors' envelopes with Copilot's
  *  words where Copilot has its own (the service_tier rejection). */
-export const SCENARIOS = {
-  "ok": { kind: "text", text: "OK" },
-  "unauthorized": {
+const SCENARIOS = {
+  ok: { kind: "text", text: "OK" },
+  unauthorized: {
     kind: "error",
     status: 401,
     type: "authentication_error",
@@ -71,15 +72,14 @@ export const SCENARIOS = {
   // The connection drops right after the FIRST content delta of a codex-shaped Responses stream
   // (aimock destroys the socket, so this is the mid-stream disconnect, not a clean early end).
   // The frame count is codex's request shape (reasoning item, prelude, one delta) plus aimock's
-  // off-by-one; fake_model_endpoint.test.ts pins that exactly one delta gets through. Exercised
+  // off-by-one; fake_model_endpoint.e2e.test.ts pins that exactly one delta gets through. Exercised
   // through codex, which reconnects five times within seconds and fails the turn; claude reads
   // the same drop as a connection error it retries ten times over about six minutes, so its arm
   // is recorded, never exercised.
   "truncate-after-first-delta": {
     kind: "truncate",
     text: "OK, and this reply is long enough to be cut after its first delta",
-    afterFrames: RESPONSES_REASONING_ITEM_FRAMES + RESPONSES_PRELUDE_FRAMES + 1 +
-      AIMOCK_CUT_OFFSET,
+    afterFrames: RESPONSES_REASONING_ITEM_FRAMES + RESPONSES_PRELUDE_FRAMES + 1 + AIMOCK_CUT_OFFSET,
   },
 } satisfies Scenarios;
 
@@ -111,7 +111,7 @@ export function writeClaudeFakeSettings(
     .map(([name, value]) => `${name}: ${value}`)
     .join("\n");
   const settings = {
-    "env": {
+    env: {
       [BASE_URL_ENV]: baseUrl,
       [AUTH_TOKEN_ENV]: FAKE_CLAUDE_TOKEN,
       [CUSTOM_HEADERS_ENV]: customHeaders,
@@ -132,16 +132,16 @@ export function writeCodexFakeConfig(
   mkdirSync(codexHome, { recursive: true });
   const path = join(codexHome, "config.toml");
   const doc = {
-    "model": FAKE_CODEX_MODEL,
-    "model_provider": "fake",
-    "model_providers": {
-      "fake": {
-        "name": "fake",
-        "base_url": baseUrl,
-        "wire_api": "responses",
-        "requires_openai_auth": false,
-        "http_headers": {
-          "Authorization": `Bearer ${FAKE_CODEX_TOKEN}`,
+    model: FAKE_CODEX_MODEL,
+    model_provider: "fake",
+    model_providers: {
+      fake: {
+        name: "fake",
+        base_url: baseUrl,
+        wire_api: "responses",
+        requires_openai_auth: false,
+        http_headers: {
+          Authorization: `Bearer ${FAKE_CODEX_TOKEN}`,
           ...fakeClientHeaders(scenario),
         },
       },
@@ -155,7 +155,7 @@ export function writeCodexFakeConfig(
  *  allowlist (hermeticEnv), PATH led by the CLI's own bin dir (an npm shim needs node beside it),
  *  a scratch HOME so nothing on the machine is read or written, the CLIs' quiet switches, and
  *  the caller's `extra`. */
-export function fakeCliEnv(
+function fakeCliEnv(
   home: string,
   binDir: string | null,
   extra: Record<string, string>,
@@ -203,22 +203,21 @@ export async function runFakeCli(
   const spec = verbatimCliSpawn(cli, args);
   const child = spawnChild(spec.shell ? "cmd.exe" : spec.file, {
     args: spec.shell ? ["/d", "/s", "/c", [spec.file, ...spec.args].join(" ")] : spec.args,
-    windowsRawArguments: spec.shell,
+    windowsVerbatimArguments: spec.shell,
     cwd: home,
     env: fakeCliEnv(home, spec.binDir, extra),
     clearEnv: true,
-    stdin: "null",
-    stdout: "piped",
-    stderr: "piped",
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
   });
-  const output = child.output();
-  const decoder = new TextDecoder();
+  const output = outputOf(child);
   const finished = await Promise.race([output, sleep(timeoutMs).then(() => null)]);
   if (finished !== null) {
     return {
-      exitCode: finished.code,
-      stdout: decoder.decode(finished.stdout),
-      stderr: decoder.decode(finished.stderr),
+      exitCode: finished.exitCode,
+      stdout: finished.stdout,
+      stderr: finished.stderr,
       timedOut: false,
     };
   }
@@ -231,8 +230,8 @@ export async function runFakeCli(
   const late = await Promise.race([output, sleep(KILL_GRACE_MS).then(() => null)]);
   return {
     exitCode: -1,
-    stdout: late === null ? "" : decoder.decode(late.stdout),
-    stderr: late === null ? "" : decoder.decode(late.stderr),
+    stdout: late === null ? "" : late.stdout,
+    stderr: late === null ? "" : late.stderr,
     timedOut: true,
   };
 }

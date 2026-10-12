@@ -1,18 +1,22 @@
 // One cross-platform runner for docker and podman. The container's throwaway HOME is the
 // structural guarantee behind the lifecycle smoke; for the unit suite it adds a Linux-parity run.
 //
-//   deno task test:docker                        full suite (image CMD)
-//   deno task test:docker test/usage/usage.test.ts     selected files
-//   deno task test:docker --lifecycle            daemon lifecycle smoke, in-container
-//   deno task test:docker --floated-lifecycle    the REAL floated proxy, asserted as far as auth
-//                                                (needs the network; no credential required)
+//   bun run test:docker                              full suite (image CMD)
+//   bun run test:docker test/usage/usage.test.ts     selected files
+//   bun run test:docker --lifecycle                  daemon lifecycle smoke, in-container
+//   bun run test:docker --floated-lifecycle          the REAL floated proxy, asserted as far as auth
+//                                                    (needs the network; no credential required)
 //
-// $CONTAINER_ENGINE picks "docker" or "podman" (the task's --allow-run grants exactly those two).
-import { fileURLToPath } from "node:url";
+// $CONTAINER_ENGINE picks "docker" or "podman".
+import { spawn, spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const IMAGE = "copilot-env-test";
+/** The image's bun: the platform sync writes this file, and the Dockerfile has no default. */
+const BUN_VERSION_FILE = ".bun-version";
 const ENGINES = ["podman", "docker"] as const;
 type Engine = (typeof ENGINES)[number];
 
@@ -22,103 +26,94 @@ function isEngine(v: string): v is Engine {
 
 // A spawn that never ran and an engine whose `--version` failed both read "not usable", so a
 // failed look can surface as the "neither on PATH" hint. Accepted: CONTAINER_ENGINE overrides.
-async function engineWorks(name: string): Promise<boolean> {
-  try {
-    const out = await new Deno.Command(name, {
-      args: ["--version"],
-      stdout: "null",
-      stderr: "null",
-    }).output();
-    return out.success;
-  } catch {
-    return false;
-  }
+function engineWorks(name: string): boolean {
+  const out = spawnSync(name, ["--version"], { stdio: "ignore" });
+  return out.error === undefined && out.status === 0;
 }
 
-async function resolveEngine(): Promise<string> {
-  const override = Deno.env.get("CONTAINER_ENGINE");
+function resolveEngine(): string {
+  const override = process.env.CONTAINER_ENGINE;
   if (override !== undefined) {
     if (!isEngine(override)) {
       console.error(
         `error: CONTAINER_ENGINE must be one of ${ENGINES.join(", ")} (got "${override}")`,
       );
-      Deno.exit(1);
+      process.exit(1);
     }
     return override;
   }
   for (const candidate of ENGINES) {
-    if (await engineWorks(candidate)) {
+    if (engineWorks(candidate)) {
       return candidate;
     }
   }
   console.error("error: neither podman nor docker on PATH (set CONTAINER_ENGINE)");
-  Deno.exit(1);
+  process.exit(1);
 }
 
-async function run(cmd: string, args: string[], stdout: "inherit" | "piped"): Promise<number> {
-  const child = new Deno.Command(cmd, { args, cwd: ROOT, stdout, stderr: "inherit" }).spawn();
-  if (stdout === "piped") {
-    // Build noise goes to stderr; stdout stays clean for test output.
-    await child.stdout.pipeTo(Deno.stderr.writable, { preventClose: true });
+function bunVersion(): string {
+  try {
+    return readFileSync(join(ROOT, BUN_VERSION_FILE), "utf8").trim();
+  } catch {
+    console.error(`error: ${BUN_VERSION_FILE} is missing or unreadable; it pins the image's bun`);
+    process.exit(1);
   }
-  return (await child.status).code;
 }
 
-const engine = await resolveEngine();
-const denoVersion = Deno.readTextFileSync(join(ROOT, ".dvmrc")).trim();
+function run(cmd: string, args: string[], stdout: "inherit" | "piped"): Promise<number> {
+  const child = spawn(cmd, args, {
+    cwd: ROOT,
+    stdio: ["inherit", stdout === "piped" ? "pipe" : "inherit", "inherit"],
+  });
+  // Build noise goes to stderr; stdout stays clean for test output.
+  child.stdout?.pipe(process.stderr);
+  return new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", (code) => resolve(code ?? 1));
+  });
+}
+
+const engine = resolveEngine();
 
 const buildCode = await run(
   engine,
-  ["build", "--build-arg", `DENO_VERSION=${denoVersion}`, "-t", IMAGE, "."],
+  ["build", "--build-arg", `BUN_VERSION=${bunVersion()}`, "-t", IMAGE, "."],
   "piped",
 );
 if (buildCode !== 0) {
-  Deno.exit(buildCode);
+  process.exit(buildCode);
 }
 
 // --network=none: the netns keeps loopback, so daemon lifecycle tests work,
 // while anything reaching for the real network fails loudly. The floated
 // lifecycle is the one mode that opts out - it exists precisely to exercise the
 // float against the live registry.
-const runArgs = ["run", "--rm"];
-const [first, ...rest] = Deno.args;
+// --init: a reaping pid 1, as a developer machine has. Without it the suite's own entry is
+// pid 1, and a killed child's orphans stay zombies that a signal-0 probe reads as alive.
+const runArgs = ["run", "--rm", "--init"];
+const [first, ...rest] = process.argv.slice(2);
 
 let command: string[];
 if (first === "--lifecycle") {
   runArgs.push("--network=none", "-e", "COPILOT_API_ENTRY=/work/test/copilot-api-fake.mjs");
-  command = [
-    "deno",
-    "run",
-    "--allow-env",
-    "--allow-read",
-    "--allow-sys=homedir,hostname",
-    "--allow-run",
-    ".github/scripts/lifecycle-smoke.ts",
-    ...rest,
-  ];
+  command = ["bun", ".github/scripts/lifecycle-smoke.ts", ...rest];
 } else if (first === "--floated-lifecycle") {
   // No COPILOT_API_ENTRY: `agent start` runs the REAL proxy, so this is the only run covering
   // the float and the daemon's production permission set end to end.
   for (const name of ["GH_TOKEN", "GITHUB_TOKEN", "COPILOT_GITHUB_TOKEN"]) {
-    const value = Deno.env.get(name);
+    const value = process.env[name];
     if (value) runArgs.push("-e", `${name}=${value}`);
   }
-  command = [
-    "deno",
-    "run",
-    "--allow-env",
-    "--allow-read",
-    "--allow-run=deno",
-    ".github/scripts/floated-smoke.ts",
-    ...rest,
-  ];
+  command = ["bun", ".github/scripts/floated-smoke.ts", ...rest];
 } else {
   runArgs.push("--network=none");
+  // The container's HOME is the throwaway one, so the *.e2e.test.ts files run here as in CI; the
+  // image's CMD carries the same opt-in for the whole suite.
   if (first !== undefined) {
-    command = ["deno", "test", "-P=test", first, ...rest];
+    command = ["bun", "run", "test", "--e2e", first, ...rest];
   } else {
     command = [];
   }
 }
 
-Deno.exit(await run(engine, [...runArgs, IMAGE, ...command], "inherit"));
+process.exit(await run(engine, [...runArgs, IMAGE, ...command], "inherit"));

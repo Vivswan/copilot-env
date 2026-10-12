@@ -3,6 +3,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
+import { isRecord } from "../../../src/utils/json.ts";
 import { writeFile } from "./cli.ts";
 import {
   CONTAINER_KEYS,
@@ -17,7 +18,6 @@ import {
   VERSION_KEYS,
   VERSION_RE,
 } from "./scrub_vocabulary.ts";
-import { isRecord } from "../../../src/utils/json.ts";
 import { ROLLOUT_FILE_RE, type Source, walkJsonl } from "./transcripts.ts";
 
 const PLACEHOLDER = "SCRUBBED";
@@ -39,9 +39,9 @@ export class IdMap {
   private digest(value: string, attempt: number, length: number): string {
     let hex = "";
     for (let block = 0; hex.length < length; block++) {
-      hex += createHash("sha256").update(`${this.salt}\n${attempt}\n${block}\n${value}`).digest(
-        "hex",
-      );
+      hex += createHash("sha256")
+        .update(`${this.salt}\n${attempt}\n${block}\n${value}`)
+        .digest("hex");
     }
     return hex;
   }
@@ -56,9 +56,10 @@ export class IdMap {
     if (UUID_RE.test(value)) {
       length = 32;
       shape = (h) =>
-        `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${
-          h.slice(20, 32)
-        }`;
+        `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(
+          20,
+          32,
+        )}`;
     } else {
       const m = PREFIXED_ID_RE.exec(value);
       if (m === null) return null;
@@ -68,7 +69,7 @@ export class IdMap {
       shape = (h) => `${prefix}${sep}${h.slice(0, length)}`;
     }
     let out: string;
-    for (let attempt = 0;; attempt++) {
+    for (let attempt = 0; ; attempt++) {
       out = shape(this.digest(value, attempt, length));
       if (out !== value && !this.assigned.has(out)) break;
     }
@@ -84,7 +85,7 @@ interface ScrubState {
 
 /** Fail-closed for strings and numbers: one not listed below is content and becomes its
  *  placeholder. Booleans, null, and the empty string pass through unchanged
- *  (test/usage/usage_corpus.test.ts pins a kept null).
+ *  (test/usage/usage_corpus.e2e.test.ts pins a kept null).
  *    string  -> a pseudonymized id; a timestamp or version under one of its keys; one of its
  *               key's closed enum values
  *    number  -> only DIRECTLY under a NUMERIC_KEYS key outside a container (an array element
@@ -129,7 +130,8 @@ function scrubValue(
       let outKey = k;
       if (!keep) {
         state.scrubbed++;
-        do outKey = `${PLACEHOLDER}_KEY_${ordinal++}`; while (outKey in value || outKey in out);
+        do outKey = `${PLACEHOLDER}_KEY_${ordinal++}`;
+        while (outKey in value || outKey in out);
       }
       out[outKey] = scrubValue(k, v, ids, state, nested || !keep);
     }
@@ -149,13 +151,18 @@ export interface ScrubbedText {
 
 /** An assistant record whose message carries a usage object: what the Claude reader prices. */
 export const isClaudeUsageLine = (record: unknown): boolean =>
-  isRecord(record) && record.type === "assistant" && isRecord(record.message) &&
+  isRecord(record) &&
+  record.type === "assistant" &&
+  isRecord(record.message) &&
   isRecord(record.message.usage);
 
 /** A token_count event carrying `last_token_usage`: what the Codex reader prices. */
 export const isCodexUsageLine = (record: unknown): boolean =>
-  isRecord(record) && record.type === "event_msg" && isRecord(record.payload) &&
-  record.payload.type === "token_count" && isRecord(record.payload.info) &&
+  isRecord(record) &&
+  record.type === "event_msg" &&
+  isRecord(record.payload) &&
+  record.payload.type === "token_count" &&
+  isRecord(record.payload.info) &&
   isRecord(record.payload.info.last_token_usage);
 
 /** Scrub one JSONL file's text; a line that is not JSON is replaced whole. */
@@ -176,11 +183,12 @@ export function scrubJsonl(
       parsed = JSON.parse(line);
     } catch {
       state.scrubbed++;
-      return JSON.stringify({ "scrubbed_unparseable_line": PLACEHOLDER });
+      return JSON.stringify({ scrubbed_unparseable_line: PLACEHOLDER });
     }
     if (isUsageLine(parsed)) usageLines++;
     if (
-      isRecord(parsed) && typeof parsed.timestamp === "string" &&
+      isRecord(parsed) &&
+      typeof parsed.timestamp === "string" &&
       ISO_TIMESTAMP_RE.test(parsed.timestamp)
     ) {
       minutes.add(parsed.timestamp.slice(0, "YYYY-MM-DDTHH:MM".length));
@@ -214,7 +222,7 @@ function scrubbedRelativePath(
     if (renamed === undefined) {
       const taken = new Set(segmentNames.values());
       // Never the raw segment itself (a user directory could be named like a placeholder).
-      for (let n = segmentNames.size + 1;; n++) {
+      for (let n = segmentNames.size + 1; ; n++) {
         renamed = index === 0 && source === "claude" ? `-scrubbed-cwd-${n}` : `scrubbed-${n}`;
         if (renamed !== segment && !taken.has(renamed)) break;
       }
@@ -223,33 +231,37 @@ function scrubbedRelativePath(
     return renamed;
   };
   const last = segments.length - 1;
-  return segments.map((segment, index) => {
-    if (source === "codex") {
-      const dateShape = index === 0 ? /^\d{4}$/ : /^\d{2}$/;
-      if (index < 3 && index < last && dateShape.test(segment)) return segment;
-      const rollout = index === last && index === 3 ? ROLLOUT_FILE_RE.exec(segment) : null;
-      if (rollout !== null) {
-        return `rollout-${rollout[1]}-${ids.pseudonym(rollout[2]!) ?? rollout[2]}.jsonl`;
+  return segments
+    .map((segment, index) => {
+      if (source === "codex") {
+        const dateShape = index === 0 ? /^\d{4}$/ : /^\d{2}$/;
+        if (index < 3 && index < last && dateShape.test(segment)) return segment;
+        const rollout = index === last && index === 3 ? ROLLOUT_FILE_RE.exec(segment) : null;
+        if (rollout !== null) {
+          return `rollout-${rollout[1]}-${ids.pseudonym(rollout[2]!) ?? rollout[2]}.jsonl`;
+        }
+        return rename(segment, index);
       }
-      return rename(segment, index);
-    }
-    if (index === 0) return rename(segment, index);
-    if (index === 1) {
-      const file = segment.endsWith(".jsonl") ? segment.slice(0, -".jsonl".length) : segment;
-      if (UUID_SEGMENT_RE.test(file)) {
-        return `${ids.pseudonym(file)}${segment.endsWith(".jsonl") ? ".jsonl" : ""}`;
+      if (index === 0) return rename(segment, index);
+      if (index === 1) {
+        const file = segment.endsWith(".jsonl") ? segment.slice(0, -".jsonl".length) : segment;
+        if (UUID_SEGMENT_RE.test(file)) {
+          return `${ids.pseudonym(file)}${segment.endsWith(".jsonl") ? ".jsonl" : ""}`;
+        }
+        return rename(segment, index);
       }
+      if (index === 2 && segment === "subagents" && index < last) return segment;
+      if (index === 3 && segment === "workflows" && index < last) return segment;
+      // An agent file sits right under subagents/ (index 3) or under a workflow name (index 5).
+      const agentPosition =
+        index === last &&
+        segments[2] === "subagents" &&
+        (index === 3 || (index === 5 && segments[3] === "workflows"));
+      const agent = agentPosition ? AGENT_FILE_RE.exec(segment) : null;
+      if (agent !== null) return `${ids.pseudonym(agent[1]!) ?? agent[1]}.jsonl`;
       return rename(segment, index);
-    }
-    if (index === 2 && segment === "subagents" && index < last) return segment;
-    if (index === 3 && segment === "workflows" && index < last) return segment;
-    // An agent file sits right under subagents/ (index 3) or under a workflow name (index 5).
-    const agentPosition = index === last && segments[2] === "subagents" &&
-      (index === 3 || (index === 5 && segments[3] === "workflows"));
-    const agent = agentPosition ? AGENT_FILE_RE.exec(segment) : null;
-    if (agent !== null) return `${ids.pseudonym(agent[1]!) ?? agent[1]}.jsonl`;
-    return rename(segment, index);
-  }).join("/");
+    })
+    .join("/");
 }
 
 export interface SourceSummary {

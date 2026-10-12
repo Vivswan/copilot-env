@@ -28,7 +28,6 @@ const NOT_KEYS = new Set([
   "claude.live",
   "codex.live",
   "proxy.package",
-  "proxy.sidecar",
   "proxy.resolved",
 ]);
 
@@ -46,8 +45,9 @@ function stringLiterals(source: string): string[] {
 }
 
 const KEYS: ReadonlySet<string> = new Set(CONFIG_REGISTRY.map((def) => def.key));
-const GROUPS = [...new Set(CONFIG_REGISTRY.map((def) => def.key.split(".")[0]))]
-  .filter((group) => CONFIG_REGISTRY.some((def) => def.key.startsWith(`${group}.`)));
+const GROUPS = [...new Set(CONFIG_REGISTRY.map((def) => def.key.split(".")[0]))].filter((group) =>
+  CONFIG_REGISTRY.some((def) => def.key.startsWith(`${group}.`)),
+);
 const DOTTED_KEY_SHAPE = new RegExp(
   `\\b(?:${GROUPS.join("|")})\\.[a-z][a-z-]*(?:\\.[a-z][a-z-]*)*\\b`,
   "g",
@@ -85,34 +85,40 @@ test("no source string spells an `agent config` hint by hand or names a dotted k
   // Negative controls: the scan sees what it is meant to see.
   expect(
     stringLiterals('x("agent config set daemon.port 4242")').join("").match(HAND_SPELLED_HINT),
-  )
-    .toEqual(["agent config set daemon.port"]);
-  expect('"agent profile work set identity copilot-developer-cli"'.match(HAND_SPELLED_HINT))
-    .toEqual(["agent profile work set identity"]);
-  expect('"agent profile 2work set identity auto"'.match(HAND_SPELLED_HINT))
-    .toEqual(["agent profile 2work set identity"]);
-  expect('"agent profile [<name>] set identity auto"'.match(HAND_SPELLED_HINT))
-    .toEqual(["agent profile [<name>] set identity"]);
-  expect('"agent profile <name> unset identity"'.match(HAND_SPELLED_HINT))
-    .toEqual(["agent profile <name> unset identity"]);
+  ).toEqual(["agent config set daemon.port"]);
   expect(
-    stringLiterals("w(`agent profile ${profile} set identity auto`)").join("").match(
-      HAND_SPELLED_HINT,
-    ),
-  )
-    .toEqual(["agent profile   set identity"]);
+    '"agent profile work set identity copilot-developer-cli"'.match(HAND_SPELLED_HINT),
+  ).toEqual(["agent profile work set identity"]);
+  expect('"agent profile 2work set identity auto"'.match(HAND_SPELLED_HINT)).toEqual([
+    "agent profile 2work set identity",
+  ]);
+  expect('"agent profile [<name>] set identity auto"'.match(HAND_SPELLED_HINT)).toEqual([
+    "agent profile [<name>] set identity",
+  ]);
+  expect('"agent profile <name> unset identity"'.match(HAND_SPELLED_HINT)).toEqual([
+    "agent profile <name> unset identity",
+  ]);
+  expect(
+    stringLiterals("w(`agent profile ${profile} set identity auto`)")
+      .join("")
+      .match(HAND_SPELLED_HINT),
+  ).toEqual(["agent profile   set identity"]);
   expect(stringLiterals("y(`(${key} on)`)").join("").match(DOTTED_KEY_SHAPE)).toBeNull();
-  expect(stringLiterals('z("(daemon.auto-stop on)")').join("").match(DOTTED_KEY_SHAPE))
-    .toEqual(["daemon.auto-stop"]);
+  expect(stringLiterals('z("(daemon.auto-stop on)")').join("").match(DOTTED_KEY_SHAPE)).toEqual([
+    "daemon.auto-stop",
+  ]);
   expect(KEYS.has("daemon.auto-stop")).toBe(false);
-  expect('"pinned via `agent config integration-id`"'.match(HAND_SPELLED_HINT))
-    .toEqual(["agent config integration-id"]);
+  expect('"pinned via `agent config integration-id`"'.match(HAND_SPELLED_HINT)).toEqual([
+    "agent config integration-id",
+  ]);
   expect('"usage: agent config set <key> <value>"'.match(HAND_SPELLED_HINT)).toBeNull();
-  expect('"agent profile [<name>] set|unset|get; agent config get"'.match(HAND_SPELLED_HINT))
-    .toBeNull();
+  expect(
+    '"agent profile [<name>] set|unset|get; agent config get"'.match(HAND_SPELLED_HINT),
+  ).toBeNull();
   expect('"agent profile work add --proxy"'.match(HAND_SPELLED_HINT)).toBeNull();
-  expect([...'"the `launchers` config key"'.matchAll(KEY_MENTION)].map((m) => m[1] ?? m[2]))
-    .toEqual(["launchers"]);
+  expect(
+    [...'"the `launchers` config key"'.matchAll(KEY_MENTION)].map((m) => m[1] ?? m[2]),
+  ).toEqual(["launchers"]);
   expect([...'"unknown config key"'.matchAll(KEY_MENTION)]).toEqual([]);
 });
 
@@ -130,8 +136,8 @@ function everyFile(dir: string): string[] {
 
 /** The old CLI spellings the 4.0.9 migration renames, from its own table; a spelling the rename kept
  *  (`passthrough`, `static-key`) is not old. */
-const OLD_KEY_NAMES = PREFERENCE_RENAMES.filter(([, cli, key]) => cli !== key).map(([, cli]) =>
-  cli
+const OLD_KEY_NAMES = PREFERENCE_RENAMES.filter(([, cli, key]) => cli !== key).map(
+  ([, cli]) => cli,
 );
 
 /** A key is cited in backticks, alone or with one value word (`` `codex-host` ``, `` `claude-desktop false` ``,
@@ -158,18 +164,21 @@ test("no source file, comments included, cites a config key by a spelling the 4.
   // Negative controls: the citation shapes are seen, a template literal's opening backtick and a
   // dotted or flag spelling are not, and the list really comes from the migration's table.
   expect("the `codex-host` key".match(OLD_KEY_CITATION)).toEqual(["`codex-host`"]);
-  expect(" *  --set update-cooldown N` takes effect".match(OLD_KEY_CITATION))
-    .toEqual(["--set update-cooldown"]);
-  expect("run `agent config --set update.cooldown 3` or pass `--port`".match(OLD_KEY_CITATION))
-    .toBeNull();
+  expect(" *  --set update-cooldown N` takes effect".match(OLD_KEY_CITATION)).toEqual([
+    "--set update-cooldown",
+  ]);
+  expect(
+    "run `agent config --set update.cooldown 3` or pass `--port`".match(OLD_KEY_CITATION),
+  ).toBeNull();
   expect("busy (\\`strict-port\\`); free it".match(OLD_KEY_CITATION)).toEqual([
     "\\`strict-port\\`",
   ]);
   expect("the `claude-desktop false` sweep".match(OLD_KEY_CITATION)).toEqual([
     "`claude-desktop false`",
   ]);
-  expect("`port ${def} is busy (`daemon.strict-port`); pass `--port`".match(OLD_KEY_CITATION))
-    .toBeNull();
+  expect(
+    "`port ${def} is busy (`daemon.strict-port`); pass `--port`".match(OLD_KEY_CITATION),
+  ).toBeNull();
   expect(OLD_KEY_NAMES).toContain("integration-id");
   expect(OLD_KEY_NAMES).not.toContain("passthrough");
 });

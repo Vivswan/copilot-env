@@ -1,12 +1,13 @@
 // The agent CLIs copilot-env installs (`agent shell --clis`) and probes (`agent health`), and
 // the npm/nvm/winget installer behind the install: Node.js and npm first, then each CLI to a
 // cooled-down or latest version, keeping a newer or non-npm install as it is.
-import { spawnSync, type SpawnSyncReturns } from "node:child_process";
+import { type SpawnSyncReturns, spawnSync } from "node:child_process";
 import { dirname } from "node:path";
 import { consola } from "consola";
 import { assertNever } from "../utils/assert.ts";
 import {
   childEnvWithPath,
+  cliSpawn,
   commandExists,
   findCommand,
   resolveCommand,
@@ -78,7 +79,7 @@ function warnMissing(command: string, name: string): void {
       );
       return;
     default:
-      return assertNever(look);
+      assertNever(look);
   }
 }
 
@@ -91,11 +92,12 @@ function refreshWindowsPath(): void {
         "-NoProfile",
         "-Command",
         "$machine=[Environment]::GetEnvironmentVariable('Path','Machine');" +
-        "$user=[Environment]::GetEnvironmentVariable('Path','User');" +
-        "($machine,$user,$env:Path) -join ';'",
+          "$user=[Environment]::GetEnvironmentVariable('Path','User');" +
+          "($machine,$user,$env:Path) -join ';'",
       ],
       { encoding: "utf8", env },
-    ));
+    ),
+  );
   if (result.status !== 0 || !result.stdout.trim()) {
     consola.warn("Could not refresh this process PATH after install.");
     return;
@@ -114,18 +116,19 @@ function addWindowsUserPath(directory: string): void {
         "-Command",
         // Stop, so a refused registry write exits non-zero before the report line can print.
         "$ErrorActionPreference='Stop';" +
-        `$dir=${quotePowerShell(directory)};` +
-        "$path=[Environment]::GetEnvironmentVariable('Path','User');" +
-        "$entries=@($path -split ';' | Where-Object { $_ });" +
-        "if ($entries -notcontains $dir) {" +
-        "[Environment]::SetEnvironmentVariable('Path', (($entries + $dir) -join ';'), 'User');" +
-        // A write outside copilot-env's homes: name it, as the execution-policy change does
-        // (src/shell/integration.ts), and only when it happened.
-        'Write-Host "Added $dir to the User PATH so new shells find npm\'s global bin."' +
-        "}",
+          `$dir=${quotePowerShell(directory)};` +
+          "$path=[Environment]::GetEnvironmentVariable('Path','User');" +
+          "$entries=@($path -split ';' | Where-Object { $_ });" +
+          "if ($entries -notcontains $dir) {" +
+          "[Environment]::SetEnvironmentVariable('Path', (($entries + $dir) -join ';'), 'User');" +
+          // A write outside copilot-env's homes: name it, as the execution-policy change does
+          // (src/shell/integration.ts), and only when it happened.
+          'Write-Host "Added $dir to the User PATH so new shells find npm\'s global bin."' +
+          "}",
       ],
       { stdio: ["ignore", "inherit", "inherit"], env },
-    ));
+    ),
+  );
   if (result.status !== 0) consola.warn(`Could not add npm global bin to user PATH: ${directory}`);
   refreshWindowsPath();
 }
@@ -243,9 +246,14 @@ function spawnNpm(args: string[], capture: boolean): SpawnSyncReturns<string> {
   //   npm's own dir        -> IS node's bin dir, so prepending it is the fix
   //   Windows              -> a bare name, nothing to prepend: npm is already on PATH
   const npmDir = npm.includes("/") || npm.includes("\\") ? dirname(npm) : null;
-  return spawnSync(npm, args, {
+  // bun, like node since CVE-2024-27980, refuses to spawn a batch shim such as npm.cmd without a
+  // shell (`spawnSync npm.cmd EINVAL`), hence the cliSpawn hop.
+  const s = cliSpawn(npm, args);
+  // nosemgrep: javascript.lang.security.audit.spawn-shell-true.spawn-shell-true -- Windows-only, for .cmd shims; the spec quotes args
+  return spawnSync(s.file, s.args, {
     encoding: "utf8",
     stdio: capture ? ["ignore", "pipe", "inherit"] : "inherit",
+    shell: s.shell,
     env: childEnvWithPath([npmDir]),
   });
 }
@@ -397,7 +405,7 @@ function installCli(
     case "absent":
       break;
     default:
-      return assertNever(look);
+      assertNever(look);
   }
   // npm's version bounds the install whether or not the command is on PATH (its bin dir may not
   // be).
@@ -409,9 +417,10 @@ function installCli(
     return;
   }
 
-  const target = options.cooldown !== null
-    ? resolveAgedVersion(cli.packageName, options.cooldown)
-    : resolveLatestVersion(cli.packageName);
+  const target =
+    options.cooldown !== null
+      ? resolveAgedVersion(cli.packageName, options.cooldown)
+      : resolveLatestVersion(cli.packageName);
   const spec = `${cli.packageName}@${target}`;
   const cooled = options.cooldown !== null ? `, cooled down >=${options.cooldown}d` : "";
   const plan = planCliVersion(installed ?? null, target);
@@ -446,16 +455,14 @@ function installCli(
       return;
     case "unproven":
       // The install itself succeeded; only the verifying look failed.
-      consola.warn(
-        `Could not verify ${cli.name} after install (the command probe failed to run).`,
-      );
+      consola.warn(`Could not verify ${cli.name} after install (the command probe failed to run).`);
       return;
     case "absent":
       throw new Error(
         `${cli.name} was installed but '${cli.command}' is still unavailable. Open a new shell and rerun 'agent shell --clis'.`,
       );
     default:
-      return assertNever(verify);
+      assertNever(verify);
   }
 }
 

@@ -8,21 +8,21 @@ import { dirname } from "node:path";
 import { jsonOutputReason, PROBE_TIMEOUT_MS, probeOutputLines } from "../agents/live_probe.ts";
 import { resolveClaudeHome } from "../claude/paths.ts";
 import { effectiveCodexHome } from "../codex/host.ts";
-import { assertNever } from "../utils/assert.ts";
 import {
+  type GhTokenLook,
   ghAccountsLookFromSpawn,
   ghAuthTokenLookAsync,
-  type GhTokenLook,
   runGhSpecAsync,
 } from "../copilot_api/credential.ts";
 import { activeGhLogin, ghAuthStatusSpawnSpec } from "../copilot_api/gh_cli.ts";
 import { classifyOwnedDaemonPid } from "../copilot_api/process.ts";
 import type { Profile } from "../copilot_api/profile.ts";
 import { shellTargetFiles } from "../shell/integration.ts";
+import { assertNever } from "../utils/assert.ts";
 import {
+  type CommandLook,
   childEnvWithPath,
   cliSpawn,
-  type CommandLook,
   findCommand,
   resolveCommand,
 } from "../utils/command.ts";
@@ -209,7 +209,8 @@ export function runLiveCli(
         kind: "failed",
         cli: resolved,
         detail: formatLiveFailure(null, null, e.message, out, err),
-      }));
+      }),
+    );
     child.on("close", (code, signal) => {
       if (code === 0 && launch.answered(out)) {
         resolve({ kind: "ok", cli: resolved });

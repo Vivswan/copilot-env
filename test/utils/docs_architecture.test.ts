@@ -1,13 +1,15 @@
 // The architecture page names real code: every mermaid box that starts a segment with a path
-// names a file that exists and, after it, only symbols that file exports (as `deno doc` reads
-// them); every concept diagram has a `Demonstrated by:` line whose links resolve to a test or a
+// names a file that exists and, after it, only symbols that file exports (as the parser reads
+// them, test/helpers/syntax.ts); every concept diagram has a `Demonstrated by:` line whose links resolve to a test or a
 // smoke scenario; the concept count is pinned; and the GENERATED module map equals a fresh render
 // of architecture.json. Existence only: a caption box is not checked, and a demonstration link is
 // checked to resolve, not to test its claim.
 
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { PROJECT_ROOT } from "../../src/utils/root.ts";
+import { exportedNames } from "../helpers/syntax.ts";
+import { expect, test } from "../helpers/testing.ts";
 import {
   GENERATED_BEGIN,
   GENERATED_END,
@@ -15,15 +17,13 @@ import {
   renderArchitectureMap,
   spliceGeneratedRegion,
 } from "../lint/architecture.ts";
-import { ROOT, runSync } from "../helpers/run.ts";
-import { expect, test } from "../helpers/testing.ts";
 
 const PAGE = join("docs", "architecture.md");
 /** Changes only when a concept diagram is added or removed on purpose: a fence a stray edit
  *  swallowed would otherwise vanish from every other check here. */
 const CONCEPT_DIAGRAMS = 7;
 
-const page = readFileSync(join(ROOT, PAGE), "utf8").replaceAll("\r\n", "\n").split("\n");
+const page = readFileSync(join(PROJECT_ROOT, PAGE), "utf8").replaceAll("\r\n", "\n").split("\n");
 
 interface Fence {
   /** Zero-based line of the opening fence. */
@@ -71,7 +71,7 @@ const concepts = fences.filter((fence) => fence.mermaid && !fence.generated);
 
 // --- labels ------------------------------------------------------------------
 
-const PATH_ROOTS = readdirSync(ROOT, { withFileTypes: true })
+const PATH_ROOTS = readdirSync(PROJECT_ROOT, { withFileTypes: true })
   .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
   .map((entry) => entry.name);
 const PATH_TOKEN = new RegExp(`^(?:${PATH_ROOTS.join("|")})/[\\w./-]+$`);
@@ -94,7 +94,10 @@ function readLabel(label: string): { claims: Claim[]; problems: string[] } {
   const problems: string[] = [];
   let bound: string | undefined;
   for (const segment of label.split("<br>")) {
-    const tokens = segment.trim().split(/[\s,]+/).filter((token) => token !== "");
+    const tokens = segment
+      .trim()
+      .split(/[\s,]+/)
+      .filter((token) => token !== "");
     const [head] = tokens;
     let path: string;
     let names: string[];
@@ -124,28 +127,10 @@ function readLabel(label: string): { claims: Claim[]; problems: string[] } {
   return { claims, problems };
 }
 
-interface DenoDoc {
-  nodes: Record<
-    string,
-    { symbols?: { name: string; declarations: { declarationKind: string }[] }[] }
-  >;
-}
-
-/** The exported names of each TypeScript file, as `deno doc --json` reads them: `export { a as b }`
- *  is b, `export * from` carries the target's names, a re-export keeps the exported name. */
-function exportedNames(files: readonly string[]): Map<string, Set<string>> {
-  const byFile = new Map<string, Set<string>>();
-  if (files.length === 0) return byFile;
-  const result = runSync(Deno.execPath(), ["doc", "--json", ...files], { cwd: ROOT });
-  if (result.exitCode !== 0) throw new Error(`deno doc failed: ${result.stderr}`);
-  for (const [url, entry] of Object.entries((JSON.parse(result.stdout) as DenoDoc).nodes)) {
-    const file = relative(ROOT, fileURLToPath(url)).replaceAll("\\", "/");
-    const names = (entry.symbols ?? [])
-      .filter((symbol) => symbol.declarations.some((d) => d.declarationKind === "export"))
-      .map((symbol) => symbol.name);
-    byFile.set(file, new Set(names));
-  }
-  return byFile;
+/** The exported names of each TypeScript file: `export { a as b }` is b, `export * from` carries
+ *  the target's names, a re-export keeps the exported name. */
+function exportsByFile(files: readonly string[]): Map<string, Set<string>> {
+  return new Map(files.map((file) => [file, exportedNames(join(PROJECT_ROOT, file))]));
 }
 
 // --- the tests -------------------------------------------------------------------
@@ -153,8 +138,7 @@ function exportedNames(files: readonly string[]): Map<string, Set<string>> {
 test("a caption reads as code only when a token is shaped like a repository path", () => {
   expect(
     readLabel("~/.codex/config.toml<br>GET https://api.github.com/copilot_internal/user").problems,
-  )
-    .toEqual([]);
+  ).toEqual([]);
   expect(readLabel("srcc/engine/x.ts").problems).toEqual([
     '"srcc/engine/x.ts": "srcc/engine/x.ts" looks like code but reads as a caption',
   ]);
@@ -179,7 +163,7 @@ test("every mermaid box names a file that exists and symbols it exports", () => 
     }
   }
   const present = claims.filter((claim) => {
-    if (existsSync(join(ROOT, claim.path))) return true;
+    if (existsSync(join(PROJECT_ROOT, claim.path))) return true;
     problems.push(`${claim.at}: "${claim.label}": ${claim.path} does not exist`);
     return false;
   });
@@ -190,7 +174,7 @@ test("every mermaid box names a file that exists and symbols it exports", () => 
         .map((claim) => claim.path),
     ),
   ];
-  const exports = exportedNames(modules);
+  const exports = exportsByFile(modules);
   for (const claim of present) {
     for (const symbol of claim.symbols) {
       if (!claim.path.endsWith(".ts")) {
@@ -208,10 +192,10 @@ test("every mermaid box names a file that exists and symbols it exports", () => 
 test("every concept diagram has a Demonstrated by line whose links resolve to tests", () => {
   const problems: string[] = [];
   const headings = text.flatMap((line, index) =>
-    line !== undefined && /^#/.test(line) ? [index] : []
+    line !== undefined && /^#/.test(line) ? [index] : [],
   );
   const demonstrations = text.flatMap((line, index) =>
-    line !== undefined && line.startsWith("Demonstrated by:") ? [index] : []
+    line !== undefined && line.startsWith("Demonstrated by:") ? [index] : [],
   );
   const claimed = new Set<number>();
   for (const fence of concepts) {
@@ -228,8 +212,8 @@ test("every concept diagram has a Demonstrated by line whose links resolve to te
     const links = [...(page[demo] ?? "").matchAll(/\]\(([^)]+)\)/g)].map((match) => match[1] ?? "");
     if (links.length === 0) problems.push(`${at}: the "Demonstrated by:" line links nothing`);
     for (const link of links) {
-      const file = resolve(ROOT, dirname(PAGE), link.split("#")[0] ?? "");
-      const rel = relative(ROOT, file).replaceAll("\\", "/");
+      const file = resolve(PROJECT_ROOT, dirname(PAGE), link.split("#")[0] ?? "");
+      const rel = relative(PROJECT_ROOT, file).replaceAll("\\", "/");
       if (!existsSync(file) || statSync(file).isDirectory()) {
         problems.push(`${at}: "${link}" names no file`);
       } else if (!/^(?:test\/[\w./-]+\.test\.ts|\.github\/scripts\/[\w.-]+-smoke\.ts)$/.test(rel)) {
@@ -247,7 +231,7 @@ test(`the page carries exactly ${CONCEPT_DIAGRAMS} concept diagrams`, () => {
 
 test("the generated module map equals a fresh render of architecture.json", () => {
   const current = page.join("\n");
-  const map = renderArchitectureMap(readArchitecture(ROOT));
+  const map = renderArchitectureMap(readArchitecture(PROJECT_ROOT));
   expect(spliceGeneratedRegion(current, map)).toBe(current);
   // A CRLF checkout renders back in CRLF, so `docs:arch --check` reports no drift there.
   const crlf = current.replaceAll("\n", "\r\n");

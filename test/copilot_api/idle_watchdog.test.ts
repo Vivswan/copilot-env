@@ -1,7 +1,6 @@
 import { configDefaultNumber } from "../../src/copilot_api/config_registry.ts";
+import { resetDaemonShutdownForTests } from "../../src/copilot_api/daemon_shutdown.ts";
 import { CopilotEnvConfig } from "../../src/copilot_api/env_config.ts";
-import { DAEMON_KEEP_PORT_ENV } from "../../src/copilot_api/paths.ts";
-import { CopilotEnvRunState } from "../../src/copilot_api/run_state.ts";
 import {
   armIdleWatchdog,
   defaultCheckIntervalMs,
@@ -11,14 +10,15 @@ import {
   isIdle,
   lastActivityMs,
 } from "../../src/copilot_api/idle_watchdog.ts";
-import { resetDaemonShutdownForTests } from "../../src/copilot_api/daemon_shutdown.ts";
 import {
   markInference,
   resetInferenceActivityForTests,
 } from "../../src/copilot_api/inference_activity.ts";
-import { afterEach, expect, test } from "../helpers/testing.ts";
+import { DAEMON_KEEP_PORT_ENV } from "../../src/copilot_api/paths.ts";
+import { CopilotEnvRunState } from "../../src/copilot_api/run_state.ts";
 import { envSnapshot, isolateProxyHome } from "../helpers/env.ts";
 import { writeRunState } from "../helpers/fixtures.ts";
+import { afterEach, expect, test } from "../helpers/testing.ts";
 
 const restoreEnv = envSnapshot([IDLE_TIMEOUT_ENV, DAEMON_KEEP_PORT_ENV]);
 
@@ -42,14 +42,14 @@ test("idleCheck: recent observed inference keeps a long-started daemon alive", (
   markInference(Date.now());
   // Stub the process-exit primitive the shared shutdown path calls, so a wrong
   // decision surfaces as a failure instead of ending the test run.
-  const realExit = Deno.exit;
-  Deno.exit = ((code?: number): never => {
+  const realExit = process.exit;
+  process.exit = ((code?: number): never => {
     throw new Error(`idleCheck unexpectedly stopped the daemon (${code})`);
-  }) as typeof Deno.exit;
+  }) as typeof process.exit;
   try {
     idleCheck(0, 60_000); // started at epoch, 1-minute window: only the mark is recent
   } finally {
-    Deno.exit = realExit;
+    process.exit = realExit;
   }
   expect(new CopilotEnvRunState().read().pid).toBe(process.pid); // never cleared -- the daemon stayed up
 });
@@ -72,21 +72,24 @@ test("idleCheck: with no activity past the window, clears run state and exits; k
     state.set({ pid: process.pid, port: 4242, lastEnsureAt: 1 });
     if (row.keepPort === undefined) delete process.env[DAEMON_KEEP_PORT_ENV];
     else process.env[DAEMON_KEEP_PORT_ENV] = row.keepPort;
-    const realExit = Deno.exit;
+    const realExit = process.exit;
     let exitCode: number | undefined = -1;
-    Deno.exit = ((code?: number): never => {
+    process.exit = ((code?: number): never => {
       exitCode = code;
-      throw new Error("exit"); // the shutdown path ends here, like the real Deno.exit
-    }) as typeof Deno.exit;
+      throw new Error("exit"); // the shutdown path ends here, like the real process.exit
+    }) as typeof process.exit;
     try {
       expect(() => idleCheck(2, 1), String(row.keepPort)).toThrow("exit");
     } finally {
-      Deno.exit = realExit;
+      process.exit = realExit;
     }
     expect(exitCode, String(row.keepPort)).toBe(0);
     const after = state.read();
-    expect({ ...row, pid: after.pid, lastEnsureAt: after.lastEnsureAt, port: after.port })
-      .toEqual({ ...row, pid: undefined, lastEnsureAt: undefined });
+    expect({ ...row, pid: after.pid, lastEnsureAt: after.lastEnsureAt, port: after.port }).toEqual({
+      ...row,
+      pid: undefined,
+      lastEnsureAt: undefined,
+    });
   }
 });
 
@@ -139,8 +142,8 @@ test("idleCheck: lifecycle OFF (auto-start unset) returns before touching run-st
   tmpHome();
   // auto-start unset disables the managed lifecycle, so idleCheck must disengage before clearIfPid.
   // idleCheck(0, 1) is long-idle with a 1ms timeout: without the OFF gate it would clearIfPid and
-  // call shutdownDaemon(0), whose Deno.exit the process.exit stub below does not intercept, so a
-  // broken gate ends the whole `deno test` run with code 0 rather than failing here.
+  // call shutdownDaemon(0), whose exit the process.exit stub below would turn into a thrown
+  // "exit", so a broken gate fails here rather than ending the file's run.
   expect(new CopilotEnvConfig().autoStartEnabled()).toBe(false);
   const state = new CopilotEnvRunState();
   state.set({ pid: process.pid, port: 4141, lastEnsureAt: 1 });
@@ -184,7 +187,7 @@ test("armIdleWatchdog: a timeout of 0 arms no timer; a positive one arms an unre
     globalThis.setInterval = ((): ReturnType<typeof realSetInterval> => {
       armed = true;
       return fakeTimer as unknown as ReturnType<typeof realSetInterval>;
-    }) as typeof realSetInterval;
+    }) as unknown as typeof realSetInterval;
     try {
       armIdleWatchdog();
     } finally {

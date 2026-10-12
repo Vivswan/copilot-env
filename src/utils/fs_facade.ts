@@ -10,10 +10,10 @@
 import { basename, dirname, join } from "node:path";
 import { isEnoentOrNotdir } from "./fs.ts";
 import * as disk from "./fs_disk.ts";
-import { openOverlay, type Overlay } from "./fs_overlay.ts";
+import { type Overlay, openOverlay } from "./fs_overlay.ts";
 import { underScratch } from "./report_write.ts";
 
-export type { DirEntry, EntryStats, RemoveOptions, ScratchDir, WriteOptions } from "./fs_disk.ts";
+export type { DirEntry, EntryStats, ScratchDir } from "./fs_disk.ts";
 export { assertNotDirectory, RenameRefusedError } from "./fs_disk.ts";
 
 let overlay: Overlay | null = null;
@@ -221,9 +221,9 @@ export function atomicSymlink(target: string, link: string): void {
 }
 
 /** A file opened for writing (created or truncated at the open): the one way runtime code streams
- *  bytes to a path (a release download, the daemon's log). A dry run has no handle to hand back
- *  and refuses outside scratch. */
-export function openWritable(path: string): Promise<Deno.FsFile> {
+ *  bytes to a path (a release download). A dry run has no handle to hand back and refuses outside
+ *  scratch. */
+export function openWritable(path: string): Promise<WritableStream<Uint8Array>> {
   refuseHandle(path);
   return disk.openWritable(path);
 }
@@ -234,8 +234,15 @@ export function openWriteFd(path: string): number {
   return disk.openWriteFd(path);
 }
 
+/** A file opened for streaming reads (a downloaded release's digest): the disk's, since a dry run
+ *  has no planned bytes to stream and refuses outside scratch. */
+export function openReadable(path: string): Promise<ReadableStream<Uint8Array>> {
+  refuseHandle(path);
+  return disk.openReadable(path);
+}
+
 function refuseHandle(path: string): void {
-  if (overlayFor(path) !== null) throw new Error(`${path}: a dry run opens no file for writing`);
+  if (overlayFor(path) !== null) throw new Error(`${path}: a dry run opens no file handle`);
 }
 
 /** A process-transient directory: real in every mode, never reported or planned, and taken away

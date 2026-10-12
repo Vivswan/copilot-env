@@ -1,8 +1,9 @@
 // Fixture lines spelled exactly the way the Codex and Claude CLIs write them, and the proxy's DB
 // the way the daemon writes it.
+
+import { Database } from "bun:sqlite";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { RUN_DIR_NAME, SQLITE_DB_FILENAME } from "../../src/copilot_api/paths.ts";
 
 // ---------- Codex ----------
@@ -10,11 +11,11 @@ import { RUN_DIR_NAME, SQLITE_DB_FILENAME } from "../../src/copilot_api/paths.ts
 /** A Codex TokenUsage object: input INCLUDES cached; output includes reasoning. */
 export function codexUsage(input: number, cached: number, output: number): Record<string, number> {
   return {
-    "input_tokens": input,
-    "cached_input_tokens": cached,
-    "output_tokens": output,
-    "reasoning_output_tokens": 0,
-    "total_tokens": input + output,
+    input_tokens: input,
+    cached_input_tokens: cached,
+    output_tokens: output,
+    reasoning_output_tokens: 0,
+    total_tokens: input + output,
   };
 }
 
@@ -29,16 +30,16 @@ export function sessionMeta(
 ): string {
   return rolloutLine(timestamp, "session_meta", {
     id,
-    "session_id": id,
+    session_id: id,
     timestamp,
     cwd: "/tmp",
-    ...(opts.provider !== undefined ? { "model_provider": opts.provider } : {}),
-    ...(opts.forkedFrom !== undefined ? { "forked_from_id": opts.forkedFrom } : {}),
+    ...(opts.provider !== undefined ? { model_provider: opts.provider } : {}),
+    ...(opts.forkedFrom !== undefined ? { forked_from_id: opts.forkedFrom } : {}),
   });
 }
 
 export function turnContext(timestamp: string, model: string): string {
-  return rolloutLine(timestamp, "turn_context", { "turn_id": "t", model, cwd: "/tmp" });
+  return rolloutLine(timestamp, "turn_context", { turn_id: "t", model, cwd: "/tmp" });
 }
 
 export function tokenCount(
@@ -48,8 +49,8 @@ export function tokenCount(
 ): string {
   return rolloutLine(timestamp, "event_msg", {
     type: "token_count",
-    info: { "total_token_usage": total, "last_token_usage": last, "model_context_window": 1000 },
-    "rate_limits": null,
+    info: { total_token_usage: total, last_token_usage: last, model_context_window: 1000 },
+    rate_limits: null,
   });
 }
 
@@ -87,10 +88,10 @@ export function claudeUsage(
   cacheCreation = 0,
 ): Record<string, unknown> {
   return {
-    "input_tokens": input,
-    "output_tokens": output,
-    "cache_read_input_tokens": cacheRead,
-    "cache_creation_input_tokens": cacheCreation,
+    input_tokens: input,
+    output_tokens: output,
+    cache_read_input_tokens: cacheRead,
+    cache_creation_input_tokens: cacheCreation,
   };
 }
 
@@ -119,9 +120,9 @@ export function writeProxyDb(home: string, host: string, rows: ProxyRow[]): stri
   const dir = join(home, RUN_DIR_NAME, host);
   mkdirSync(dir, { recursive: true });
   const path = join(dir, SQLITE_DB_FILENAME);
-  const db = new DatabaseSync(path);
+  const db = new Database(path);
   try {
-    db.exec(`CREATE TABLE token_usage_events (
+    db.run(`CREATE TABLE token_usage_events (
       model TEXT NOT NULL,
       input_tokens INTEGER,
       output_tokens INTEGER,
@@ -143,7 +144,7 @@ export function writeProxyDb(home: string, host: string, rows: ProxyRow[]): stri
       );
     }
   } finally {
-    db.close();
+    db.close(true);
   }
   return path;
 }

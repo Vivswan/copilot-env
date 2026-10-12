@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { parse as parseYaml } from "@std/yaml";
 import * as v from "valibot";
 import { canonicalPricingUrl } from "../copilot_api/config_registry.ts";
+import type { ProbeFetch } from "../copilot_api/integration_identity.ts";
 import { usageIndexDir } from "../copilot_api/paths.ts";
 import { errMessage } from "../utils/error.ts";
 import * as fs from "../utils/fs_facade.ts";
@@ -26,7 +27,7 @@ const NOT_APPLICABLE = "Not applicable";
 
 /** Prompts (input plus cached input) above `promptTokens` bill at `tier`; a rate the tier leaves
  *  out keeps the model's base rate. */
-export interface LongContextTier {
+interface LongContextTier {
   promptTokens: number;
   tier: PricingTier;
 }
@@ -49,15 +50,15 @@ export interface RateCardSource {
  *  from the OpenRouter list alone. */
 export type LoadedRateCard =
   | {
-    kind: "card";
-    card: GitHubRateCard;
-    from: RateCardSource;
-    /** Why today's card was not read (the run then prices from `card`, the last good one); absent
-     *  when it was. */
-    problem?: string;
-    /** Set when a fetched card could not be persisted: the next run fetches again. */
-    cacheWriteError?: string;
-  }
+      kind: "card";
+      card: GitHubRateCard;
+      from: RateCardSource;
+      /** Why today's card was not read (the run then prices from `card`, the last good one); absent
+       *  when it was. */
+      problem?: string;
+      /** Set when a fetched card could not be persisted: the next run fetches again. */
+      cacheWriteError?: string;
+    }
   | { kind: "none"; problem: string };
 
 /** The card's display names and the OpenRouter id each one prices. `null` marks a row for an
@@ -252,7 +253,7 @@ export function parseRateCard(text: string): GitHubRateCard {
 
 /** Errors are fixed text (plus a numeric HTTP status), never the transport's: a custom URL may carry
  *  credentials. */
-async function fetchRateCardText(url: string, fetchImpl: typeof fetch): Promise<string> {
+async function fetchRateCardText(url: string, fetchImpl: ProbeFetch): Promise<string> {
   const timeout = AbortSignal.timeout(FETCH_TIMEOUT_MS);
   let res: Response;
   try {
@@ -289,7 +290,7 @@ export async function loadGitHubRateCard(
     cacheDir?: string;
     nowMs?: number;
     ttlMs?: number;
-    fetchImpl?: typeof fetch;
+    fetchImpl?: ProbeFetch;
   } = {},
 ): Promise<LoadedRateCard> {
   const nowMs = opts.nowMs ?? Date.now();
@@ -329,26 +330,26 @@ function sha256Hex(text: string): string {
 
 const RATE_SCHEMA = v.optional(v.pipe(v.number(), v.finite(), v.minValue(0)));
 const TIER_SCHEMA = v.strictObject({
-  "input": RATE_SCHEMA,
-  "output": RATE_SCHEMA,
-  "cacheRead": RATE_SCHEMA,
-  "cacheCreation": RATE_SCHEMA,
+  input: RATE_SCHEMA,
+  output: RATE_SCHEMA,
+  cacheRead: RATE_SCHEMA,
+  cacheCreation: RATE_SCHEMA,
 });
 
 // The URL is stored as a digest only. The quoted snake_case keys are the on-disk contract; the
 // record is this program's own and is read back as written.
 const CACHE_RECORD_SCHEMA = v.strictObject({
-  "url_sha256": v.string(),
-  "fetched_at_ms": v.pipe(v.number(), v.finite()),
-  "rates": v.record(v.string(), TIER_SCHEMA),
-  "long_context": v.record(
+  url_sha256: v.string(),
+  fetched_at_ms: v.pipe(v.number(), v.finite()),
+  rates: v.record(v.string(), TIER_SCHEMA),
+  long_context: v.record(
     v.string(),
     v.strictObject({
-      "prompt_tokens": v.pipe(v.number(), v.integer(), v.minValue(1)),
-      "tier": TIER_SCHEMA,
+      prompt_tokens: v.pipe(v.number(), v.integer(), v.minValue(1)),
+      tier: TIER_SCHEMA,
     }),
   ),
-  "unmapped": v.array(v.string()),
+  unmapped: v.array(v.string()),
 });
 
 /** A file written for another URL, not JSON, or not this record reads as absent. */
@@ -367,10 +368,13 @@ function readRateCardCache(
     card: {
       rates: new Map(Object.entries(record.rates)),
       longContext: new Map(
-        Object.entries(record.long_context).map(([id, long]) => [id, {
-          promptTokens: long.prompt_tokens,
-          tier: long.tier,
-        }]),
+        Object.entries(record.long_context).map(([id, long]) => [
+          id,
+          {
+            promptTokens: long.prompt_tokens,
+            tier: long.tier,
+          },
+        ]),
       ),
       unmapped: record.unmapped,
     },
@@ -384,16 +388,19 @@ function writeRateCardCache(
   card: GitHubRateCard,
 ): void {
   const record: v.InferOutput<typeof CACHE_RECORD_SCHEMA> = {
-    "url_sha256": urlDigest,
-    "fetched_at_ms": fetchedAtMs,
-    "rates": Object.fromEntries(card.rates),
-    "long_context": Object.fromEntries(
-      [...card.longContext].map(([id, long]) => [id, {
-        "prompt_tokens": long.promptTokens,
-        "tier": long.tier,
-      }]),
+    url_sha256: urlDigest,
+    fetched_at_ms: fetchedAtMs,
+    rates: Object.fromEntries(card.rates),
+    long_context: Object.fromEntries(
+      [...card.longContext].map(([id, long]) => [
+        id,
+        {
+          prompt_tokens: long.promptTokens,
+          tier: long.tier,
+        },
+      ]),
     ),
-    "unmapped": [...card.unmapped],
+    unmapped: [...card.unmapped],
   };
   fs.writeText(path, `${JSON.stringify(record)}\n`, { secretKeys: [] });
 }

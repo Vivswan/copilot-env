@@ -1,6 +1,11 @@
 // `agent credits`: the response fold, the month's pace
 // against a target, and the rendered block, all against fixed clocks so the
 // numbers are exact.
+
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { runCredits, runCreditsEverywhere } from "../../src/commands/credits.ts";
+import type { CopilotEnvConfig } from "../../src/copilot_api/env_config.ts";
 import {
   type CopilotCredits,
   CREDITS_TARGET_ENV,
@@ -11,19 +16,15 @@ import {
   renderCredits,
   resolveCreditsTarget,
 } from "../../src/usage/credits.ts";
-import { runCredits, runCreditsEverywhere } from "../../src/commands/credits.ts";
-import { CopilotEnvConfig } from "../../src/copilot_api/env_config.ts";
+import { envSnapshot, isolateProxyHome } from "../helpers/env.ts";
 import { captureChannels } from "../helpers/output.ts";
 import { describe, expect, test } from "../helpers/testing.ts";
-import { envSnapshot, isolateProxyHome } from "../helpers/env.ts";
-import { writeFileSync } from "node:fs";
-import { join } from "node:path";
 
 const BODY = {
-  "login": "octocat",
-  "quota_reset_date": "2026-10-01",
-  "quota_snapshots": {
-    "premium_interactions": { "entitlement": 10_000_000, "credits_used": 2_374_638 },
+  login: "octocat",
+  quota_reset_date: "2026-10-01",
+  quota_snapshots: {
+    premium_interactions: { entitlement: 10_000_000, credits_used: 2_374_638 },
   },
 };
 const CREDITS: CopilotCredits = {
@@ -37,37 +38,37 @@ const NOON_SEP_11 = Date.UTC(2026, 8, 11, 12);
 describe("parseCopilotCredits", () => {
   test("reads the metered quota, used count, reset date, and login; names the missing or malformed field", () => {
     expect(parseCopilotCredits(BODY)).toEqual(CREDITS);
-    expect(parseCopilotCredits({ ...BODY, "login": undefined }).login).toBeNull();
+    expect(parseCopilotCredits({ ...BODY, login: undefined }).login).toBeNull();
 
     // The endpoint is undocumented: a shape it stops matching is named, not guessed at.
     const malformed: [unknown, string][] = [
       [null, "not a JSON object"],
-      [{ ...BODY, "quota_snapshots": {} }, "no metered premium_interactions quota"],
+      [{ ...BODY, quota_snapshots: {} }, "no metered premium_interactions quota"],
       [
         {
           ...BODY,
-          "quota_snapshots": { "premium_interactions": { "entitlement": 0, "credits_used": 1 } },
+          quota_snapshots: { premium_interactions: { entitlement: 0, credits_used: 1 } },
         },
         "no metered",
       ],
       [
         {
           ...BODY,
-          "quota_snapshots": { "premium_interactions": { "entitlement": 5, "credits_used": -1 } },
+          quota_snapshots: { premium_interactions: { entitlement: 5, credits_used: -1 } },
         },
         "credits_used",
       ],
       [
         {
           ...BODY,
-          "quota_snapshots": {
-            "premium_interactions": { "entitlement": 5, "credits_used": 1e400 },
+          quota_snapshots: {
+            premium_interactions: { entitlement: 5, credits_used: Number.POSITIVE_INFINITY },
           },
         },
         "credits_used",
       ],
-      [{ ...BODY, "quota_reset_date": "2026-02-30" }, "quota_reset_date"],
-      [{ ...BODY, "quota_reset_date": "next month" }, "quota_reset_date"],
+      [{ ...BODY, quota_reset_date: "2026-02-30" }, "quota_reset_date"],
+      [{ ...BODY, quota_reset_date: "next month" }, "quota_reset_date"],
     ];
     for (const [body, needle] of malformed) {
       expect(() => parseCopilotCredits(body), JSON.stringify(body)).toThrow(needle);
@@ -83,7 +84,8 @@ describe("fetchCopilotCredits", () => {
       return Promise.resolve(new Response(JSON.stringify(BODY), { status: 200 }));
     });
     expect(ok).toEqual(CREDITS);
-    expect((seen?.headers as Record<string, string>).Authorization).toBe("token tok");
+    const headers = seen?.headers as Record<string, string> | undefined;
+    expect(headers?.Authorization).toBe("token tok");
     await expect(
       fetchCopilotCredits("tok", () => Promise.resolve(new Response("", { status: 401 }))),
     ).rejects.toThrow("returned 401");
@@ -112,7 +114,7 @@ describe("creditsPace", () => {
         elapsed: 10.5 / 30,
         targetMark: 2_800_000,
         totalMark: 3_500_000,
-        projected: Math.round(2_374_638 / 10.5 * 30),
+        projected: Math.round((2_374_638 / 10.5) * 30),
       },
     },
     {
@@ -190,8 +192,7 @@ describe("renderCredits", () => {
       ],
     },
     {
-      name:
-        "without a target there is no target bar, row, or marker, and the projection is judged against the entitlement",
+      name: "without a target there is no target bar, row, or marker, and the projection is judged against the entitlement",
       credits: CREDITS,
       target: null,
       nowMs: NOON_SEP_11,
@@ -208,8 +209,7 @@ describe("renderCredits", () => {
       ],
     },
     {
-      name:
-        "with nothing elapsed there is no projection: bars carry only the spend, the row a dash",
+      name: "with nothing elapsed there is no projection: bars carry only the spend, the row a dash",
       credits: CREDITS,
       target: 8_000_000,
       nowMs: Date.UTC(2026, 8, 1),
@@ -232,7 +232,10 @@ describe("renderCredits", () => {
       credits: { ...CREDITS, used: 9_000_000 },
       target: 8_000_000,
       nowMs: NOON_SEP_11,
-      cells: [[3, "#>"], [8, "✗ +"]],
+      cells: [
+        [3, "#>"],
+        [8, "✗ +"],
+      ],
     },
     {
       name: "a target above the entitlement is said so in the legend",
@@ -280,14 +283,14 @@ describe("runCredits", () => {
   test("prints the block for the resolved credential, or the JSON with --json; no credential is the command's error, worded by the credential's own reason", async () => {
     const credential = () => ({ token: "tok", reason: null });
     const block = await captureChannels(() =>
-      runCredits({ creditsTarget: "8000000" }, { fetchImpl, credential, nowMs })
+      runCredits({ creditsTarget: "8000000" }, { fetchImpl, credential, nowMs }),
     );
     expect(block.stdout.split("\n")[0]).toBe(
       "Copilot credits  octocat · Sep 2026 · resets Oct 1 · day 11/30",
     );
     expect(block.stdout).toContain("  target      8,000,000");
     const json = await captureChannels(() =>
-      runCredits({ json: true, creditsTarget: "8000000" }, { fetchImpl, credential, nowMs })
+      runCredits({ json: true, creditsTarget: "8000000" }, { fetchImpl, credential, nowMs }),
     );
     expect(JSON.parse(json.stdout)).toMatchObject({ target: 8_000_000, resetDate: "2026-10-01" });
 
@@ -336,7 +339,7 @@ describe("runCreditsEverywhere", () => {
         return Promise.resolve(new Response(JSON.stringify(BODY), { status: 200 }));
       };
       const out = await captureChannels(() =>
-        runCreditsEverywhere({ json: true }, { fetchImpl, credential, nowMs })
+        runCreditsEverywhere({ json: true }, { fetchImpl, credential, nowMs }),
       );
       // Two distinct tokens, two fetches; the endpoint names one login for both, so one meter.
       expect(fetched).toEqual(["token tok-default", "token tok-other-token-same-login"]);
@@ -346,7 +349,7 @@ describe("runCreditsEverywhere", () => {
       expect(out.stderr).toContain("profile 'c': no GitHub credential configured for profile 'c'");
 
       const text = await captureChannels(() =>
-        runCreditsEverywhere({}, { fetchImpl, credential, nowMs })
+        runCreditsEverywhere({}, { fetchImpl, credential, nowMs }),
       );
       expect(text.stdout.split("\n").slice(0, 2)).toEqual([
         "profiles: default, a, b",
@@ -360,25 +363,29 @@ describe("runCreditsEverywhere", () => {
       const perToken = () => {
         call += 1;
         const login = `user-${call}`;
-        const body = new Response(JSON.stringify({ ...BODY, "login": login }), { status: 200 });
+        const body = new Response(JSON.stringify({ ...BODY, login: login }), { status: 200 });
         return call === 1
           ? new Promise<Response>((resolve) => setTimeout(() => resolve(body), 20))
           : Promise.resolve(body);
       };
       const two = await captureChannels(() =>
-        runCreditsEverywhere({ json: true }, { fetchImpl: perToken, credential, nowMs })
+        runCreditsEverywhere({ json: true }, { fetchImpl: perToken, credential, nowMs }),
       );
       expect(
         (JSON.parse(two.stdout) as { profiles: string[]; login: string }[]).map((m) => [
           m.login,
           ...m.profiles,
         ]),
-      ).toEqual([["user-1", "default", "b"], ["user-2", "a"]]);
+      ).toEqual([
+        ["user-1", "default", "b"],
+        ["user-2", "a"],
+      ]);
 
       // Nothing resolving is the command's error.
       const none = () => ({ token: null, reason: "no credential" });
-      await expect(runCreditsEverywhere({}, { fetchImpl, credential: none, nowMs })).rejects
-        .toThrow("no profile has a credential that resolves");
+      await expect(
+        runCreditsEverywhere({}, { fetchImpl, credential: none, nowMs }),
+      ).rejects.toThrow("no profile has a credential that resolves");
     } finally {
       restoreEnv();
     }

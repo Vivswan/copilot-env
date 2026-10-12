@@ -18,7 +18,7 @@ import {
   generateUsageTree,
 } from "../helpers/usage_fixtures.ts";
 
-const PINNED_CORPUS_DIGEST = "6b772b285c440909add90b3ff7a438833c664a89a585475b1802ef9b0dd8b5b0";
+const PINNED_CORPUS_DIGEST = "5e66f4e3ef8450b06883a725b14e90d335321bf7f6891908f0f9fb1230540fbc";
 
 /** The ledger with its raw model ids folded onto the readers' canonical spelling. */
 function canonical(report: ExpectedReport): ExpectedReport {
@@ -29,13 +29,15 @@ function canonical(report: ExpectedReport): ExpectedReport {
       const prev = out.get(key);
       out.set(
         key,
-        prev === undefined ? { ...u } : {
-          input: prev.input + u.input,
-          output: prev.output + u.output,
-          cacheRead: prev.cacheRead + u.cacheRead,
-          cacheCreation: prev.cacheCreation + u.cacheCreation,
-          events: prev.events + u.events,
-        },
+        prev === undefined
+          ? { ...u }
+          : {
+              input: prev.input + u.input,
+              output: prev.output + u.output,
+              cacheRead: prev.cacheRead + u.cacheRead,
+              cacheCreation: prev.cacheCreation + u.cacheCreation,
+              events: prev.events + u.events,
+            },
       );
     }
     return out;
@@ -71,10 +73,12 @@ function byModel(report: ReadonlyUsageTotals): Record<string, unknown> {
 
 function perDay(report: ReadonlyUsageTotals): Record<string, Record<string, unknown>> {
   return Object.fromEntries(
-    [...report.perDay].sort(([a], [b]) => a.localeCompare(b)).map(([day, models]) => [
-      day,
-      Object.fromEntries([...models].sort(([a], [b]) => a.localeCompare(b))),
-    ]),
+    [...report.perDay]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([day, models]) => [
+        day,
+        Object.fromEntries([...models].sort(([a], [b]) => a.localeCompare(b))),
+      ]),
   );
 }
 
@@ -98,86 +102,89 @@ function expectLedgerMatch(tree: GeneratedTree, got: Awaited<ReturnType<typeof r
 /** The JSONL lines of the first file of `source` whose text carries `needle`. */
 function linesOf(tree: GeneratedTree, source: "codex" | "claude", needle: string) {
   const file = tree.files.find((f) => f.source === source && textOf(f.path).includes(needle))!;
-  const lines = readFileSync(file.path, "utf8").split("\n").filter((l) => l !== "");
+  const lines = readFileSync(file.path, "utf8")
+    .split("\n")
+    .filter((l) => l !== "");
   return { file, lines, at: lines.findIndex((l) => l.includes(needle)) };
 }
 
-test(
-  "generateUsageTree writes the pinned bytes, and the readers return exactly its ledger",
-  async () => {
-    // The cross-OS pin: one seed, one digest over every file's relative path and bytes.
-    const pinnedRoot = tempDir("usage-fixtures-");
-    const pinned = await generateUsageTree({ root: pinnedRoot, mb: 1, seed: 7, days: 5 });
-    const hash = createHash("sha256");
-    for (
-      const entry of pinned.files
-        .map((f) => ({ rel: relative(pinnedRoot, f.path).replaceAll("\\", "/"), path: f.path }))
-        .sort((a, b) => (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0))
-    ) {
-      hash.update(`${entry.rel}\n`);
-      hash.update(readFileSync(entry.path));
-    }
-    expect(hash.digest("hex")).toBe(PINNED_CORPUS_DIGEST);
+test("generateUsageTree writes the pinned bytes, and the readers return exactly its ledger", async () => {
+  // The cross-OS pin: one seed, one digest over every file's relative path and bytes. A `.zst`
+  // member is hashed decompressed: every zstd encoder (deno's, bun's, the next runtime's) emits
+  // its own bytes for the same input, and the readers see only the inflated content.
+  const pinnedRoot = tempDir("usage-fixtures-");
+  const pinned = await generateUsageTree({ root: pinnedRoot, mb: 1, seed: 7, days: 5 });
+  const hash = createHash("sha256");
+  for (const entry of pinned.files
+    .map((f) => ({ rel: relative(pinnedRoot, f.path).replaceAll("\\", "/"), path: f.path }))
+    .sort((a, b) => (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0))) {
+    hash.update(`${entry.rel}\n`);
+    hash.update(
+      entry.rel.endsWith(".zst")
+        ? zstdDecompressSync(readFileSync(entry.path))
+        : readFileSync(entry.path),
+    );
+  }
+  expect(hash.digest("hex")).toBe(PINNED_CORPUS_DIGEST);
 
-    // The drift canary: an adversarial tree (forks, an archived duplicate, repeated counts,
-    // resumes, a torn tail, pasted needles) reads back as exactly what the ledger booked,
-    // with more than one day and more than one provider in play.
-    const tree = await generateUsageTree({
-      root: tempDir("usage-fixtures-"),
-      mb: 5,
-      seed: 20260904,
-    });
-    expect(discoverCodexSessionRoots([tree.codexRoot]).length).toBe(2);
-    const got = await readBack(tree);
-    expectLedgerMatch(tree, got);
-    expect([...got.codex.values()].some((r) => r.perDay.size > 1)).toBe(true);
-    expect(got.claude.perDay.size).toBeGreaterThan(1);
+  // The drift canary: an adversarial tree (forks, an archived duplicate, repeated counts,
+  // resumes, a torn tail, pasted needles) reads back as exactly what the ledger booked,
+  // with more than one day and more than one provider in play.
+  const tree = await generateUsageTree({
+    root: tempDir("usage-fixtures-"),
+    mb: 5,
+    seed: 20260904,
+  });
+  expect(discoverCodexSessionRoots([tree.codexRoot]).length).toBe(2);
+  const got = await readBack(tree);
+  expectLedgerMatch(tree, got);
+  expect([...got.codex.values()].some((r) => r.perDay.size > 1)).toBe(true);
+  expect(got.claude.perDay.size).toBeGreaterThan(1);
 
-    // The oracle bites, three ways, on a plain tree: a raised Claude snapshot and an extra
-    // Codex count move the roll-ups; a message moved a day later leaves the roll-up alone
-    // and moves the per-day split.
-    const plain = await generateUsageTree({
-      root: tempDir("usage-fixtures-"),
-      mb: 2,
-      seed: 11,
-      adversarial: false,
-    });
-    expectLedgerMatch(plain, await readBack(plain));
-    const claude = linesOf(plain, "claude", '"type":"assistant"');
-    const raised = JSON.parse(claude.lines[claude.at]!) as {
-      "message": { "usage": { "output_tokens": number } };
-    };
-    raised.message.usage.output_tokens += 1_000;
-    writeFileSync(claude.file.path, `${[...claude.lines, JSON.stringify(raised)].join("\n")}\n`);
-    const codex = linesOf(plain, "codex", '"token_count"');
-    const extra = JSON.parse(codex.lines[codex.at]!) as {
-      "payload": { "info": { "total_token_usage": { "total_tokens": number } } };
-    };
-    extra.payload.info.total_token_usage.total_tokens += 1;
-    writeFileSync(codex.file.path, `${[...codex.lines, JSON.stringify(extra)].join("\n")}\n`);
-    const tampered = await readBack(plain);
-    expect(byModel(tampered.claude)).not.toEqual(byModel(canonical(plain.expected.claude)));
-    expect(
-      [...plain.expected.codex].some(([provider, expected]) =>
+  // The oracle bites, three ways, on a plain tree: a raised Claude snapshot and an extra
+  // Codex count move the roll-ups; a message moved a day later leaves the roll-up alone
+  // and moves the per-day split.
+  const plain = await generateUsageTree({
+    root: tempDir("usage-fixtures-"),
+    mb: 2,
+    seed: 11,
+    adversarial: false,
+  });
+  expectLedgerMatch(plain, await readBack(plain));
+  const claude = linesOf(plain, "claude", '"type":"assistant"');
+  const raised = JSON.parse(claude.lines[claude.at]!) as {
+    message: { usage: { output_tokens: number } };
+  };
+  raised.message.usage.output_tokens += 1_000;
+  writeFileSync(claude.file.path, `${[...claude.lines, JSON.stringify(raised)].join("\n")}\n`);
+  const codex = linesOf(plain, "codex", '"token_count"');
+  const extra = JSON.parse(codex.lines[codex.at]!) as {
+    payload: { info: { total_token_usage: { total_tokens: number } } };
+  };
+  extra.payload.info.total_token_usage.total_tokens += 1;
+  writeFileSync(codex.file.path, `${[...codex.lines, JSON.stringify(extra)].join("\n")}\n`);
+  const tampered = await readBack(plain);
+  expect(byModel(tampered.claude)).not.toEqual(byModel(canonical(plain.expected.claude)));
+  expect(
+    [...plain.expected.codex].some(
+      ([provider, expected]) =>
         JSON.stringify(byModel(tampered.codex.get(provider)!)) !==
-          JSON.stringify(byModel(canonical(expected)))
-      ),
-    ).toBe(true);
+        JSON.stringify(byModel(canonical(expected))),
+    ),
+  ).toBe(true);
 
-    const shifted = await generateUsageTree({
-      root: tempDir("usage-fixtures-"),
-      mb: 2,
-      seed: 11,
-      adversarial: false,
-    });
-    const target = linesOf(shifted, "claude", '"type":"assistant"');
-    const moved = JSON.parse(target.lines[target.at]!) as { timestamp: string };
-    moved.timestamp = new Date(Date.parse(moved.timestamp) + MILLISECONDS_PER_DAY).toISOString();
-    target.lines[target.at] = JSON.stringify(moved);
-    writeFileSync(target.file.path, `${target.lines.join("\n")}\n`);
-    const day = await readBack(shifted);
-    expect(byModel(day.claude)).toEqual(byModel(canonical(shifted.expected.claude)));
-    expect(perDay(day.claude)).not.toEqual(perDay(canonical(shifted.expected.claude)));
-  },
-  120_000,
-);
+  const shifted = await generateUsageTree({
+    root: tempDir("usage-fixtures-"),
+    mb: 2,
+    seed: 11,
+    adversarial: false,
+  });
+  const target = linesOf(shifted, "claude", '"type":"assistant"');
+  const moved = JSON.parse(target.lines[target.at]!) as { timestamp: string };
+  moved.timestamp = new Date(Date.parse(moved.timestamp) + MILLISECONDS_PER_DAY).toISOString();
+  target.lines[target.at] = JSON.stringify(moved);
+  writeFileSync(target.file.path, `${target.lines.join("\n")}\n`);
+  const day = await readBack(shifted);
+  expect(byModel(day.claude)).toEqual(byModel(canonical(shifted.expected.claude)));
+  expect(perDay(day.claude)).not.toEqual(perDay(canonical(shifted.expected.claude)));
+}, 120_000);

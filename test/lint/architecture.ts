@@ -5,8 +5,8 @@
 //   a declared edge no file draws                   -> "stale allowance"
 //   a graph file no layer owns                      -> "belongs to no layer"
 //
-// The import graph itself comes from deno (`deno info --json`, test/utils/architecture.test.ts), so an
-// edge is exactly what deno resolves: static, type-only, re-export, side-effect, and
+// The import graph itself is read from syntax (test/helpers/syntax.ts, by test/utils/architecture.test.ts),
+// so an edge is every specifier a file names: static, type-only, re-export, side-effect, and
 // string-literal dynamic imports alike. Imports inside one layer are not edges.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -32,8 +32,12 @@ function isStringList(value: unknown): value is string[] {
 }
 
 function isStringListRecord(value: unknown): value is Record<string, string[]> {
-  return typeof value === "object" && value !== null && !Array.isArray(value) &&
-    Object.values(value).every(isStringList);
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Object.values(value).every(isStringList)
+  );
 }
 
 /** The declaration under `root`, shape-checked: a typo in a layer name under `edges`, or two layers
@@ -61,12 +65,13 @@ export function readArchitecture(root: string): Architecture {
     }
   }
   const owned = Object.entries(layers).flatMap(([layer, paths]) =>
-    paths.map((path) => ({ layer, path }))
+    paths.map((path) => ({ layer, path })),
   );
   for (const [i, a] of owned.entries()) {
     for (const b of owned.slice(i + 1)) {
       if (a.layer === b.layer) continue;
-      const overlap = a.path === b.path ||
+      const overlap =
+        a.path === b.path ||
         (a.path.endsWith("/") && b.path.startsWith(a.path)) ||
         (b.path.endsWith("/") && a.path.startsWith(b.path));
       if (overlap) {
@@ -80,7 +85,7 @@ export function readArchitecture(root: string): Architecture {
 }
 
 function owns(paths: readonly string[], file: string): boolean {
-  return paths.some((owned) => owned.endsWith("/") ? file.startsWith(owned) : file === owned);
+  return paths.some((owned) => (owned.endsWith("/") ? file.startsWith(owned) : file === owned));
 }
 
 /** `file` is repo-relative, as the graph's keys are. */
@@ -124,7 +129,7 @@ export function lintArchitecture(arch: Architecture, graph: ImportGraph): string
   }
   const declared = new Set(
     Object.entries(arch.edges).flatMap(([from, targets]) =>
-      targets.map((to) => `${from} -> ${to}`)
+      targets.map((to) => `${from} -> ${to}`),
     ),
   );
   for (const [key, sites] of [...drawn].sort()) {
@@ -145,7 +150,7 @@ export function lintArchitecture(arch: Architecture, graph: ImportGraph): string
 // --- the module map ------------------------------------------------------------
 
 export const GENERATED_BEGIN =
-  "<!-- BEGIN GENERATED: architecture-map (deno task docs:arch; derived from architecture.json) -->";
+  "<!-- BEGIN GENERATED: architecture-map (bun run docs:arch; derived from architecture.json) -->";
 export const GENERATED_END = "<!-- END GENERATED: architecture-map -->";
 
 /** Over the DECLARED edges, never the import graph. */
@@ -159,13 +164,13 @@ export function renderArchitectureMap(arch: Architecture): string {
     "graph TD",
     ...Object.entries(arch.layers).map(([name, paths]) => `  ${name}["${paths.join("<br>")}"]`),
     ...Object.entries(arch.edges).flatMap(([from, targets]) =>
-      targets.map((to) => `  ${from} --> ${to}`)
+      targets.map((to) => `  ${from} --> ${to}`),
     ),
   ].join("\n");
 }
 
 /** `page` with the body between the two markers replaced by a mermaid fence of `map` (blank
- *  lines around it, as `deno fmt` lays out a fence), in the page's own line ending, so a CRLF
+ *  lines around it, as the formatter lays out a fence), in the page's own line ending, so a CRLF
  *  checkout compares equal to itself; exactly one marker pair, or a throw naming the counts,
  *  since a second pair would be spliced blind. */
 export function spliceGeneratedRegion(page: string, map: string): string {

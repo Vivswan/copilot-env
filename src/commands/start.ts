@@ -1,10 +1,12 @@
 import { consola } from "consola";
 import { type PreflightOptions, runPreflight } from "../autoupdate/preflight.ts";
+import { codexUserAgent } from "../codex/user_agent.ts";
 import { CopilotApiConfig } from "../copilot_api/config.ts";
 import { Credential, credentialSourceLabel } from "../copilot_api/credential.ts";
 import { proxyStatus, recordHeartbeat } from "../copilot_api/daemon.ts";
-import { configSetCommand, CopilotEnvConfig } from "../copilot_api/env_config.ts";
+import { CopilotEnvConfig, configSetCommand } from "../copilot_api/env_config.ts";
 import { assertProfileSlot } from "../copilot_api/env_state.ts";
+import { idleTimeoutMs } from "../copilot_api/idle_watchdog.ts";
 import {
   applyDefaultConfig,
   awaitReadiness,
@@ -30,20 +32,19 @@ import type { CopilotApiEntry } from "../copilot_api/process.ts";
 import {
   agentStartCommand,
   agentStopCommand,
-  parseProfileFlag,
   type Profile,
+  parseProfileFlag,
 } from "../copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../copilot_api/run_state.ts";
 import { PROXY_PACKAGE_NAME } from "../copilot_api/version.ts";
-import { codexUserAgent } from "../codex/user_agent.ts";
-import { idleTimeoutMs } from "../copilot_api/idle_watchdog.ts";
+import type { FetchLike, ProxyFloatDeps } from "../proxy_float.ts";
+import { colorEnabled, statusPaint } from "../utils/ansi.ts";
 import { errMessage } from "../utils/error.ts";
+import * as fs from "../utils/fs_facade.ts";
 import { createStderrLogger, withConsolaOnStderr } from "../utils/logger.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
-import { colorEnabled, statusPaint } from "../utils/ansi.ts";
 import { formatTable, terminalWidth } from "../utils/table.ts";
 import { formatDuration } from "../utils/time.ts";
-import * as fs from "../utils/fs_facade.ts";
 import { runDryRun } from "./dry_run.ts";
 
 export interface StartFlags {
@@ -149,7 +150,9 @@ async function previewLaunch(
   // where a refused port still leaves them in the preview.
   const plan = await planCleanup(paths.home, profile, state);
   const pids = (role: "stop" | "leave"): string =>
-    plan.filter((step) => PREVIEW_ROLE[step.kind] === role).map((step) => `pid ${step.pid}`)
+    plan
+      .filter((step) => PREVIEW_ROLE[step.kind] === role)
+      .map((step) => `pid ${step.pid}`)
       .join(", ");
   if (plan.some((step) => PREVIEW_ROLE[step.kind] === "clear")) {
     state.set(daemonPolicy(profile).releasesPortOnStop ? { pid: null, port: null } : { pid: null });
@@ -184,9 +187,9 @@ function reportStartNoOp(state: CopilotEnvRunState, port: number, profile: Profi
   // this token.
   consola.info("[start:noop]");
   consola.info(
-    `Run \`${
-      agentStartCommand(profile)
-    } --force\` to launch a fresh daemon (e.g. after a credential or config change).`,
+    `Run \`${agentStartCommand(
+      profile,
+    )} --force\` to launch a fresh daemon (e.g. after a credential or config change).`,
   );
 }
 
@@ -212,14 +215,16 @@ function reportManagedLifecycle(state: CopilotEnvRunState): void {
 }
 
 /** The summary's first line, consola-decorated; the table rows go through console.log: consola
- *  would put its icon in front of the first row and read a hard-split path chunk as markup. */
-async function proxyLine(entry: CopilotApiEntry): Promise<string> {
+ *  would put its icon in front of the first row and read a hard-split path chunk as markup. The
+ *  publish-date lookup goes through the float's fetch seam, so a test's offline float stays
+ *  offline through the summary. */
+async function proxyLine(entry: CopilotApiEntry, fetchLike: FetchLike): Promise<string> {
   if (entry.kind === "file") return `   Proxy: ${entry.path} (COPILOT_API_ENTRY)`;
   const version = entryProxyVersion(entry);
   if (version === null) return `   Proxy: ${PROXY_PACKAGE_NAME} (version unknown)`;
   let published = "";
   try {
-    const res = await fetch(`https://registry.npmjs.org/${PROXY_PACKAGE_NAME}`, {
+    const res = await fetchLike(`https://registry.npmjs.org/${PROXY_PACKAGE_NAME}`, {
       headers: { Accept: "application/json" },
       signal: AbortSignal.timeout(3000),
     });
@@ -243,12 +248,15 @@ export function renderStartSummary(
   width: number | null = terminalWidth(),
   color = colorEnabled(),
 ): string {
-  return formatTable(summary.map(([label, value]) => [`${label}:`, value]), {
-    indent: "   ",
-    wrap: [false, "hard"],
-    width,
-    color,
-  }).join("\n");
+  return formatTable(
+    summary.map(([label, value]) => [`${label}:`, value]),
+    {
+      indent: "   ",
+      wrap: [false, "hard"],
+      width,
+      color,
+    },
+  ).join("\n");
 }
 
 /** The proxy line and the path block print back to back, so their lines never interleave with
@@ -259,36 +267,39 @@ async function reportStartSummary(
   paths: CopilotApiPaths,
   logFile: string,
   entry: CopilotApiEntry,
+  fetchLike: FetchLike,
 ): Promise<void> {
-  consola.info(await proxyLine(entry));
-  console.log(renderStartSummary([
-    ["Logs", logFile],
-    ["PID", String(live.pid)],
-    ["Port", String(live.port)],
-    ["SQLite", paths.sqliteDb],
-    ["Install root", PROJECT_ROOT],
-  ]));
+  consola.info(await proxyLine(entry, fetchLike));
+  console.log(
+    renderStartSummary([
+      ["Logs", logFile],
+      ["PID", String(live.pid)],
+      ["Port", String(live.port)],
+      ["SQLite", paths.sqliteDb],
+      ["Install root", PROJECT_ROOT],
+    ]),
+  );
   // The default box is an output contract.
   consola.log("");
   consola.box(
     profile === null
       ? [
-        "Next steps",
-        "",
-        "  • Launch an agent:  `cl` (Claude) / `cx` (Codex) / `co` (Copilot)",
-        "    ...or run `claude` / `codex` directly.",
-        `  • Enable those launchers:  \`${configSetCommand("shell.launchers", "true")}\``,
-        "  • `agent cost` reports proxy usage  ·  `agent stop` stops the proxy.",
-      ].join("\n")
+          "Next steps",
+          "",
+          "  • Launch an agent:  `cl` (Claude) / `cx` (Codex) / `co` (Copilot)",
+          "    ...or run `claude` / `codex` directly.",
+          `  • Enable those launchers:  \`${configSetCommand("shell.launchers", "true")}\``,
+          "  • `agent cost` reports proxy usage  ·  `agent stop` stops the proxy.",
+        ].join("\n")
       : [
-        "Next steps",
-        "",
-        `  • Launch an agent under this profile:  \`cl --profile ${profile}\` / \`cx --profile ${profile}\``,
-        `    ...or \`claude --settings <the path cl --profile ${profile} resolves>\` / \`codex --profile ${profile}\`.`,
-        `  • \`${
-          agentStopCommand(profile)
-        }\` stops this daemon (\`agent stop --all\` stops every one).`,
-      ].join("\n"),
+          "Next steps",
+          "",
+          `  • Launch an agent under this profile:  \`cl --profile ${profile}\` / \`cx --profile ${profile}\``,
+          `    ...or \`claude --settings <the path cl --profile ${profile} resolves>\` / \`codex --profile ${profile}\`.`,
+          `  • \`${agentStopCommand(
+            profile,
+          )}\` stops this daemon (\`agent stop --all\` stops every one).`,
+        ].join("\n"),
   );
 }
 
@@ -327,9 +338,11 @@ async function selfUpdatePreflight(preflight: PreflightRunner): Promise<void> {
   });
 }
 
+/** `floatDeps` are the proxy float's seams (the registry fetch, the installer), for the tests. */
 export async function runStart(
   action: StartAction,
   preflight: PreflightRunner = runPreflight,
+  floatDeps: ProxyFloatDeps = {},
 ): Promise<void> {
   const profile = action.profile;
   // First, on every arm: a named profile hard-fails and never falls back, so a typo'd name is
@@ -375,7 +388,7 @@ export async function runStart(
 
   await withStartLock(async () => {
     try {
-      await launchUnderLock(action, profile, launchContext, launch);
+      await launchUnderLock(action, profile, launchContext, launch, floatDeps);
     } finally {
       // On every exit path: a failed launch still gets its daily check, and its error passes
       // through.
@@ -389,6 +402,7 @@ async function launchUnderLock(
   profile: Profile,
   launchContext: () => LaunchContext,
   launch: LaunchToken,
+  floatDeps: ProxyFloatDeps,
 ): Promise<void> {
   const ctx = launchContext();
   const paths = ctx.paths;
@@ -396,7 +410,7 @@ async function launchUnderLock(
   // Inside the start lock: the gate rewrites the shared daemon config and re-warms the float's
   // cache, so two concurrent starts must not run it over each other. The spawn below runs the
   // entry it judged.
-  const entry = await ensureProxyFloor();
+  let entry = await ensureProxyFloor(floatDeps);
 
   if (isIdempotentNoOp(action, ctx.envConfig)) {
     const status = await proxyStatus(profile);
@@ -408,7 +422,12 @@ async function launchUnderLock(
 
   fs.mkdir(paths.home);
   applyDefaultConfig(profile, ctx.paths, ctx.envConfig);
-  await cleanupExistingProxies(profile, ctx.state);
+  const cleanup = await cleanupExistingProxies(profile, ctx.state);
+  // The gate ran ahead of the cleanup (fail-closed before any running daemon is disturbed), so a
+  // float that found that daemon running kept the previous tree in place. With it stopped, the
+  // gate runs once more: the refused float left no stage behind, so this pass is a reinstall from
+  // the per-version cache plus the swap, and one start lands the update.
+  if (cleanup.stopped) entry = await ensureProxyFloor(floatDeps);
 
   const port = await resolveStartPort(action.port, true, profile, true, ctx.envConfig);
   const { credential, copilotHost } = await resolveLaunchCredential(
@@ -445,5 +464,5 @@ async function launchUnderLock(
     reportManagedLifecycle(ctx.state);
   }
   await syncAliasesAfterStart(ctx.config, live.port);
-  await reportStartSummary(profile, live, paths, ctx.logFile, entry);
+  await reportStartSummary(profile, live, paths, ctx.logFile, entry, floatDeps.fetchLike ?? fetch);
 }

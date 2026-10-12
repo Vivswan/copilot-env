@@ -11,11 +11,11 @@ import { resolveCommand } from "../utils/command.ts";
 import { errMessage } from "../utils/error.ts";
 import { isDir, isEnoentOrNotdir, isFile } from "../utils/fs.ts";
 import * as fs from "../utils/fs_facade.ts";
-import { isRecord } from "../utils/json.ts";
 import { codexFarmHostsDir, getSanitizedHostname } from "../utils/hostname.ts";
+import { isRecord } from "../utils/json.ts";
 import { createStderrLogger, narrationMuted } from "../utils/logger.ts";
-import type { ManagedEnvValue } from "../utils/shell_quote.ts";
 import { reportWrite } from "../utils/report_write.ts";
+import type { ManagedEnvValue } from "../utils/shell_quote.ts";
 import { CODEX_PROVIDER_ID, codexConfigPath, defaultCodexHome, plainCodexHome } from "./paths.ts";
 import { readCodexToml } from "./toml_io.ts";
 
@@ -139,10 +139,6 @@ export function effectiveCodexHome(): string {
   return resolveCodexHome().home;
 }
 
-export function effectiveCodexHomeFor(prefs: CodexHomePrefs): string {
-  return resolveCodexHome(prefs).home;
-}
-
 /** `$CODEX_HOME` unless it is OUR farm export (POSIX only; Windows never has a farm), else
  *  `~/.codex`. `prefs` names the root the farm export is judged against: the settings-import plan
  *  passes the bundle's, so its line and the apply's write agree. */
@@ -155,9 +151,10 @@ function unmanagedCodexHome(prefs: CodexHomePrefs = codexHomePrefsOrDerived()): 
 
 export function staleCodexHomeExportLine(resolution: CodexHomeResolution): string | null {
   if (resolution.staleExport === null) return null;
-  const wired = resolution.by === "farm"
-    ? `codex.host is on, so Codex is wired at the per-host farm ${resolution.home}`
-    : `codex.home is set, so Codex is wired at ${resolution.home}`;
+  const wired =
+    resolution.by === "farm"
+      ? `codex.host is on, so Codex is wired at the per-host farm ${resolution.home}`
+      : `codex.home is set, so Codex is wired at ${resolution.home}`;
   return `Ignoring the shell's CODEX_HOME=${resolution.staleExport}: ${wired}`;
 }
 
@@ -237,8 +234,10 @@ export function codexHostDriftLine(drift: CodexHostDrift): string {
     case "inactive":
       // A farm built under another root (or before a rebuild) is wired but unrecorded: `agent
       // uninstall` would not delete it until a pass records it again.
-      return `codex.host is on but no completed wiring pass is recorded for the per-host CODEX_HOME ` +
-        `farm at ${drift.hostHome}; run \`agent profile sync --codex\` to record it`;
+      return (
+        `codex.host is on but no completed wiring pass is recorded for the per-host CODEX_HOME ` +
+        `farm at ${drift.hostHome}; run \`agent profile sync --codex\` to record it`
+      );
     case "disabled":
       return `codex.host is off but a per-host CODEX_HOME farm is still present at ${drift.hostHome}; run \`agent profile sync --codex\` to remove it`;
   }
@@ -705,7 +704,7 @@ export function knownCodexHomes(): { homes: string[]; complete: boolean } {
   } catch {
     complete = false;
   }
-  const homes = new Set<string>([effectiveCodexHomeFor(prefs)]);
+  const homes = new Set<string>([resolveCodexHome(prefs).home]);
   // The default home resolves via homedir(); the farm root via its creator's contract
   // (codexFarmHostsDir on homeDir, process.env.HOME first). They can differ (HOME set on Windows),
   // so BOTH are swept; the Set dedupes the common case. A `codex.home` root is a third: its own

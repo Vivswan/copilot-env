@@ -1,8 +1,8 @@
 // The fake inference backend's side of a run: the minute straddle its beforeReply hook runs,
 // and the request trace it reports, checked against what the scripted turns must have made.
 import { setTimeout as sleep } from "node:timers/promises";
-import { log } from "./cli.ts";
 import { registry } from "./children.ts";
+import { log } from "./cli.ts";
 import type { Source } from "./transcripts.ts";
 
 /** The second-of-minute the boundary turns start at; the fake holds their replies past :00. */
@@ -78,7 +78,10 @@ export function fakeUsageBySource(trace: TracedRequest[]): Record<Source, Record
 export function requestTraceFailures(trace: TracedRequest[]): string[] {
   const failures: string[] = [];
   const byPath = (path: string) => trace.filter((r) => r.path === path);
-  const checks: [Source, string][] = [["claude", "/messages"], ["codex", "/responses"]];
+  const checks: [Source, string][] = [
+    ["claude", "/messages"],
+    ["codex", "/responses"],
+  ];
   for (const [source, path] of checks) {
     const requests = byPath(path);
     if (requests.length !== EXPECTED_REQUESTS_PER_CLI) {

@@ -27,9 +27,9 @@ import { directWiringFor } from "../codex/config.ts";
 import { codexUserAgent } from "../codex/user_agent.ts";
 import { Credential } from "../copilot_api/credential.ts";
 import { staticKeyDetail } from "../copilot_api/credential_detail.ts";
-import { CopilotEnvState } from "../copilot_api/env_state.ts";
 import { directSmoke, type EndpointSmoke } from "../copilot_api/endpoint_smoke.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
+import { CopilotEnvState } from "../copilot_api/env_state.ts";
 import {
   CODEX_EXEC_USER_AGENT,
   DEFAULT_COPILOT_API_BASE,
@@ -48,23 +48,23 @@ import {
   parseLoopbackProxyUrl,
   proxyLoopbackOrigin,
 } from "../copilot_api/port.ts";
-import { type Profile, profileLabel, type ProfileName } from "../copilot_api/profile.ts";
+import { type Profile, type ProfileName, profileLabel } from "../copilot_api/profile.ts";
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import { isEnoentOrNotdir, WIN } from "../utils/fs.ts";
 import type { TextReadResult } from "../utils/fs_facade.ts";
 import * as fs from "../utils/fs_facade.ts";
-import { escapeRegExp } from "../utils/regexp.ts";
-import { type ManagedEnvValue, quotePosix } from "../utils/shell_quote.ts";
-import { printKeyValue } from "../utils/table.ts";
 import { isRecord, parseJsonRecord, readStringField } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
+import { escapeRegExp } from "../utils/regexp.ts";
 import {
   agentAuthGetArgs,
   agentLauncherCommand,
   proxyTokenArgs,
   proxyTokenCommand,
 } from "../utils/root.ts";
+import { type ManagedEnvValue, quotePosix } from "../utils/shell_quote.ts";
+import { printKeyValue } from "../utils/table.ts";
 import { removeClaudeDesktopEntry, syncClaudeDesktopWiring } from "./desktop.ts";
 import { winQuote } from "./helper_body.ts";
 import { prepareClaudeMcpRemoval, registerClaudeMcpServer } from "./mcp_registration.ts";
@@ -94,12 +94,10 @@ function shToken(s: string): string {
 // binary was asking. Each arm admits only spellings the writers produce.
 //   bare POSIX path     -> shToken's charset only, so `evil;/bin/agent` never reads as managed
 //   Windows -File path  -> always winQuote-quoted (a real path carries `\` and `:`), so no bare arm
-const POSIX_LAUNCHER_SHAPE = String
-  .raw`(?:'(?:[^']|'\\'')*/bin/agent'|[A-Za-z0-9_.:/=-]*/bin/agent)`;
+const POSIX_LAUNCHER_SHAPE = String.raw`(?:'(?:[^']|'\\'')*/bin/agent'|[A-Za-z0-9_.:/=-]*/bin/agent)`;
 // No line breaks inside the quotes: a value smuggling a second line must never read as managed. Raw
 // `%` stays legal: the inline command is not a batch file, so the writer never doubles it.
-const WIN_LAUNCHER_SHAPE = String
-  .raw`powershell -NoProfile -ExecutionPolicy Bypass -File "[^"\r\n]*\\bin\\agent\.ps1"`;
+const WIN_LAUNCHER_SHAPE = String.raw`powershell -NoProfile -ExecutionPolicy Bypass -File "[^"\r\n]*\\bin\\agent\.ps1"`;
 
 /** `win` is a parameter rather than the ambient platform so both shapes are testable on every CI
  *  runner. */
@@ -148,45 +146,47 @@ type ClaudeManagedCredential =
  */
 export type ClaudeWiringStatus =
   | (ClaudeManagedCredential & {
-    providerMode: "direct" | "proxy";
-    settingsExists: true;
-    wired: true;
-    otherReason: null;
-    baseUrl: string | null;
-    /** The proxy-port check; defaultSetupNeedsProxy keys off it (mode itself keys off the
-     *  credential shape alone). */
-    baseUrlMatches: boolean;
-  })
+      providerMode: "direct" | "proxy";
+      settingsExists: true;
+      wired: true;
+      otherReason: null;
+      baseUrl: string | null;
+      /** The proxy-port check; defaultSetupNeedsProxy keys off it (mode itself keys off the
+       *  credential shape alone). */
+      baseUrlMatches: boolean;
+    })
   | {
-    providerMode: "none";
-    /** False = no settings file at all; true = one with no relevant keys. */
-    settingsExists: boolean;
-    wired: false;
-    otherReason: null;
-    credential: null;
-    helperPath: null;
-    baseUrl: null;
-    baseUrlMatches: false;
-  }
+      providerMode: "none";
+      /** False = no settings file at all; true = one with no relevant keys. */
+      settingsExists: boolean;
+      wired: false;
+      otherReason: null;
+      credential: null;
+      helperPath: null;
+      baseUrl: null;
+      baseUrlMatches: false;
+    }
   | {
-    providerMode: "other";
-    settingsExists: true;
-    wired: false;
-    otherReason: ClaudeOtherReason;
-    credential: null;
-    /** The foreign apiKeyHelper value; null when the file could not be read or parsed at all. */
-    helperPath: string | null;
-    baseUrl: string | null;
-    baseUrlMatches: boolean;
-  };
+      providerMode: "other";
+      settingsExists: true;
+      wired: false;
+      otherReason: ClaudeOtherReason;
+      credential: null;
+      /** The foreign apiKeyHelper value; null when the file could not be read or parsed at all. */
+      helperPath: string | null;
+      baseUrl: string | null;
+      baseUrlMatches: boolean;
+    };
 
 /** The Direct client headers Claude carries (directCustomHeaders' output), recognized by the one
  *  line no other wiring writes: the codex_exec User-Agent. */
 function directHeadersShape(customHeaders: string | null): boolean {
-  return customHeaders !== null &&
-    customHeaders.split("\n").some((line) =>
-      line.startsWith(`User-Agent: ${CODEX_EXEC_USER_AGENT}/`)
-    );
+  return (
+    customHeaders !== null &&
+    customHeaders
+      .split("\n")
+      .some((line) => line.startsWith(`User-Agent: ${CODEX_EXEC_USER_AGENT}/`))
+  );
 }
 
 /** The baked ANTHROPIC_AUTH_TOKEN of a settings file, for the health freshness compare only: the
@@ -214,9 +214,10 @@ export function inspectClaudeWiring(
   expectedPort: number,
   profile: Profile = null,
 ): ClaudeWiringStatus {
-  const read: TextReadResult = typeof settings === "string"
-    ? { kind: "text", text: settings }
-    : settings ?? { kind: "absent" };
+  const read: TextReadResult =
+    typeof settings === "string"
+      ? { kind: "text", text: settings }
+      : (settings ?? { kind: "absent" });
   const none = (settingsExists: boolean): ClaudeWiringStatus => ({
     providerMode: "none",
     settingsExists,
@@ -277,7 +278,9 @@ export function inspectClaudeWiring(
   const staticToken = env ? readStringField(env, AUTH_TOKEN_ENV) : null;
   if (helperPath === null && env !== undefined && staticToken !== null && staticToken !== "") {
     if (
-      baseUrl !== null && isDirectBaseUrl(baseUrl) && env[DISABLE_BETAS_ENV] === "1" &&
+      baseUrl !== null &&
+      isDirectBaseUrl(baseUrl) &&
+      env[DISABLE_BETAS_ENV] === "1" &&
       directHeadersShape(readStringField(env, CUSTOM_HEADERS_ENV))
     ) {
       return wired("direct", { credential: "static", helperPath: null });
@@ -600,25 +603,30 @@ export function configureClaudeConfig(claudeHome: string, request: ClaudeWriteRe
       request.direct?.directIntegrationId ?? null,
     );
     applyManagedCredential(doc, request.credential, directHelperCommand(profile), profile);
-    detail = `Claude config, direct: GitHub Copilot${
-      credentialDetail(request.credential, "direct", profile)
-    }`;
+    detail = `Claude config, direct: GitHub Copilot${credentialDetail(
+      request.credential,
+      "direct",
+      profile,
+    )}`;
   } else {
     plannedPort = copilotApiResolvePort(profile);
     // No path, no trailing slash: the shape inspectClaudeWiring's proxy-origin check and
     // parseLoopbackProxyUrl expect.
     applyManagedEnv(doc, "proxy", proxyLoopbackOrigin(plannedPort), profile);
     applyManagedCredential(doc, request.credential, proxyHelperCommand(profile), profile);
-    detail = `Claude config, proxy mode via port ${plannedPort}${
-      credentialDetail(request.credential, "proxy", profile)
-    }`;
+    detail = `Claude config, proxy mode via port ${plannedPort}${credentialDetail(
+      request.credential,
+      "proxy",
+      profile,
+    )}`;
   }
   // Real Claude home only: the throwaway detect-probe home must not touch the machine-global
   // ~/.claude.json. The proxy arm's look at it comes before any write; the Direct arm's
   // registration write follows the home's mkdir, so a home that cannot be made leaves it untouched.
-  const pair = profile === null && claudeHome === resolveClaudeHome()
-    ? prepareWebSearchPair(doc, request.mode, settingsPath)
-    : NO_PAIR;
+  const pair =
+    profile === null && claudeHome === resolveClaudeHome()
+      ? prepareWebSearchPair(doc, request.mode, settingsPath)
+      : NO_PAIR;
   if (plannedPort !== null) reservePlannedPort(profile, plannedPort);
   try {
     fs.mkdir(claudeHome);
@@ -768,19 +776,20 @@ export function detectClaudeDirect(
       // The scratch config is the probe's own: under a scratch dir the seam writes and plans nothing.
       configureClaudeConfig(tmpHome, { mode: "direct", direct, credential });
     },
-    ghToken === null ? null : directSmoke(
-      CLAUDE_ENDPOINT_SMOKE,
-      ghToken,
-      codexUserAgent(),
-      direct.directIntegrationId,
-      direct.directBaseUrl,
-      {
-        fetchImpl: deps?.fetchImpl,
-        pinnedModel:
-          new CopilotEnvConfig().resolve("probe.claude-model", { profile: null }).value ??
-            null,
-      },
-    ),
+    ghToken === null
+      ? null
+      : directSmoke(
+          CLAUDE_ENDPOINT_SMOKE,
+          ghToken,
+          codexUserAgent(),
+          direct.directIntegrationId,
+          direct.directBaseUrl,
+          {
+            fetchImpl: deps?.fetchImpl,
+            pinnedModel:
+              new CopilotEnvConfig().resolve("probe.claude-model", { profile: null }).value ?? null,
+          },
+        ),
     deps,
   );
 }
@@ -802,9 +811,10 @@ export function claudeAdapter(): AgentAdapter {
         ...write,
         profile,
         quiet: options.quiet,
-        directToken: options.directToken !== undefined
-          ? options.directToken
-          : resolvedDirectToken(write.mode, write.credential),
+        directToken:
+          options.directToken !== undefined
+            ? options.directToken
+            : resolvedDirectToken(write.mode, write.credential),
       });
     },
     removeProfile(name, options) {

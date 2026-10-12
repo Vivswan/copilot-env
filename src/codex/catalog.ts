@@ -11,12 +11,10 @@
 //                                                    launch
 //   `agent config set codex.model-catalog true` -> opt-in; off, config.ts and
 //                                                    catalog_reference.ts remove it
-import { spawnSync, type SpawnSyncReturns } from "node:child_process";
+import { type SpawnSyncReturns, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
-import { codexConfigPath } from "./paths.ts";
-import { stringify } from "../utils/toml.ts";
 import { type CatalogSource, fetchRawModels } from "../copilot_api/catalog.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { CopilotEnvState } from "../copilot_api/env_state.ts";
@@ -24,11 +22,13 @@ import { ONE_M_SUFFIX } from "../copilot_api/models.ts";
 import { CopilotApiPaths } from "../copilot_api/paths.ts";
 import { childEnvWithPath, cliSpawn, resolveCommand } from "../utils/command.ts";
 import { errMessage } from "../utils/error.ts";
-import { isDue } from "../utils/time.ts";
-import { isRecord } from "../utils/json.ts";
-import { createStderrLogger } from "../utils/logger.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { removeScratchDir, type ScratchDir, scratchDir } from "../utils/fs_facade.ts";
+import { isRecord } from "../utils/json.ts";
+import { createStderrLogger } from "../utils/logger.ts";
+import { isDue } from "../utils/time.ts";
+import { stringify } from "../utils/toml.ts";
+import { codexConfigPath } from "./paths.ts";
 import {
   CODEX_VERSION_TIMEOUT_MS,
   codexUserAgent,
@@ -53,8 +53,11 @@ const CATALOG_PROBE_TIMEOUT_MS = 5000;
 const COPILOT_FETCH_BUDGET_MS = 5000;
 // Past the refresh's end-to-end deadline the cache writes (acceptance memo, ownership ledger) are
 // skipped: they are caches.
-const REFRESH_DEADLINE_MS = CODEX_VERSION_TIMEOUT_MS + COPILOT_FETCH_BUDGET_MS +
-  BUNDLED_DUMP_TIMEOUT_MS + CATALOG_PROBE_TIMEOUT_MS;
+const REFRESH_DEADLINE_MS =
+  CODEX_VERSION_TIMEOUT_MS +
+  COPILOT_FETCH_BUDGET_MS +
+  BUNDLED_DUMP_TIMEOUT_MS +
+  CATALOG_PROBE_TIMEOUT_MS;
 
 // Null outside a refresh: writes allowed.
 let refreshDeadlineAt: number | null = null;
@@ -129,10 +132,11 @@ export function parseCopilotModels(body: unknown): Map<string, CopilotCatalogMod
       limits: { maxContextWindowTokens: window, maxPromptTokens: prompt },
       name: typeof entry.name === "string" ? entry.name : null,
       reasoningEfforts: nonEmpty(efforts),
-      parallelToolCalls: typeof supports.parallel_tool_calls === "boolean"
-        ? supports.parallel_tool_calls
-        : null,
-      codexServable: capabilities.type === "chat" && entry.model_picker_enabled === true &&
+      parallelToolCalls:
+        typeof supports.parallel_tool_calls === "boolean" ? supports.parallel_tool_calls : null,
+      codexServable:
+        capabilities.type === "chat" &&
+        entry.model_picker_enabled === true &&
         endpoints.includes(RESPONSES_ENDPOINT),
     };
     const existing = out.get(id);
@@ -147,9 +151,8 @@ export function parseCopilotModels(body: unknown): Map<string, CopilotCatalogMod
  *    name, efforts, parallel tool calls -> the larger window's; the other fills a null
  *    codexServable                      -> true when either is */
 function mergeCopilotModels(a: CopilotCatalogModel, b: CopilotCatalogModel): CopilotCatalogModel {
-  const [first, second] = b.limits.maxContextWindowTokens > a.limits.maxContextWindowTokens
-    ? [b, a]
-    : [a, b];
+  const [first, second] =
+    b.limits.maxContextWindowTokens > a.limits.maxContextWindowTokens ? [b, a] : [a, b];
   return {
     limits: first.limits,
     name: first.name ?? second.name,
@@ -163,7 +166,7 @@ function mergeCopilotModels(a: CopilotCatalogModel, b: CopilotCatalogModel): Cop
  *  `supports_parallel_tool_calls` is required at startup by a codex-core build sharing ~/.codex
  *  (seen 2026-09-04), absent from ModelInfo in every public tag 0.152.0..main. */
 function requiredExtras(copilot: CopilotCatalogModel | undefined): Record<string, unknown> {
-  return { "supports_parallel_tool_calls": copilot?.parallelToolCalls ?? false };
+  return { supports_parallel_tool_calls: copilot?.parallelToolCalls ?? false };
 }
 
 // The numbered OpenAI family, `gpt-<major>[.<minor>[.<patch>]]` with an optional `-<variant>`: the
@@ -206,7 +209,8 @@ function pickDonor(
     // the newest donor (different version).
     const tieBreak = distance === 0 ? -commonPrefixLength(id, donor.slug) : -donorVersion;
     if (
-      best === null || distance < best.distance ||
+      best === null ||
+      distance < best.distance ||
       (distance === best.distance && tieBreak < best.tieBreak)
     ) {
       best = { distance, tieBreak, model: donor.model };
@@ -396,7 +400,18 @@ let bundledDump: string | null | undefined;
 function bundledCatalog(): string | null {
   if (bundledDump === undefined) {
     const result = runCodexDebugModels(["--bundled"], () => {}, BUNDLED_DUMP_TIMEOUT_MS);
-    bundledDump = result === null || result.error || result.status !== 0 ? null : result.stdout;
+    if (result !== null && !result.error && result.status === 0) {
+      bundledDump = result.stdout;
+    } else {
+      const failure =
+        result === null
+          ? "did not run"
+          : result.error
+            ? errMessage(result.error)
+            : `exited ${result.status}: ${result.stderr.split("\n")[0] ?? ""}`;
+      logger.warn(`codex model catalog not written: codex debug models --bundled ${failure}`);
+      bundledDump = null;
+    }
   }
   return bundledDump;
 }
@@ -475,13 +490,15 @@ function acceptsCatalog(catalogJson: string): boolean | null {
 }
 
 function probeCatalog(catalogJson: string): boolean | null {
-  const referencing = (content: string) => (home: string): void => {
-    const file = path.join(home, "candidate-catalog.json");
-    fs.writeText(file, content, { secretKeys: [] });
-    fs.writeText(codexConfigPath(home), stringify({ "model_catalog_json": file }), {
-      secretKeys: [],
-    });
-  };
+  const referencing =
+    (content: string) =>
+    (home: string): void => {
+      const file = path.join(home, "candidate-catalog.json");
+      fs.writeText(file, content, { secretKeys: [] });
+      fs.writeText(codexConfigPath(home), stringify({ model_catalog_json: file }), {
+        secretKeys: [],
+      });
+    };
   // A run that never reported an exit code (spawn error, or killed, the budget's timeout kill
   // included) proves nothing either way; only a real exit counts.
   const exitOf = (run: SpawnSyncReturns<string> | null): number | null =>
@@ -591,7 +608,9 @@ function judgeCatalog(catalogJson: string): boolean | null {
     recorded = null;
   }
   if (
-    version !== null && recorded !== null && recorded.sha256 === digest &&
+    version !== null &&
+    recorded !== null &&
+    recorded.sha256 === digest &&
     recorded.codexVersion === version
   ) {
     return true;

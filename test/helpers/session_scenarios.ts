@@ -19,7 +19,7 @@ import {
 import { expect } from "./testing.ts";
 
 /** `files`: the session files written, for tests that change one between two reads. */
-export interface ReaderInput {
+interface ReaderInput {
   roots: string[];
   sinceMs?: number;
   timeZone?: string;
@@ -102,28 +102,30 @@ export const CODEX_SCENARIOS: readonly ReaderScenario<CodexReport>[] = [
     },
   },
   // The zone is NAMED rather than pinned through process.env.TZ, so this runs on
-  // Windows too (deno honors the TZ env var on unix only). Asserting the SAME
+  // Windows too (a runtime TZ is honored on unix only). Asserting the SAME
   // event in two zones keeps the teeth on every runner: a reader that ignored the
   // zone, or sliced by UTC, would have to return one key for both, and these differ.
   ...[
     { zone: "America/New_York", day: "2026-06-01" },
     { zone: "UTC", day: "2026-06-02" },
-  ].map(({ zone, day }): ReaderScenario<CodexReport> => ({
-    name: `buckets by the user's local day in ${zone}, not the UTC day`,
-    build(dir) {
-      const root = join(dir, "sessions");
-      writeRollout(root, "2026-06-02", "aaa", [
-        sessionMeta("2026-06-02T01:00:00.000Z", "aaa", { provider: "copilot-env" }),
-        turnContext("2026-06-02T01:00:01.000Z", "gpt-5.6"),
-        // 2026-06-02T01:00Z is 2026-06-01 21:00 in New York (UTC-4 in June).
-        tokenCount("2026-06-02T01:00:05.000Z", codexUsage(10, 0, 1), codexUsage(10, 0, 1)),
-      ]);
-      return { roots: [root], timeZone: zone };
-    },
-    check(byProvider) {
-      expect([...(byProvider.get("copilot-env")?.perDay.keys() ?? [])]).toEqual([day]);
-    },
-  })),
+  ].map(
+    ({ zone, day }): ReaderScenario<CodexReport> => ({
+      name: `buckets by the user's local day in ${zone}, not the UTC day`,
+      build(dir) {
+        const root = join(dir, "sessions");
+        writeRollout(root, "2026-06-02", "aaa", [
+          sessionMeta("2026-06-02T01:00:00.000Z", "aaa", { provider: "copilot-env" }),
+          turnContext("2026-06-02T01:00:01.000Z", "gpt-5.6"),
+          // 2026-06-02T01:00Z is 2026-06-01 21:00 in New York (UTC-4 in June).
+          tokenCount("2026-06-02T01:00:05.000Z", codexUsage(10, 0, 1), codexUsage(10, 0, 1)),
+        ]);
+        return { roots: [root], timeZone: zone };
+      },
+      check(byProvider) {
+        expect([...(byProvider.get("copilot-env")?.perDay.keys() ?? [])]).toEqual([day]);
+      },
+    }),
+  ),
   {
     name: "keys rows by the canonical model spelling",
     build(dir) {
@@ -136,7 +138,7 @@ export const CODEX_SCENARIOS: readonly ReaderScenario<CodexReport>[] = [
         // A thread_settings_applied model switch canonicalizes the same way.
         rolloutLine("2026-06-01T10:01:00.000Z", "event_msg", {
           type: "thread_settings_applied",
-          "thread_settings": { model: "claude-haiku-4-5-20251001" },
+          thread_settings: { model: "claude-haiku-4-5-20251001" },
         }),
         tokenCount("2026-06-01T10:01:05.000Z", codexUsage(30, 0, 7), codexUsage(20, 0, 5)),
       ]);
@@ -383,8 +385,8 @@ export const CODEX_SCENARIOS: readonly ReaderScenario<CodexReport>[] = [
         rolloutLine("2026-06-01T10:00:02.000Z", "response_item", {
           type: "custom_tool_call",
           name: "token_count",
-          input: { type: "session_meta", "turn_context": "turn_context" },
-          "thread_settings_applied": { info: { "last_token_usage": codexUsage(999, 0, 999) } },
+          input: { type: "session_meta", turn_context: "turn_context" },
+          thread_settings_applied: { info: { last_token_usage: codexUsage(999, 0, 999) } },
         }),
         tokenCount("2026-06-01T10:00:05.000Z", codexUsage(10, 0, 1), codexUsage(10, 0, 1)),
       ]);
@@ -672,20 +674,22 @@ export const CLAUDE_SCENARIOS: readonly ReaderScenario<UsageReport>[] = [
   ...[
     { zone: "America/New_York", day: "2026-06-01" },
     { zone: "UTC", day: "2026-06-02" },
-  ].map(({ zone, day }): ReaderScenario<UsageReport> => ({
-    name: `buckets by the user's local day in ${zone}, not the UTC day`,
-    build(dir) {
-      const root = join(dir, "projects");
-      writeTranscript(join(root, "-Users-x-proj"), "aaa.jsonl", [
-        // 2026-06-02T01:00Z is 2026-06-01 21:00 in New York (UTC-4 in June).
-        assistantLine("2026-06-02T01:00:00.000Z", "claude-opus-4-8", "msg_1", claudeUsage(1, 2)),
-      ]);
-      return { roots: [root], timeZone: zone };
-    },
-    check(report) {
-      expect([...report.perDay.keys()]).toEqual([day]);
-    },
-  })),
+  ].map(
+    ({ zone, day }): ReaderScenario<UsageReport> => ({
+      name: `buckets by the user's local day in ${zone}, not the UTC day`,
+      build(dir) {
+        const root = join(dir, "projects");
+        writeTranscript(join(root, "-Users-x-proj"), "aaa.jsonl", [
+          // 2026-06-02T01:00Z is 2026-06-01 21:00 in New York (UTC-4 in June).
+          assistantLine("2026-06-02T01:00:00.000Z", "claude-opus-4-8", "msg_1", claudeUsage(1, 2)),
+        ]);
+        return { roots: [root], timeZone: zone };
+      },
+      check(report) {
+        expect([...report.perDay.keys()]).toEqual([day]);
+      },
+    }),
+  ),
   {
     name: "books a streamed message at its final (max) usage snapshot",
     build(dir) {
@@ -752,12 +756,14 @@ export const CLAUDE_SCENARIOS: readonly ReaderScenario<UsageReport>[] = [
       writeTranscript(
         join(root, "-Users-x-proj", "session-1", "subagents", "workflows", "wf_1"),
         "agent-abc.jsonl",
-        [assistantLine(
-          "2026-06-01T10:00:00.000Z",
-          "claude-opus-4-8",
-          "msg_1",
-          claudeUsage(10, 20),
-        )],
+        [
+          assistantLine(
+            "2026-06-01T10:00:00.000Z",
+            "claude-opus-4-8",
+            "msg_1",
+            claudeUsage(10, 20),
+          ),
+        ],
       );
       return { roots: [root] };
     },
@@ -865,10 +871,12 @@ export const CLAUDE_SCENARIOS: readonly ReaderScenario<UsageReport>[] = [
           timestamp: "2026-06-01T10:00:00.000Z",
           message: {
             role: "user",
-            content: [{
-              type: "assistant",
-              message: { id: "msg_x", model: "claude-opus-4-8", usage: claudeUsage(999, 999) },
-            }],
+            content: [
+              {
+                type: "assistant",
+                message: { id: "msg_x", model: "claude-opus-4-8", usage: claudeUsage(999, 999) },
+              },
+            ],
           },
         }),
         assistantLine("2026-06-01T10:00:01.000Z", "claude-opus-4-8", "msg_1", claudeUsage(10, 20)),

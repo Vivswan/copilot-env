@@ -7,6 +7,7 @@ import { mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, isAbsolute, join } from "node:path";
 import { diffOverlay, type FileChange } from "./dry_run_report.ts";
+import { probeFileLock, withFileLock } from "./file_lock.ts";
 import { removeScratchDir, type ScratchDir, underOverlay } from "./fs_facade.ts";
 import { trackScratch } from "./report_write.ts";
 
@@ -46,22 +47,17 @@ export function promptRefusedInDryRun(what: string): Error {
  *  auth helper is this CLI again) so a child that finds it runs as a silent dry run, and nothing
  *  this CLI does on the child's behalf lands behind the plan either. The value is the marker the
  *  spawning run minted (underDryRunMarker): the path of a scratch directory named with a fresh
- *  nonce, whose hold file that run keeps under an exclusive OS lock for as long as it collects. A
- *  child honours the value only while a live process holds that lock (spawnedByDryRun), so a
- *  value that reached an environment any other way (`=1` exported in a shell, a pid, a nonce with
- *  no run behind it, a directory made by hand, a marker a crashed run left behind) names nothing
- *  and changes nothing: liveness of some process is not authorship of this one. */
+ *  nonce, whose hold file that run keeps as its lock (src/utils/file_lock.ts: the file names the
+ *  minting pid) for as long as it collects. A child honours the value only while the process the
+ *  hold names lives (spawnedByDryRun), so a value that reached an environment any other way (`=1`
+ *  exported in a shell, a pid, a nonce with no run behind it, a directory made by hand, a marker a
+ *  crashed run left behind) names nothing and changes nothing. */
 export const DRY_RUN_ENV = "COPILOT_ENV_DRY_RUN";
 
 const DRY_RUN_MARKER_PREFIX = "copilot-env-dry-run-";
 const DRY_RUN_MARKER_NAME = new RegExp(`^${DRY_RUN_MARKER_PREFIX}[0-9a-f]{32}$`);
-/** The file inside the marker the minting run holds locked (flock/LockFileEx, which a crashed
- *  holder releases automatically). */
+/** The lock file inside the marker the minting run holds. */
 const DRY_RUN_MARKER_HOLD = "held";
-
-/** The marker this process minted, while its run collects: the OS may report a same-process
- *  attempt on our own lock either way, so our own marker answers from the record. */
-let minted: string | null = null;
 
 /**
  * Runs `body` with a dry run's marker minted, held, and exported (DRY_RUN_ENV), so every process
@@ -77,27 +73,28 @@ export async function underDryRunMarker<T>(body: () => Promise<T>): Promise<T> {
   ) as ScratchDir;
   mkdirSync(marker, { mode: 0o700 });
   trackScratch(marker);
-  const hold = Deno.openSync(join(marker, DRY_RUN_MARKER_HOLD), {
-    read: true,
-    write: true,
-    create: true,
-  });
-  if (!hold.tryLockSync(true)) {
-    hold.close();
-    removeScratchDir(marker);
-    throw new Error(`the dry-run marker ${marker} is held by another process`);
-  }
-  const inherited = process.env[DRY_RUN_ENV];
-  process.env[DRY_RUN_ENV] = marker;
-  minted = marker;
   try {
-    return await body();
+    // A fresh nonce has no holder; the one refusal is the lock's own I/O.
+    return await withFileLock(
+      join(marker, DRY_RUN_MARKER_HOLD),
+      { staleMs: Number.POSITIVE_INFINITY, waitMs: 0 },
+      async (outcome) => {
+        if (!outcome.held) {
+          throw new Error(`the dry-run marker ${marker} could not be held`, {
+            cause: outcome.reason === "unavailable" ? outcome.cause : undefined,
+          });
+        }
+        const inherited = process.env[DRY_RUN_ENV];
+        process.env[DRY_RUN_ENV] = marker;
+        try {
+          return await body();
+        } finally {
+          if (inherited === undefined) delete process.env[DRY_RUN_ENV];
+          else process.env[DRY_RUN_ENV] = inherited;
+        }
+      },
+    );
   } finally {
-    minted = null;
-    if (inherited === undefined) delete process.env[DRY_RUN_ENV];
-    else process.env[DRY_RUN_ENV] = inherited;
-    hold.unlockSync();
-    hold.close();
     removeScratchDir(marker);
   }
 }
@@ -108,26 +105,12 @@ export function spawnedByDryRun(env: NodeJS.ProcessEnv = process.env): boolean {
   if (value === undefined || !isAbsolute(value) || !DRY_RUN_MARKER_NAME.test(basename(value))) {
     return false;
   }
-  return value === minted || markerHeld(value);
+  return markerHeld(value);
 }
 
-/** A SHARED try-lock on the hold file that succeeds means no run holds the marker (a directory
- *  made by hand, a run that ended or crashed); only the minting run's EXCLUSIVE lock reads held. A
- *  hold file that cannot be opened is no marker either. */
+/** Only a hold file naming a live process reads held: a directory made by hand, a run that ended
+ *  or crashed, and a hold file that cannot be read are no marker. A pid this process cannot probe
+ *  is no marker either: a child that then wrote for real would be the child of no run of ours. */
 function markerHeld(marker: string): boolean {
-  let file: Deno.FsFile;
-  try {
-    file = Deno.openSync(join(marker, DRY_RUN_MARKER_HOLD), { read: true, write: true });
-  } catch {
-    return false;
-  }
-  try {
-    if (!file.tryLockSync(false)) return true;
-    file.unlockSync();
-    return false;
-  } catch {
-    return false;
-  } finally {
-    file.close();
-  }
+  return probeFileLock(join(marker, DRY_RUN_MARKER_HOLD)).kind === "held";
 }

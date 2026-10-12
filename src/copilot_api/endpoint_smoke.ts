@@ -20,8 +20,8 @@ import { fetchModelCatalog } from "./models_fetch.ts";
 type DirectWire = "messages" | "responses";
 
 const WIRE_PATHS: Record<DirectWire, string> = {
-  "messages": "/v1/messages",
-  "responses": "/responses",
+  messages: "/v1/messages",
+  responses: "/responses",
 };
 
 /** One ping's budget, shared with discovery.ts. */
@@ -79,7 +79,7 @@ export function directSmoke(
   const fetchImpl: ProbeFetch = opts.fetchImpl ?? defaultFetch;
   const pinned = opts.pinnedModel ?? null;
   const identity = directClientHeaders(userAgent, integrationId);
-  const headers = { ...identity, "Authorization": `Bearer ${token}` };
+  const headers = { ...identity, Authorization: `Bearer ${token}` };
   const catalog = async (): Promise<CatalogLook> => {
     const got = await fetchModelCatalog({ host: apiBase, token, headers: identity, fetchImpl });
     switch (got.kind) {
@@ -128,9 +128,14 @@ export function directSmoke(
       try {
         const ping = await fetchImpl(`${apiBase}${path}`, {
           method: "POST",
-          headers: smoke.wire === "messages"
-            ? { ...headers, "Content-Type": "application/json", "anthropic-version": "2023-06-01" }
-            : { ...headers, "Content-Type": "application/json" },
+          headers:
+            smoke.wire === "messages"
+              ? {
+                  ...headers,
+                  "Content-Type": "application/json",
+                  "anthropic-version": "2023-06-01",
+                }
+              : { ...headers, "Content-Type": "application/json" },
           body: JSON.stringify(pingBody(smoke.wire, model)),
           signal: AbortSignal.timeout(PING_TIMEOUT_MS),
         });
@@ -158,6 +163,6 @@ export function directSmoke(
  *  ("Expected a value >= 16", verified live 2026-09-15). */
 function pingBody(wire: DirectWire, model: string): Record<string, unknown> {
   return wire === "messages"
-    ? { "model": model, "max_tokens": 1, "messages": [{ "role": "user", "content": "x" }] }
-    : { "model": model, "input": "x", "stream": false, "max_output_tokens": 16 };
+    ? { model: model, max_tokens: 1, messages: [{ role: "user", content: "x" }] }
+    : { model: model, input: "x", stream: false, max_output_tokens: 16 };
 }

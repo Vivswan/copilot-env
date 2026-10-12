@@ -1,14 +1,14 @@
 // Status, liveness, heartbeat, and teardown for the proxy daemon, kept out of the command files so
 // models, profile, auth, and uninstall never import another command.
 import { consola } from "consola";
-import { clearPersistedInferenceActivity } from "./inference_activity.ts";
-import { daemonLockVerdict } from "./daemon_lock.ts";
 import { assertNever } from "../utils/assert.ts";
 import { dryRunActive } from "../utils/fs_facade.ts";
+import { pidAlive } from "../utils/pid.ts";
+import { daemonLockVerdict } from "./daemon_lock.ts";
 import { CopilotEnvConfig } from "./env_config.ts";
+import { clearPersistedInferenceActivity } from "./inference_activity.ts";
 import { CopilotApiPaths, profileHomeNames } from "./paths.ts";
 import { daemonPolicy, loopbackListening } from "./port.ts";
-import { pidAlive } from "../utils/pid.ts";
 import { classifyDaemonPid, isCopilotApiPid, terminatePid } from "./process.ts";
 import type { Profile } from "./profile.ts";
 import { CopilotEnvRunState } from "./run_state.ts";
@@ -61,7 +61,8 @@ export async function proxyStatus(profile: Profile = null): Promise<ProxyStatus>
   }
   // Only a config-ported daemon has a meaningful fallback port; a reservation-ported daemon's
   // reservation IS the recorded port, so without it there is nothing to probe.
-  const probePort = port ??
+  const probePort =
+    port ??
     (daemonPolicy(profile).port.source === "config"
       ? new CopilotEnvConfig().defaultPort()
       : undefined);

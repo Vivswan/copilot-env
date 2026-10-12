@@ -115,7 +115,7 @@ interface UninstallContext {
  *  its place. A warning is said as it arises, in either mode. */
 type Narration = () => void;
 
-type UninstallStep = () => void | Narration | Promise<void | Narration>;
+type UninstallStep = () => void | Narration | Promise<void> | Promise<Narration>;
 
 /** Order matters: daemons first (they hold the credential in memory, and a stuck one aborts before
  *  anything is deleted), all wiring and store work before the copilot-api home they read from, and

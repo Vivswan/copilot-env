@@ -320,7 +320,7 @@ function releasedHelperBodies(mode: "direct" | "proxy", profile: Profile): RegEx
     );
   const shProfile = profile === null ? "" : ` '--profile' '${profile}'`;
   const cmdProfile = profile === null ? "" : ` --profile ${profile}`;
-  const agent = String.raw`/bin/agent`;
+  const agent = "/bin/agent";
   const agentPs1 = String.raw`\\bin\\agent\.ps1`;
   const script = String.raw`/src/scripts/proxy-token\.sh`;
   const scriptPs1 = String.raw`\\src\\scripts\\proxy-token\.ps1`;

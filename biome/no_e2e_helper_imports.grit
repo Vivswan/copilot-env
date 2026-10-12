@@ -11,9 +11,9 @@
 // change. The banned set is the helpers that spawn, listen, or point HOME somewhere, closed under
 // import:
 //   run (node:child_process), net (node:net), fake_model_endpoint (node:http)  -> the roots
-//   sidecar (an executable lookup at load), fake_codex (plants a codex the code under test
-//   spawns), usage_goldens (points HOME at a generated tree)                    -> roots by effect
-//   biome_plugin, daemon, deno_sidecar, fake_endpoint, mcp, scratch_home        -> import a root
+//   fake_codex (plants a codex the code under test spawns), usage_goldens
+//   (points HOME at a generated tree)                                          -> roots by effect
+//   biome_plugin, daemon, fake_endpoint, mcp, scratch_home                      -> import a root
 //
 // The ban is on the import, under every form (a value import, a side-effect import, a re-export,
 // a dynamic import) and under any path spelling that resolves to it (`../helpers/run.ts`,
@@ -34,7 +34,7 @@ language js(typescript)
 // is as static as the quoted form. A helper reaches a sibling as `./run.ts`, with no helpers/
 // segment, so a bare `./` path to a banned name counts too.
 pattern banned_source() {
-  r"^[\"'`](?:(?:(?:[^\"'`]*/)?helpers/(?:[^\"'`]*/)?|(?:\./)+)(?:run|daemon|mcp|deno_sidecar|sidecar|scratch_home|fake_codex|fake_endpoint|fake_model_endpoint|net|biome_plugin|usage_goldens)(?:\.[cm]?[jt]s)?|(?:node:)?(?:child_process|net|http|https|http2|dgram))[\"'`]$"
+  r"^[\"'`](?:(?:(?:[^\"'`]*/)?helpers/(?:[^\"'`]*/)?|(?:\./)+)(?:run|daemon|mcp|scratch_home|fake_codex|fake_endpoint|fake_model_endpoint|net|biome_plugin|usage_goldens)(?:\.[cm]?[jt]s)?|(?:node:)?(?:child_process|net|http|https|http2|dgram))[\"'`]$"
 }
 
 // The module itself, under either quote or a substitution-free template literal.

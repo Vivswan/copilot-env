@@ -85,12 +85,10 @@
         "!test/helpers/run.ts",
         "!test/helpers/net.ts",
         "!test/helpers/fake_model_endpoint.ts",
-        "!test/helpers/sidecar.ts",
         "!test/helpers/fake_codex.ts",
         "!test/helpers/usage_goldens.ts",
         "!test/helpers/biome_plugin.ts",
         "!test/helpers/daemon.ts",
-        "!test/helpers/deno_sidecar.ts",
         "!test/helpers/fake_endpoint.ts",
         "!test/helpers/mcp.ts",
         "!test/helpers/scratch_home.ts"

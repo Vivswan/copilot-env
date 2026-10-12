@@ -40,7 +40,7 @@ Two guards keep it from recurring. The launcher starts every test file under a s
 
 The boundary is linted by `biome/no_e2e_helper_imports.grit` over every `.ts` file under `test/` except the `*.e2e.test.ts` files, the banned helpers themselves, and `testing.ts` (it imports nothing banned, and the child-spawn rule's scope fixture pins its finding count), so a helper that re-exports a banned one is flagged as it is written. The fix for a finding is the rename to `.e2e.test.ts`. A file in scope may not:
 
-- import a banned helper: `run.ts`, `daemon.ts`, `mcp.ts`, `deno_sidecar.ts`, `sidecar.ts`, `scratch_home.ts`, `fake_codex.ts`, `fake_endpoint.ts`, `fake_model_endpoint.ts`, `net.ts`, `biome_plugin.ts`, `usage_goldens.ts` (the files that spawn, listen, or point HOME somewhere, closed under import)
+- import a banned helper: `run.ts`, `daemon.ts`, `mcp.ts`, `scratch_home.ts`, `fake_codex.ts`, `fake_endpoint.ts`, `fake_model_endpoint.ts`, `net.ts`, `biome_plugin.ts`, `usage_goldens.ts` (the files that spawn, listen, or point HOME somewhere, closed under import)
 - import `node:child_process` or a listener module (`node:net`, `http`, `https`, `http2`, `dgram`)
 - reach `Bun.spawn`, `spawnSync`, `serve`, `listen`, or `connect`, under any spelling, or import any value from the `bun` module (its `$` shell spawns too)
 - reach `isolateAgentHomes` or `agentHomeEnv` from `env.ts`, or use `require`

@@ -22,8 +22,6 @@ const SOURCES: [source: string, diagnostics: number][] = [
   'import "../helpers/fake_endpoint.ts";',
   'import { scenario } from "../helpers/fake_model_endpoint.ts";',
   'import { scratchHome } from "../helpers/scratch_home.ts";',
-  'import { sidecarDeno } from "../helpers/deno_sidecar.ts";',
-  'import { sidecarPath } from "../helpers/sidecar.ts";',
   'import { freePort } from "../helpers/net.ts";',
   'import { lintCases } from "../helpers/biome_plugin.ts";',
   'import { fakeCodexOnPath } from "../helpers/fake_codex.ts";',

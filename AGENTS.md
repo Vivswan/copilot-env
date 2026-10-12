@@ -41,7 +41,7 @@ copilot-env wires the Codex and Claude CLIs to GitHub Copilot, either through a 
 - **A personal utility, not a product**: no backwards compatibility except `src/migrations/` (one-time fix-ups run after `agent update` or a reinstall); no compatibility shims or legacy-state adoption in read sites; no production hardening. Delete old surfaces outright; a flag removal is a plain `feat:`/`fix:`.
 - **String literals are external contracts** (model ids, JSON keys, env var names, log markers): never rename them in a refactor.
 - **ASCII source**: non-ASCII only inside string literal text.
-- **Layering**: command files (`src/commands/`) validate, orchestrate, and render; the domain layers never import them. `src/scripts/` holds only things that run as their own process or as the daemon's `--preload` shims under the Deno sidecar, never CLI handlers.
+- **Layering**: command files (`src/commands/`) validate, orchestrate, and render; the domain layers never import them. `src/scripts/` holds only things that run as their own process or as the daemon's `--preload` shims, never CLI handlers.
 
 ### Decisions a reader would otherwise reverse
 

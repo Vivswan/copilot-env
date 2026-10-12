@@ -18,7 +18,7 @@ cd copilot-env
 bash scripts/setup-env.sh   # scripts/setup-env.ps1 on Windows: the locked deps and the git hooks
 ```
 
-The toolchain (Bun) and the daemon's Deno sidecar are described on the [development page](docs/development.md).
+The toolchain (Bun, which the CLI, the tests, and the proxy daemon all run on) is described on the [development page](docs/development.md).
 
 ## Checks
 

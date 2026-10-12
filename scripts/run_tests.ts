@@ -51,7 +51,9 @@ interface Selection {
 function usage(): Command {
   return new Command("bun scripts/run_tests.ts")
     .description(
-      `Runs every ${TEST_GLOB} file under test/, or under each directory PATH, plus each file PATH, one \`bun test\` process per file, ${JOBS_ENV} files at a time (default: min(4, the CPU count)), each file killed and failed past ${FILE_BUDGET_ENV} ms (default: ${FILE_BUDGET_MS}).`,
+      `Runs every ${TEST_GLOB} file under test/, or under each directory PATH, plus each file PATH, ` +
+        `one \`bun test\` process per file, ${JOBS_ENV} files at a time (default: min(4, the CPU ` +
+        `count)), each file killed and failed past ${FILE_BUDGET_ENV} ms (default: ${FILE_BUDGET_MS}).`,
     )
     .argument("[path...]", "a test file, or a directory of them")
     .addOption(

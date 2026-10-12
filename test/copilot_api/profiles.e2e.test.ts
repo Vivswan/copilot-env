@@ -100,7 +100,7 @@ afterEach(() => {
   setGithubLoginFetch(null);
   globalThis.fetch = REAL_FETCH;
   restoreEnv();
-  // A check test's exit 1/2 must never leak into the whole `deno test` run.
+  // A check test's exit 1/2 must never leak into the whole test run.
   resetExitCode();
 });
 

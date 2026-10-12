@@ -553,16 +553,10 @@ function removeDebris(dir: string): void {
 }
 
 /**
- * The transactional install. Everything happens in `install.next`: this build's manifest and
- * bunfig, the lock of the tree in place when the manifest is unchanged (a reinstall of the
- * recorded version, run `--frozen-lockfile`, so no transitive pin moves and the cache serves it
- * offline), then `bun install`, then the same verification the readers apply. Only a tree that
- * passed is renamed into place (never under a daemon still running from the previous tree,
- * runningDaemon), the previous tree aside first; then the record is written, then the retired tree
- * removed, then the other versions' caches. A failure at any step before the swap, a write
- * included, removes the stage and leaves the tree in place untouched: the version it holds stays
- * runnable, and the next attempt judges freezing against the manifest its lock was resolved from.
- * `version` null builds the shims-only tree.
+ * Everything happens in the stage, so a failure before the swap leaves the tree in place runnable.
+ * The lock rides along only when the manifest is unchanged: `--frozen-lockfile` then moves no
+ * transitive pin and the cache serves the reinstall offline. `version` null builds the shims-only
+ * tree.
  */
 function installIntoProxyHome(
   ctx: FloatContext,

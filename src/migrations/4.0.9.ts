@@ -513,17 +513,10 @@ export const v409IdentityCache: Migration = {
 
 // --- one store: state.json ---------------------------------------------------------------
 //
-// Away from 4.0.9: the root home held three account-wide stores (credentials.json, preferences.json,
-// ownership.json), each with its own lock under `locks/`. They are now ONE `state.json` under ONE
-// lock (src/copilot_api/state_store.ts): preferences.json's `global` map and credentials.json's
-// non-profile keys become `global`; each profile's settings section and its credential slot become
-// one `profiles.<name>`; ownership.json becomes `ownership`. A preferences.json still flat (pre-4.0.9
-// keys) is regrouped as it folds (regroupPreferences), so the fold is the one step that reads it.
-// This is a `layout` step, ahead of every other 4.0.9 step, which read the merged maps.
-// The same pass removes what nothing reads any more, naming each file: the three stores' lock
-// sidecars, the copilot-api login artifact under `opencode/` (a host selector the proxy no longer
-// runs under) and its then-empty directory, the catalog backup a past sync left, and the root
-// `github_token` with its login lock (the device flow stores its token in state.json now).
+// A `layout` step: every other 4.0.9 step reads the merged maps, so the fold runs first. It is also
+// the one reader left of a flat (pre-4.0.9) preferences.json, regrouped as it folds. Each debris
+// path is named as it goes; `opencode/github_token` was copilot-api's login under a host selector
+// the proxy no longer runs under.
 
 const FOLDED_STORES = ["credentials.json", "preferences.json", "ownership.json"] as const;
 type FoldedStore = (typeof FOLDED_STORES)[number];
@@ -863,17 +856,10 @@ export const v409RootDaemonHome: Migration = {
 
 // --- the `agent profile [<name>] <verb>` command tree --------------------------------------------
 //
-// Away from 4.0.9: the proxy resolver line in the agent files was `agent proxy-token --yes
-// [--profile <name>]`, a named profile's Direct line `agent auth --get --profile <name>`, and the
-// MCP argv (the `.claude.json` registration, every Claude Desktop entry) `agent mcp --serve
-// [--profile <name>]`; they are `agent profile [<name>] proxy-token --yes`, `agent profile <name>
-// auth --get`, and `agent profile [<name>] mcp --serve` now (the default's Direct line, `agent auth
-// --get`, stays: `agent auth` is an alias), and the readers classify the old lines as foreign, so
-// each is rewritten in place before the profile re-renders. The verbs are reserved names for a
-// NEW profile (isReservedProfileWord), and one named like a verb before the word became one is
-// renamed to the first unused `<name>-<n>` across the store, the daemon homes, and the agent
-// files: every artifact is retargeted before the re-render, so the user's own keys in the profile
-// files and the Desktop entry's identity survive.
+// The readers classify the old command lines as foreign, so each is rewritten in place before the
+// profile re-renders: the user's own keys in the profile files and the Desktop entry's identity
+// survive. The default's Direct line stays `agent auth --get`, an alias. A profile named like a
+// verb before the word was reserved is renamed first, across every artifact.
 
 /** The 4.0.9 spellings, the one place they still exist. */
 function legacyAuthGetArgs(profile: ProfileName): string[] {

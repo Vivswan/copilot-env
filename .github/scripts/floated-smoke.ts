@@ -25,15 +25,13 @@ export interface FloatedSmokeEvidence {
 }
 
 /**
- * The first failed check, in assertion order, or null once the daemon ran with the token it was
- * handed. Pure; test/copilot_api/smoke_scripts.e2e.test.ts drives it.
+ * Why the non-obvious checks exist; test/copilot_api/smoke_scripts.e2e.test.ts drives the function.
  *
- * legacy home recreated       -> the spawn stopped pinning COPILOT_API_HOME
- * an unresolved import in the -> THE regression this job exists for: the real proxy and the shims
- * log                            resolve their modules from the floated install in ways the fake
- *                                never exercises
- * the passed token            -> upstream's line for a `--github-token` it was handed; a daemon
- *                                that logged in on its own, or died before auth, never writes it
+ *   legacy home recreated    -> the spawn stopped pinning COPILOT_API_HOME
+ *   unresolved import logged -> THE regression this job exists for: the real proxy and the shims
+ *                               resolve modules from the floated install as the fake never does
+ *   the passed token logged  -> upstream writes it only for a `--github-token` it was handed; a
+ *                               daemon that logged in on its own, or died before auth, never does
  */
 export function floatedSmokeFailure(evidence: FloatedSmokeEvidence): string | null {
   if (!evidence.startOutput.includes("now using @jeffreycao/copilot-api@")) {

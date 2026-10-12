@@ -567,20 +567,13 @@ export function planImport(
   const profiles: PlannedProfile[] = [];
   const state = new CopilotEnvState();
   const recorded = state.readProfileSlot(null).mode;
-  // The default is one mode for both agents, decided at PLAN time so the skip lines and the
-  // outcome name both agents. Three bundles land BOTH agents:
-  //   NO default wiring (`none` for both, never a skipped or unmanaged mode) on a recorded Direct
-  //   default whose pair will not be stored at apply time -> rebakes both, as a named profile's
-  //   slot does below (importProfiles): a landing is where the pair is probed and stored;
-  //   one managed mode on a default with no record -> the first landing wires both;
-  //   one Direct agent on a recorded Direct default whose pair will not be stored -> the one-agent
-  //   write would land both anyway (runAgentConfig): decided here, so the preview names the other
-  //   agent's file too.
-  // "Not stored at apply time" is the apply's own test (runAgentConfig's directPairIncomplete: a half
-  // is present when stored OR covered by the pin or literal in force), judged here under the overlay
-  // the BUNDLE puts in force (the apply replaces the preferences before it wires, so the local ones
-  // would answer for the wrong document), plus the one fact only the plan knows: this import lands
-  // the default credential, whose write takes the pair with it.
+  // Decided at PLAN time, so the skip lines and the preview name both agents' files. `pairUnstored`
+  // is the apply's own test (runAgentConfig), judged under the BUNDLE's overlay: the apply replaces
+  // the preferences before it wires, so the local ones would answer for the wrong document. The
+  // plan alone knows one more fact: a default credential landing takes the pair with it.
+  //
+  // A bundle with no default wiring still rebakes both on such a default: a landing is where the
+  // pair is probed and stored, and nothing else in the import would wire it.
   const named = modes.codex ?? modes.claude;
   const oneNamed = named !== null && (modes.codex === null) !== (modes.claude === null);
   /** A landing overrides a skip line for the OTHER agent (an unmanaged or gated mode there): the

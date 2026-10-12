@@ -705,10 +705,10 @@ export function knownCodexHomes(): { homes: string[]; complete: boolean } {
     complete = false;
   }
   const homes = new Set<string>([resolveCodexHome(prefs).home]);
-  // The default home resolves via homedir(); the farm root via its creator's contract
-  // (codexFarmHostsDir on homeDir, process.env.HOME first). They can differ (HOME set on Windows),
-  // so BOTH are swept; the Set dedupes the common case. A `codex.home` root is a third: its own
-  // farm hosts dir is swept beside the default one, since a key change leaves the other behind.
+  // The default home reads USERPROFILE on Windows (plainCodexHome -> userHomeDir); the farm root
+  // reads HOME first (codexFarmHostsDir -> homeDir). They can differ (HOME set on Windows), so BOTH
+  // are swept. A `codex.home` root is a third: its own farm hosts dir is swept beside the default
+  // one, since a key change leaves the other behind.
   homes.add(plainCodexHome());
   const hostsDirs = [codexFarmHostsDir()];
   if (prefs.explicit !== null) {

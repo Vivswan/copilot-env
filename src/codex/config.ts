@@ -417,23 +417,14 @@ async function applyCodexConfig(
   if (profile === null) syncCodexCatalogReference();
 }
 
-/** The Direct facts a write bakes, resolved ONCE on the host in use: the `identity` pin, else
- *  identity selection on that host, then the `host` literal, else the host probe under that
- *  identity; a host `auto` moves to re-runs the selection there. Throws when the credential is
- *  rejected under every known identity.
+/** `probe` stores nothing, so a listing such as `agent profile models --direct` can never overwrite
+ *  the stored pair with a transient answer. Throws when the credential is rejected under every
+ *  known identity.
  *
- *  Claude           -> the result rides in ANTHROPIC_BASE_URL + ANTHROPIC_CUSTOM_HEADERS
- *  Codex            -> the same result rides in base_url + http_headers
- *  `token` supplied -> skips a redundant credential resolve
- *
- *  `probe` answers and stores nothing: a listing such as `agent profile models --direct` probes
- *  this way, so a transient answer there can never overwrite the stored pair.
- *
- *  `land` is the LANDING: landDirectPair (src/copilot_api/direct_pair.ts, the one probe-and-store
- *  owner) as the branded wiring the writers take. A named profile lands when a credential lands
- *  (`agent profile <name> add`, `agent profile <name> auth`, an import) or a re-render finds its
- *  slot holding no pair. The default profile never lands here: its landing probes per agent and
- *  stores through commitDefaultWiring (configure_defaults.ts) once both agents' files are written. */
+ *    `land`, a named profile -> the landing: a credential landing, an import, or a re-render that
+ *                               finds the slot empty
+ *    the default profile     -> never lands here; commitDefaultWiring (configure_defaults.ts)
+ *                               stores its pair once both agents' files are written */
 export async function directWiringFor(
   profile: Profile,
   token: string | null | undefined,

@@ -211,13 +211,7 @@ type GhAccountChooserMode = "interactive" | "headless" | "dry-run";
 /**
  * Pinning is the only default: a later `gh auth login` must never switch whose Copilot credit gets
  * spent. When nothing can be pinned honestly this throws naming the escape hatches; the one auto
- * settlement is a sole saved login gh cannot serve by name.
- *   one saved login  -> SOLE: pinned when gh serves it by name, else followed as auto (the slot
- *                       write settles it, settleGhCliAccount)
- *   one env-only     -> pins itself without a TTY (its pin may fail verification with nothing to
- *                       escape to); under a TTY the user decides
- *   several, no TTY  -> pins the active one when pickable, else errors
- *   several, TTY     -> the picker lists the accounts first, auto as the explicit LAST option
+ * settlement is a sole saved login gh cannot serve by name (settleGhCliAccount decides that).
  * `look` is a test seam.
  */
 export async function chooseGhAccount(
@@ -474,16 +468,13 @@ export function loginWithGhCli(
 }
 
 /** Verified BEFORE recording, or a failed check would point `--get` at a `gh` that cannot produce
- *  a token. An UNPROVEN look wears its own words: "not authenticated" and the `gh auth login`
- *  advice are wrong when gh was never asked. Every miss quotes the gh call and its stderr: the
- *  fix differs by cause (an old gh, a missing login, a switched account, an env token), and the
- *  look named it. Read-only, so a dry run runs it too.
+ *  a token; read-only, so a dry run runs it too.
  *
- *  A SOLE saved login is pinned when `gh auth token --user` serves it. When that call misses but
- *  the plain call (scoped to the same host) answers, gh cannot serve the account by name (a
- *  pre-2.40 single-account hosts.yml with no `users:` map, or a gh without `--user`) and the slot
- *  follows gh's active account instead: with one login that is the same account, and the line
- *  says how a pin becomes servable. */
+ *    unproven look                        -> its own words: "not authenticated" is wrong when gh
+ *                                            was never asked
+ *    `--user` misses, the plain call hits -> gh's quirk (a pre-2.40 hosts.yml with no `users:`
+ *                                            map, or no `--user` flag): the sole login follows
+ *                                            gh's active account instead of pinning */
 function settleGhCliAccount(
   account: GhAccountSelection,
   look: (ghUser: string | null) => GhTokenLook,

@@ -544,8 +544,8 @@ test("the sweep signature matches every real daemon shape, straight from daemonA
     ),
   ).toBe(true);
   // The same package run by another tool from its own node_modules: daemon-shaped, and not ours.
-  // Under deno a copilot-api run was ours by construction; under bun only our spawn's marks say so:
-  // the preload file under this root home's proxy home, or an entry in this proxy home's install.
+  // Only our spawn's marks say so: the preload file under this root home's proxy home, or an entry
+  // in this proxy home's install.
   expect(
     isDaemonProcess({
       pid: 1,

@@ -1,41 +1,28 @@
-// The fake model endpoint the REAL claude and codex CLIs (and our own Direct smoke,
-// src/copilot_api/endpoint_smoke.ts) run against with no network and no credential: aimock
-// (@copilotkit/aimock, pinned in package.json; zero runtime deps, MIT) behind a thin front.
+// The fake model endpoint the REAL claude and codex CLIs and the Direct smoke
+// (src/copilot_api/endpoint_smoke.ts) run against: aimock behind a thin front. aimock rather than
+// a hand-rolled emitter: its shapes are validated daily against the real vendors by its drift job.
 //
-// Hand-rolling the SSE emitter was weighed and dropped: aimock's Anthropic and OpenAI shapes are
-// validated daily against the real vendors by its own drift job (.github/workflows/test-drift.yml
-// in CopilotKit/aimock), which is a better fidelity anchor than SDK types alone. The front exists
-// for the ONE route aimock lacks in Copilot's shape: Copilot serves its catalog at the ROOT
-// `/models` with picker fields (capabilities.limits, model_picker_enabled, supported_endpoints)
-// that both smoke pickers read, while aimock serves `/v1/models` as a plain OpenAI list.
-// Everything else is proxied to aimock byte for byte, streams included.
-//
-// WIRES, as the CLIs and the smoke send them
-//   GET  /models                    -> the front: Copilot's catalog (CATALOG below)
-//   GET  /v1/models                 -> aimock: its own plain OpenAI list
-//   POST /v1/messages               -> aimock: Anthropic Messages, SSE when the body says stream
-//   POST /responses, /v1/responses  -> aimock: OpenAI Responses (Codex's wire, no /v1 on Copilot)
-//   POST /v1/chat/completions       -> aimock: OpenAI chat completions
+// The front serves the ONE route aimock lacks in Copilot's shape and proxies everything else to
+// aimock byte for byte, streams included.
+//   GET  /models                    -> Copilot's catalog at the ROOT, with the picker fields both
+//                                      smoke pickers read; aimock has only `/v1/models`, a plain
+//                                      OpenAI list
+//   POST /responses, /v1/responses  -> Codex's wire; Copilot has no /v1 on it
 //   HEAD /api/hello                 -> aimock 404; Claude Code probes it and proceeds regardless
 //   POST /v1/messages/count_tokens  -> aimock 404; claude never calls it in --print mode
 //
-// SCENARIOS select one request's reply through the header aimock matches EXACTLY,
-// `X-AIMock-Context: <name>` (SCENARIO_HEADER): claude forwards it from ANTHROPIC_CUSTOM_HEADERS,
-// codex from model_providers.<id>.http_headers. Each name is one fixture in the file this module
-// writes per start; context fixtures come FIRST because aimock serves the first match and a
-// fixture without a context matches every request (the default reply, last).
-//   text      the reply text, optional usage override
-//   error     a status with the wire's own error envelope (Anthropic's drops `code`)
-//   truncate  aimock cuts the socket once `afterFrames` SSE frames are due, counted from the FIRST
-//             frame (the prelude included): `truncateAfterChunks: N` delivers N - 1 frames, so a
-//             cut after the first delta counts the request's whole prelude (a codex request with
-//             `include: ["reasoning.encrypted_content"]` gets a 2-frame reasoning item first)
-// Every streaming fixture carries `latency >= 1`: at 0 aimock's truncation delivers zero bytes.
+// A scenario picks one request's reply by the header aimock matches EXACTLY (SCENARIO_HEADER):
+// claude forwards it from ANTHROPIC_CUSTOM_HEADERS, codex from model_providers.<id>.http_headers.
 //
-// JOURNAL: `journal()` merges aimock's `GET /__aimock/journal` (method, path, headers, parsed
-// body, status) with the front's own entries for the catalog route. aimock REDACTS credential
-// header values (`authorization`, `x-api-key` read "[REDACTED]"), so a test asserts their
-// presence there and their value only on a catalog entry, which the front journals in full.
+// aimock quirks the fixtures work around:
+//   first matching fixture wins   -> context fixtures FIRST, the no-context default last
+//   an error scenario's `code`    -> dropped on /v1/messages: aimock's Anthropic envelope has none
+//   `truncateAfterChunks: N`      -> N - 1 frames, counted from the FIRST frame, prelude included
+//                                    (a codex reasoning item alone is 2 frames)
+//   truncation at `latency: 0`    -> zero bytes, so every streaming fixture has `latency >= 1`
+//   the journal REDACTS `authorization` and `x-api-key`
+//                                 -> a test asserts their presence there and their value only on a
+//                                    catalog entry, which the front journals in full
 import { readFileSync, writeFileSync } from "node:fs";
 import { createServer, request as httpRequest, type IncomingMessage } from "node:http";
 import { join } from "node:path";

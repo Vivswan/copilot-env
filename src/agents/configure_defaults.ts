@@ -49,15 +49,10 @@ function initCommand(mode: RequestedMode): string {
 }
 
 /**
- * ONE agent's re-render of the recorded default mode (`agent profile sync --codex`, `agent profile sync --claude`, the launchers'
- * proxy re-sync). No flag renders the recorded mode; a flag must name it. It never writes the
- * record or the pair: a Direct re-render bakes the slot's stored pair under the pin and literal in
- * force (renderDirectWiring, zero requests). Two states leave one agent nothing to re-render, and
- * one agent's write can set neither the mode both share nor the pair both bake: NO record, and a
- * Direct record whose slot holds no pair (a credential landed since the last wiring). Both land
- * BOTH agents through configureDefaultAgents, as `agent init` spelled with the mode would
- * (profiles are atomic units, the default included), and say so. `adapters` is that landing's pair
- * (the test seam).
+ * One agent's re-render behind `agent profile sync --codex|--claude` and the launchers' proxy
+ * re-sync. It never writes the record or the pair: one agent's write cannot set what both agents
+ * share, so the two states with nothing to re-render land BOTH agents, as `agent init` would.
+ * `adapters` is that landing's pair (the test seam).
  */
 export async function runAgentConfig(
   adapter: AgentAdapter,
@@ -146,18 +141,10 @@ interface DefaultAgentsOutcome {
 }
 
 /**
- * Warns per agent and keeps going; the returned `failures` let a caller with a stricter contract
- * (the settings-bundle import) fail the run instead of printing success over a broken wiring. The
- * modes returned are what each write LANDED (never read back off the agent files): an agent left
- * alone reports `none`, and an agent whose write failed reports `none` too and is named in
- * `failedAgents`, so a caller can label it "unchanged" rather than "not configured" (its existing
- * files were not touched).
- *
- * A request naming BOTH agents is the landing that sets or moves the default's mode: the modes are
- * resolved first (one probe pass over both agents when both are `auto`, Direct only when each
- * accepts), then each agent is written, then commitDefaultWiring lands the record and the pair
- * once both writes succeeded. A request naming ONE agent goes through runAgentConfig: that agent's
- * re-render on a recorded mode, or the both-agents landing on none.
+ * Warns per agent and keeps going; `failures` lets a stricter caller (the settings-bundle import)
+ * fail the run instead of printing success over a broken wiring. The modes are what each write
+ * LANDED, never read back off the agent files: an agent whose write failed reports `none` and is
+ * named in `failedAgents`, so a caller can say "unchanged" rather than "not configured".
  */
 export async function configureDefaultAgents(
   request: DefaultAgentRequest,

@@ -497,9 +497,9 @@ test.skipIf(process.platform === "win32")(
 
 test("the real probe child never sees a provider variable the parent shell exported", async () => {
   // The env the probe builds omits the provider families (pinned by the test below), but what the
-  // runtime's spawn hands the child is its own semantics (deno once merged the parent's variables
-  // back in whatever `env` said): a shell ANTHROPIC_BASE_URL at a running proxy would answer the
-  // Claude smoke prompt and mint a Direct verdict the proxy earned. Only a REAL child can see that.
+  // runtime's spawn hands the child is its own semantics: a shell ANTHROPIC_BASE_URL at a running
+  // proxy would answer the Claude smoke prompt and mint a Direct verdict the proxy earned. Only a
+  // REAL child can see that.
   const restoreEnv = envSnapshot();
   process.env.ANTHROPIC_BASE_URL = "http://127.0.0.1:4141";
   process.env.OPENAI_BASE_URL = "http://127.0.0.1:4141/v1";

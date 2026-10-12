@@ -11,6 +11,7 @@ import {
   commandExists,
   findCommand,
   LOOK_KILL_SIGNAL,
+  POWERSHELL_LOOK_TIMEOUT_MS,
   resolveCommand,
   withPowershellChildEnv,
 } from "../utils/command.ts";
@@ -96,7 +97,7 @@ function refreshWindowsPath(): void {
           "$user=[Environment]::GetEnvironmentVariable('Path','User');" +
           "($machine,$user,$env:Path) -join ';'",
       ],
-      { encoding: "utf8", env },
+      { encoding: "utf8", env, timeout: POWERSHELL_LOOK_TIMEOUT_MS, killSignal: LOOK_KILL_SIGNAL },
     ),
   );
   if (result.status !== 0 || !result.stdout.trim()) {

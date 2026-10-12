@@ -25,14 +25,16 @@ function bodies(api: string): Record<string, unknown> {
   };
 }
 
-/** Prints one line per path: `<status> <content-type> <path> <body json>`. */
+/** Prints one line per path: `<status> <content-type> <path> <body json>`. The server names its
+ *  content type itself (Response.json's default differs per runtime), so the lines pin that the
+ *  shim passes the upstream headers through, not a runtime's default. */
 function runPreloaded(host: string | null): string[] {
   const source = [
     `const bodies = ${CHILD_VALUES}.bodies;`,
     "const server = Bun.serve({ port: 0, hostname: '127.0.0.1', fetch: (req) => {",
     "  const url = new URL(req.url);",
     "  const path = url.pathname + url.search;",
-    "  return Response.json(bodies[path], { headers: { 'x-probe': path } });",
+    "  return new Response(JSON.stringify(bodies[path]), { headers: { 'content-type': 'application/json', 'x-probe': path } });",
     "} });",
     "const base = `http://127.0.0.1:${server.port}`;",
     "for (const path of Object.keys(bodies)) {",

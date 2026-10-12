@@ -1,0 +1,73 @@
+// A child the CLI spawns only to read something must carry a bound: with none, a child that never
+// exits (or whose exit Bun never reports, oven-sh/bun#41024) hangs the command. The required
+// `timeoutMs` of runCaptured (src/utils/command.ts) covers its callers; this rule covers every other
+// node:child_process call in src/, so a new raw look cannot drop the bound unnoticed. biome.json
+// scopes it to src/.
+//
+// Flagged: a spawnSync/execFile/execFileSync/spawn call, bare or as a member, with no argument
+// that is an object literal carrying its own `timeout` member (a bound held in a variable or a
+// spread, or a `timeout` nested under another key, reads as unbounded). A one-argument `spawn` is
+// not matched, bare or as a member: `spawn` is also an ordinary callback name, and a Bun.spawn
+// takes its options inside its one argument. An aliased import of one of the four names from
+// node:child_process is flagged too, since the call would then escape the name list. A child that
+// runs FOR the user (an installer, the agent launch, the daemon) is excused at its call site with
+// `// biome-ignore lint/plugin/no_unbounded_child_spawn: <why it runs for the user>`, never by
+// path. Teeth pinned by test/utils/child_bound_lint.e2e.test.ts.
+language js(typescript)
+
+pattern bounded_options() {
+  JsObjectExpression(members=$members) where {
+    $members <: some or {
+      JsPropertyObjectMember(name=`timeout`),
+      JsShorthandPropertyObjectMember(name=`timeout`)
+    }
+  }
+}
+
+pattern look_callee() {
+  or {
+    `spawnSync`,
+    `execFile`,
+    `execFileSync`,
+    `spawn`,
+    `$object.spawnSync`,
+    `$object.execFile`,
+    `$object.execFileSync`,
+    `$object.spawn`
+  }
+}
+
+pattern child_process_module() {
+  or {
+    `"node:child_process"`,
+    `"child_process"`
+  }
+}
+
+or {
+  or {
+    // The node form, not the snippet `$callee($file)`: a trailing metavariable in a snippet's
+    // argument list matches the whole list, at any arity.
+    JsCallExpression(callee=$callee, arguments=JsCallArguments(args=[$file])) where {
+      not $callee <: or {
+        `spawn`,
+        `$object.spawn`
+      }
+    },
+    `$callee($file, $a)` where { not $a <: bounded_options() },
+    `$callee($file, $a, $b)` where { not $a <: bounded_options(), not $b <: bounded_options() },
+    `$callee($file, $a, $b, $c)` where { not $a <: bounded_options(), not $b <: bounded_options() }
+  } as $call where {
+    $callee <: look_callee(),
+    register_diagnostic(span=$call, message="a child spawned to read something needs a bound: pass `timeout` (with `killSignal: \"SIGKILL\"`) or go through runCaptured (src/utils/command.ts); a child that runs for the user is excused here with a biome-ignore naming why")
+  },
+  `import $clause from $source` as $import where {
+    $source <: child_process_module(),
+    not $import <: `import type $c from $s`,
+    $clause <: contains JsNamedImportSpecifier(name=$name) as $specifier where {
+      $name <: r"^(?:spawn|spawnSync|execFile|execFileSync)$",
+      not $specifier <: `type $n as $local`
+    },
+    register_diagnostic(span=$import, message="import spawn, spawnSync, execFile and execFileSync under their own names: an alias hides the call from the bound check")
+  }
+}

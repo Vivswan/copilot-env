@@ -235,6 +235,7 @@ export async function prepareLaunch(action: LaunchAction): Promise<LaunchPlan | 
 function spawnAgentCli(plan: LaunchPlan): number {
   const spawn = verbatimCliSpawn(plan.command, plan.args);
   // nosemgrep: javascript.lang.security.audit.spawn-shell-true.spawn-shell-true -- Windows-only, for .cmd shims; the spec quotes args
+  // biome-ignore lint/plugin/no_unbounded_child_spawn: the agent CLI runs for the user with the terminal handed over
   const result = spawnSync(spawn.file, spawn.args, {
     stdio: "inherit",
     shell: spawn.shell,

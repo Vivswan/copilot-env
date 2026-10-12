@@ -63,6 +63,7 @@ function run(
   args: string[],
   options: Parameters<typeof spawnSync>[2] = {},
 ): ReturnType<typeof spawnSync> {
+  // biome-ignore lint/plugin/no_unbounded_child_spawn: installers run for the user on inherited stdio
   return spawnSync(command, args, { stdio: "inherit", ...options });
 }
 
@@ -111,6 +112,7 @@ function refreshWindowsPath(): void {
 function addWindowsUserPath(directory: string): void {
   if (process.platform !== "win32") return;
   const result = withPowershellChildEnv("powershell", (env) =>
+    // biome-ignore lint/plugin/no_unbounded_child_spawn: a user-PATH registry write for the user, where a kill mid-write is worse than a hang
     spawnSync(
       "powershell",
       [
@@ -166,13 +168,24 @@ function installNodePosix(): void {
   if (result.status !== 0) throw new Error("nvm failed to install/activate Node LTS.");
 }
 
-/** A FAILED winget look reads absent here and only aborts (nothing installs off it); ensureNpm's
- *  npm look just completed through the same probe shell. A dry run refuses here too. */
+/** Either miss only aborts (nothing installs off it), but a failed look must not hand out the
+ *  install advice a proven absence earns. A dry run refuses here too. */
 function assertWingetAvailable(): void {
-  if (commandExists("winget")) return;
-  throw new Error(
-    "Cannot install Node.js because winget is unavailable. Install Node.js LTS and rerun 'agent shell --clis'.",
-  );
+  const look = findCommand("winget");
+  switch (look.kind) {
+    case "found":
+      return;
+    case "unproven":
+      throw new Error(
+        "Cannot install Node.js: could not check for winget (the command probe failed to run).",
+      );
+    case "absent":
+      throw new Error(
+        "Cannot install Node.js because winget is unavailable. Install Node.js LTS and rerun 'agent shell --clis'.",
+      );
+    default:
+      assertNever(look);
+  }
 }
 
 function installNodeWindows(): void {
@@ -261,7 +274,9 @@ function spawnNpm(args: string[], capture: boolean): SpawnSyncReturns<string> {
     stdio: capture ? ["ignore", "pipe", "inherit"] : "inherit",
     shell: s.shell,
     env: childEnvWithPath([npmDir]),
-    ...(capture ? { timeout: NPM_READ_TIMEOUT_MS, killSignal: LOOK_KILL_SIGNAL } : {}),
+    // An install runs for the user and gets no bound.
+    timeout: capture ? NPM_READ_TIMEOUT_MS : undefined,
+    killSignal: LOOK_KILL_SIGNAL,
   });
 }
 

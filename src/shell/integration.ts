@@ -491,6 +491,7 @@ function relaxWindowsExecutionPolicy(_target: { source: "system" }): void {
   }
   for (const exe of PS_EXES) {
     const result = withPowershellChildEnv(exe, (env) =>
+      // biome-ignore lint/plugin/no_unbounded_child_spawn: a Set-ExecutionPolicy registry write for the user, where a kill mid-write is worse than a hang
       spawnSync(exe, ["-NoProfile", "-Command", command], {
         stdio: ["ignore", "inherit", "inherit"],
         env,

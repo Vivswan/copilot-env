@@ -285,6 +285,7 @@ function stage(attested: Attested, top: string, versionName: string): Staged {
  *   manifest names another version  -> the staged binary provisioned the wrong release
  */
 function provision(staged: Staged, stdio: StdioOptions): Provisioned {
+  // biome-ignore lint/plugin/no_unbounded_child_spawn: the staged release lays down its runtime files for the user
   const result = spawnSync(staged.binary, ["install", "--assets-only"], {
     cwd: staged.versionRoot,
     stdio,

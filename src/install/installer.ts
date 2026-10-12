@@ -641,6 +641,7 @@ export function runPostFlipMigrations(
     return;
   }
   try {
+    // biome-ignore lint/plugin/no_unbounded_child_spawn: the new release's migrations run for the user on inherited stdio
     const result = spawnSync(binary, args, {
       cwd: top,
       stdio,
@@ -681,6 +682,7 @@ function wireShellsThroughInstalledBinary(
       );
       continue;
     }
+    // biome-ignore lint/plugin/no_unbounded_child_spawn: the shell integration runs for the user on inherited stdio
     const result = spawnSync(binary, args, {
       cwd: top,
       stdio: "inherit",

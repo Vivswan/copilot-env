@@ -616,6 +616,7 @@ export function launchDaemon(spec: DaemonSpec): number {
   fs.writeText(daemonPreloadFile(spec.entry.proxyHome), renderDaemonPreload(spec), {
     secretKeys: [],
   });
+  // biome-ignore lint/plugin/no_unbounded_child_spawn: the daemon runs for the user, detached and long-lived
   const proc = spawn(process.execPath, daemonArgv(spec), {
     cwd: spec.entry.proxyHome,
     stdio: [devnull, logFd, logFd],

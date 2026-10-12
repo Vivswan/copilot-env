@@ -394,6 +394,7 @@ function defaultInstallRunner(
   args: string[],
   options: { cwd: string; env: Record<string, string> },
 ): InstallRunResult {
+  // biome-ignore lint/plugin/no_unbounded_child_spawn: the proxy package install runs for the user
   const result = spawnSync(process.execPath, args, {
     cwd: options.cwd,
     env: { ...process.env, ...options.env },

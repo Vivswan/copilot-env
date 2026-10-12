@@ -1097,10 +1097,16 @@ test("cli.ts cost prices at the stored pricing-url when the flag is omitted and 
   const storedUrl = "https://127.0.0.1:9/stored/models";
   const flagUrl = "https://127.0.0.1:9/flag/models";
   const home = env.COPILOT_API_HOME ?? "";
+  // GitHub's rate card is pointed at the same dead port: a reachable card prices Copilot models at
+  // GitHub's own rates over the seeded OpenRouter list, which is not what this test measures.
   writeFileSync(
     join(home, "state.json"),
     JSON.stringify({
-      global: { "daemon.port": 4199, "cost.pricing-url": storedUrl },
+      global: {
+        "daemon.port": 4199,
+        "cost.pricing-url": storedUrl,
+        "cost.github-pricing-url": "https://127.0.0.1:9/rate-card",
+      },
     }),
   );
   // Two days old: expired, so the run refreshes (fails at 127.0.0.1:9) and falls back

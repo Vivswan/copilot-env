@@ -219,8 +219,9 @@ test("a file that hangs before registering a test is killed with its tree at the
 // Bun 1.4.x segfaults on the Windows runner under a file that is otherwise green, about one run
 // in three, exit 3. Its crash handler labels the line by the thread that died, four ways: the
 // main thread, a Windows thread by id or by name, and a bare "panic: " for a thread on macOS or
-// Linux. Every row runs under each. The two controls keep a flaky TEST from hiding behind the
-// retry: a plain failure runs once, a second panic is final.
+// Linux. The launcher joins stdout and stderr chunks in arrival order, so an unterminated stdout
+// line may sit right before the panic. Every row runs under each shape. The two controls keep a
+// flaky TEST from hiding behind the retry: a plain failure runs once, a second panic is final.
 test("a file whose bun process dies of a runtime panic runs once more, whichever thread the panic line names; a test failure and a second panic are final", () => {
   const dir = tempDir("run-tests-panic-");
   const retryHeader = "died of a Bun runtime panic (exit 3), running it once more";
@@ -229,6 +230,7 @@ test("a file whose bun process dies of a runtime panic runs once more, whichever
     "thread-id": "panic(thread 7032): synthetic",
     "thread-name": "panic(io thread): synthetic",
     bare: "panic: synthetic",
+    "mid-line": "progresspanic: synthetic",
   };
   const count = (text: string, needle: string): number => text.split(needle).length - 1;
   const rows = [

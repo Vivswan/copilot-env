@@ -39,10 +39,12 @@ const PIPE_GRACE_MS = 5_000;
 /** Bun dying of its own fault: this exit code AND a panic line in the output (a test failure is
  *  exit 1, whatever it prints). Bun's crash handler labels the line by the thread that died:
  *  `panic(main thread): `, on Windows `panic(thread 7032): ` or `panic(<thread name>): `, and a
- *  bare `panic: ` for a thread on macOS or Linux. The case: Bun 1.4.x segfaults on the Windows
- *  runner about one run in three. */
+ *  bare `panic: ` for a thread on macOS or Linux. Not anchored to a line start: stdout and
+ *  stderr chunks join in arrival order, so an unterminated stdout line may sit right before it,
+ *  and a false match only costs one more run, which is judged. The case: Bun 1.4.x segfaults on
+ *  the Windows runner about one run in three. */
 const BUN_PANIC_EXIT = 3;
-const BUN_PANIC_LINE = /^panic(\([^)]*\))?: /m;
+const BUN_PANIC_MARKER = /panic(\([^)]*\))?: /;
 
 interface FileResult {
   file: string;
@@ -248,7 +250,7 @@ async function runFile(file: string, budgetMs: number): Promise<FileResult> {
           budgetMs,
         )}) and was killed\n`
       : chunks.join("");
-    const panicked = !overran && exitCode === BUN_PANIC_EXIT && BUN_PANIC_LINE.test(output);
+    const panicked = !overran && exitCode === BUN_PANIC_EXIT && BUN_PANIC_MARKER.test(output);
     return {
       file,
       exitCode: overran ? 1 : exitCode,

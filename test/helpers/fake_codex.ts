@@ -9,6 +9,7 @@ import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resetCatalogProbeState } from "../../src/codex/catalog.ts";
 import { CI_NO_LIVE_LOOKUPS_ENV, resetCodexVersionMemo } from "../../src/codex/user_agent.ts";
+import { runSync } from "./run.ts";
 
 /** What `codex debug models` answers when the throwaway home references a candidate.
  *    accept         -> parses a catalog-shaped candidate (dumps it back), fails garbage
@@ -94,5 +95,9 @@ export function fakeCodexOnPath(dir: string, spec: Partial<FakeCodexSpec> = {}):
     },
   };
   fake.script(spec);
+  // The dispatcher's first start on a Windows runner has taken seconds, as long as the generator's
+  // dump budget; that start-up cost is the fixture's, paid here, before any budgeted spawn.
+  if (process.platform === "win32") runSync(join(bin, "codex.cmd"), ["--version"], { shell: true });
+  else runSync(join(bin, "codex"), ["--version"]);
   return fake;
 }

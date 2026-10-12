@@ -706,7 +706,7 @@ test("generateCodexModelCatalog writes the patched catalog file", async () => {
   const narrated = await stderrOf(async () => {
     ok = await generate();
   });
-  expect(ok).toBe(true);
+  expect(ok, narrated).toBe(true);
   const file = new CopilotApiPaths().codexModelCatalogFile;
   // The catalog lives inside the data home: written, never named (stdout may be a token).
   expect(linesNaming(narrated, file)).toEqual([]);

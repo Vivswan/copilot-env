@@ -400,7 +400,18 @@ let bundledDump: string | null | undefined;
 function bundledCatalog(): string | null {
   if (bundledDump === undefined) {
     const result = runCodexDebugModels(["--bundled"], () => {}, BUNDLED_DUMP_TIMEOUT_MS);
-    bundledDump = result === null || result.error || result.status !== 0 ? null : result.stdout;
+    if (result !== null && !result.error && result.status === 0) {
+      bundledDump = result.stdout;
+    } else {
+      const failure =
+        result === null
+          ? "did not run"
+          : result.error
+            ? errMessage(result.error)
+            : `exited ${result.status}: ${result.stderr.split("\n")[0] ?? ""}`;
+      logger.warn(`codex model catalog not written: codex debug models --bundled ${failure}`);
+      bundledDump = null;
+    }
   }
   return bundledDump;
 }

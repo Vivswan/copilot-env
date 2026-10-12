@@ -41,8 +41,7 @@ const PIPE_GRACE_MS = 5_000;
  *  `panic(main thread): `, on Windows `panic(thread 7032): ` or `panic(<thread name>): `, and a
  *  bare `panic: ` for a thread on macOS or Linux. Not anchored to a line start: stdout and
  *  stderr chunks join in arrival order, so an unterminated stdout line may sit right before it,
- *  and a false match only costs one more run, which is judged. The case: Bun 1.4.x segfaults on
- *  the Windows runner about one run in three. */
+ *  and a false match only costs one more run, which is judged. */
 const BUN_PANIC_EXIT = 3;
 const BUN_PANIC_MARKER = /panic(\([^)]*\))?: /;
 

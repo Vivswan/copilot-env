@@ -11,7 +11,9 @@ import { mkdirSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { availableParallelism, tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { deadline } from "@std/async";
 import { Command, CommanderError, Option } from "commander";
+import treeKill from "tree-kill";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const TEST_DIR = join(ROOT, "test");
@@ -25,6 +27,13 @@ const JOBS_ENV = "COPILOT_ENV_TEST_JOBS";
 const TEST_HOME_ENV = "COPILOT_ENV_TEST_HOME";
 // Windows runners are the slow leg.
 const PER_TEST_TIMEOUT_MS = process.platform === "win32" ? 120_000 : 60_000;
+/** The whole file, wall clock: bun's --timeout covers test bodies only, so a file that never
+ *  registers one (a module-scope await that never settles) would otherwise hold the run until the
+ *  workflow's own timeout. Generous: the longest file takes a quarter of it. */
+const FILE_BUDGET_MS = 10 * 60_000;
+const FILE_BUDGET_ENV = "COPILOT_ENV_TEST_FILE_BUDGET_MS";
+/** The pipes settle with the child unless a descendant still holds them. */
+const PIPE_GRACE_MS = 5_000;
 
 interface FileResult {
   file: string;
@@ -42,7 +51,7 @@ interface Selection {
 function usage(): Command {
   return new Command("bun scripts/run_tests.ts")
     .description(
-      `Runs every ${TEST_GLOB} file under test/, or under each directory PATH, plus each file PATH, one \`bun test\` process per file, ${JOBS_ENV} files at a time (default: min(4, the CPU count)).`,
+      `Runs every ${TEST_GLOB} file under test/, or under each directory PATH, plus each file PATH, one \`bun test\` process per file, ${JOBS_ENV} files at a time (default: min(4, the CPU count)), each file killed and failed past ${FILE_BUDGET_ENV} ms (default: ${FILE_BUDGET_MS}).`,
     )
     .argument("[path...]", "a test file, or a directory of them")
     .addOption(
@@ -118,6 +127,16 @@ function jobs(): number {
   return count;
 }
 
+function fileBudgetMs(): number {
+  const raw = process.env[FILE_BUDGET_ENV];
+  if (raw === undefined || raw === "") return FILE_BUDGET_MS;
+  const ms = Number(raw);
+  if (!Number.isInteger(ms) || ms < 1) {
+    throw new Error(`${FILE_BUDGET_ENV} must be a positive integer, got ${JSON.stringify(raw)}`);
+  }
+  return ms;
+}
+
 /**
  * The parent's env with NODE_ENV pinned and HOME at `home`: `bun test` sets NODE_ENV=test when
  * it is unset, which consola reads as a test run and silences the info output the logger tests
@@ -164,7 +183,7 @@ function childHome(): { home: string; dispose: () => void } {
 /** Aborted on SIGINT or SIGTERM, so an interrupted run leaves no `bun test` behind. */
 const cancel = new AbortController();
 
-async function runFile(file: string): Promise<FileResult> {
+async function runFile(file: string, budgetMs: number): Promise<FileResult> {
   const started = performance.now();
   const { home, dispose } = childHome();
   try {
@@ -181,28 +200,61 @@ async function runFile(file: string): Promise<FileResult> {
       },
     );
     const chunks: string[] = [];
+    const readers: ReadableStreamDefaultReader<Uint8Array>[] = [];
     const collect = async (stream: ReadableStream<Uint8Array>): Promise<void> => {
+      const reader = stream.getReader();
+      readers.push(reader);
       const decoder = new TextDecoder();
-      for await (const chunk of stream) chunks.push(decoder.decode(chunk, { stream: true }));
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(decoder.decode(value, { stream: true }));
+      }
       chunks.push(decoder.decode());
     };
-    const [exitCode] = await Promise.all([
-      child.exited,
-      collect(child.stdout),
-      collect(child.stderr),
-    ]);
-    return { file, exitCode, output: chunks.join(""), ms: performance.now() - started };
+    const settled = Promise.all([collect(child.stdout), collect(child.stderr)]);
+    let overran = false;
+    let killed: Promise<void> = Promise.resolve();
+    const timer = setTimeout(() => {
+      overran = true;
+      // The whole tree: a test that hangs after spawning a daemon never reaches its teardown,
+      // and a kill of the one pid would leave that daemon running.
+      killed = killTree(child.pid);
+    }, budgetMs);
+    const exitCode = await child.exited.finally(() => clearTimeout(timer));
+    await killed;
+    // A descendant that inherited the pipes and outlived the child keeps them open: past the
+    // grace the readers are cancelled, which releases the pipes, so the launcher can exit.
+    try {
+      await deadline(settled, PIPE_GRACE_MS);
+    } catch (error) {
+      if (!(error instanceof DOMException && error.name === "TimeoutError")) throw error;
+      for (const reader of readers) await reader.cancel();
+    }
+    const output = overran
+      ? `${chunks.join("")}\n${displayName(file)} ran past the launcher's file budget (${seconds(
+          budgetMs,
+        )}) and was killed\n`
+      : chunks.join("");
+    return { file, exitCode: overran ? 1 : exitCode, output, ms: performance.now() - started };
   } finally {
     dispose();
   }
 }
 
-async function runAll(files: string[], limit: number): Promise<FileResult[]> {
+/** A process already gone is not an error: the tree is what the budget wanted ended. */
+function killTree(pid: number): Promise<void> {
+  return new Promise((resolve) => {
+    treeKill(pid, "SIGKILL", () => resolve());
+  });
+}
+
+async function runAll(files: string[], limit: number, budgetMs: number): Promise<FileResult[]> {
   const queue = [...files];
   const results: FileResult[] = [];
   const worker = async (): Promise<void> => {
     for (let file = queue.shift(); file !== undefined; file = queue.shift()) {
-      const result = await runFile(file);
+      const result = await runFile(file, budgetMs);
       results.push(result);
       report(result);
     }
@@ -238,11 +290,13 @@ function report(result: FileResult): void {
 async function main(): Promise<number> {
   let files: string[];
   let limit: number;
+  let budgetMs: number;
   try {
     const selection = parseArgs(process.argv.slice(2));
     if (typeof selection === "number") return selection;
     files = testFiles(selection);
     limit = jobs();
+    budgetMs = fileBudgetMs();
     const e2e = files.filter(isE2e);
     if (e2e.length > 0 && !e2eAllowed(selection)) {
       throw new Error(
@@ -265,7 +319,7 @@ async function main(): Promise<number> {
     });
   }
   const started = performance.now();
-  const results = await runAll(files, limit);
+  const results = await runAll(files, limit, budgetMs);
   const failed = results.filter((result) => result.exitCode !== 0);
   console.log(
     `${results.length} test files: ${results.length - failed.length} passed, ${

@@ -4,12 +4,16 @@
 // would run as one), a *.e2e.test.ts file must run in CI and under --e2e only (on a developer
 // machine with neither, the run is refused before any test starts, and --unit leaves the file out),
 // and a file named outright must match **/*.test.ts, or it reaches `bun test` outside the gate.
-import { writeFileSync } from "node:fs";
+// A file that never registers a test (a module-scope await that never settles) is outside bun's
+// own --timeout, so the launcher's file budget must end it and fail it.
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { bunRunArgs, ROOT, runSync } from "../helpers/run.ts";
+import { pidAlive } from "../../src/utils/pid.ts";
+import { bunRunArgs, CHILD_VALUES, childValuesEnv, ROOT, runSync } from "../helpers/run.ts";
 import { expect, tempDir, test } from "../helpers/testing.ts";
 
 const LAUNCHER = join(ROOT, "scripts", "run_tests.ts");
+const FILE_BUDGET_ENV = "COPILOT_ENV_TEST_FILE_BUDGET_MS";
 
 /** The CI markers the launcher reads, each absent: a run of this file in CI must not open the
  *  gate for the rows that expect it shut. */
@@ -170,3 +174,44 @@ test("the launcher's exit code and file count over files, a directory, a missing
     });
   }
 }, 180_000);
+
+// The hanging file first spawns a detached sleeper, the shape of a daemon a test launched and
+// never tore down: the budget kill must end the whole tree, not the one bun test pid.
+test("a file that hangs before registering a test is killed with its tree at the file budget and fails the run", () => {
+  const dir = tempDir("run-tests-hang-");
+  const hanging = join(dir, "hanging.test.ts");
+  const pidFile = join(dir, "sleeper.pid");
+  writeFileSync(
+    hanging,
+    [
+      'import { spawn } from "node:child_process";',
+      'import { writeFileSync } from "node:fs";',
+      'import "bun:test";',
+      'const sleeper = spawn(process.execPath, ["-e", "setInterval(() => {}, 60_000)"], {',
+      "  detached: true,",
+      '  stdio: "ignore",',
+      "});",
+      "sleeper.unref();",
+      `writeFileSync(${CHILD_VALUES}.pidFile, String(sleeper.pid));`,
+      "await new Promise(() => {});",
+      "",
+    ].join("\n"),
+  );
+  const res = runSync(process.execPath, [...bunRunArgs(), LAUNCHER, hanging], {
+    env: {
+      ...process.env,
+      ...OUTSIDE_CI,
+      ...childValuesEnv({ pidFile }),
+      [FILE_BUDGET_ENV]: "2000",
+    },
+    timeoutMs: 60_000,
+  });
+  const sleeper = Number(readFileSync(pidFile, "utf8"));
+  expect({
+    exitCode: res.exitCode,
+    ran: filesRan(res.stdout),
+    named: res.stdout.includes(`failed: ${hanging}`),
+    budgetNamed: res.stdout.includes("ran past the launcher's file budget"),
+    sleeperAlive: pidAlive(sleeper),
+  }).toEqual({ exitCode: 1, ran: 1, named: true, budgetNamed: true, sleeperAlive: false });
+}, 90_000);

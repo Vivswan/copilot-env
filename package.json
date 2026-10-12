@@ -58,6 +58,7 @@
     "knip": "6.41.0",
     "mitata": "1.0.34",
     "oxc-parser": "0.153.0",
+    "tree-kill": "1.2.2",
     "typescript": "7.0.2"
   }
 }

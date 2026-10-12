@@ -195,7 +195,7 @@ test("every concept diagram has a Demonstrated by line whose links resolve to te
     line !== undefined && /^#/.test(line) ? [index] : [],
   );
   const demonstrations = text.flatMap((line, index) =>
-    line !== undefined && line.startsWith("Demonstrated by:") ? [index] : [],
+    line?.startsWith("Demonstrated by:") ? [index] : [],
   );
   const claimed = new Set<number>();
   for (const fence of concepts) {

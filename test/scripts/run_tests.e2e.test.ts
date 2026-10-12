@@ -216,13 +216,20 @@ test("a file that hangs before registering a test is killed with its tree at the
   }).toEqual({ exitCode: 1, ran: 1, named: true, budgetNamed: true, sleeperAlive: false });
 }, 90_000);
 
-// Bun 1.4.2 segfaults on the Windows runner ("panic(main thread): Segmentation fault", exit 3)
-// under a file that is otherwise green, about one run in three. The two controls keep a flaky
-// TEST from hiding behind the retry: a plain failure runs once, a second panic is final.
-test("a file whose bun process dies of a runtime panic runs once more; a test failure and a second panic are final", () => {
+// Bun 1.4.x segfaults on the Windows runner under a file that is otherwise green, about one run
+// in three, exit 3. Its crash handler labels the line by the thread that died, four ways: the
+// main thread, a Windows thread by id or by name, and a bare "panic: " for a thread on macOS or
+// Linux. Every row runs under each. The two controls keep a flaky TEST from hiding behind the
+// retry: a plain failure runs once, a second panic is final.
+test("a file whose bun process dies of a runtime panic runs once more, whichever thread the panic line names; a test failure and a second panic are final", () => {
   const dir = tempDir("run-tests-panic-");
   const retryHeader = "died of a Bun runtime panic (exit 3), running it once more";
-  const panicLine = "panic(main thread): synthetic";
+  const panicLines = {
+    main: "panic(main thread): synthetic",
+    "thread-id": "panic(thread 7032): synthetic",
+    "thread-name": "panic(io thread): synthetic",
+    bare: "panic: synthetic",
+  };
   const count = (text: string, needle: string): number => text.split(needle).length - 1;
   const rows = [
     { name: "once", panics: 1, expected: 1, exitCode: 0, runs: 2, retried: 1, header: "passed" },
@@ -245,50 +252,58 @@ test("a file whose bun process dies of a runtime panic runs once more; a test fa
       header: "failed (exit 3)",
     },
   ];
-  for (const row of rows) {
-    const file = join(dir, `${row.name}.test.ts`);
-    const tally = join(dir, `${row.name}.runs`);
-    writeFileSync(
-      file,
-      [
-        'import { appendFileSync, readFileSync } from "node:fs";',
-        'import { expect, test } from "bun:test";',
-        `const values = ${CHILD_VALUES};`,
-        'appendFileSync(values.tally, "run\\n");',
-        'if (readFileSync(values.tally, "utf8").split("\\n").length - 1 <= values.panics) {',
-        // Spliced from two halves: bun's failure excerpt reprints the source around a failed
-        // expect, and the marker must appear in the output only when the fixture printed it.
-        `  console.error(${JSON.stringify(panicLine.slice(0, 9))} + ${JSON.stringify(panicLine.slice(9))});`,
-        "  process.exit(3);",
-        "}",
-        `test(${JSON.stringify(row.name)}, () => { expect(1).toBe(values.expected); });`,
-        "",
-      ].join("\n"),
-    );
-    const res = runSync(process.execPath, [...bunRunArgs(), LAUNCHER, file], {
-      env: {
-        ...process.env,
-        ...OUTSIDE_CI,
-        ...childValuesEnv({ tally, panics: row.panics, expected: row.expected }),
-      },
-      timeoutMs: 60_000,
-    });
-    expect({
-      name: row.name,
-      exitCode: res.exitCode,
-      runs: count(readFileSync(tally, "utf8"), "run\n"),
-      retried: count(res.stdout, `${file}: ${retryHeader}`),
-      panicsPrinted: count(res.stdout, panicLine),
-      header: res.stdout.includes(`=== ${file}: ${row.header} in `),
-      judged: filesRan(res.stdout),
-    }).toEqual({
-      name: row.name,
-      exitCode: row.exitCode,
-      runs: row.runs,
-      retried: row.retried,
-      panicsPrinted: row.panics,
-      header: true,
-      judged: 1,
-    });
-  }
+  // Every case runs before the one assertion, so a red run names every shape that missed.
+  const seen = Object.entries(panicLines).flatMap(([shape, panicLine]) =>
+    rows.map((row) => {
+      const file = join(dir, `${row.name}-${shape}.test.ts`);
+      const tally = join(dir, `${row.name}-${shape}.runs`);
+      writeFileSync(
+        file,
+        [
+          'import { appendFileSync, readFileSync } from "node:fs";',
+          'import { expect, test } from "bun:test";',
+          `const values = ${CHILD_VALUES};`,
+          'appendFileSync(values.tally, "run\\n");',
+          'if (readFileSync(values.tally, "utf8").split("\\n").length - 1 <= values.panics) {',
+          // As data, never source: bun's failure excerpt reprints the source around a failed expect.
+          "  console.error(values.panicLine);",
+          "  process.exit(3);",
+          "}",
+          `test(${JSON.stringify(row.name)}, () => { expect(1).toBe(values.expected); });`,
+          "",
+        ].join("\n"),
+      );
+      const res = runSync(process.execPath, [...bunRunArgs(), LAUNCHER, file], {
+        env: {
+          ...process.env,
+          ...OUTSIDE_CI,
+          ...childValuesEnv({ tally, panics: row.panics, expected: row.expected, panicLine }),
+        },
+        timeoutMs: 60_000,
+      });
+      return {
+        actual: {
+          name: row.name,
+          panicLine,
+          exitCode: res.exitCode,
+          runs: count(readFileSync(tally, "utf8"), "run\n"),
+          retried: count(res.stdout, `${file}: ${retryHeader}`),
+          panicsPrinted: count(res.stdout, panicLine),
+          header: res.stdout.includes(`=== ${file}: ${row.header} in `),
+          judged: filesRan(res.stdout),
+        },
+        expected: {
+          name: row.name,
+          panicLine,
+          exitCode: row.exitCode,
+          runs: row.runs,
+          retried: row.retried,
+          panicsPrinted: row.panics,
+          header: true,
+          judged: 1,
+        },
+      };
+    }),
+  );
+  expect(seen.map((s) => s.actual)).toEqual(seen.map((s) => s.expected));
 }, 120_000);

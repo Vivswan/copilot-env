@@ -1,3 +1,4 @@
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   childEnvWithPath,
@@ -245,6 +246,28 @@ test("findCommand: a real found command and a real proven absence, both proven",
   expect(found.kind === "found" && found.path).toBeTruthy();
   expect(findCommand("copilot-env-no-such-command-xyz")).toEqual({ kind: "absent" });
 });
+
+// Nothing in the runtime bounds a child, so a probe shell that never returns would hang every
+// look. The shim ignores TERM and execs the sleeper under its own pid, so only a KILL ends it.
+const HANGING_SHIM = "#!/bin/sh\ntrap '' TERM\nexec sleep 20\n";
+
+test.skipIf(process.platform === "win32")(
+  "findCommand: a probe shell that never exits reads as unproven at the bound, never as absent",
+  () => {
+    const bin = tempDir("copilot-env-hanging-sh-");
+    writeFileSync(join(bin, "sh"), HANGING_SHIM, { mode: 0o755 });
+    process.env.PATH = childPathPrepending([bin]);
+    const started = performance.now();
+    const look = findCommand("gh");
+    const elapsed = performance.now() - started;
+    // Control: a missing shell fails in milliseconds; only the bound ending a live child takes
+    // seconds, and it must end it well before a caller's own deadline would.
+    expect({ look, waited: elapsed > 1000 && elapsed < 15_000 }).toEqual({
+      look: { kind: "unproven" },
+      waited: true,
+    });
+  },
+);
 
 test("runCaptured: the launch-failure mark rides ONLY the synthesized exit", async () => {
   step("a child that prints ok");

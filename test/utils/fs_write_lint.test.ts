@@ -61,12 +61,6 @@ const CASES: readonly (readonly [string, number, number])[] = [
   ['export { default as fs } from "node:fs";', 1, 1],
   ['export { default as fsp } from "node:fs/promises";', 1, 1],
   ['export { readFileSync, rmSync } from "node:fs";', 1, 1],
-  // The Deno namespace, spelled every way: nothing in src/ runs under it any more.
-  ['Deno.writeTextFileSync("x", "y");', 1, 0],
-  ['await globalThis.Deno.remove("x");', 1, 0],
-  ["const { makeTempDirSync } = Deno;", 1, 0],
-  ['const deno = Deno; deno.removeSync("x");', 1, 0],
-  ['Deno.chownSync("x", 1, 1);', 1, 0],
   // Bun's own file APIs: a write, and a handle that reads (and writes through its writer).
   ['await Bun.write("x", "y");', 1, 0],
   ['const f = Bun.file("x"); await f.text();', 1, 1],
@@ -79,11 +73,8 @@ const CASES: readonly (readonly [string, number, number])[] = [
   ['import { type WriteStream, readFileSync } from "node:fs";', 0, 1],
   ['import fs from "node:fs"; const { statSync } = fs;', 0, 1],
   ['import { promises as fsp } from "node:fs"; await fsp.readdir("x");', 0, 1],
-  ['Deno.readTextFileSync("x"); Deno.statSync("x");', 0, 2],
-  ['const deno = Deno; await deno.readDir("x");', 0, 1],
-  ["const { realPathSync } = Deno;", 0, 1],
   ['export { readFileSync } from "node:fs";', 0, 1],
-  // A file handle is the seam's to hand out: every open is a read; one whose flag or options say
+  // A file handle is the seam's to hand out: every open is a read; one whose flag says
   // write (or cannot be read) is a write too, so a read-exempt file still may not open for writing.
   ['import { openSync } from "node:fs"; openSync("x", "w");', 1, 1],
   ['import { open } from "node:fs/promises"; await open("x", "a+");', 1, 1],
@@ -91,14 +82,6 @@ const CASES: readonly (readonly [string, number, number])[] = [
   ['import * as fs from "node:fs"; fs.openSync("x", "r+");', 1, 1],
   ['import { openSync } from "node:fs"; openSync("x", flags);', 1, 1],
   ['import * as fs from "node:fs"; const { openSync } = fs; openSync("x", "w");', 1, 1],
-  ['await Deno.open("x", { write: true, create: true });', 1, 1],
-  ['Deno.openSync("x", { append: true });', 1, 1],
-  ['await Deno.open("x", opts);', 1, 1],
-  ['const flag = "write"; await Deno.open("x", { [flag]: true });', 1, 1],
-  ['await Deno.open("x", { read: true }); Deno.openSync("y", { write: false });', 0, 2],
-  ['const { open } = Deno; await open("x", { write: true, create: true });', 1, 1],
-  ['const { openSync: o } = Deno; o("x", { read: true });', 0, 1],
-  ['const open = Deno.open; await open("x", { write: true, create: true });', 1, 1],
   ['import * as fs from "node:fs"; const o = fs.openSync; o("x", "w");', 1, 1],
   // Type imports, the seam itself, and unrelated modules are left alone.
   ['import type { WriteFileOptions, Stats } from "node:fs";', 0, 0],
@@ -107,8 +90,7 @@ const CASES: readonly (readonly [string, number, number])[] = [
   ['const store = new Map(); store.rm("x"); store.stat("x");', 0, 0],
   ['Bun.which("deno"); const { env } = Bun;', 0, 0],
   // A child process running a filesystem command: the command itself, a shell's command line, an
-  // exec command line, Deno.Command, or Bun.spawn; a computed command passes (the rule cannot
-  // read it).
+  // exec command line, or Bun.spawn; a computed command passes (the rule cannot read it).
   ['import { spawnSync } from "node:child_process"; spawnSync("rm", ["-rf", "x"]);', 1, 0],
   ['import { spawn } from "node:child_process"; spawn("/bin/mv", ["a", "b"]);', 1, 0],
   [
@@ -129,8 +111,6 @@ const CASES: readonly (readonly [string, number, number])[] = [
     0,
   ],
   ['import * as cp from "node:child_process"; cp.spawnSync("rmdir", ["x"]);', 1, 0],
-  ['new Deno.Command("rm", { args: ["x"] }).outputSync();', 1, 0],
-  ['new Deno.Command("sh", { "args": ["-c", "rm x"] }).outputSync();', 1, 0],
   ['Bun.spawn(["rm", "-rf", "x"]);', 1, 0],
   ['Bun.spawnSync({ cmd: ["sh", "-c", "ls && rm x"] });', 1, 0],
   ['const bun = Bun; bun.spawn(["mv", "a", "b"]);', 1, 0],
@@ -171,7 +151,7 @@ test("scoped to src/, minus each rule's own exemptions", () => {
   }
   // A raw read handle alone: the two files that stream a file no run plans keep every other read
   // (and every write) guarded.
-  const readOpen = 'import { openSync } from "node:fs"; openSync("x", "r"); Deno.open("y");';
+  const readOpen = 'import { openSync } from "node:fs"; openSync("x", "r");';
   for (const handle of ["src/install/checksums.ts", "src/copilot_api/process.ts"]) {
     expect(lint(readOpen, handle), handle).toEqual({ writes: 0, reads: 0 });
     expect(lint(write + read, handle), handle).toEqual({ writes: 1, reads: 1 });

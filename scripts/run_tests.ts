@@ -221,7 +221,7 @@ async function runFile(file: string, budgetMs: number): Promise<FileResult> {
       overran = true;
       // The whole tree: a test that hangs after spawning a daemon never reaches its teardown,
       // and a kill of the one pid would leave that daemon running.
-      killed = killTree(child.pid);
+      killed = killTree(child);
     }, budgetMs);
     const exitCode = await child.exited.finally(() => clearTimeout(timer));
     await killed;
@@ -244,16 +244,31 @@ async function runFile(file: string, budgetMs: number): Promise<FileResult> {
   }
 }
 
-/** Resolves either way: a tree already gone is the wanted state, and any other refusal is said,
- *  since a tree left standing would otherwise pass for a kill. */
-function killTree(pid: number): Promise<void> {
+/** tree-kill lists descendants through this tool on POSIX; without it the listing would be an
+ *  unhandled spawn error inside the package, not a callback. */
+const TREE_LISTER =
+  process.platform === "darwin" ? "pgrep" : process.platform === "linux" ? "ps" : null;
+
+/** Resolves either way, and the child itself is dead either way: a tree already gone is the
+ *  wanted state; a refused tree kill is said and the one pid is killed directly, so the budget
+ *  still ends the file, though its descendants may survive. */
+function killTree(child: Bun.Subprocess): Promise<void> {
+  const pid = child.pid;
+  const alone = (reason: string): void => {
+    console.error(`run_tests: ${reason}; killing pid ${pid} alone, so its descendants may survive`);
+    child.kill("SIGKILL");
+  };
+  if (TREE_LISTER !== null && Bun.which(TREE_LISTER) === null) {
+    alone(`${TREE_LISTER} is not on PATH, so the process tree under pid ${pid} cannot be listed`);
+    return Promise.resolve();
+  }
   return new Promise((resolve) => {
     treeKill(pid, "SIGKILL", (error) => {
       // Windows reports success as a null error (exec's callback shape), POSIX as none.
+      // exec's error text (the Windows branch) carries the command's stderr on further lines.
       if (error) {
-        console.error(
-          `run_tests: could not kill the process tree under pid ${pid}: ${error.message}`,
-        );
+        const detail = error.message.replace(/\s+/g, " ").trim();
+        alone(`could not kill the process tree under pid ${pid}: ${detail}`);
       }
       resolve();
     });

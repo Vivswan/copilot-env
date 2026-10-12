@@ -268,16 +268,28 @@ function spawnNpm(args: string[], capture: boolean): SpawnSyncReturns<string> {
   // bun, like node since CVE-2024-27980, refuses to spawn a batch shim such as npm.cmd without a
   // shell (`spawnSync npm.cmd EINVAL`), hence the cliSpawn hop.
   const s = cliSpawn(npm, args);
+  const env = childEnvWithPath([npmDir]);
+  if (capture) {
+    // nosemgrep: javascript.lang.security.audit.spawn-shell-true.spawn-shell-true -- Windows-only, for .cmd shims; the spec quotes args
+    return spawnSync(s.file, s.args, {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "inherit"],
+      shell: s.shell,
+      env,
+      timeout: NPM_READ_TIMEOUT_MS,
+      killSignal: LOOK_KILL_SIGNAL,
+    });
+  }
+  // biome-ignore-start lint/plugin/no_unbounded_child_spawn: an npm install runs for the user on inherited stdio
   // nosemgrep: javascript.lang.security.audit.spawn-shell-true.spawn-shell-true -- Windows-only, for .cmd shims; the spec quotes args
-  return spawnSync(s.file, s.args, {
+  const result = spawnSync(s.file, s.args, {
     encoding: "utf8",
-    stdio: capture ? ["ignore", "pipe", "inherit"] : "inherit",
+    stdio: "inherit",
     shell: s.shell,
-    env: childEnvWithPath([npmDir]),
-    // An install runs for the user and gets no bound.
-    timeout: capture ? NPM_READ_TIMEOUT_MS : undefined,
-    killSignal: LOOK_KILL_SIGNAL,
+    env,
   });
+  // biome-ignore-end lint/plugin/no_unbounded_child_spawn: the suppression ends with the install
+  return result;
 }
 
 function runNpm(args: string[], capture = false): string {

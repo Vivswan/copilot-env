@@ -32,6 +32,9 @@ const SOURCES: [source: string, diagnostics: number][] = [
   'spawnSync(command, args, { stdio: "inherit", ...options });',
   'spawnSync("ps", ["-U"], { env: { timeout: "1" } });',
   'execFile("ps", ["-U"], (error) => { const retry = { timeout: 1 }; });',
+  // A `timeout` the library reads as none.
+  'spawnSync("ps", ["-U"], { timeout: undefined, killSignal: "SIGKILL" });',
+  'spawnSync("npm", ["view"], { timeout: capture ? 30_000 : undefined, killSignal: "SIGKILL" });',
   // An alias would hide the call from the name list, so the import is the diagnostic: one for the
   // import, none for the call through it.
   'import { spawnSync as probe } from "node:child_process";\nprobe("ps", ["-U"], { encoding: "utf8" });',
@@ -49,10 +52,6 @@ const SOURCES: [source: string, diagnostics: number][] = [
     ['execFile("ps", ["-U"], { timeout: 5, killSignal: "SIGKILL" }, (error, stdout) => {});', 0],
     ['execFile("ps", { timeout: 5000, killSignal: "SIGKILL" }, (error, stdout) => {});', 0],
     ['spawn(s.file, s.args, { stdio: "pipe", timeout: s.timeout });', 0],
-    [
-      'spawnSync("npm", ["view"], { timeout: capture ? 30_000 : undefined, killSignal: "SIGKILL" });',
-      0,
-    ],
     // The excuse a child that runs for the user carries at its call site.
     [
       '// biome-ignore lint/plugin/no_unbounded_child_spawn: the daemon runs for the user\nspawnSync("ps", ["-U"]);',

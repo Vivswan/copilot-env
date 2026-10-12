@@ -10,6 +10,7 @@
 //   child stdin   -> ignored on the managed branch: nothing in `agent start` reads it (with no stored
 //                    credential the child refuses and names `agent auth`; nothing prompts)
 import { spawnSync } from "node:child_process";
+import { createInterface } from "node:readline";
 import { CopilotApiConfig } from "../copilot_api/config.ts";
 import { proxyStatus, recordHeartbeat } from "../copilot_api/daemon.ts";
 import { CopilotEnvConfig, configSetCommand } from "../copilot_api/env_config.ts";
@@ -94,10 +95,9 @@ export function launchProxy(profile: Profile, output: LaunchOutput): void | Prom
 }
 
 /**
- * Raw stdin events, not readline's question(): the query goes to stderr, since stdout stays
- * key-only and both readline's prompt and consola.prompt write to stdout.
- *   stdin already closed, no line coming  -> rl.question never settles, the `end` event does
- *   EOF                                   -> "", which means START (the apiKeyHelper case)
+ * The line and close events rather than rl.question(): on a stdin already at EOF, question's
+ * callback never runs, while close fires.
+ *   EOF  -> "", which means START (the apiKeyHelper case)
  *
  * @public test/commands/proxy_token.e2e.test.ts imports it from a generated child script, which knip
  * cannot follow.
@@ -105,24 +105,12 @@ export function launchProxy(profile: Profile, output: LaunchOutput): void | Prom
 export function readStartAnswer(query: string): Promise<string> {
   process.stderr.write(wrapMessage(query, terminalWidth(process.stderr)));
   return new Promise((resolve) => {
-    // String chunks split on character boundaries; per-chunk Buffer.toString could mangle a
-    // straddling UTF-8 sequence.
-    process.stdin.setEncoding("utf8");
-    let buf = "";
-    const finish = (answer: string): void => {
-      process.stdin.off("data", onData);
-      process.stdin.off("end", onEnd);
-      process.stdin.pause(); // release the event loop; the process must be able to exit
-      resolve(answer);
-    };
-    const onData = (chunk: string): void => {
-      buf += chunk;
-      const newline = buf.indexOf("\n");
-      if (newline !== -1) finish(buf.slice(0, newline).replace(/\r$/, ""));
-    };
-    const onEnd = (): void => finish(buf);
-    process.stdin.on("data", onData);
-    process.stdin.once("end", onEnd);
+    const rl = createInterface({ input: process.stdin, output: process.stderr, terminal: false });
+    rl.once("line", (line) => {
+      resolve(line);
+      rl.close();
+    });
+    rl.once("close", () => resolve(""));
   });
 }
 

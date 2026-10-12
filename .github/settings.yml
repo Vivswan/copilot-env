@@ -23,7 +23,7 @@ repository:
   allow_update_branch: true
   squash_merge_commit_title: PR_TITLE
   squash_merge_commit_message: BLANK
-  topics: claude-code,cli,codex,copilot,copilot-api,deno,proxy,typescript
+  topics: claude-code,cli,codex,copilot,copilot-api,bun,proxy,typescript
   enable_vulnerability_alerts: true
   enable_automated_security_fixes: true
 labels:

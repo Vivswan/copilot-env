@@ -13,6 +13,7 @@ import { DatabaseSync } from "node:sqlite";
 import { usageIndexDir } from "../copilot_api/paths.ts";
 import { errMessage } from "../utils/error.ts";
 import { BOUNDED_LOCK_POLICY, type LockPolicy, withFileLockSync } from "../utils/file_lock.ts";
+import { retryOpenHandleRefusal } from "../utils/fs.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { isRecord } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
@@ -428,7 +429,12 @@ export function openUsageIndex(opts: OpenUsageIndexOptions = {}): UsageIndex | n
       logger.info(`rebuilding the usage index (${errMessage(e)}).`);
     }
     try {
-      removeDbFiles(dbPath);
+      // The judged database is closed (stamped closes before it throws), but bun's sqlite closes
+      // with sqlite3_close_v2, which keeps the file handle until the statements it prepared are
+      // collected; Windows refuses the removal until then. A forced collection, then the
+      // open-handle retry the rest of the disk layer uses.
+      Bun.gc(true);
+      retryOpenHandleRefusal(() => removeDbFiles(dbPath));
     } catch (e) {
       logger.warn(`could not remove the stale usage index (${errMessage(e)}).`);
       return null;

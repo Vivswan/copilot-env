@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, sep } from "node:path";
-import { consola } from "consola";
+import { consola, type LogObject } from "consola";
 import { parse, stringify, TomlDate } from "smol-toml";
 import { AUTOUPDATE_FILENAME, autoupdateDir } from "../../src/autoupdate/state.ts";
 import { directHelperCommand, proxyHelperCommand } from "../../src/claude/config.ts";
@@ -741,14 +741,26 @@ test("runMigrations is best-effort: a failing step never stops the rest", async 
  *  left and what they dropped. */
 function captureConsola(level: "warn" | "info"): { lines: string[]; restore: () => void } {
   const lines: string[] = [];
-  const original = consola[level];
-  consola[level] = ((...args: unknown[]) => {
-    lines.push(args.map(String).join(" "));
-  }) as typeof consola.warn;
+  const previous = {
+    reporters: consola.options.reporters,
+    throttleMin: consola.options.throttleMin,
+  };
+  // consola holds back a line that repeats the one logged under a second before it once such
+  // repeats have happened throttleMin times in the process, and this file logs repeats outside
+  // the captures (pinSoleGhAccount's "left on auto" line, the near-miss helper loop).
+  consola.options.throttleMin = Number.POSITIVE_INFINITY;
+  consola.setReporters([
+    {
+      log(logObj: LogObject) {
+        if (logObj.type === level) lines.push(logObj.args.map(String).join(" "));
+      },
+    },
+  ]);
   return {
     lines,
     restore: () => {
-      consola[level] = original;
+      consola.setReporters(previous.reporters);
+      consola.options.throttleMin = previous.throttleMin;
     },
   };
 }

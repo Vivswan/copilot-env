@@ -76,8 +76,8 @@ interface Farm {
 }
 
 // No codex on PATH makes the prime step a no-op. The disabled catalog sync inside applyCodexConfig
-// sweeps homedir()/.codex; deno's node:os homedir() follows the HOME and USERPROFILE
-// isolateAgentHomes just set, so that sweep stays inside the temp tree too.
+// sweeps the plain Codex home, which userHomeDir() (src/utils/home.ts) reads from the HOME and
+// USERPROFILE isolateAgentHomes just set, so that sweep stays inside the temp tree too.
 function isolate(): Farm {
   const homes = isolateAgentHomes("copilot-codex-host-");
   dir = homes.dir;

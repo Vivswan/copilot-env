@@ -36,11 +36,13 @@ const FILE_BUDGET_MS = 10 * 60_000;
 const FILE_BUDGET_ENV = "COPILOT_ENV_TEST_FILE_BUDGET_MS";
 /** The pipes settle with the child unless a descendant still holds them. */
 const PIPE_GRACE_MS = 5_000;
-/** Bun dying of its own fault: this exit code AND this line in the output (a test failure is
- *  exit 1, whatever it prints). The case: Bun 1.4.2 segfaults on the Windows runner about one
- *  run in three. */
+/** Bun dying of its own fault: this exit code AND a panic line in the output (a test failure is
+ *  exit 1, whatever it prints). Bun's crash handler labels the line by the thread that died:
+ *  `panic(main thread): `, on Windows `panic(thread 7032): ` or `panic(<thread name>): `, and a
+ *  bare `panic: ` for a thread on macOS or Linux. The case: Bun 1.4.x segfaults on the Windows
+ *  runner about one run in three. */
 const BUN_PANIC_EXIT = 3;
-const BUN_PANIC_MARKER = "panic(main thread)";
+const BUN_PANIC_LINE = /^panic(\([^)]*\))?: /m;
 
 interface FileResult {
   file: string;
@@ -246,7 +248,7 @@ async function runFile(file: string, budgetMs: number): Promise<FileResult> {
           budgetMs,
         )}) and was killed\n`
       : chunks.join("");
-    const panicked = !overran && exitCode === BUN_PANIC_EXIT && output.includes(BUN_PANIC_MARKER);
+    const panicked = !overran && exitCode === BUN_PANIC_EXIT && BUN_PANIC_LINE.test(output);
     return {
       file,
       exitCode: overran ? 1 : exitCode,

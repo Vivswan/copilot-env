@@ -529,7 +529,7 @@ function planMaterialization(root: string, sourceRoot: string): Materialization 
     { to: join(root, "bin", "agent.ps1"), body: POWERSHELL_SHIM, executable: false },
     {
       to: join(root, INSTALL_MANIFEST_FILE),
-      body: JSON.stringify(manifest, null, 2) + "\n",
+      body: `${JSON.stringify(manifest, null, 2)}\n`,
       executable: false,
     },
   );

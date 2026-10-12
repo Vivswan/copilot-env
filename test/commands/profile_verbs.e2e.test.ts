@@ -73,7 +73,7 @@ test("no name is the default profile: bare `agent profile` lists, auth reads the
   const bare = observe(["profile"], scratch);
   expect(bare.exitCode).toBe(0);
   expect(bare.stdout + bare.stderr).toMatch(/default\s+incomplete\s+gh-token/);
-  expect(observe(["list"], scratch).stdout + "").toBe(bare.stdout);
+  expect(observe(["list"], scratch).stdout).toBe(bare.stdout);
 
   // `set identity auto` is the pin's one spelling; `auto` stores without a probe.
   const identity = observe(["profile", "set", "identity", "auto"], scratch);

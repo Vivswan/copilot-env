@@ -306,7 +306,7 @@ test("`auth --provider <gh-cli|gh-env> --dry-run` resolves what the real command
 });
 
 test("wrapLine splits an over-wide path at the width with every character kept: no space is invented between the pieces", () => {
-  const path = "/very/long/path/" + "segment/".repeat(12) + "state.json";
+  const path = `/very/long/path/${"segment/".repeat(12)}state.json`;
   const lines = wrapLine(`rewrite ${path}`, 40, "  ", "    ");
   expect(lines.every((line) => line.length <= 40)).toBe(true);
   // The word break after "rewrite" is the one character the wrap consumes; the path's pieces

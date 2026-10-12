@@ -234,8 +234,8 @@ export async function prepareLaunch(action: LaunchAction): Promise<LaunchPlan | 
 
 function spawnAgentCli(plan: LaunchPlan): number {
   const spawn = verbatimCliSpawn(plan.command, plan.args);
+  // biome-ignore-start lint/plugin/no_unbounded_child_spawn: the agent CLI runs for the user with the terminal handed over
   // nosemgrep: javascript.lang.security.audit.spawn-shell-true.spawn-shell-true -- Windows-only, for .cmd shims; the spec quotes args
-  // biome-ignore lint/plugin/no_unbounded_child_spawn: the agent CLI runs for the user with the terminal handed over
   const result = spawnSync(spawn.file, spawn.args, {
     stdio: "inherit",
     shell: spawn.shell,
@@ -244,6 +244,7 @@ function spawnAgentCli(plan: LaunchPlan): number {
       omit: (upper) => plan.scrub.includes(upper),
     }),
   });
+  // biome-ignore-end lint/plugin/no_unbounded_child_spawn: the suppression ends with the launch
   if (result.error) throw result.error;
   if (result.status !== null) return result.status;
   const signalNumber = result.signal ? constants.signals[result.signal] : undefined;

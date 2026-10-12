@@ -533,7 +533,7 @@ test("detectClaudeDirect: with no claude CLI the endpoint smoke judges the crede
   // Both requests carry the wiring's exact identity: the same credential under other headers can
   // be rejected, so a bare fetch would mint a verdict for a request Claude never sends.
   for (const r of [catalogReq, ping]) {
-    expect(r.headers["Authorization"]).toBe("Bearer ghu_tok");
+    expect(r.headers.Authorization).toBe("Bearer ghu_tok");
     expect(r.headers["Copilot-Integration-Id"]).toBe("copilot-developer-cli");
   }
   expect(catalogReq.url).toBe("https://api.githubcopilot.com/models");

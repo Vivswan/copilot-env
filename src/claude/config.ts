@@ -182,10 +182,9 @@ export type ClaudeWiringStatus =
  *  line no other wiring writes: the codex_exec User-Agent. */
 function directHeadersShape(customHeaders: string | null): boolean {
   return (
-    customHeaders !== null &&
     customHeaders
-      .split("\n")
-      .some((line) => line.startsWith(`User-Agent: ${CODEX_EXEC_USER_AGENT}/`))
+      ?.split("\n")
+      .some((line) => line.startsWith(`User-Agent: ${CODEX_EXEC_USER_AGENT}/`)) === true
   );
 }
 

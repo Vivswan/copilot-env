@@ -172,8 +172,8 @@ export function foldCodex(
     const { fork, metaTsMs } = state;
     const parentHashes = fork === undefined ? undefined : infoHashesBySession.get(fork.parentHash);
     const ownHashes = new Set<string>();
-    for (let index = 0; index < events.length; index++) {
-      const [tsMs, rawProvider, rawModel, infoHash, input, output, cacheRead] = events[index]!;
+    for (const [index, event] of events.entries()) {
+      const [tsMs, rawProvider, rawModel, infoHash, input, output, cacheRead] = event;
       const forked = fork !== undefined && index >= fork.knownAfter;
       const duplicate =
         ownHashes.has(infoHash) ||

@@ -48,13 +48,28 @@
     "enabled": true,
     "rules": {
       "preset": "recommended",
+      "complexity": {
+        "noCommaOperator": "error",
+        "noUselessStringRaw": "error",
+        "useLiteralKeys": "error",
+        "useOptionalChain": "error"
+      },
       "correctness": {
         "noUnusedImports": "error",
         "noUnusedVariables": "error"
       },
+      "performance": {
+        "noAccumulatingSpread": "error"
+      },
       "style": {
+        "noNonNullAssertion": "error",
         "useImportType": "error",
-        "useNodejsImportProtocol": "error"
+        "useNodejsImportProtocol": "error",
+        "useTemplate": "error"
+      },
+      "suspicious": {
+        "noConfusingVoidType": "error",
+        "noTemplateCurlyInString": "error"
       }
     }
   },

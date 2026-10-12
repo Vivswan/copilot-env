@@ -145,12 +145,13 @@ export function codexEvidenceFailures(
     failures.push("codex: the resume after the tool turn did not continue the tool session");
   }
   const firstFiles = filesFor(files, ids.first, "codex");
-  for (const [label, id] of [
+  const sessions: [label: string, id: string][] = [
     ["session 1", ids.first],
     ["the tool session", ids.tool],
     ["the fork", ids.fork],
-  ]) {
-    const count = filesFor(files, id!, "codex").length;
+  ];
+  for (const [label, id] of sessions) {
+    const count = filesFor(files, id, "codex").length;
     if (count !== 1) failures.push(`codex: ${label} has ${count} rollouts, expected 1`);
   }
   let tokenCounts = 0;

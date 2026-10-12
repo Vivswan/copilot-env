@@ -36,10 +36,12 @@ function runPreloaded(host: string | null): string[] {
     "  const path = url.pathname + url.search;",
     "  return new Response(JSON.stringify(bodies[path]), { headers: { 'content-type': 'application/json', 'x-probe': path } });",
     "} });",
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: JavaScript source for the child process; its template runs there
     "const base = `http://127.0.0.1:${server.port}`;",
     "for (const path of Object.keys(bodies)) {",
     "  const res = await fetch(base + path);",
     "  const body = await res.json();",
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: JavaScript source for the child process; its template runs there
     "  console.log(`${res.status} ${res.headers.get('content-type')} ${res.headers.get('x-probe')} ${JSON.stringify(body)}`);",
     "}",
     "await server.stop();",

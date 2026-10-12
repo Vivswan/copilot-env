@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import { zstdCompressSync } from "node:zlib";
 import * as v from "valibot";
 import type { ModelUsage, ReadonlyUsageTotals } from "../../src/usage/usage.ts";
+import { must } from "../../src/utils/assert.ts";
 import { isRecord } from "../../src/utils/json.ts";
 import { MILLISECONDS_PER_DAY } from "../../src/utils/time.ts";
 import {
@@ -55,7 +56,8 @@ function loadProfile(file: string = PROFILE_PATH): Profile {
   return parseProfile(parseJsonQuietly(readFileSync(file, "utf8"), "usage profile"));
 }
 
-const QUANTILE_POINTS: readonly (readonly [number, keyof Omit<Quantiles, "count">])[] = [
+type QuantilePoint = readonly [number, keyof Omit<Quantiles, "count">];
+const QUANTILE_POINTS: readonly [QuantilePoint, ...QuantilePoint[]] = [
   [0.05, "p5"],
   [0.25, "p25"],
   [0.5, "p50"],
@@ -68,7 +70,7 @@ const QUANTILE_POINTS: readonly (readonly [number, keyof Omit<Quantiles, "count"
  *  arithmetic only, so every host computes the same double. */
 function sampleQuantile(rng: Rng, q: Quantiles): number {
   const u = rng();
-  let prev = QUANTILE_POINTS[0]!;
+  let prev = QUANTILE_POINTS[0];
   if (u <= prev[0]) return q[prev[1]];
   for (const point of QUANTILE_POINTS.slice(1)) {
     if (u <= point[0]) {
@@ -114,14 +116,19 @@ function chance(rng: Rng, probability: number): boolean {
 /** Keys are visited sorted, so the draw does not depend on insertion order. */
 function weightedKey(rng: Rng, table: Record<string, number>): string {
   const keys = Object.keys(table).sort();
-  if (keys.length === 0) throw new Error("weighted draw over an empty table");
+  const lastKey = keys.at(-1);
+  if (lastKey === undefined) throw new Error("weighted draw over an empty table");
   const total = keys.reduce((sum, key) => sum + (table[key] ?? 0), 0);
   let u = rng() * total;
   for (const key of keys) {
     u -= table[key] ?? 0;
     if (u < 0) return key;
   }
-  return keys[keys.length - 1]!;
+  return lastKey;
+}
+
+function modelOf(profile: { models: Record<string, ModelProfile> }, name: string): ModelProfile {
+  return profile.models[name] ?? must(Object.values(profile.models)[0], "a profile has a model");
 }
 
 function modelShares(models: Record<string, ModelProfile>): Record<string, number> {
@@ -301,7 +308,7 @@ function filler(rng: Rng, bytes: number, kind: FillKind): string {
   let remaining = bytes;
   for (let tries = 0; remaining > 0 && tries < bytes; tries++) {
     const i = Math.floor(rng() * PROSE_TOKENS.length);
-    const cost = PROSE_COSTS[i]!;
+    const cost = must(PROSE_COSTS[i], "PROSE_COSTS is indexed like PROSE_TOKENS");
     if (cost > remaining) continue;
     text += `${PROSE_TOKENS[i]} `;
     remaining -= cost;
@@ -513,7 +520,7 @@ function addUsage(a: Usage, b: Usage): Usage {
 
 /** The next planted marker, cycling, so every marker lands within the first sessions. */
 function nextMarker(g: Generator): string {
-  const marker = g.markers[g.markerCursor % g.markers.length]!;
+  const marker = must(g.markers[g.markerCursor % g.markers.length], "the cursor wraps in range");
   g.markerCursor++;
   return marker;
 }
@@ -521,7 +528,7 @@ function nextMarker(g: Generator): string {
 function promptText(g: Generator): string {
   const marker = nextMarker(g);
   if (!g.adversarial || !chance(g.rng, 0.5)) return marker;
-  const needle = NEEDLES[g.needleCursor % NEEDLES.length]!;
+  const needle = must(NEEDLES[g.needleCursor % NEEDLES.length], "the cursor wraps in range");
   g.needleCursor++;
   return `${marker} pasted: ${needle}`;
 }
@@ -606,6 +613,13 @@ class LineBuffer {
 
   body(): string {
     return this.lines.length === 0 ? "" : `${this.lines.join("\n")}\n`;
+  }
+
+  pairs(): (readonly [string, LineStamps])[] {
+    return this.lines.map((line, i) => [
+      line,
+      must(this.stamps[i], "push() and pop() move a line and its stamps together"),
+    ]);
   }
 
   noteSpan(g: Generator): void {
@@ -764,20 +778,21 @@ function codexSessionMeta(
   state: CodexState,
   first: boolean,
 ): void {
+  const forkedFrom = session.forkedFrom;
   codexLine(g, session, state, "session_meta", {
     gapMs: first ? 0 : undefined,
     reshape:
-      session.forkedFrom === undefined
+      forkedFrom === undefined
         ? undefined
         : (line) => {
             const payload = line.payload;
             if (isJsonObject(payload)) {
               // forked_from_id sits before model_provider in the writer's key order.
-              const provider = payload["model_provider"] ?? null;
-              delete payload["model_provider"];
+              const provider = payload.model_provider ?? null;
+              delete payload.model_provider;
               line.payload = {
                 ...payload,
-                forked_from_id: session.forkedFrom!,
+                forked_from_id: forkedFrom,
                 model_provider: provider,
               };
             }
@@ -925,7 +940,7 @@ function codexTurn(
     codexMessage(g, session, state, "user", promptText(g));
     codexLine(g, session, state, "event_msg/user_message", { prefix: promptText(g) });
   }
-  const model = profile.models[state.model] ?? Object.values(profile.models)[0]!;
+  const model = modelOf(profile, state.model);
   const events = sampleCount(g.rng, profile.usageEventsPerTurn, 1);
   for (let i = 0; i < MAX_EVENTS_PER_TURN; i++) {
     const reached = session.buffer.bytes >= targetBytes;
@@ -965,8 +980,7 @@ function codexSession(
   };
   const share = profile.lineTypeShare;
   const usageRecordShare =
-    (share["token_usage_record"] ?? 0) /
-    Math.max(share["event_msg/token_count"] ?? 1, Number.EPSILON);
+    (share.token_usage_record ?? 0) / Math.max(share["event_msg/token_count"] ?? 1, Number.EPSILON);
   const state: CodexState = {
     ordinal: 0,
     nowMs: startMs,
@@ -989,11 +1003,9 @@ function codexSession(
     // type, so a prompt that pasted the word is still an item) in one batch under fresh outer
     // timestamps; nested instants stay the parent's. Its totals continue from the prefix.
     const parent = opts.forkOf.buffer;
-    const copied = parent.lines
-      .map((line, i) => ({
-        parsed: JSON.parse(line) as JsonObject,
-        nested: parent.stamps[i]!.nested,
-      }))
+    const copied = parent
+      .pairs()
+      .map(([line, stamps]) => ({ parsed: JSON.parse(line) as JsonObject, nested: stamps.nested }))
       .filter(({ parsed }) => parsed.type !== "session_meta");
     let copyMs = state.nowMs;
     const step = FORK_COPY_WINDOW_MS / Math.max(1, copied.length);
@@ -1083,8 +1095,10 @@ function writeCodexSession(
     // A crash mid-write leaves the tail unterminated: half a token_count line and
     // no LF. Its gate word is present, its JSON is not.
     const lines = session.buffer.lines;
-    const source =
-      lines.findLast((line) => line.includes('"token_count"')) ?? lines[lines.length - 1]!;
+    const source = must(
+      lines.findLast((line) => line.includes('"token_count"')) ?? lines.at(-1),
+      "a torn session has at least one line",
+    );
     body += source.slice(0, Math.max(8, Math.floor(source.length / 2)));
   }
   if (opts.archived === true) {
@@ -1389,7 +1403,7 @@ function claudeTurn(
   if (firstTurn) claudeLine(g, session, state, "ai-title", { header: true });
   if (chance(g.rng, 0.3)) claudeLine(g, session, state, "queue-operation", { header: true });
   if (chance(g.rng, 0.1)) state.model = weightedKey(g.rng, modelShares(profile.models));
-  const model = profile.models[state.model] ?? Object.values(profile.models)[0]!;
+  const model = modelOf(profile, state.model);
   const events = sampleCount(g.rng, profile.usageEventsPerTurn, 1);
   for (let i = 0; i < MAX_EVENTS_PER_TURN; i++) {
     const reached = session.buffer.bytes >= targetBytes;
@@ -1465,9 +1479,9 @@ function claudeSession(
     // same message ids and snapshots, which the readers book nothing new for),
     // then the final line the original never got to write, then its own turns.
     const copied = opts.resumeOf.body;
-    for (const [i, line] of copied.lines.entries()) {
-      session.buffer.push(line, copied.stamps[i]!);
-      session.body.push(line, copied.stamps[i]!);
+    for (const [line, stamps] of copied.pairs()) {
+      session.buffer.push(line, stamps);
+      session.body.push(line, stamps);
     }
     const pending = opts.resumeOf.pendingFinal;
     if (pending !== undefined) {

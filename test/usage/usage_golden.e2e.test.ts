@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { buildSourceJson, type CostRuntime } from "../../src/usage/cost.ts";
 import { estimateCost, type PricingTier } from "../../src/usage/pricing.ts";
 import type { ReadonlyUsageReport } from "../../src/usage/usage.ts";
+import { must } from "../../src/utils/assert.ts";
 import { expect, tempDir, test } from "../helpers/testing.ts";
 import type { GeneratedTree } from "../helpers/usage_fixtures.ts";
 import {
@@ -90,7 +91,11 @@ function blocksFromReports(
     });
   return JSON.parse(
     JSON.stringify({
-      codex: Object.fromEntries([...codex.keys()].sort().map((p) => [p, block(codex.get(p)!)])),
+      codex: Object.fromEntries(
+        [...codex.keys()]
+          .sort()
+          .map((p) => [p, block(must(codex.get(p), "p is one of the map's own keys"))]),
+      ),
       claude: block(claude),
     }),
   );
@@ -163,11 +168,11 @@ for (const entry of GOLDEN_MATRIX) {
 }
 
 test("tamper control: one changed token count fails the golden comparison", async () => {
-  const { golden } = await loadGolden(GOLDEN_MATRIX[0]!);
+  const { golden } = await loadGolden(must(GOLDEN_MATRIX[0], "the golden matrix has a case"));
   const tampered = JSON.parse(JSON.stringify(golden)) as Record<string, unknown>;
   const claude = tampered.claudeSessions as { usageByModel: Record<string, { input: number }> };
-  const model = Object.keys(claude.usageByModel).sort()[0]!;
-  claude.usageByModel[model]!.input += 1;
+  const model = must(Object.keys(claude.usageByModel).sort()[0], "the golden's claude has a model");
+  must(claude.usageByModel[model], "model is one of usageByModel's own keys").input += 1;
   // Control for the control: an untouched copy still matches.
   expect(describeMismatch(JSON.parse(JSON.stringify(golden)), golden)).toBeNull();
   expect(describeMismatch(tampered, golden)).toContain("input");

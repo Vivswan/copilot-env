@@ -358,10 +358,10 @@ export function readDesktopAppState(): DesktopAppState {
     docs.push(loaded.doc);
   }
   const [config, ...developer] = docs;
-  const mode = config?.["deploymentMode"];
+  const mode = config?.deploymentMode;
   return {
     kind: "read",
-    developerMode: developer.every((doc) => doc["allowDevTools"] === true),
+    developerMode: developer.every((doc) => doc.allowDevTools === true),
     deploymentMode: mode === "3p" || mode === "1p" ? mode : null,
   };
 }

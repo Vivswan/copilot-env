@@ -396,7 +396,7 @@ export function rm(path: string, options: RemoveOptions = {}): boolean {
     }
     if (code === "ENOTDIR") throw e;
   }
-  if (entry !== null && entry.isDirectory() && !recursive) throw rmDirectoryRefused(path);
+  if (entry?.isDirectory() && !recursive) throw rmDirectoryRefused(path);
   const was = look(path, recursive);
   try {
     rmSync(path, { recursive, force: true });

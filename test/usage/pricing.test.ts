@@ -17,6 +17,7 @@ import {
   type UsageTokens,
   withGitHubRates,
 } from "../../src/usage/pricing.ts";
+import { must } from "../../src/utils/assert.ts";
 import { expect, tempDir, test } from "../helpers/testing.ts";
 
 // The ONE serialized-USD precision: 4 decimal places, half-up, applied only at
@@ -356,7 +357,12 @@ test("withGitHubRates prices gpt-5.6-sol at GitHub's card, leaves the list and e
   // A card that agrees with the list changes no price, so it names no model: the footer is about
   // prices the card moved.
   const agreeing = cardOf({
-    rates: new Map([["anthropic/claude-fable-5.1", list.get("anthropic/claude-fable-5.1")!]]),
+    rates: new Map([
+      [
+        "anthropic/claude-fable-5.1",
+        must(list.get("anthropic/claude-fable-5.1"), "the list prices claude-fable-5.1"),
+      ],
+    ]),
   });
   expect(
     estimateCost({ byModel: usage }, withGitHubRates(list, agreeing, FETCHED)).githubRated,

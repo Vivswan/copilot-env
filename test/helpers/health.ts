@@ -10,7 +10,7 @@ import type { DaemonProbed, RuntimeTarget } from "../../src/health/facts.ts";
 import type { CheckResult } from "../../src/health/types.ts";
 
 export function probeOf(t: RuntimeTarget | undefined): DaemonProbed {
-  if (!t || t.probe.kind !== "probed") throw new Error("expected a probed runtime target");
+  if (t?.probe.kind !== "probed") throw new Error("expected a probed runtime target");
   return t.probe;
 }
 

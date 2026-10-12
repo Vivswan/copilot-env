@@ -269,7 +269,7 @@ test("static-key scopes the baked value to the named agent; the other keeps its 
         apiKeyHelper: settings.apiKeyHelper,
       },
       codex: {
-        authorization: record(provider.http_headers ?? {})["Authorization"],
+        authorization: record(provider.http_headers ?? {}).Authorization,
         authCommand: record(provider.auth ?? {}).command,
       },
     }).toEqual({

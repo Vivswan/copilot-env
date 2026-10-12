@@ -721,8 +721,7 @@ test("identityTableLines: with color on, the palette paints the survey like agen
     // The legend, every note, and every reason are dim end to end: one open, one close, so the
     // host label inside a reason never nests a dim of its own.
     const dimWhole = (line: string | undefined, indent = ""): boolean =>
-      line !== undefined &&
-      line.startsWith(`${indent}\x1b[2m`) &&
+      line?.startsWith(`${indent}\x1b[2m`) === true &&
       line.endsWith("\x1b[22m") &&
       line.split(ESC).length === 3;
     expect(dimWhole(colored.find((line) => line.includes("* = in use")))).toBe(true);
@@ -1122,9 +1121,12 @@ test("loginWithGhCli: an UNPROVEN look says could-not-check; a proven miss quote
     "could not check gh authentication (`gh auth token` did not complete (killed)) - retry `agent auth`",
   );
   asked.length = 0;
-  expect(() => loginWithGhCli(SOLE_WORK, (ghUser) => (asked.push(ghUser), killed))).toThrow(
-    "could not check gh authentication",
-  );
+  expect(() =>
+    loginWithGhCli(SOLE_WORK, (ghUser) => {
+      asked.push(ghUser);
+      return killed;
+    }),
+  ).toThrow("could not check gh authentication");
   expect(asked).toEqual(["work"]);
 });
 

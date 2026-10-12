@@ -99,10 +99,12 @@ test("no source string spells an `agent config` hint by hand or names a dotted k
     "agent profile <name> unset identity",
   ]);
   expect(
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: source text under lint; the template is the input, not ours
     stringLiterals("w(`agent profile ${profile} set identity auto`)")
       .join("")
       .match(HAND_SPELLED_HINT),
   ).toEqual(["agent profile   set identity"]);
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: source text under lint; the template is the input, not ours
   expect(stringLiterals("y(`(${key} on)`)").join("").match(DOTTED_KEY_SHAPE)).toBeNull();
   expect(stringLiterals('z("(daemon.auto-stop on)")').join("").match(DOTTED_KEY_SHAPE)).toEqual([
     "daemon.auto-stop",
@@ -177,6 +179,7 @@ test("no source file, comments included, cites a config key by a spelling the 4.
     "`claude-desktop false`",
   ]);
   expect(
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: a message quoted as source text under lint
     "`port ${def} is busy (`daemon.strict-port`); pass `--port`".match(OLD_KEY_CITATION),
   ).toBeNull();
   expect(OLD_KEY_NAMES).toContain("integration-id");

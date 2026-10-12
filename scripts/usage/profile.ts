@@ -23,6 +23,7 @@ import { resolveClaudeHome } from "../../src/claude/paths.ts";
 import { knownCodexHomes } from "../../src/codex/host.ts";
 import { SYNTHETIC_MODEL } from "../../src/usage/claude_sessions.ts";
 import { ROLLOUT_FILE } from "../../src/usage/codex_sessions.ts";
+import { must } from "../../src/utils/assert.ts";
 import { isEnoentOrNotdir } from "../../src/utils/fs.ts";
 import { isRecord } from "../../src/utils/json.ts";
 import { localDayKey } from "../../src/utils/time.ts";
@@ -243,12 +244,14 @@ class SourceAccumulator {
   profile(totalBytes: number): SourceProfile {
     const bytesPerLine: Record<string, ReturnType<typeof quantiles>> = {};
     for (const type of [...this.bytesPerLine.keys()].sort()) {
-      bytesPerLine[type] = quantiles(this.bytesPerLine.get(type)!.values);
+      bytesPerLine[type] = quantiles(
+        must(this.bytesPerLine.get(type), "type is one of the map's own keys").values,
+      );
     }
     const models: Record<string, ModelProfile> = {};
     const totalEvents = [...this.models.values()].reduce((sum, m) => sum + m.events, 0);
     for (const name of [...this.models.keys()].sort()) {
-      const acc = this.models.get(name)!;
+      const acc = must(this.models.get(name), "name is one of the map's own keys");
       models[name] = {
         share: totalEvents === 0 ? 0 : acc.events / totalEvents,
         input: quantiles(acc.input.values),

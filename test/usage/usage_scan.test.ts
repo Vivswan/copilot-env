@@ -45,10 +45,11 @@ function scanBytesOneAtATime(
 ): ReturnType<typeof scanLines> {
   return scanSource(
     (target, position) => {
-      if (position >= bytes.length || target.length === 0) {
+      const byte = bytes[position];
+      if (byte === undefined || target.length === 0) {
         return 0;
       }
-      target[0] = bytes[position]!;
+      target[0] = byte;
       return 1;
     },
     fromByte,

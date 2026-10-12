@@ -17,7 +17,7 @@ function assistant(text: string, usage: Record<string, number>): string {
     type: "assistant",
     timestamp: "2026-06-01T10:00:00.000Z",
     message: {
-      id: `msg_${usage["output_tokens"]}`,
+      id: `msg_${usage.output_tokens}`,
       model: "claude-opus-4-8",
       role: "assistant",
       content: [{ type: "text", text }],

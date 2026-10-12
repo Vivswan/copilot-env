@@ -18,6 +18,7 @@ import {
 } from "../../src/usage/codex_sessions.ts";
 import { dedupKey, parseEveryCandidate, type WalkedFile } from "../../src/usage/contribution.ts";
 import { estimateCost, type PricingTier, withGitHubRates } from "../../src/usage/pricing.ts";
+import { must } from "../../src/utils/assert.ts";
 import { errMessage } from "../../src/utils/error.ts";
 import { dayKeyIn } from "../../src/utils/time.ts";
 import { captureAllWrites } from "../helpers/output.ts";
@@ -36,7 +37,7 @@ test("readCodexSessions counts an unterminated final line once its LF lands", as
   const scenario = scenarioNamed(CODEX_SCENARIOS, "does not count an unterminated final line");
   const { roots, files } = scenario.build(tempDir("codex-sessions-"));
   scenario.check(await readCodexSessions(roots, undefined, undefined, parseEveryCandidate));
-  appendFileSync(files![0]!, "\n");
+  appendFileSync(must(files?.[0], "the scenario builds one transcript file"), "\n");
   expect(
     (await readCodexSessions(roots, undefined, undefined, parseEveryCandidate))
       .get("copilot-env")
@@ -167,7 +168,7 @@ test("walkCodexSessions reports every rollout with its candidacy verdict, in fol
     [false, false], // its compressed twin is demoted
     [true, false], // an archive without a live twin is parsed
   ]);
-  const kept0 = walked[1]!;
+  const kept0 = must(walked[1], "the walk lists the live copy second");
   expect(kept0.size).toBe(statSync(kept).size);
   expect(kept0.mtimeMs).toBe(statSync(kept).mtimeMs);
 });
@@ -215,9 +216,10 @@ test("foldCodex books a request over 272K prompt tokens as long-context and one 
     ),
   ]);
   const { contribution } = parseCodexWhole(walkedFile(path));
-  const report = foldCodex([{ path, contribution }], undefined, dayKeyIn("UTC")).get(
-    "copilot-env",
-  )!;
+  const report = must(
+    foldCodex([{ path, contribution }], undefined, dayKeyIn("UTC")).get("copilot-env"),
+    "the rollout's provider is copilot-env",
+  );
   const flat = { input: at - cached, output: 10, cacheRead: cached, cacheCreation: 0, events: 1 };
   const long = { ...flat, input: at + 1 - cached };
   expect(report.byModel.get("gpt-6-astra")).toEqual({

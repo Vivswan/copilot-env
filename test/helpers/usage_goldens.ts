@@ -10,6 +10,7 @@ import { SHA256_HEX_SCHEMA } from "../../src/copilot_api/config_registry.ts";
 import { type CostRuntime, runCost } from "../../src/usage/cost.ts";
 import { canonicalModelName } from "../../src/usage/pricing.ts";
 import { type ModelUsage, type ReadonlyUsageReport, usageReport } from "../../src/usage/usage.ts";
+import { must } from "../../src/utils/assert.ts";
 import { stableStringify } from "../../src/utils/json.ts";
 import {
   DEFAULT_DAYS,
@@ -216,7 +217,9 @@ function plantSplitLines(tree: GeneratedTree): PlantedDelta {
   for (const [i, cp] of LINE_SPLITTING_CODE_POINTS.entries()) {
     const u = PLANTED_USAGE[i];
     if (u === undefined) throw new Error("PLANTED_USAGE is shorter than the code point list");
-    const hex = cp.codePointAt(0)!.toString(16).padStart(4, "0");
+    const hex = must(cp.codePointAt(0), "every planted code point is a non-empty string")
+      .toString(16)
+      .padStart(4, "0");
     const usageJson: Json = {
       input_tokens: u.input,
       cache_creation_input_tokens: u.cacheCreation,

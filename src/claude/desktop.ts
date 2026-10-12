@@ -210,7 +210,7 @@ export async function wireClaudeDesktopEntry(opts: DesktopWireOptions): Promise<
       } catch {
         continue; // malformed is foreign, never adopted
       }
-      if (!isRecord(doc) || !sameBaseUrl(doc["inferenceGatewayBaseUrl"], baseUrl)) continue;
+      if (!isRecord(doc) || !sameBaseUrl(doc.inferenceGatewayBaseUrl, baseUrl)) continue;
       entry = candidate;
       if (!opts.quiet) {
         logger.info(
@@ -347,7 +347,7 @@ export function profileStoreWellFormed(storeFile: string): boolean {
     return false;
   }
   if (!isRecord(doc)) return false;
-  const profiles = doc["profiles"];
+  const profiles = doc.profiles;
   return profiles === undefined || (isRecord(profiles) && Object.values(profiles).every(isRecord));
 }
 

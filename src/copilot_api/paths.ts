@@ -52,7 +52,7 @@ export function usageDbsUnderHome(home: string): string[] {
   for (const host of hosts) {
     const hostStat = statIfPresent(join(runDir, host));
     const candidate = join(runDir, host, SQLITE_DB_FILENAME);
-    if (hostStat !== null && hostStat.isDirectory() && statIfPresent(candidate) !== null) {
+    if (hostStat?.isDirectory() && statIfPresent(candidate) !== null) {
       paths.push(candidate);
     }
   }

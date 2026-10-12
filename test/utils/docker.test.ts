@@ -23,7 +23,8 @@ function negationReadmits(pattern: string, entry: string): boolean {
     .reduce<string[]>((parts, seg) => {
       if (seg === "" || seg === ".") return parts;
       if (seg === "..") return parts.slice(0, -1);
-      return [...parts, seg];
+      parts.push(seg);
+      return parts;
     }, [])
     .join("/");
   const literal = cleaned.split(/[*?[\\]/)[0] ?? "";

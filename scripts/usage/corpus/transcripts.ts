@@ -35,7 +35,7 @@ export function filesFor(files: string[], id: string, source: Source): string[] 
     const base = file.split(/[\\/]/).at(-1) ?? "";
     if (source === "claude") return base === `${id}.jsonl`;
     const rollout = ROLLOUT_FILE_RE.exec(base);
-    return rollout !== null && rollout[2]!.toLowerCase() === id.toLowerCase();
+    return rollout?.[2]?.toLowerCase() === id.toLowerCase();
   });
 }
 

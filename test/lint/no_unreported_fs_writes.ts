@@ -1,6 +1,6 @@
 // Runtime code reaches the filesystem through the one seam (src/utils/fs_facade.ts), never around
 // it: the seam names every write outside copilot-env's own homes on stderr and answers every read
-// from a dry run's planned state. So the ban is on REACHING node:fs, Bun, or Deno at all, not on
+// from a dry run's planned state. So the ban is on REACHING node:fs or Bun at all, not on
 // the call that mutates: a raw call is a write the seam never sees or a read behind the plan.
 //
 // Two rules, one per direction, because their exemptions differ; each ALLOWED set below carries its
@@ -160,60 +160,6 @@ const FS_READ_NAMES = new Set([
   "unwatchFile",
 ]);
 
-const DENO_WRITE_NAMES = new Set([
-  "writeFile",
-  "writeFileSync",
-  "writeTextFile",
-  "writeTextFileSync",
-  "remove",
-  "removeSync",
-  "rename",
-  "renameSync",
-  "symlink",
-  "symlinkSync",
-  "link",
-  "linkSync",
-  "chmod",
-  "chmodSync",
-  "mkdir",
-  "mkdirSync",
-  "copyFile",
-  "copyFileSync",
-  "truncate",
-  "truncateSync",
-  "makeTempDir",
-  "makeTempDirSync",
-  "makeTempFile",
-  "makeTempFileSync",
-  "create",
-  "createSync",
-  "utime",
-  "utimeSync",
-  "chown",
-  "chownSync",
-]);
-
-/** The Deno namespace's lookup and read entry points, every open included. */
-const DENO_READ_NAMES = new Set([
-  "readTextFile",
-  "readTextFileSync",
-  "readFile",
-  "readFileSync",
-  "stat",
-  "statSync",
-  "lstat",
-  "lstatSync",
-  "readDir",
-  "readDirSync",
-  "readLink",
-  "readLinkSync",
-  "realPath",
-  "realPathSync",
-  "open",
-  "openSync",
-  "watchFs",
-]);
-
 /** Bun's own file APIs: `Bun.write` mutates, `Bun.file` hands out a readable (and, through its
  *  writer, a writable) handle the seam never sees. */
 const BUN_WRITE_NAMES = new Set(["write", "file"]);
@@ -221,9 +167,6 @@ const BUN_READ_NAMES = new Set(["file"]);
 
 /** The node:fs open calls: a read by name, a write when the flag says so. */
 const FS_OPEN_NAMES = new Set(["open", "openSync"]);
-const DENO_OPEN_NAMES = new Set(["open", "openSync"]);
-/** Deno.open options that make the handle a write. */
-const DENO_OPEN_WRITE_OPTIONS = new Set(["write", "append", "create", "createNew", "truncate"]);
 
 function withoutOpens(names: ReadonlySet<string>): ReadonlySet<string> {
   return new Set([...names].filter((name) => !FS_OPEN_NAMES.has(name)));
@@ -380,19 +323,6 @@ function fsFlagWrites(flag: Argument | undefined): boolean {
   return text === null || /[wa+]/.test(text);
 }
 
-/** Whether a Deno.open options argument asks for a write: a write option not literally false, or
- *  options the rule cannot read. */
-function denoOptionsWrite(options: Argument | undefined): boolean {
-  if (options === undefined) return false;
-  if (options.type !== "ObjectExpression") return true;
-  return options.properties.some((property) => {
-    if (property.type !== "Property" || property.computed) return true;
-    const key = nameOf(property.key);
-    if (key === null || !DENO_OPEN_WRITE_OPTIONS.has(key)) return false;
-    return !(property.value.type === "Literal" && property.value.value === false);
-  });
-}
-
 /** Whether a literal argument vector (`["rm", "-rf", x]`, or a shell with its command line)
  *  names a mutating command. */
 function argvMutates(elements: readonly ArrayExpressionElement[]): boolean {
@@ -435,14 +365,14 @@ function bunSpawnArgv(first: Argument): readonly ArrayExpressionElement[] | null
     : null;
 }
 
-/** `Deno`, `Bun`, `globalThis.Deno`, and the local aliases a rule collected. */
-function isGlobalNamespace(node: Expression, name: string, aliases: ReadonlySet<string>): boolean {
-  if (node.type === "Identifier") return node.name === name || aliases.has(node.name);
+/** `Bun`, `globalThis.Bun`, and the local aliases a rule collected. */
+function isBunNamespace(node: Expression, aliases: ReadonlySet<string>): boolean {
+  if (node.type === "Identifier") return node.name === "Bun" || aliases.has(node.name);
   return (
     node.type === "MemberExpression" &&
     node.object.type === "Identifier" &&
     node.object.name === "globalThis" &&
-    memberName(node) === name
+    memberName(node) === "Bun"
   );
 }
 
@@ -459,7 +389,6 @@ function isFsNamespace(node: Expression, locals: ReadonlySet<string>): boolean {
 /** The API names one direction of the seam covers, and the message for reaching one raw. */
 interface Direction {
   fs: ReadonlySet<string>;
-  deno: ReadonlySet<string>;
   bun: ReadonlySet<string>;
   message: string;
 }
@@ -471,11 +400,9 @@ interface Scan {
   /** Local names bound to a whole node:fs module (`import * as fs`, `import fs`, the `promises`
    *  namespace, and aliases of either). */
   fsNamespaces: Set<string>;
-  denoAliases: Set<string>;
   bunAliases: Set<string>;
-  /** Local names bound to node:fs `open`/`openSync`, and to `Deno.open`/`Deno.openSync`. */
+  /** Local names bound to node:fs `open`/`openSync`. */
   fsOpens: Set<string>;
-  denoOpens: Set<string>;
   /** Local names bound to a child_process spawn entry point, by kind, and to the whole module. */
   spawns: Set<string>;
   execs: Set<string>;
@@ -488,10 +415,8 @@ function newScan(rule: FsFinding["rule"], direction: Direction): Scan {
     rule,
     direction,
     fsNamespaces: new Set(),
-    denoAliases: new Set(),
     bunAliases: new Set(),
     fsOpens: new Set(),
-    denoOpens: new Set(),
     spawns: new Set(),
     execs: new Set(),
     childProcessNamespaces: new Set(),
@@ -502,7 +427,7 @@ function report(scan: Scan, at: { start: number }, message = scan.direction.mess
   scan.findings.push({ rule: scan.rule, start: at.start, message });
 }
 
-/** Every way of reaching a node:fs, Deno, or Bun filesystem API by name: a named import, a member
+/** Every way of reaching a node:fs or Bun filesystem API by name: a named import, a member
  *  read off a module or global namespace (and any alias of either), a destructure, a re-export, a
  *  dynamic import of the whole module. */
 function reachVisitor(scan: Scan): VisitorObject {
@@ -570,41 +495,37 @@ function reachVisitor(scan: Scan): VisitorObject {
         if (direction.fs.has(name)) report(scan, node);
         return;
       }
-      if (isGlobalNamespace(node.object, "Deno", scan.denoAliases) && direction.deno.has(name)) {
-        report(scan, node);
-      } else if (
-        isGlobalNamespace(node.object, "Bun", scan.bunAliases) &&
-        direction.bun.has(name)
-      ) {
+      if (isBunNamespace(node.object, scan.bunAliases) && direction.bun.has(name)) {
         report(scan, node);
       }
     },
-    // `const { rmSync } = fs;` / `const { remove } = Deno;` / `const fsp = fs.promises;`
-    // / `const { promises: fsp } = fs;` / `const deno = Deno;`
+    // `const { rmSync } = fs;` / `const fsp = fs.promises;` / `const { promises: fsp } = fs;`
+    // / `const bun = Bun;`
     VariableDeclarator(node) {
       const { id, init } = node;
       if (init === null) return;
       if (id.type === "Identifier") {
         const local = id.name;
         if (isFsNamespace(init, scan.fsNamespaces)) scan.fsNamespaces.add(local);
-        if (isGlobalNamespace(init, "Deno", scan.denoAliases)) scan.denoAliases.add(local);
-        if (isGlobalNamespace(init, "Bun", scan.bunAliases)) scan.bunAliases.add(local);
-        // `const open = Deno.open;` / `const o = fs.openSync;`: an open under another name.
+        if (isBunNamespace(init, scan.bunAliases)) scan.bunAliases.add(local);
+        // `const o = fs.openSync;`: an open under another name.
         if (init.type === "MemberExpression") {
           const name = memberName(init);
-          if (name !== null && FS_OPEN_NAMES.has(name)) {
-            if (isFsNamespace(init.object, scan.fsNamespaces)) scan.fsOpens.add(local);
-            if (isGlobalNamespace(init.object, "Deno", scan.denoAliases)) scan.denoOpens.add(local);
+          if (
+            name !== null &&
+            FS_OPEN_NAMES.has(name) &&
+            isFsNamespace(init.object, scan.fsNamespaces)
+          ) {
+            scan.fsOpens.add(local);
           }
         }
         return;
       }
       if (id.type !== "ObjectPattern") return;
       const fromFs = isFsNamespace(init, scan.fsNamespaces);
-      const fromDeno = isGlobalNamespace(init, "Deno", scan.denoAliases);
-      const fromBun = isGlobalNamespace(init, "Bun", scan.bunAliases);
-      if (!fromFs && !fromDeno && !fromBun) return;
-      const names = fromFs ? direction.fs : fromDeno ? direction.deno : direction.bun;
+      const fromBun = isBunNamespace(init, scan.bunAliases);
+      if (!fromFs && !fromBun) return;
+      const names = fromFs ? direction.fs : direction.bun;
       for (const property of id.properties) {
         if (property.type !== "Property") continue;
         const key = nameOf(property.key);
@@ -616,8 +537,6 @@ function reachVisitor(scan: Scan): VisitorObject {
           scan.fsNamespaces.add(local);
         } else if (fromFs && FS_OPEN_NAMES.has(key) && local !== null) {
           scan.fsOpens.add(local);
-        } else if (fromDeno && DENO_OPEN_NAMES.has(key) && local !== null) {
-          scan.denoOpens.add(local);
         }
       }
     },
@@ -625,7 +544,7 @@ function reachVisitor(scan: Scan): VisitorObject {
 }
 
 /** The write rule's own visitors: a write-capable open, and a child process running a
- *  filesystem command (node:child_process, Bun.spawn, Deno.Command). */
+ *  filesystem command (node:child_process, Bun.spawn). */
 function writeVisitor(scan: Scan): VisitorObject {
   return {
     CallExpression(node) {
@@ -635,8 +554,6 @@ function writeVisitor(scan: Scan): VisitorObject {
       if (callee.type === "Identifier") {
         const { name } = callee;
         if (scan.fsOpens.has(name) && fsFlagWrites(second)) report(scan, node, HANDLE_MESSAGE);
-        else if (scan.denoOpens.has(name) && denoOptionsWrite(second))
-          report(scan, node, HANDLE_MESSAGE);
         else if (scan.spawns.has(name) && spawnMutates(first, second))
           report(scan, node, SPAWN_MESSAGE);
         else if (scan.execs.has(name)) {
@@ -652,12 +569,7 @@ function writeVisitor(scan: Scan): VisitorObject {
         if (FS_OPEN_NAMES.has(name) && fsFlagWrites(second)) report(scan, node, HANDLE_MESSAGE);
         return;
       }
-      if (isGlobalNamespace(callee.object, "Deno", scan.denoAliases)) {
-        if (DENO_OPEN_NAMES.has(name) && denoOptionsWrite(second))
-          report(scan, node, HANDLE_MESSAGE);
-        return;
-      }
-      if (isGlobalNamespace(callee.object, "Bun", scan.bunAliases)) {
+      if (isBunNamespace(callee.object, scan.bunAliases)) {
         if (name !== "spawn" && name !== "spawnSync") return;
         const argv = bunSpawnArgv(first);
         if (argv !== null && argvMutates(argv)) report(scan, node, SPAWN_MESSAGE);
@@ -673,26 +585,6 @@ function writeVisitor(scan: Scan): VisitorObject {
       else if (EXEC_NAMES.has(name)) {
         const line = literalText(first);
         if (line !== null && commandLineMutates(line)) report(scan, node, SPAWN_MESSAGE);
-      }
-    },
-    // `new Deno.Command("rm", { args })`.
-    NewExpression(node) {
-      const { callee } = node;
-      if (callee.type !== "MemberExpression" || memberName(callee) !== "Command") return;
-      if (!isGlobalNamespace(callee.object, "Deno", scan.denoAliases)) return;
-      const [command, options] = node.arguments;
-      if (command === undefined) return;
-      const args =
-        options?.type === "ObjectExpression"
-          ? options.properties.find(
-              (property) =>
-                property.type === "Property" &&
-                !property.computed &&
-                nameOf(property.key) === "args",
-            )
-          : undefined;
-      if (spawnMutates(command, args?.type === "Property" ? args.value : undefined)) {
-        report(scan, node, SPAWN_MESSAGE);
       }
     },
   };
@@ -728,7 +620,6 @@ export function scanFsReach(path: string, source: string): FsFinding[] {
   if (guarded(path)) {
     const scan = newScan(WRITES_RULE, {
       fs: STDERR_WRITE_ALLOWED.has(path) ? withoutFdWrites(FS_WRITE_NAMES) : FS_WRITE_NAMES,
-      deno: DENO_WRITE_NAMES,
       bun: BUN_WRITE_NAMES,
       message: WRITE_MESSAGE,
     });
@@ -739,7 +630,6 @@ export function scanFsReach(path: string, source: string): FsFinding[] {
     const handles = READ_HANDLE_ALLOWED.has(path);
     const scan = newScan(READS_RULE, {
       fs: handles ? withoutOpens(FS_READ_NAMES) : FS_READ_NAMES,
-      deno: handles ? withoutOpens(DENO_READ_NAMES) : DENO_READ_NAMES,
       bun: BUN_READ_NAMES,
       message: READ_MESSAGE,
     });

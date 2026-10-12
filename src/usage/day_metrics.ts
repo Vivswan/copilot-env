@@ -212,7 +212,8 @@ export function median(values: number[]): number {
   }
   const sorted = [...values].sort((a, b) => a - b);
   const mid = Math.floor(sorted.length / 2);
-  return sorted.length % 2 === 0 ? ((sorted[mid - 1] ?? 0) + (sorted[mid] ?? 0)) / 2 : sorted[mid]!;
+  const upper = sorted[mid] ?? 0;
+  return sorted.length % 2 === 0 ? ((sorted[mid - 1] ?? 0) + upper) / 2 : upper;
 }
 
 /** The inclusive min..max calendar span of the active days, and what fraction of it was active. */
@@ -221,11 +222,11 @@ export function activeDayCoverage(report: ReadonlyUsageReport): {
   percent: number;
 } {
   const days = [...report.perDay.keys()].sort();
-  if (days.length === 0) {
+  const first = days[0];
+  const last = days.at(-1);
+  if (first === undefined || last === undefined) {
     return { spanDays: 0, percent: 100 };
   }
-  const first = days[0]!;
-  const last = days[days.length - 1]!;
   const spanMs = Date.parse(`${last}T00:00:00Z`) - Date.parse(`${first}T00:00:00Z`);
   const spanDays = Math.round(spanMs / MILLISECONDS_PER_DAY) + 1;
   const percent = spanDays > 0 ? Math.round((days.length / spanDays) * 100) : 100;

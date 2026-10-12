@@ -75,6 +75,7 @@ import { OwnershipLedger } from "../../src/copilot_api/ownership.ts";
 import { CopilotApiPaths, resolveRootHome } from "../../src/copilot_api/paths.ts";
 import type { Profile } from "../../src/copilot_api/profile.ts";
 import { parseProfileName } from "../../src/copilot_api/profile.ts";
+import { must } from "../../src/utils/assert.ts";
 import { agentLauncherCommand } from "../../src/utils/root.ts";
 import { linesNaming } from "../helpers/dry_run.ts";
 import { envSnapshot, isolateAgentHomes, resetExitCode } from "../helpers/env.ts";
@@ -263,19 +264,19 @@ test("payload: direct shape (headers + models + no discovery), proxy shape (disc
     direct: directWiring("copilot-developer-cli", DEFAULT_COPILOT_API_BASE),
     models,
   });
-  expect(direct["inferenceGatewayBaseUrl"]).toBe(DEFAULT_COPILOT_API_BASE);
+  expect(direct.inferenceGatewayBaseUrl).toBe(DEFAULT_COPILOT_API_BASE);
   // The two keys that make the app treat the entry as a third-party config at all: without
   // them it boots into claude.ai sign-in (seen on a fresh machine).
-  expect(direct["inferenceProvider"]).toBe("gateway");
-  expect(direct["inferenceCredentialKind"]).toBe("helper-script");
-  expect(direct["inferenceCredentialHelper"]).toBe("/x/helper.sh");
-  expect(direct["inferenceCredentialHelperTimeoutSec"]).toBe(30);
-  expect(direct["deploymentDisplayName"]).toBe(DESKTOP_DISPLAY_NAME);
-  const headers = direct["inferenceCustomHeaders"] as Record<string, string>;
+  expect(direct.inferenceProvider).toBe("gateway");
+  expect(direct.inferenceCredentialKind).toBe("helper-script");
+  expect(direct.inferenceCredentialHelper).toBe("/x/helper.sh");
+  expect(direct.inferenceCredentialHelperTimeoutSec).toBe(30);
+  expect(direct.deploymentDisplayName).toBe(DESKTOP_DISPLAY_NAME);
+  const headers = direct.inferenceCustomHeaders as Record<string, string>;
   expect(headers["Copilot-Integration-Id"]).toBe("copilot-developer-cli");
   expect(headers["Openai-Intent"]).toBe("conversation-edits");
-  expect(direct["modelDiscoveryEnabled"]).toBeUndefined(); // Copilot Direct 404s /v1/models
-  expect(direct["inferenceModels"]).toEqual([
+  expect(direct.modelDiscoveryEnabled).toBeUndefined(); // Copilot Direct 404s /v1/models
+  expect(direct.inferenceModels).toEqual([
     {
       name: "claude-fable-5",
       labelOverride: "Claude Fable 5",
@@ -305,9 +306,9 @@ test("payload: direct shape (headers + models + no discovery), proxy shape (disc
     expect(direct[key]).toBe(true);
   }
   // managedMcpServers is an ARRAY (the object shape is rejected as invalid_type and dropped).
-  const servers = direct["managedMcpServers"] as { name: string; transport: string }[];
+  const servers = direct.managedMcpServers as { name: string; transport: string }[];
   expect(servers.map((s) => [s.name, s.transport])).toEqual([["copilot-env", "stdio"]]);
-  expect(direct["claudeAiImport"]).toEqual({
+  expect(direct.claudeAiImport).toEqual({
     enabled: true,
     automatic3pImport: true,
     exportEnabled: true,
@@ -321,12 +322,12 @@ test("payload: direct shape (headers + models + no discovery), proxy shape (disc
     models,
     existing: direct, // mode switch: direct-only keys must be scrubbed
   });
-  expect(proxy["modelDiscoveryEnabled"]).toBe(true);
-  expect(proxy["inferenceCustomHeaders"]).toBeUndefined();
-  expect(proxy["inferenceCredentialHelperTimeoutSec"]).toBe(120);
+  expect(proxy.modelDiscoveryEnabled).toBe(true);
+  expect(proxy.inferenceCustomHeaders).toBeUndefined();
+  expect(proxy.inferenceCredentialHelperTimeoutSec).toBe(120);
   // Discovery alone carries no capability metadata (claude-code#88345), so the proxy
   // payload keeps the direct payload's rows, 1m annotations included.
-  expect(proxy["inferenceModels"]).toEqual(direct["inferenceModels"]);
+  expect(proxy.inferenceModels).toEqual(direct.inferenceModels);
 });
 
 test("payload: foreign keys in the existing document survive the surgical merge", () => {
@@ -342,9 +343,9 @@ test("payload: foreign keys in the existing document survive the surgical merge"
       claudeAiImport: { bannerBehavior: "detect", enabled: false },
     },
   });
-  expect(merged["banner"]).toEqual({ enabled: true, text: "keep me" });
-  expect(merged["userKey"]).toBe(42);
-  expect(merged["claudeAiImport"]).toEqual({
+  expect(merged.banner).toEqual({ enabled: true, text: "keep me" });
+  expect(merged.userKey).toBe(42);
+  expect(merged.claudeAiImport).toEqual({
     bannerBehavior: "detect", // hand-set sibling field kept
     enabled: true, // managed value wins over the stale hand-set one
     automatic3pImport: true,
@@ -361,7 +362,7 @@ test("payload: a rotation to a null integration id drops the stale header; forei
     direct: directWiring("copilot-developer-cli", DEFAULT_COPILOT_API_BASE),
     existing: { inferenceCustomHeaders: { "X-Custom": "keep" } },
   });
-  const before = withId["inferenceCustomHeaders"] as Record<string, string>;
+  const before = withId.inferenceCustomHeaders as Record<string, string>;
   expect(before["Copilot-Integration-Id"]).toBe("copilot-developer-cli");
   expect(before["X-Custom"]).toBe("keep");
 
@@ -375,7 +376,7 @@ test("payload: a rotation to a null integration id drops the stale header; forei
     direct: null,
     existing: withId,
   });
-  const headers = rotated["inferenceCustomHeaders"] as Record<string, string>;
+  const headers = rotated.inferenceCustomHeaders as Record<string, string>;
   expect(headers["Copilot-Integration-Id"]).toBeUndefined();
   expect(headers["X-Custom"]).toBe("keep");
   expect(headers["Openai-Intent"]).toBe("conversation-edits");
@@ -396,17 +397,17 @@ test("payload: the static shape bakes the key and drops the helper keys; the com
     credential: { kind: "static", token: "ghu_x" },
     existing: viaHelper,
   });
-  expect(baked["inferenceCredentialKind"]).toBe("static");
-  expect(baked["inferenceGatewayApiKey"]).toBe("ghu_x");
-  expect(baked["inferenceGatewayAuthScheme"]).toBe("bearer");
-  expect(baked["inferenceCredentialHelper"]).toBeUndefined();
-  expect(baked["inferenceCredentialHelperTimeoutSec"]).toBeUndefined();
+  expect(baked.inferenceCredentialKind).toBe("static");
+  expect(baked.inferenceGatewayApiKey).toBe("ghu_x");
+  expect(baked.inferenceGatewayAuthScheme).toBe("bearer");
+  expect(baked.inferenceCredentialHelper).toBeUndefined();
+  expect(baked.inferenceCredentialHelperTimeoutSec).toBeUndefined();
   // Back to the command shape: the key must not linger in the document beside the helper, and
   // the kind names the helper as the app's one source again.
   const back = desktopConfigPayload({ ...base, credential: command, existing: baked });
-  expect(back["inferenceCredentialHelper"]).toBe("/x/h.sh");
-  expect(back["inferenceCredentialHelperTimeoutSec"]).toBe(30);
-  expect(back["inferenceCredentialKind"]).toBe("helper-script");
+  expect(back.inferenceCredentialHelper).toBe("/x/h.sh");
+  expect(back.inferenceCredentialHelperTimeoutSec).toBe(30);
+  expect(back.inferenceCredentialKind).toBe("helper-script");
   for (const key of ["inferenceGatewayApiKey", "inferenceGatewayAuthScheme"]) {
     expect(back[key]).toBeUndefined();
   }
@@ -460,9 +461,9 @@ test("fresh upsert: config + meta entry + appliedId only when the library had no
   expect(meta.appliedId).toBe(entries[0]?.id); // empty library: ours becomes applied
   const configPath = join(library, `${entries[0]?.id}.json`);
   const doc = readJson(configPath);
-  expect(doc["inferenceGatewayBaseUrl"]).toBe(DEFAULT_COPILOT_API_BASE);
+  expect(doc.inferenceGatewayBaseUrl).toBe(DEFAULT_COPILOT_API_BASE);
   // One row per Claude id in the catalog; the gpt id is ignored.
-  const models = doc["inferenceModels"] as {
+  const models = doc.inferenceModels as {
     name: string;
     labelOverride: string;
     supports1m: boolean;
@@ -548,13 +549,13 @@ test("offline direct: a FRESH entry is never created; an owned entry keeps its r
   const ours = (meta.entries as { id: string; name: string }[]).find(
     (e) => e.name === "copilot-env",
   );
-  const wired = readJson(join(library, `${ours?.id}.json`))["inferenceModels"];
+  const wired = readJson(join(library, `${ours?.id}.json`)).inferenceModels;
   expect(wired).toHaveLength(3); // catalog-derived, so the survival check below is non-vacuous
 
   await wireClaudeDesktopEntry(offline);
   // The WHOLE rows survive -- a clobber that keeps the names but blanks the
   // labels or flips the 1m flags must fail here, not just an emptied list.
-  expect(readJson(join(library, `${ours?.id}.json`))["inferenceModels"]).toEqual(wired);
+  expect(readJson(join(library, `${ours?.id}.json`)).inferenceModels).toEqual(wired);
   // The foreign entry is untouched (different gateway: not adoptable).
   expect(readJson(join(library, "user-1.json"))).toEqual({
     inferenceGatewayBaseUrl: "https://elsewhere.example",
@@ -572,13 +573,11 @@ test("a direct entry's gateway is the write's Copilot host, the generic host whe
     quiet: false,
     fetchImpl: catalogFetch(CATALOG),
   });
-  expect(readJson(firstEntryPath(library))["inferenceGatewayBaseUrl"]).toBe(
+  expect(readJson(firstEntryPath(library)).inferenceGatewayBaseUrl).toBe(
     "https://api.business.githubcopilot.com",
   );
   await wireClaudeDesktopEntry(directWire());
-  expect(readJson(firstEntryPath(library))["inferenceGatewayBaseUrl"]).toBe(
-    DEFAULT_COPILOT_API_BASE,
-  );
+  expect(readJson(firstEntryPath(library)).inferenceGatewayBaseUrl).toBe(DEFAULT_COPILOT_API_BASE);
 });
 
 test("a blocked removal (malformed _meta.json) keeps the helper scripts", async () => {
@@ -631,8 +630,8 @@ test("adopt-and-replace: same-gateway foreign entry is taken over in place, name
   expect(entries).toEqual([{ id: "hand-1", name: "Default" }]); // same uuid, the user's name
   expect(meta.appliedId).toBe("hand-1"); // stays applied naturally
   const doc = readJson(join(library, "hand-1.json"));
-  expect(doc["userKey"]).toBe("keep"); // surgical merge
-  expect(doc["inferenceCredentialHelper"]).not.toBe(handMadeHelper); // managed helper now
+  expect(doc.userKey).toBe("keep"); // surgical merge
+  expect(doc.inferenceCredentialHelper).not.toBe(handMadeHelper); // managed helper now
   expect(existsSync(handMadeHelper)).toBe(true); // the user's file is never touched
   expect(new OwnershipLedger().owns("claudeDesktop", join(library, "hand-1.json"))).toBe(true);
 });
@@ -658,7 +657,7 @@ test("never-clobber: a foreign entry carrying our name, or a malformed _meta.jso
     fetchImpl: catalogFetch(CATALOG),
   };
   await wireClaudeDesktopEntry(opts);
-  expect(readJson(join(library, "f-1.json"))["inferenceGatewayBaseUrl"]).toBe(
+  expect(readJson(join(library, "f-1.json")).inferenceGatewayBaseUrl).toBe(
     "https://elsewhere.example",
   );
   expect(new OwnershipLedger().ownedPaths("claudeDesktop")).toEqual([]);
@@ -877,8 +876,8 @@ test("Desktop status judges a Direct entry against the slot's stored pair: what 
   expect(seen.length).toBeGreaterThan(0);
   expect(seen.every((url) => new URL(url).origin === enterprise)).toBe(true);
   const doc = readJson(firstEntryPath(library));
-  expect(doc["inferenceGatewayBaseUrl"]).toBe(enterprise);
-  expect((doc["inferenceCustomHeaders"] as Record<string, string>)["Copilot-Integration-Id"]).toBe(
+  expect(doc.inferenceGatewayBaseUrl).toBe(enterprise);
+  expect((doc.inferenceCustomHeaders as Record<string, string>)["Copilot-Integration-Id"]).toBe(
     "copilot-developer-cli",
   );
   expect(verdict()).toBe("wired");
@@ -899,7 +898,7 @@ test("payload: MCP entry carries the profile selector and merges over foreign se
       inferenceCustomHeaders: { "X-Custom": "keep" },
     },
   });
-  const servers = doc["managedMcpServers"] as {
+  const servers = doc.managedMcpServers as {
     name: string;
     transport: string;
     command: string;
@@ -926,9 +925,9 @@ test("payload: MCP entry carries the profile selector and merges over foreign se
     credential: { kind: "command", helperPath: "/x/h.sh" },
     existing: { managedMcpServers: { "copilot-env": { command: "old" } } },
   });
-  expect((fromObject["managedMcpServers"] as unknown[]).length).toBe(1);
+  expect((fromObject.managedMcpServers as unknown[]).length).toBe(1);
   // Foreign header names survive; ours are (re)written.
-  const headers = doc["inferenceCustomHeaders"] as Record<string, string>;
+  const headers = doc.inferenceCustomHeaders as Record<string, string>;
   expect(headers["X-Custom"]).toBe("keep");
   expect(headers["Openai-Intent"]).toBe("conversation-edits");
 
@@ -940,7 +939,7 @@ test("payload: MCP entry carries the profile selector and merges over foreign se
     credential: { kind: "command", helperPath: "/x/h.sh" },
     existing: doc,
   });
-  expect(proxy["inferenceCustomHeaders"]).toEqual({ "X-Custom": "keep" });
+  expect(proxy.inferenceCustomHeaders).toEqual({ "X-Custom": "keep" });
 });
 
 test("quiet re-wire heals rows recorded without labels (no catalog fetch)", async () => {
@@ -1101,7 +1100,7 @@ test("sync reconciles from the key: on wires (every write announced), off remove
   expect(existsSync(helper)).toBe(true);
   // The app files are never unwired: Developer Mode is the user's, and third-party start is
   // moot once no applied entry names a provider.
-  expect(readJson(appConfig)["deploymentMode"]).toBe("3p");
+  expect(readJson(appConfig).deploymentMode).toBe("3p");
   for (const path of devSettings) expect(existsSync(path)).toBe(true);
   expect(existsSync(firstWork)).toBe(false);
   expect(existsSync(workHelper)).toBe(false);
@@ -1340,7 +1339,7 @@ test("inspect + render: wired, missing, stale, orphaned, disabled-but-owned, abs
   const drifted = { ...doc, deploymentDisplayName: "Mine" };
   writeFileSync(configPath, `${JSON.stringify(drifted, null, 2)}\n`);
   expect(inspected(inspectTargets(targets)).entries[0]?.verdict).toEqual(managedDrift);
-  const headers = { ...(doc["inferenceCustomHeaders"] as Record<string, string>) };
+  const headers = { ...(doc.inferenceCustomHeaders as Record<string, string>) };
   headers["User-Agent"] = `${headers["User-Agent"]}-stale`;
   writeFileSync(
     configPath,
@@ -1620,9 +1619,12 @@ test("an interrupted removal's unlisted claim is reported, listed for the dry ru
   writeFileSync(blankPath, "{}\n");
   // The blank one names no wiring now, so the profile's wire mints a sibling beside it.
   await wireClaudeDesktopEntry(directWire(WORK));
-  const besideBlank = (metaOf(library).entries as { id: string }[])
-    .map((e) => join(library, `${e.id}.json`))
-    .find((p) => p !== blankPath && p !== configPath)!;
+  const besideBlank = must(
+    (metaOf(library).entries as { id: string }[])
+      .map((e) => join(library, `${e.id}.json`))
+      .find((p) => p !== blankPath && p !== configPath),
+    "the profile's wire minted a sibling entry beside the blank one",
+  );
   prune();
   const unknown = await captureAllWrites(() => reconcileClaudeDesktopWiring());
   expect(unknown).toContain(`${blankPath} carries no copilot-env wiring`);
@@ -1694,7 +1696,7 @@ test("a renamed owned entry is ours by path: rewired in place, name kept, unmana
   await wireClaudeDesktopEntry(directWire());
   const configPath = firstEntryPath(library);
   const meta = metaOf(library);
-  (meta.entries as { name: string }[])[0]!.name = "Mine now";
+  must((meta.entries as { name: string }[])[0], "the wire minted an entry").name = "Mine now";
   writeFileSync(join(library, "_meta.json"), `${JSON.stringify(meta)}\n`);
   const target: DesktopTarget = { profile: null, mode: "direct" };
   // Still the default's entry: judged against its target, never an orphan.
@@ -1752,7 +1754,8 @@ test("a renamed owned entry is ours by path: rewired in place, name kept, unmana
   // Renamed to ANOTHER wiring's seed name, it is still the default's and no obstacle to
   // that wiring: the profile gets its own entry (the picker twin is the user's doing).
   const twin = metaOf(library);
-  (twin.entries as { name: string }[])[0]!.name = "copilot-env: work";
+  must((twin.entries as { name: string }[])[0], "the wire minted an entry").name =
+    "copilot-env: work";
   writeFileSync(join(library, "_meta.json"), `${JSON.stringify(twin)}\n`);
   // A named Direct slot must exist for its pair to land (what `agent profile <name> add` commits).
   new CopilotEnvState().commitProfile(WORK, {
@@ -2116,9 +2119,9 @@ test("a static wire bakes the key, writes no helper script, and takes a leftover
   const out = await captureAllWrites(() => wireClaudeDesktopEntry(staticWire()));
   const configPath = firstEntryPath(library);
   const doc = readJson(configPath);
-  expect(doc["inferenceCredentialKind"]).toBe("static");
-  expect(doc["inferenceGatewayApiKey"]).toBe("ghu_x");
-  expect(doc["inferenceCredentialHelper"]).toBeUndefined();
+  expect(doc.inferenceCredentialKind).toBe("static");
+  expect(doc.inferenceGatewayApiKey).toBe("ghu_x");
+  expect(doc.inferenceCredentialHelper).toBeUndefined();
   expect(presentDesktopHelperScripts(rootHome)).toEqual([]);
   // The write's line carries the shape; the helper lives in the data home: removed, never named.
   expect(linesNaming(out, configPath)).toEqual([

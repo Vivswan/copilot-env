@@ -6,6 +6,7 @@ import {
   type Release,
   resolveTarget,
 } from "../../src/install/resolve-release.ts";
+import { must } from "../../src/utils/assert.ts";
 import { envSnapshot, isolateProxyHome } from "../helpers/env.ts";
 import { describe, expect, removeDir, test } from "../helpers/testing.ts";
 
@@ -199,7 +200,7 @@ describe("resolveTarget retry (de-flakes the release lookup)", () => {
   test("sends no Authorization header with GH_TOKEN exported and a credential stored", async () => {
     const restoreEnv = envSnapshot();
     let home = "";
-    let sent: Headers | null = null;
+    const sent: Headers[] = [];
     try {
       home = isolateProxyHome("copilot-update-anon-");
       process.env.GH_TOKEN = "ghp_someone_elses";
@@ -210,13 +211,13 @@ describe("resolveTarget retry (de-flakes the release lookup)", () => {
         token: "ghu_stored",
       });
       const resolved = await resolveWith((init) => {
-        sent = new Headers(init?.headers);
+        sent.push(new Headers(init?.headers));
         return Promise.resolve(new Response(releasesJson, { status: 200 }));
       });
       expect(resolved?.tag).toBe("v1.0.0");
-      expect(sent).not.toBeNull();
-      expect(sent!.has("authorization")).toBe(false);
-      expect(sent!.get("accept")).toBe("application/vnd.github+json");
+      const headers = must(sent[0], "the fetch stub saw the one request");
+      expect(headers.has("authorization")).toBe(false);
+      expect(headers.get("accept")).toBe("application/vnd.github+json");
     } finally {
       restoreEnv();
       removeDir(home);

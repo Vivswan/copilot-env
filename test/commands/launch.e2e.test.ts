@@ -371,10 +371,12 @@ function fakeCliBin(root: string, command: string, exitCode = 0): string {
     "#!/bin/sh",
     'echo "ARGS=$*"',
     'i=0; for a in "$@"; do i=$((i+1)); echo "ARG$i=[$a]"; done',
+    // biome-ignore-start lint/suspicious/noTemplateCurlyInString: POSIX shell parameter expansions in the fake agent's script
     'echo "BASE=${ANTHROPIC_BASE_URL-unset}"',
     'echo "FLICKER=${CLAUDE_CODE_NO_FLICKER-unset}"',
     'echo "SANDBOX=${IS_SANDBOX-unset}"',
     'echo "CODEX_HOME=${CODEX_HOME-unset}"',
+    // biome-ignore-end lint/suspicious/noTemplateCurlyInString: POSIX shell parameter expansions in the fake agent's script
     `exit ${exitCode}`,
     "",
   ].join("\n");

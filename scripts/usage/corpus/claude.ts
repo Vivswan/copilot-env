@@ -137,12 +137,13 @@ export function claudeEvidenceFailures(
   if (ids.afterTool !== ids.tool) {
     failures.push("claude: the resume after the tool turn did not continue the tool session");
   }
-  for (const [label, id] of [
+  const sessions: [label: string, id: string][] = [
     ["session 1", ids.first],
     ["the tool session", ids.tool],
     ["the fork", ids.fork],
-  ]) {
-    const count = filesFor(files, id!, "claude").length;
+  ];
+  for (const [label, id] of sessions) {
+    const count = filesFor(files, id, "claude").length;
     if (count !== 1) failures.push(`claude: ${label} has ${count} transcripts, expected 1`);
   }
   // Stable ids of a session's records: a user line's `uuid`, an assistant line's `message.id`

@@ -605,7 +605,7 @@ export class Overlay {
     // Windows opens a directory for writing with EINVAL, and refuses the staged rename over one
     // with the EPERM the real writer wraps as RenameRefusedError (the installer answers that class
     // with a direct write).
-    if (seen !== null && seen.stats.isDirectory()) {
+    if (seen?.stats.isDirectory()) {
       if (write.replace) {
         const staged = join(dirname(path), `${basename(path)}.tmp.${process.pid}`);
         if (WINDOWS) throw new RenameRefusedError(path, errno("EPERM", "rename", staged, path));
@@ -651,8 +651,7 @@ export class Overlay {
       cur = join(cur, spelled.parts[i] as string);
       const link = this.view(this.key(cur, "mkdir", false), "mkdir", path, false);
       if (
-        link !== null &&
-        link.stats.isSymbolicLink() &&
+        link?.stats.isSymbolicLink() &&
         this.view(this.key(cur, "mkdir"), "mkdir", path) === null
       ) {
         throw errno("ENOENT", "mkdir", path);
@@ -753,7 +752,7 @@ export class Overlay {
     const key = this.key(link, "rename", false);
     this.landingParent(key, "rename", link);
     const seen = this.view(key, "rename", link, false);
-    if (seen !== null && seen.stats.isDirectory()) {
+    if (seen?.stats.isDirectory()) {
       throw errno(WINDOWS ? "EPERM" : "EISDIR", "rename", link);
     }
     if (seen?.kind === "own") {

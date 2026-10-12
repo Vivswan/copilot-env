@@ -39,8 +39,10 @@ async function runPreloaded(
     "const servers = [serve(values.pinned), serve(values.other)];",
     // The proxy's own upstream identity, as copilot-api sends it.
     'const proxyOwn = { "Copilot-Integration-Id": "vscode-chat", "user-agent": "node", "openai-intent": "conversation-agent" };',
+    // biome-ignore-start lint/suspicious/noTemplateCurlyInString: JavaScript source for the child process; its templates run there
     "const http = await (await fetch(`http://127.0.0.1:${values.pinned}/models`, { headers: proxyOwn })).json();",
     "const other = await (await fetch(`http://127.0.0.1:${values.other}/models`, { headers: proxyOwn })).json();",
+    // biome-ignore-end lint/suspicious/noTemplateCurlyInString: JavaScript source for the child process; its templates run there
     "console.log(JSON.stringify({ http, other }));",
     "await Promise.all(servers.map((s) => s.stop()));",
   ].join("\n");

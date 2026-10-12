@@ -220,7 +220,9 @@ export function configDefaultValue(def: ConfigKeyDef): ConfigValue | undefined {
   return def.defaultValue ?? def.proxyDefault;
 }
 
-export function isProxyProjected(def: ConfigKeyDef): boolean {
+type ProjectedConfigKeyDef = Extract<ConfigKeyDef, ProjectedKeyFields>;
+
+export function isProxyProjected(def: ConfigKeyDef): def is ProjectedConfigKeyDef {
   return def.proxyDefault !== undefined || def.proxyProjected === true;
 }
 

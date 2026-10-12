@@ -43,6 +43,7 @@ interface InstallerPin {
 export const INSTALLER_PINS: Record<"install.sh" | "install.ps1", InstallerPin[]> = {
   "install.sh": [
     {
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: the installer's own shell line, matched byte for byte
       needle: 'INSTALL_REF="${COPILOT_ENV_INSTALL_REF:-latest}"',
       pinned: (tag) => `INSTALL_REF="\${COPILOT_ENV_INSTALL_REF:-${tag}}"`,
     },

@@ -21,6 +21,7 @@ import {
   configKeyDef,
   isProxyProjected,
   OPENROUTER_MODELS_URL,
+  registryEntry,
 } from "../../src/copilot_api/config_registry.ts";
 import { anyTrackedDaemonAlive, trackedDaemonAlive } from "../../src/copilot_api/daemon.ts";
 import {
@@ -254,11 +255,11 @@ test("the registry parsers accept valid input and reject bad input with a clear 
   expect(configKeyDef("proxy.claude-auto-model")?.parse("claude-haiku-4.5")).toBe(
     "claude-haiku-4.5",
   );
-  const multiplier = configKeyDef("proxy.claude-token-multiplier")!;
+  const multiplier = registryEntry("proxy.claude-token-multiplier");
   expect(multiplier.parse("1.15")).toBe(1.15);
   expect(multiplier.parse("2")).toBe(2);
   expect(multiplier.parse(" 1.5 ")).toBe(1.5);
-  const pricingUrl = configKeyDef("cost.pricing-url")!;
+  const pricingUrl = registryEntry("cost.pricing-url");
   expect(pricingUrl.parse(" https://pricing.example/models?x=1 ")).toBe(
     "https://pricing.example/models?x=1",
   );
@@ -673,14 +674,14 @@ test("every registry key round-trips: a CLI-set value survives read() and reache
     if (def.scope === "profile") expect(data.global).not.toHaveProperty(def.key);
     // ... and the projection reads through the same schema, so a projected key sees it.
     if (isProxyProjected(def)) {
-      expect(projectedValue(projected, def.proxyPath!)).toBe(expected);
+      expect(projectedValue(projected, def.proxyPath)).toBe(expected);
     }
   }
 });
 
 test("codex.home: an absolute path as typed or `auto`; `~` and relative paths are refused with the reason", () => {
   tmpHome();
-  const def = configKeyDef("codex.home")!;
+  const def = registryEntry("codex.home");
   // Trimmed, never expanded or normalized: the export and the write use the exact spelling.
   expect(def.parse(`  ${ABS_CODEX_HOME}  `)).toBe(ABS_CODEX_HOME);
   expect(def.parse("AUTO")).toBe("AUTO");
@@ -908,28 +909,28 @@ test("configTable() renders the header, the groups, and key=value rows with type
   expect(lines.filter((l) => l.length > PLAIN_TABLE.width)).toEqual([]);
   // A stored key: the star, the stored value, its type, and its bare default.
   expect(row("daemon.strict-port")).toBe(
-    `  * daemon.strict-port=true`.padEnd(column) + "[bool] default false",
+    `${"  * daemon.strict-port=true".padEnd(column)}[bool] default false`,
   );
   // An unset key shows its built-in default as the value, no star, no `default` cell.
-  expect(row("daemon.port")).toBe(`    daemon.port=4141`.padEnd(column) + "[1-65535]");
+  expect(row("daemon.port")).toBe(`${"    daemon.port=4141".padEnd(column)}[1-65535]`);
   // No stored value and no built-in default: `<unset>`.
   expect(row("proxy.claude-auto-model")).toBe(
-    `    proxy.claude-auto-model=<unset>`.padEnd(column) + "[model id]",
+    `${"    proxy.claude-auto-model=<unset>".padEnd(column)}[model id]`,
   );
   // A key=value too long for the column keeps its own line; its right column starts below,
   // and a cell that will not fit beside the type moves down again, the URL split at the edge
   // under its `default` label.
   const url = rowAt("cost.pricing-url");
   expect(lines[url]).toBe(`  * cost.pricing-url=${global["cost.pricing-url"]}`);
-  expect(lines[url + 1]).toBe(" ".repeat(column) + "[url]");
-  expect(lines[url + 2]).toBe(" ".repeat(column) + "default");
+  expect(lines[url + 1]).toBe(`${" ".repeat(column)}[url]`);
+  expect(lines[url + 2]).toBe(`${" ".repeat(column)}default`);
   const urlLines = lines.slice(url + 3, url + 5);
   expect(urlLines.every((l) => l.startsWith(" ".repeat(column + 2)))).toBe(true);
   expect(urlLines.map((l) => l.trim()).join("")).toBe(OPENROUTER_MODELS_URL);
   // A stored POSIX-only value on Windows is still starred (it IS stored) and named inert, the
   // note packed onto the next line where it does not fit beside the type and default.
-  expect(row("codex.host")).toBe(`  * codex.host=true`.padEnd(column) + "[bool] default false");
-  expect(lines[rowAt("codex.host") + 1]).toBe(" ".repeat(column) + "(inert on this platform)");
+  expect(row("codex.host")).toBe(`${"  * codex.host=true".padEnd(column)}[bool] default false`);
+  expect(lines[rowAt("codex.host") + 1]).toBe(`${" ".repeat(column)}(inert on this platform)`);
   // The description follows the type line at the column. The stored model id above has pushed the
   // right column down to its 30-column floor, and every registry describe still takes ONE line
   // there, so `agent config` never wraps a description at 80 columns whatever value is stored.
@@ -1241,13 +1242,13 @@ test("projectedProxyConfig(): force keys always project (built-in default or sto
 test("one web-search default for both surfaces, and unset IS the default where the read sites layer their own", () => {
   // The proxy's own default must match the MCP tool's DEFAULT_WEB_SEARCH_MODEL, owned by
   // web_search.ts (which imports env_config, so the registry cannot reference it).
-  expect(configDefaultValue(configKeyDef("proxy.message-websearch-model")!)).toBe(
+  expect(configDefaultValue(registryEntry("proxy.message-websearch-model"))).toBe(
     DEFAULT_WEB_SEARCH_MODEL,
   );
   // Unset IS the default: a disabled override, a floating pin, and the update cooldown (whose
   // two read sites apply different defaults: none for `agent update`, 7 days for autoupdate).
   for (const key of ["proxy.claude-auto-model", "daemon.version", "update.cooldown"] as const) {
-    expect(configDefaultValue(configKeyDef(key)!)).toBeUndefined();
+    expect(configDefaultValue(registryEntry(key))).toBeUndefined();
   }
 });
 

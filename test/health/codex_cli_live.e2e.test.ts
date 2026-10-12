@@ -78,11 +78,11 @@ live(
     // carries none, as Copilot's does).
     const request = await fake.lastRequest("responses");
     expect(request?.path).toBe("/responses");
-    expect(request?.headers["authorization"]).toBeDefined();
+    expect(request?.headers.authorization).toBeDefined();
     expect(request?.headers["user-agent"]).toBe(FAKE_USER_AGENT);
     expect(request?.headers["openai-intent"]).toBe("conversation-edits");
-    expect(request?.headers["originator"]).toBe("codex_exec");
-    expect(request?.headers["accept"]).toBe("text/event-stream");
+    expect(request?.headers.originator).toBe("codex_exec");
+    expect(request?.headers.accept).toBe("text/event-stream");
     expect(request?.body).toMatchObject({ model: FAKE_CODEX_MODEL, stream: true });
     expect(request?.interrupted).toBe(false);
   },

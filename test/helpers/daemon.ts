@@ -124,25 +124,30 @@ export function launchFakeDaemon(home: string, port: number): number {
  * spawn leaves (here one importing the parent-exit preload, so a decoy also dies with the test).
  * Nothing else in the process table qualifies: the suite's own bun processes, and another test
  * file's decoy under its own scratch root home. `stderr` is inherited so a child that dies says
- * why in the run.
+ * why in the run. The decoy's stdin is a pipe this process holds: the parent-exit preload exits on
+ * stdin's EOF, so an ignored stdin (an immediate EOF) would end the decoy before its entry ran;
+ * the pipe's write end is released once the decoy is gone.
  */
 export function spawnDaemonShapedChild(
   entry: string,
   args: string[] = ["start"],
   env: Record<string, string> = {},
-): Bun.Subprocess<"ignore", "ignore", "inherit"> {
+): Bun.Subprocess<"pipe", "ignore", "inherit"> {
   const preload = join(proxyHome(resolveRootHome()), "decoy_preload.ts");
   mkdirSync(join(preload, ".."), { recursive: true });
   writeFileSync(
     preload,
     `import ${JSON.stringify(pathToFileURL(join(ROOT, "test", "helpers", "exit_with_parent_preload.ts")).href)};\n`,
   );
-  return spawnChild(process.execPath, {
+  const child = spawnChild(process.execPath, {
     args: [...bunRunArgs("--preload", preload), entry, ...args],
     env: { ...env, ...BUN_CLI_ENV },
+    stdin: "pipe",
     stdout: "ignore",
     stderr: "inherit",
   });
+  void child.exited.then(() => child.stdin.end());
+  return child;
 }
 
 /** `source` written under a fresh temp dir and run with `--preload shim` ahead of it, the way the

@@ -234,7 +234,7 @@ test("proxyStatus: an acquirable lock naming the tracked pid reads DOWN, pid tab
 function spawnDaemonShapedDecoy(
   dir: string,
   ready: string,
-): Bun.Subprocess<"ignore", "ignore", "inherit"> {
+): Bun.Subprocess<"pipe", "ignore", "inherit"> {
   const decoy = join(dir, "copilot-api-decoy.mjs");
   writeFileSync(
     decoy,

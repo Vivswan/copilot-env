@@ -1,4 +1,4 @@
-import { writeFileSync } from "node:fs";
+import { realpathSync, writeFileSync } from "node:fs";
 import { delimiter, join, resolve } from "node:path";
 import {
   CLAUDE_PROBE,
@@ -442,24 +442,24 @@ test("probeDirectWorks runs a catalog-free first hop whatever the catalog says: 
 test("probeDirectWorks spawns the CLI from inside the throwaway home, never the caller's cwd", async () => {
   // Both CLIs read project-level config from the working directory (a repo's .claude/settings.json,
   // codex project trust), so a probe run from the caller's cwd would judge that project's wiring.
-  // The "CLI" is bun itself, running a script the config writer dropped into the home; it exits 0
-  // only when the process cwd IS that home (realpaths: macOS tmp dirs live behind a symlink).
+  // The "CLI" is bun itself, running a script the config writer dropped into the home. The home
+  // goes in argv in both spellings the OS may answer process.cwd() with: macOS resolves the temp
+  // dir's symlink, and the Windows temp dir can be an 8.3 short name that only realpathSync.native
+  // expands. The child imports nothing: one importing node:fs stalled past the deadline twice on
+  // the macOS runner.
   const script = "cwd_check.mts";
   const descriptor: ProbeDescriptor = {
     cli: "bun",
     homeEnvVar: "CLAUDE_CONFIG_DIR",
     updateCommand: "claude update",
-    args: (_prompt, home) => ["run", join(home, script)],
+    args: (_prompt, home) => ["run", join(home, script), home, realpathSync.native(home)],
   };
   const ok = await probeDirectWorks(
     descriptor,
     (home) =>
       writeFileSync(
         join(home, script),
-        'import { realpathSync } from "node:fs";\n' +
-          // `.native`: the Windows temp dir arrives as its 8.3 short name on one side (`RUNNER~1`),
-          // which only the OS call expands.
-          "process.exit(realpathSync.native(process.cwd()) === realpathSync.native(import.meta.dirname) ? 0 : 3);\n",
+        "process.exit(process.argv.slice(2).includes(process.cwd()) ? 0 : 3);\n",
       ),
     fakeSmoke(),
     { findCommand: () => ({ kind: "found", path: process.execPath }) },

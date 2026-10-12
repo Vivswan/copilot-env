@@ -142,7 +142,7 @@ flowchart LR
   registry[["GET https://registry.npmjs.org/@jeffreycao%2Fcopilot-api"]]
   prefs[("~/.local/share/copilot-env/state.json (global and profiles.<name>: the settings)")]
   float["src/proxy_float.ts<br>floatProxy() ensureShimDependencies() selectProxyVersion() renderProxyManifest() writeResolvedVersionRecord() readResolvedVersionRecord()"]
-  shims["src/copilot_api/shims.ts<br>DAEMON_SHIM_FILES DAEMON_SHIM_DEPENDENCIES shimPath()"]
+  shims["src/copilot_api/shims.ts<br>DAEMON_SHIM_DEPENDENCIES shimPath()"]
   spawn["src/copilot_api/process.ts<br>DaemonSpec resolveCopilotApiEntry() daemonArgv() daemonEnvironment() launchDaemon()"]
   preloads["src/scripts/daemon_lock_preload.ts<br>src/scripts/token_argv_preload.ts<br>src/scripts/daemon_runtime_preload.ts<br>src/scripts/copilot_host_preload.ts<br>src/scripts/client_headers_preload.ts<br>src/scripts/pat_passthrough_preload.ts<br>src/scripts/idle_watchdog_preload.ts<br>src/scripts/log_mute_preload.ts"]
   cache[("~/.local/share/copilot-env/bun/cache<br>bun's download cache for the proxy home")]

@@ -4,7 +4,7 @@
 import { join } from "node:path";
 import { PROJECT_ROOT } from "../utils/root.ts";
 
-export const DAEMON_SHIM_FILES = [
+const DAEMON_SHIM_FILES = [
   "daemon_lock_preload.ts",
   "token_argv_preload.ts",
   "daemon_runtime_preload.ts",

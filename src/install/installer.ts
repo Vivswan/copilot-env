@@ -46,7 +46,7 @@ import { packageVersion } from "../utils/version.ts";
 /** Embedded AND materialized: something outside this process opens these by path (the daemon's
  *  `--preload` shims, the shell payload the rc block sources, the plugin/skill surface other
  *  tools read). `src/scripts` is materialized WHOLE: the daemon loads a per-credential subset of
- *  DAEMON_SHIM_FILES (src/copilot_api/shims.ts) whose entrypoints import siblings, so copying
+ *  the daemon shims (src/copilot_api/shims.ts) whose entrypoints import siblings, so copying
  *  the directory covers the in-dir ones; imports reaching OUTSIDE it are
  *  MATERIALIZED_ASSET_FILES. */
 export const MATERIALIZED_ASSET_DIRS = [

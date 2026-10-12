@@ -60,7 +60,7 @@ import {
   registryDoc,
 } from "../helpers/proxy_float.ts";
 import { ROOT } from "../helpers/run.ts";
-import { afterEach, expect, test } from "../helpers/testing.ts";
+import { afterEach, expect, step, test } from "../helpers/testing.ts";
 
 // `start --record-event` (the heartbeat) and `start --check` (the is-it-up probe) are the
 // primitives the proxy-token resolver orchestrates.
@@ -115,8 +115,10 @@ async function dryRunNarration(): Promise<string> {
 test("start --dry-run runs the launch's credential gate: no credential is the real refusal, a stored one is named in the plan", async () => {
   tmpHome();
   const refusal = /cannot start the proxy without a credential/;
+  step("dry run with no credential: the credential gate refuses");
   await expect(dryRunNarration()).rejects.toThrow(refusal);
   // The real launch refuses the same way, before any side effect.
+  step("live start with no credential: the credential gate refuses");
   await expect(
     captureChannels(() =>
       runStart({ kind: "launch", dryRun: false, force: false, port: undefined, profile: null }),
@@ -127,6 +129,7 @@ test("start --dry-run runs the launch's credential gate: no credential is the re
   // A bare `start --dry-run` collects its own plan: the port and the credential pair it would
   // record print as store rows, the spawn as its one line, and nothing is written.
   const before = fingerprintTree(dir);
+  step("dry run with a stored credential: the plan");
   const preview = await captureChannels(() =>
     runStart({ kind: "launch", dryRun: true, force: false, port: undefined, profile: null }),
   );
@@ -140,9 +143,11 @@ test("start --dry-run runs the launch's credential gate: no credential is the re
   // real start refuses to rewrite (not JSON) refuses the preview the same way.
   writeFileSync(new CopilotApiPaths().configFile, "{");
   const notJson = /is not valid JSON/;
+  step("dry run over a config.json that is not JSON: the refusal");
   await expect(dryRunNarration()).rejects.toThrow(notJson);
   // The refusal comes where the real start's does, before the port and the credential pair land:
   // the plan printed up to it carries neither.
+  step("dry run over a config.json that is not JSON: the plan printed up to the refusal");
   const refused = await captureChannels(async () => {
     await runStart({
       kind: "launch",
@@ -157,6 +162,7 @@ test("start --dry-run runs the launch's credential gate: no credential is the re
   // The live start reaches the config refusal only after its floor gate, which would float the
   // proxy from the registry; the fake entry is the file entry that gate takes as resolved.
   process.env.COPILOT_API_ENTRY = join(ROOT, "test", "copilot-api-fake.mjs");
+  step("live start over a config.json that is not JSON: the floor gate, then the refusal");
   await expect(
     captureChannels(() =>
       runStart({ kind: "launch", dryRun: false, force: false, port: undefined, profile: null }),

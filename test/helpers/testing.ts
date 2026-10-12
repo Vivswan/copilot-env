@@ -158,14 +158,21 @@ interface TestApi extends RegisterTest {
   skipIf(condition: boolean): RegisterTest;
 }
 
-// --- the per-test abort signal -------------------------------------------------
+// --- the per-test abort signal and step log --------------------------------------
 //
 // The deadline race ABANDONS a timed-out body; it does not cancel it, so the body runs on and
 // keeps spawning children alongside the tests that follow. Each body therefore gets its own
 // AbortController, aborted when the deadline fires (and again once the body settles), carried
 // WITH the body through AsyncLocalStorage: an abandoned continuation must see ITS OWN aborted
-// signal, not the signal of whichever test is live when it wakes up.
-const TEST_ABORT = new AsyncLocalStorage<AbortSignal>();
+// signal, not the signal of whichever test is live when it wakes up. The body's step marks ride
+// in the same store for the same reason: a late mark from an abandoned body lands in its own log.
+interface TestContext {
+  signal: AbortSignal;
+  startedAt: number;
+  steps: { name: string; at: number }[];
+}
+
+const TEST_CONTEXT = new AsyncLocalStorage<TestContext>();
 
 /**
  * Aborted once the body has timed out or finished; the spawn helpers (test/helpers/run.ts)
@@ -174,19 +181,39 @@ const TEST_ABORT = new AsyncLocalStorage<AbortSignal>();
  *   outside one         -> undefined: there is no deadline to abandon
  */
 export function testAbortSignal(): AbortSignal | undefined {
-  return TEST_ABORT.getStore();
+  return TEST_CONTEXT.getStore()?.signal;
+}
+
+/** Called before each await or spawn in a body that may stall: the deadline error names the
+ *  last mark. */
+export function step(name: string): void {
+  TEST_CONTEXT.getStore()?.steps.push({ name, at: performance.now() });
+}
+
+function deadlineMessage(name: string, timeoutMs: number, ctx: TestContext): string {
+  const head = `test "${name}" timed out after ${timeoutMs} ms`;
+  const { steps } = ctx;
+  const last = steps.at(-1);
+  if (last === undefined) return `${head} with no step recorded`;
+  const now = performance.now();
+  const timings = steps.map(
+    (s, i) => `${s.name} ${Math.round((steps[i + 1]?.at ?? now) - s.at)} ms`,
+  );
+  const enteredMs = Math.round(last.at - ctx.startedAt);
+  return `${head} at step "${last.name}" (entered ${enteredMs} ms in; steps: ${timings.join(", ")})`;
 }
 
 /** Purely sync bodies cannot be preempted; the race cuts off async bodies that stall. */
-function withDeadline(name: string, fn: TestBody, timeoutMs: number): () => Promise<void> {
+export function withDeadline(name: string, fn: TestBody, timeoutMs: number): () => Promise<void> {
   return async () => {
     const abort = new AbortController();
+    const ctx: TestContext = { signal: abort.signal, startedAt: performance.now(), steps: [] };
     const timer = setTimeout(() => {
-      abort.abort(new Error(`test "${name}" timed out after ${timeoutMs}ms`));
+      abort.abort(new Error(deadlineMessage(name, timeoutMs, ctx)));
     }, timeoutMs);
     try {
       await abortable(
-        TEST_ABORT.run(abort.signal, () => Promise.resolve().then(fn)),
+        TEST_CONTEXT.run(ctx, () => Promise.resolve().then(fn)),
         abort.signal,
       );
     } finally {

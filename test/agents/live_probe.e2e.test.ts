@@ -14,7 +14,7 @@ import { ghAuthVerdict, ghTokenFromEnv } from "../../src/copilot_api/gh_cli.ts";
 import type { CommandLook } from "../../src/utils/command.ts";
 import { envSnapshot } from "../helpers/env.ts";
 import { captureAllWrites } from "../helpers/output.ts";
-import { expect, test } from "../helpers/testing.ts";
+import { expect, step, test } from "../helpers/testing.ts";
 
 // The one catalog-noise filter shared by summarizeProbeFailure and formatLiveFailure
 // (src/health/probe_deps.ts).
@@ -454,13 +454,16 @@ test("probeDirectWorks spawns the CLI from inside the throwaway home, never the 
     updateCommand: "claude update",
     args: (_prompt, home) => ["run", join(home, script), home, realpathSync.native(home)],
   };
+  step("probeDirectWorks: find the CLI, pick the model, make the home");
   const ok = await probeDirectWorks(
     descriptor,
-    (home) =>
+    (home) => {
       writeFileSync(
         join(home, script),
         "process.exit(process.argv.slice(2).includes(process.cwd()) ? 0 : 3);\n",
-      ),
+      );
+      step("probeDirectWorks: the script is in the home; spawn bun on it");
+    },
     fakeSmoke(),
     { findCommand: () => ({ kind: "found", path: process.execPath }) },
   );

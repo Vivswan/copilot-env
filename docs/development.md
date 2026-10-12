@@ -19,6 +19,7 @@ bash scripts/setup-env.sh   # one-shot env/worktree init (bun install --frozen-l
 
 - **Tasks:** run `bun run` for the list (typecheck, test, bench, lint, check). They are the `scripts` of `package.json`; the toolchain is Bun at the version in `.bun-version`.
 - **Tests:** `bun run test` is `scripts/run_tests.ts`, which runs one bun process per test file. Name files to run a subset: `bun run test test/usage/usage.test.ts`. `bun run test:unit` runs the unit files alone ([below](#unit-tests-and-e2e-tests)).
+- **A stalled test:** every body runs under a per-test deadline, 15 s by default (`test/helpers/testing.ts`); a body that may stall marks `step("...")` before each await or spawn, and the deadline error then names the step it was in and how long each earlier step took.
 - **The daemon:** the proxy daemon runs on the same bun as the CLI: a checkout spawns the `bun` it runs under, a release spawns its own binary as a bun CLI (`BUN_BE_BUN=1`). Nothing else is downloaded; the float installs the proxy with `bun install` into the data home.
 - **Env init:** `scripts/setup-env.sh` (`setup-env.ps1` on Windows) is the single initializer. The Copilot coding agent and Codespaces / Dev Containers both run it.
 - **Checks before a push:** the tasks and the pre-commit hook are listed in [CONTRIBUTING.md](../CONTRIBUTING.md).

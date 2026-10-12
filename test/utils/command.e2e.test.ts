@@ -11,7 +11,7 @@ import {
   withPowershellChildEnv,
 } from "../../src/utils/command.ts";
 import { runSync } from "../helpers/run.ts";
-import { afterEach, expect, tempDir, test } from "../helpers/testing.ts";
+import { afterEach, expect, step, tempDir, test } from "../helpers/testing.ts";
 
 const SEP = process.platform === "win32" ? ";" : ":";
 
@@ -247,17 +247,20 @@ test("findCommand: a real found command and a real proven absence, both proven",
 });
 
 test("runCaptured: the launch-failure mark rides ONLY the synthesized exit", async () => {
+  step("a child that prints ok");
   const ok = await runCaptured(process.execPath, ["-e", "console.log('ok')"]);
   expect(ok.exitCode).toBe(0);
   expect(ok.launchFailed).toBeUndefined();
   expect(ok.stdout.trim()).toBe("ok");
 
   // The child's OWN nonzero exit is a completed look: pgrep's "ran, found nothing" exit 1 rides exactly here.
+  step("a child that exits 1");
   const ranNonzero = await runCaptured(process.execPath, ["-e", "process.exit(1)"]);
   expect(ranNonzero.exitCode).toBe(1);
   expect(ranNonzero.launchFailed).toBeUndefined();
 
   // ENOENT coerces to the SAME exit 1; the mark is the only thing separating it from a real exit 1.
+  step("an executable that does not exist");
   const missing = await runCaptured(join(tempDir("copilot-env-no-such-tool-"), "missing"), []);
   expect(missing.exitCode).toBe(1);
   expect(missing.launchFailed).toBe(true);

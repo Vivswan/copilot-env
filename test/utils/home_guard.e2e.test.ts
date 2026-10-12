@@ -5,7 +5,7 @@
 // The matching declaration is the positive control through the same path.
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { ROOT, runSync } from "../helpers/run.ts";
+import { CHILD_VALUES, childValuesEnv, ROOT, runSync } from "../helpers/run.ts";
 import { expect, tempDir, test } from "../helpers/testing.ts";
 
 const HOME_ENV = process.platform === "win32" ? "USERPROFILE" : "HOME";
@@ -21,7 +21,7 @@ function markingTest(dir: string): { file: string; marker: string } {
     [
       'import { writeFileSync } from "node:fs";',
       'import { test } from "bun:test";',
-      `test("marks", () => { writeFileSync(${JSON.stringify(marker)}, ""); });`,
+      `test("marks", () => { writeFileSync(${CHILD_VALUES}.marker, ""); });`,
       "",
     ].join("\n"),
   );
@@ -45,7 +45,7 @@ test("a bare `bun test` runs only under the HOME that COPILOT_ENV_TEST_HOME name
     const { file, marker } = markingTest(tempDir("home-guard-case-"));
     const res = runSync(process.execPath, ["test", "--no-env-file", file], {
       cwd: ROOT,
-      env: { ...process.env, ...env },
+      env: { ...process.env, ...env, ...childValuesEnv({ marker }) },
     });
     return {
       name,

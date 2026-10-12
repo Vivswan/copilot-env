@@ -575,7 +575,7 @@ async function withCostHome(body: (ctx: CostHome) => Promise<void>): Promise<voi
     await body({ home: process.env.COPILOT_API_HOME, claudeRoot });
   } finally {
     process.env.COPILOT_API_HOME = savedHome;
-    removeDir(dir); // retries the EBUSY bun's sqlite leaves for a beat after close() on Windows
+    removeDir(dir);
   }
 }
 

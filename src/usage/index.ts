@@ -7,13 +7,12 @@
 // checkpoint keep deleted rows out of free pages and old WAL frames. The open and each run's one
 // write transaction take the advisory lock; without it a run keeps its results and saves nothing.
 
+import { Database } from "bun:sqlite";
 import { closeSync, openSync, readSync } from "node:fs";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { usageIndexDir } from "../copilot_api/paths.ts";
 import { errMessage } from "../utils/error.ts";
 import { BOUNDED_LOCK_POLICY, type LockPolicy, withFileLockSync } from "../utils/file_lock.ts";
-import { retryOpenHandleRefusal } from "../utils/fs.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { isRecord } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
@@ -54,7 +53,7 @@ const DB_FILE_SUFFIXES = ["", "-wal", "-shm", "-journal"] as const;
 const META_PARSER_FINGERPRINT = "parser_fingerprint";
 
 /** A garbage file no connection can hold. */
-const SQLITE_NOTADB = 26;
+const SQLITE_NOTADB = "SQLITE_NOTADB";
 
 /** Our own statements against a sound database whose tables are not ours: an index a build with
  *  another table layout left behind. */
@@ -149,16 +148,17 @@ type PendingWrite =
  *  one, so every instance has been stamped, configured, and locked the same way. */
 export interface UsageIndex {
   readonly reconcile: Reconcile;
-  /** Checkpoints the WAL (best effort) before closing. */
+  /** Checkpoints the WAL (best effort) before closing; the close finalizes every statement, so
+   *  the file is released when it returns. */
   close(): void;
 }
 
 class SqliteUsageIndex implements UsageIndex {
-  readonly #db: DatabaseSync;
+  readonly #db: Database;
   readonly #lockPath: string;
   readonly #lockPolicy: LockPolicy;
 
-  constructor(db: DatabaseSync, lockPath: string, lockPolicy: LockPolicy) {
+  constructor(db: Database, lockPath: string, lockPolicy: LockPolicy) {
     this.#db = db;
     this.#lockPath = lockPath;
     this.#lockPolicy = lockPolicy;
@@ -192,12 +192,11 @@ class SqliteUsageIndex implements UsageIndex {
          VALUES (?, ?, ?, ?, ?, ?, ?)`,
     );
     const remove = this.#db.prepare(`DELETE FROM "files" WHERE "path" = ?`);
-    let removed = 0;
-    this.#db.exec("BEGIN IMMEDIATE");
-    try {
+    const transaction = this.#db.transaction((): number => {
+      let removed = 0;
       for (const write of writes) {
         if (write.kind === "delete") {
-          const changes = Number(remove.run(write.path).changes);
+          const changes = remove.run(write.path).changes;
           if (write.unwalked) removed += changes;
           continue;
         }
@@ -211,12 +210,9 @@ class SqliteUsageIndex implements UsageIndex {
           write.record,
         );
       }
-      this.#db.exec("COMMIT");
-    } catch (e) {
-      this.#db.exec("ROLLBACK");
-      throw e;
-    }
-    return removed;
+      return removed;
+    });
+    return transaction.immediate();
   }
 
   /** `bytesRead` counts successful parses and probe reads only: a parse that throws contributes no
@@ -260,8 +256,8 @@ class SqliteUsageIndex implements UsageIndex {
       recordStatement === null
         ? null
         : indexRead(() => {
-            const row = recordStatement.get(path, source) as { record: string } | undefined;
-            return row === undefined ? null : parseStoredContribution<S>(row.record);
+            const row = recordStatement.get(path, source) as { record: string } | null;
+            return row === null ? null : parseStoredContribution<S>(row.record);
           }, null);
 
     for (const file of walked) {
@@ -330,21 +326,20 @@ class SqliteUsageIndex implements UsageIndex {
 
   close(): void {
     try {
-      this.#db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+      this.#db.run("PRAGMA wal_checkpoint(TRUNCATE)");
     } catch {
       // a failed checkpoint leaves frames for the next open to replay; not an error
     }
-    this.#db.close();
+    this.#db.close(true);
   }
 }
 
 /** The open failures answered by removing the file and creating it afresh: a garbage file, or a
- *  database with another table layout. node:sqlite does not always expose `errcode`, so the message
- *  SQLite emits counts too. Anything else (a corrupt database, say) is left as it is. */
+ *  database with another table layout. Anything else (a corrupt database, say) is left as it is. */
 function isRebuildable(e: unknown): boolean {
   const message = errMessage(e);
   return (
-    (e as { errcode?: unknown }).errcode === SQLITE_NOTADB ||
+    (e as { code?: unknown }).code === SQLITE_NOTADB ||
     message === "file is not a database" ||
     LAYOUT_MISMATCH_RE.test(message)
   );
@@ -353,25 +348,25 @@ function isRebuildable(e: unknown): boolean {
 /** Configures and stamps a fresh connection, or closes it and throws. Rows under another stamp, or
  *  under none, go with their table (a stamp change may carry a layout change) and the stamp is
  *  rewritten in the same connection, so the file itself never has to go. */
-function stamped(db: DatabaseSync, fingerprint: string): DatabaseSync {
+function stamped(db: Database, fingerprint: string): Database {
   try {
-    db.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
-    db.exec("PRAGMA journal_mode = WAL");
-    db.exec("PRAGMA secure_delete = ON");
-    db.exec(SCHEMA_SQL);
+    db.run(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
+    db.run("PRAGMA journal_mode = WAL");
+    db.run("PRAGMA secure_delete = ON");
+    db.run(SCHEMA_SQL);
     const stamp = db
       .prepare(`SELECT "value" FROM "meta" WHERE "key" = ?`)
-      .get(META_PARSER_FINGERPRINT) as { value: string } | undefined;
+      .get(META_PARSER_FINGERPRINT) as { value: string } | null;
     if (stamp?.value === fingerprint) return db;
-    const hasRows = db.prepare(`SELECT 1 FROM "files" LIMIT 1`).get() !== undefined;
-    if (stamp !== undefined || hasRows) {
+    const hasRows = db.prepare(`SELECT 1 FROM "files" LIMIT 1`).get() !== null;
+    if (stamp !== null || hasRows) {
       const detail =
-        stamp === undefined ? "unstamped rows" : `${META_PARSER_FINGERPRINT} ${stamp.value}`;
+        stamp === null ? "unstamped rows" : `${META_PARSER_FINGERPRINT} ${stamp.value}`;
       logger.info(`rebuilding the usage index (${detail}).`);
     }
     // A fresh database recreates an empty table, silently.
-    db.exec(`DROP TABLE "files"`);
-    db.exec(SCHEMA_SQL);
+    db.run(`DROP TABLE "files"`);
+    db.run(SCHEMA_SQL);
     db.prepare(`INSERT OR REPLACE INTO "meta" ("key", "value") VALUES (?, ?)`).run(
       META_PARSER_FINGERPRINT,
       fingerprint,
@@ -379,7 +374,7 @@ function stamped(db: DatabaseSync, fingerprint: string): DatabaseSync {
     return db;
   } catch (e) {
     try {
-      db.close();
+      db.close(true);
     } catch {
       // the open failure is the one to report
     }
@@ -412,9 +407,9 @@ export function openUsageIndex(opts: OpenUsageIndexOptions = {}): UsageIndex | n
       logger.info("usage index lock unavailable; running without it.");
       return null;
     }
-    let db: DatabaseSync;
+    let db: Database;
     try {
-      db = new DatabaseSync(dbPath);
+      db = new Database(dbPath);
     } catch (e) {
       logger.warn(`could not open the usage index (${errMessage(e)}); running without it.`);
       return null;
@@ -429,22 +424,13 @@ export function openUsageIndex(opts: OpenUsageIndexOptions = {}): UsageIndex | n
       logger.info(`rebuilding the usage index (${errMessage(e)}).`);
     }
     try {
-      // The judged database is closed (stamped closes before it throws), but bun's sqlite closes
-      // with sqlite3_close_v2, which keeps the file handle until the statements it prepared are
-      // collected; Windows refuses the removal until then. A forced collection, then the
-      // open-handle retry the rest of the disk layer uses.
-      Bun.gc(true);
-      retryOpenHandleRefusal(() => removeDbFiles(dbPath));
+      removeDbFiles(dbPath);
     } catch (e) {
       logger.warn(`could not remove the stale usage index (${errMessage(e)}).`);
       return null;
     }
     try {
-      return new SqliteUsageIndex(
-        stamped(new DatabaseSync(dbPath), fingerprint),
-        lockPath,
-        lockPolicy,
-      );
+      return new SqliteUsageIndex(stamped(new Database(dbPath), fingerprint), lockPath, lockPolicy);
     } catch (e) {
       logger.warn(`could not create the usage index (${errMessage(e)}).`);
       return null;

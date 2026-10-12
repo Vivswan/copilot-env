@@ -1,9 +1,9 @@
 // One `token_usage_events` row per request, in a per-host DB, so a home shared across machines
 // holds several DBs. The layout is src/copilot_api/paths.ts's; this module only sweeps it.
 
+import { Database } from "bun:sqlite";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { consola } from "consola";
 import {
   DEFAULT_PROFILE_DIR,
@@ -63,15 +63,12 @@ export interface UsageRequest {
   buckets: TokenBuckets;
 }
 
-/** node:sqlite hands back a `bigint` for an integer a double cannot hold exactly, so both shapes
- *  arrive here. */
 function numberOrNull(value: unknown): number | null {
-  const asNumber = typeof value === "bigint" ? Number(value) : value;
-  return typeof asNumber === "number" && Number.isFinite(asNumber) ? asNumber : null;
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
-/** The boundary between untyped SQLite output and the report: no later step re-checks for bigints,
- *  nulls, or hostile values. A row with no usable `model` cannot be attributed and is dropped.
+/** The boundary between untyped SQLite output and the report: no later step re-checks for nulls
+ *  or hostile values. A row with no usable `model` cannot be attributed and is dropped.
  *  Exported for tests. */
 export function parseUsageRow(raw: unknown): UsageRequest | null {
   if (!isRecord(raw)) return null;
@@ -273,12 +270,12 @@ export function discoverUsageDbs(home: string = resolveHome()): string[] {
   });
 }
 
-function withReadOnlyDb<T>(path: string, query: (db: DatabaseSync) => T): T {
-  const db = new DatabaseSync(path, { readOnly: true });
+function withReadOnlyDb<T>(path: string, query: (db: Database) => T): T {
+  const db = new Database(path, { readonly: true });
   try {
     return query(db);
   } finally {
-    db.close();
+    db.close(true);
   }
 }
 
@@ -287,7 +284,7 @@ const SQLITE_SIDECAR_SUFFIXES = ["-wal", "-shm"] as const;
 
 /** A read-only filesystem lets SQLite consult a -wal only if it can create the -shm beside it,
  *  which it can in a temp copy. */
-function withDbCopy<T>(path: string, query: (db: DatabaseSync) => T): T {
+function withDbCopy<T>(path: string, query: (db: Database) => T): T {
   const dir = fs.scratchDir(join(tmpdir(), "copilot-usage-"));
   try {
     const copy = join(dir, basename(path));
@@ -310,7 +307,7 @@ function withDbCopy<T>(path: string, query: (db: DatabaseSync) => T): T {
 /** The daemon only checkpoints on close, so the live open (which consults the -wal) comes first;
  *  SQLite can defer a -shm error to prepare time, so the query is inside the try too. The FIRST
  *  error propagates when both fail: it describes the real database, not the copy. */
-function openSqliteReadOnlyWithWalFallback<T>(path: string, query: (db: DatabaseSync) => T): T {
+function openSqliteReadOnlyWithWalFallback<T>(path: string, query: (db: Database) => T): T {
   try {
     return withReadOnlyDb(path, query);
   } catch (first) {

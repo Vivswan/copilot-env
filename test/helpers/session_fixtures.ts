@@ -1,8 +1,9 @@
 // Fixture lines spelled exactly the way the Codex and Claude CLIs write them, and the proxy's DB
 // the way the daemon writes it.
+
+import { Database } from "bun:sqlite";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { RUN_DIR_NAME, SQLITE_DB_FILENAME } from "../../src/copilot_api/paths.ts";
 
 // ---------- Codex ----------
@@ -119,9 +120,9 @@ export function writeProxyDb(home: string, host: string, rows: ProxyRow[]): stri
   const dir = join(home, RUN_DIR_NAME, host);
   mkdirSync(dir, { recursive: true });
   const path = join(dir, SQLITE_DB_FILENAME);
-  const db = new DatabaseSync(path);
+  const db = new Database(path);
   try {
-    db.exec(`CREATE TABLE token_usage_events (
+    db.run(`CREATE TABLE token_usage_events (
       model TEXT NOT NULL,
       input_tokens INTEGER,
       output_tokens INTEGER,
@@ -143,7 +144,7 @@ export function writeProxyDb(home: string, host: string, rows: ProxyRow[]): stri
       );
     }
   } finally {
-    db.close();
+    db.close(true);
   }
   return path;
 }

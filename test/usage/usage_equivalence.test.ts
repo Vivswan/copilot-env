@@ -34,8 +34,6 @@ import { storedIndexPaths } from "../helpers/usage_index.ts";
 const dirs: string[] = [];
 
 afterEach(() => {
-  // removeDir, not rmSync: on Windows bun's sqlite releases a database handle a beat after
-  // close(), and the retry absorbs that EBUSY.
   for (const dir of dirs.splice(0)) removeDir(dir);
 });
 

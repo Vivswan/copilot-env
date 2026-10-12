@@ -2,6 +2,8 @@
 // occurrence keyed by the line's hash, so a stored contribution carries numbers, a model name,
 // and hashes, never a byte of the line itself. `IndexStats` is the oracle for what the index
 // did each run.
+
+import { Database } from "bun:sqlite";
 import {
   appendFileSync,
   existsSync,
@@ -14,7 +16,6 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import {
   type ClaudeContribution,
   type ClaudeOccurrence,
@@ -48,15 +49,7 @@ let indexDir = "";
 const openIndexes: UsageIndex[] = [];
 
 afterEach(() => {
-  for (const index of openIndexes.splice(0)) {
-    try {
-      index.close();
-    } catch {
-      // already closed by the test
-    }
-  }
-  // removeDir, not rmSync: on Windows bun's sqlite releases the database handle a beat after
-  // close(), and the retry absorbs that EBUSY.
+  for (const index of openIndexes.splice(0)) index.close();
   if (root) removeDir(root);
   root = "";
 });
@@ -205,37 +198,37 @@ interface StoredRow {
 }
 
 function storedRows(): StoredRow[] {
-  const db = new DatabaseSync(dbPath(), { readOnly: true });
+  const db = new Database(dbPath(), { readonly: true });
   try {
     return db
       .prepare(`SELECT "path", "record", "tail_probe" AS tailProbe FROM "files" ORDER BY "path"`)
       .all() as unknown as StoredRow[];
   } finally {
-    db.close();
+    db.close(true);
   }
 }
 
 function rewriteRecord(path: string, record: string): void {
-  const db = new DatabaseSync(dbPath());
+  const db = new Database(dbPath());
   try {
     db.prepare(`UPDATE "files" SET "record" = ? WHERE "path" = ?`).run(record, path);
   } finally {
-    db.close();
+    db.close(true);
   }
 }
 
 /** Make the index's next `files` read fail from a second connection (the table is
  *  renamed away), or put it back so a later write COULD land. */
 function hideFilesTable(hidden: boolean): void {
-  const db = new DatabaseSync(dbPath());
+  const db = new Database(dbPath());
   try {
-    db.exec(
+    db.run(
       hidden
         ? `ALTER TABLE "files" RENAME TO "files_hidden"`
         : `ALTER TABLE "files_hidden" RENAME TO "files"`,
     );
   } finally {
-    db.close();
+    db.close(true);
   }
 }
 
@@ -518,25 +511,27 @@ const OPENERS: {
     // Tables another build left behind: sound SQLite, not our columns.
     name: "a database with another table layout is rebuilt",
     sabotage: () => {
-      const db = new DatabaseSync(dbPath());
+      const db = new Database(dbPath());
       try {
-        db.exec(`DROP TABLE "meta"; CREATE TABLE "meta" ("k" TEXT PRIMARY KEY, "v" TEXT NOT NULL)`);
-        db.exec(`DROP TABLE "files"; CREATE TABLE "files" ("path" TEXT PRIMARY KEY, "blob" TEXT)`);
+        db.run(`DROP TABLE "meta"; CREATE TABLE "meta" ("k" TEXT PRIMARY KEY, "v" TEXT NOT NULL)`);
+        db.run(`DROP TABLE "files"; CREATE TABLE "files" ("path" TEXT PRIMARY KEY, "blob" TEXT)`);
       } finally {
-        db.close();
+        db.close(true);
       }
     },
     rebuilds: true,
-    line: "rebuilding the usage index (no such column: ",
+    // SQLite reads a double-quoted name that is not a column as a string literal, so the stamp
+    // SELECT finds no row and the stamp INSERT is the statement the layout refuses.
+    line: "rebuilding the usage index (table meta has no column named key",
   },
   {
     name: "rows without stamps are rebuilt, never adopted",
     sabotage: () => {
-      const db = new DatabaseSync(dbPath());
+      const db = new Database(dbPath());
       try {
-        db.exec(`DELETE FROM "meta"`);
+        db.run(`DELETE FROM "meta"`);
       } finally {
-        db.close();
+        db.close(true);
       }
     },
     rebuilds: true,

@@ -264,15 +264,10 @@ function verifyInstalledLauncher(): string {
 }
 
 /**
- * FAIL-CLOSED: every expectation is positive, so a renamed id or reshaped value fails rather
- * than passing silently. Exported for the unit tests' negative controls.
- *
- *   the report's exit code -> environment-dependent (a fresh install fails the proxy runtime
- *                             probes), so never asserted
- *   the rows below         -> only what a compiled binary must get right about ITSELF
- *   `binary`               -> the installed binary: the runtime row must name it as the
- *                             executable the proxy daemon runs from, judged by `same`
- *                             (sameExecutable in the smoke; the unit tests pass their own)
+ * Every expectation is positive, so a renamed id or reshaped value fails rather than passing
+ * silently. The report's exit code is never asserted: a fresh install fails the proxy runtime
+ * probes, so it depends on the environment. `same` is the seam the unit tests' negative controls
+ * use.
  */
 export function compiledHealthFailures(
   reportJson: unknown,

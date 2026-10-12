@@ -209,14 +209,8 @@ export function rmDirectoryRefused(path: string): Error {
 }
 
 /**
- * The directories `mkdirSync(path, { recursive: true })` would create, outermost first: the walk up
- * from `path` stops at the first entry that exists. The look is lstat's, so a symlink is an entry:
- * one that resolves to a directory is that directory for mkdir, and one to a file or to nothing is
- * the entry mkdir trips on. An existing entry that is NOT a directory (a regular file where a home
- * should be, a dangling link at `~/.local`) is the error mkdir would raise, thrown here with
- * mkdir's own code and message, so the walk fails exactly where the create would: EEXIST for the
- * path itself, ENOTDIR for a file above it, ENOENT for a dangling link anywhere on the way (node
- * reports the link's missing target). A stat that failed for another reason (EACCES) reads as
+ * The errors are mkdir's own, so the walk fails exactly where the create would; a dangling link is
+ * ENOENT because node reports the link's missing target. An unreadable entry (EACCES) reads as
  * present: the create itself then says what is wrong.
  */
 export function missingDirectories(path: string): string[] {

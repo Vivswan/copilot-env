@@ -53,16 +53,9 @@ export function directWiring(integrationId: string | null, baseUrl: string): Dir
 }
 
 /**
- * The mode-dependent half of one managed wiring write, shared by every adapter and the Claude
- * Desktop wiring. `direct` is the probed pair as the branded DirectWiring (directWiring() is its
- * one constructor: the probe and the renderer) or null (no header, the generic host: today's
- * bytes, for a scratch or replayed write that needs no probe). A hand-built pair cannot carry the
- * brand, so no writer can bake one of its own making, and the proxy arm carries no `direct` at all.
- *
- *   the default slot -> configure_defaults.ts resolves them (a landing probes, a re-render renders
- *                       the slot's stored pair)
- *   a named profile  -> wireBothAgents resolves them
- *   mode "proxy"     -> carries no pair at all, so the pairing is unrepresentable
+ * `direct: null` is a write that needs no probe (a scratch or replayed write): no header, the
+ * generic host. The pair is resolved above the writers, by configure_defaults.ts for the default
+ * slot and wireBothAgents for a named profile.
  */
 export type ManagedMode =
   | { mode: "direct"; direct: DirectWiring | null }

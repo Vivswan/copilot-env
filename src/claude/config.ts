@@ -496,15 +496,12 @@ function stripManagedWebSearchDeny(
 }
 
 /**
- * Registration first, and the deny stands only while the registration is confirmed: a machine is
- * never left with the builtin denied and no replacement. The proxy serves web search itself, so it
- * takes both back. Default profile only: `~/.claude.json` is global and deny rules UNION across
- * layers, so a named proxy profile could never un-deny a direct default's rule.
+ * The deny stands only while the registration is confirmed, so a machine is never left with the
+ * builtin denied and no replacement; the proxy serves web search itself and takes both back.
  *
- * Direct: the registration is written in `before` (after the home exists, before the settings
- * save) and the deny is patched onto `doc` from its answer. Proxy: the removal is looked at now
- * and written in `after`, so a failed settings save keeps the consistent old state (deny +
- * server) instead of losing only the server half.
+ *   default profile only       -> `~/.claude.json` is global and deny rules UNION across layers, so
+ *                                 a named proxy profile could never un-deny a direct default's rule
+ *   proxy removal in `after`   -> a failed settings save keeps deny and server together
  */
 function prepareWebSearchPair(
   doc: Record<string, unknown>,

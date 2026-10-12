@@ -231,17 +231,6 @@ function warnUnprovenTrackedPid(pid: number): void {
   );
 }
 
-/**
- * The plan only authorizes: every signal re-derives its target's identity at its own boundary, so a
- * pid that exited or now reads as a different process is spared.
- *
- *   plan -> stop the tracked pid -> clear tracking -> holder and orphan sweeps
- *
- * The snapshot and sweeps are race-free only under the start lock (withStartLock, held by the one
- * caller in commands/start.ts). Tracking is unbound before the sweeps, so a throw there leaves no port
- * pointing at a dead daemon. The residual is terminatePid's SIGKILL gate: it signals on an UNREADABLE
- * identity scan, so a pid recycled inside the grace still dies.
- */
 /** `stopped`: a daemon of this root home was signalled (a tracked pid, this home's lock holder, an
  *  orphan), so the tree it ran from is free: the start runs the floor gate once more
  *  (src/commands/start.ts), since the float refuses to swap under a running daemon. */
@@ -249,6 +238,14 @@ export interface CleanupOutcome {
   stopped: boolean;
 }
 
+/**
+ * The plan only authorizes: every signal re-derives its target's identity at its own boundary.
+ * Race-free only under the start lock (withStartLock, held by the one caller in commands/start.ts).
+ *
+ *   tracking cleared before the sweeps -> a throw there leaves no port pointing at a dead daemon
+ *   terminatePid's SIGKILL gate        -> signals on an UNREADABLE scan, so a pid recycled inside
+ *                                         the grace still dies (the residual)
+ */
 export async function cleanupExistingProxies(
   profile: Profile,
   state: CopilotEnvRunState = CopilotEnvRunState.forProfile(profile),

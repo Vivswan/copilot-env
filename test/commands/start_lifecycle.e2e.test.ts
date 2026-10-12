@@ -179,20 +179,14 @@ test("start --dry-run refuses a recorded proxy below the version floor with the 
   expect(fingerprintTree(dir)).toEqual(before);
 });
 
-// `agent start` floats before it stops daemons (the floor gate fails closed before any running
-// daemon is disturbed), and the float never swaps under a daemon still running from the tree in
-// place. So a start that replaces a running daemon runs the gate once more after the cleanup
-// stopped it: the first float built and discarded its stage, the second reinstalls from the
-// per-version cache and swaps. One invocation lands the update, and a start with nothing to stop
-// runs the gate once. The versions are the fake registry's, above the floor copilot-env.config
-// pins; the installer plants the fake proxy as the package's bin, so the launch runs what the
-// float installed.
+// The gate's passes are counted at the seam, not by installs: a fresh record short-circuits a
+// second pass before any install. Every entry into the float (the verify look, the float itself)
+// reads `nowMs` once.
+//   gate pass over a stale record          -> two reads
+//   gate pass over the record just written -> one read, the verify look alone
 //
-// The gate's passes are counted at the seam: every entry into the float (the verify look, the
-// float itself) builds one context from these deps and reads `nowMs` once, so a gate pass over a
-// stale record is two reads and a pass over the record it just wrote is one (the verify look
-// alone, up to date). An install count cannot tell an unconditional second pass apart, since the
-// fresh record short-circuits it before any install.
+// The versions sit above the floor copilot-env.config pins, and the installer plants the fake proxy
+// as the package's bin, so the launch runs what the float installed.
 const FLOATED_A = "2.9.0";
 const FLOATED_B = "2.9.1";
 const WEEK_SECONDS = 604_800;

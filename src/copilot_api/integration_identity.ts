@@ -488,15 +488,9 @@ interface HostAnswer {
 const hostMemo = new Map<string, HostAnswer>();
 
 /**
- * THE `host auto` rule, for every mode. `headers` is the identity's header set the caller
- * will send (the selected identity, or the pin), resolved BEFORE this. Module-private, like the
- * identity step below: only selectDirectIdentityAndHost may call it, so no consumer can select an
- * identity on one host and send to another.
- *
- *   literal set                     -> the literal
- *   no token                        -> the generic host, nothing probed
- *   generic /models 403, 404, 5xx, or a network failure
- *                                   -> the account's designated host, else the generic host
+ * Module-private, like the identity step below: only selectDirectIdentityAndHost may call it, so
+ * no consumer can select an identity on one host and send to another. `headers` is the identity's
+ * header set the caller will send, so it must be resolved before this.
  */
 async function resolveCopilotHost(
   token: string | null,

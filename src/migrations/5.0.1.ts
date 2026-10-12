@@ -78,16 +78,13 @@ export function removeDenoLeftovers(rootHome: string): void {
 }
 
 /**
- * Every daemon home's lock holder the new classifier reads as NOT ours (the previous release's deno
- * daemon reads "no" under it; ours reads "yes", and a failed look, "unknown", is left alone rather
- * than taken as licence) is terminated, re-proved at the SIGKILL boundary by the lock still naming
- * it alive, and its leftover marker is swept; a marker a dead holder left is swept alone.
- * Idempotent: a daemon this release spawned is left standing. A dry run names what it would stop
- * or sweep and signals nothing: the marker removal is a raw unlink outside the write seam, and a
- * signal has no overlay. `clear` is false when any home's daemon may still be running (a holder
- * the classifier could not judge, one the lock still names alive after the stop, or a lock this
- * process could not read): the deno-era files that daemon may run from stay (retireDenoDaemon).
- * Exported for the migration test; `homes`, `classify`, and `stop` isolate.
+ * The previous release's daemon reads "no" under the new classifier and ours "yes"; "unknown" is
+ * left alone rather than taken as licence. Exported for the migration test; `homes`, `classify`,
+ * and `stop` isolate.
+ *
+ *   explicit dry run -> the marker removal is a raw unlink outside the write seam, and a signal
+ *                       has no overlay
+ *   `clear` false    -> a daemon may still run, so retireDenoDaemon keeps the files it may run from
  */
 export async function stopPreviousDaemons(
   homes: readonly string[],

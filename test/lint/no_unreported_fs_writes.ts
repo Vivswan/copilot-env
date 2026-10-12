@@ -1,46 +1,19 @@
-// Runtime code reaches the filesystem through the one seam, never around it.
+// Runtime code reaches the filesystem through the one seam (src/utils/fs_facade.ts), never around
+// it: the seam names every write outside copilot-env's own homes on stderr and answers every read
+// from a dry run's planned state. So the ban is on REACHING node:fs, Bun, or Deno at all, not on
+// the call that mutates: a raw call is a write the seam never sees or a read behind the plan.
 //
-// Every file a command creates, rewrites, deletes, moves or links outside copilot-env's own homes
-// is named on stderr by the seam (src/utils/fs_facade.ts, whose disk side src/utils/fs_disk.ts
-// decides that a write inside a home is silent bookkeeping), and every read the seam answers sees
-// a dry run's planned state. A raw node:fs call anywhere else in src/ (or a Bun.write / Bun.file,
-// or, in the daemon-side modules the sidecar still runs, a Deno call) is a write the seam never
-// sees or a read that looks behind the plan -- so the ban is on REACHING the API at all: a named
-// import from node:fs / node:fs/promises, a member read off a node:fs namespace or default import,
-// a destructure of one, and the Bun and Deno namespaces' own calls. Two rules, one per direction,
-// because their exemptions differ:
+// Two rules, one per direction, because their exemptions differ; each ALLOWED set below carries its
+// files' reasons. A file handle whose flags cannot be read counts as a write, and a read-exempt
+// file still may not open one for writing: openWritable / openWriteFd are the seam's way.
 //
-//   no-unreported-fs-writes  src/ minus fs_disk.ts (the disk side), dry_run.ts (the marker: a
-//                            lock-held directory a child process probes, so it must be real),
-//                            file_lock.ts (the lock protocol's per-acquisition marker file, a
-//                            transient the seam documents), log_mute_preload.ts (patches the
-//                            PROXY's own createWriteStream, no write of ours), and
-//                            src/migrations/ (one-time fix-ups that narrate their own moves);
-//                            report_write.ts may `writeSync` to a DESCRIPTOR (its stderr line),
-//                            never to a path.
-//   no-raw-fs-reads          the same, plus src/usage/ (read-only inputs no dry run touches, on
-//                            the `agent cost` hot path with partial reads through a fd the seam has
-//                            no primitive for) and node_compat_preload.ts (runs before the seam
-//                            exists). Two files may open a read handle raw, and nothing else
-//                            (checksums.ts streams the release binary it hashes, process.ts opens
-//                            `/dev/null` for the daemon's stdin): no run plans either file.
+// A child process running a filesystem command (`rm`, `mv`, `Remove-Item`, ...) is refused too; a
+// command the rule cannot read (a variable) passes, since a spawn's command is often computed.
 //
-// A file handle (`open`, `openSync`, `Deno.open`) is a read to the read rule whatever its flags,
-// and a write to the write rule when its flag or options say so (or cannot be read): the seam's
-// openWritable / openWriteFd are the way to a write handle, and a read-exempt file still may not
-// open for writing.
-//
-// One more way to mutate without naming a write API is refused too: a child process running a
-// filesystem command (`rm`, `mv`, `cp`, `del`, `Remove-Item`, ...: spawned directly, or as the
-// first word of a shell's command line). A command the rule cannot read (a variable) passes, since
-// a spawn's command is often computed.
-//
-// A scanner over the parsed tree rather than a lint plugin: the per-file exemption lists, the
-// alias tracking, and the flag and argv reading are beyond what a GritQL pattern states. Run and
-// pinned by test/utils/fs_write_lint.test.ts, which fails on any finding under src/.
-//
-// Each visitor sees a node once, in source order, so an import or alias is recorded before the
-// uses that follow it; a use ahead of its declaration (hoisting) is not followed.
+// A scanner over the parsed tree rather than a lint plugin: the per-file exemptions, the alias
+// tracking, and the flag and argv reading are beyond what a GritQL pattern states. Run and pinned
+// by test/utils/fs_write_lint.test.ts, which fails on any finding under src/. Each visitor sees a
+// node once, in source order, so a use ahead of its declaration (hoisting) is not followed.
 import type {
   Argument,
   ArrayExpressionElement,
@@ -54,8 +27,13 @@ import { parseModule, visit } from "../helpers/syntax.ts";
 
 const FS_MODULES = new Set(["node:fs", "node:fs/promises"]);
 
-/** The seam's disk side, the dry-run marker, the lock protocol, and the preload that patches
- *  the PROXY's stream constructor, repo-relative. */
+/** Repo-relative; why each may write raw:
+ *    fs_disk.ts           -> the seam's disk side
+ *    dry_run.ts           -> the marker a child process probes under a held lock, so it must be
+ *                            real
+ *    file_lock.ts         -> the lock protocol's per-acquisition marker, a transient the seam
+ *                            documents
+ *    log_mute_preload.ts  -> patches the PROXY's own createWriteStream, no write of ours */
 const ALLOWED = new Set([
   "src/utils/fs_disk.ts",
   "src/utils/dry_run.ts",
@@ -63,6 +41,7 @@ const ALLOWED = new Set([
   "src/scripts/log_mute_preload.ts",
 ]);
 
+/** One-time fix-ups that narrate their own moves. */
 const EXEMPT_PREFIX = "src/migrations/";
 
 /** Raw reads the seam does not cover: the usage scanners (partial reads through a fd, on a hot

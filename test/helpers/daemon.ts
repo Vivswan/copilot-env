@@ -118,15 +118,13 @@ export function launchFakeDaemon(home: string, port: number): number {
 }
 
 /**
- * A process the owner-filtered scan classifies as our daemon: the running bun (the runtime name
- * the classifier gates on) running `entry`, whose basename starts with `copilot-api`, with `start`
- * next on its argv, and a `--preload` file under this root home's proxy home, the mark only our
- * spawn leaves (here one importing the parent-exit preload, so a decoy also dies with the test).
- * Nothing else in the process table qualifies: the suite's own bun processes, and another test
- * file's decoy under its own scratch root home. `stderr` is inherited so a child that dies says
- * why in the run. The decoy's stdin is a pipe this process holds: the parent-exit preload exits on
- * stdin's EOF, so an ignored stdin (an immediate EOF) would end the decoy before its entry ran;
- * the pipe's write end is released once the decoy is gone.
+ * Shaped so the owner-filtered scan (isDaemonProcess) classifies it as our daemon: bun running an
+ * entry whose basename starts with `copilot-api`, `start` next on argv, and a `--preload` under
+ * this root home's proxy home, the mark only our spawn leaves.
+ *
+ *   stdin: a pipe held until the decoy is gone -> the parent-exit preload exits on stdin's EOF, so
+ *                                                 `ignore` would end the decoy before its entry ran
+ *   stderr: inherited                          -> a child that dies says why in the run
  */
 export function spawnDaemonShapedChild(
   entry: string,

@@ -58,6 +58,13 @@ export function resetDaemonShutdownForTests(): void {
   deferredListeners.length = 0;
 }
 
+/** The exit runs in a microtask after the drain, never inside the call that started the shutdown,
+ *  so a test that stubs process.exit holds the stub until this settles; null when nothing started
+ *  one. */
+export function shutdownInFlightForTests(): Promise<void> | null {
+  return shuttingDown;
+}
+
 /** The timer is cleared on the fast path so it can never hold the process open past the drain. */
 function withDeadline(promise: Promise<unknown>, ms: number): Promise<void> {
   return new Promise((resolve) => {

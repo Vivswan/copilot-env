@@ -1,5 +1,8 @@
 import { configDefaultNumber } from "../../src/copilot_api/config_registry.ts";
-import { resetDaemonShutdownForTests } from "../../src/copilot_api/daemon_shutdown.ts";
+import {
+  resetDaemonShutdownForTests,
+  shutdownInFlightForTests,
+} from "../../src/copilot_api/daemon_shutdown.ts";
 import { CopilotEnvConfig } from "../../src/copilot_api/env_config.ts";
 import {
   armIdleWatchdog,
@@ -33,33 +36,56 @@ function tmpHome(): void {
   isolateProxyHome("copilot-idle-");
 }
 
-test("idleCheck: recent observed inference keeps a long-started daemon alive", () => {
+/** The exit stub's throw: the real process.exit never returns, and a stub that returned would arm
+ *  the shutdown path's late-listener timer, whose exit the restored real process.exit would carry
+ *  out between tests. */
+const stubbedExit = new Error("process.exit stubbed");
+
+/**
+ * idleCheck's exit decision as data: the code the shared shutdown path passed to process.exit, or
+ * null when it started no shutdown. The stub stays installed until the shutdown idleCheck may
+ * have started has settled, which is a microtask after the call: a stub restored at idleCheck's
+ * return hands the real exit the rest of the file's run.
+ */
+async function idleCheckExit(startedAtMs: number, timeoutMs: number): Promise<number | null> {
+  const realExit = process.exit;
+  let exitCode: number | null = null;
+  process.exit = ((code?: number): never => {
+    exitCode = code ?? 0;
+    throw stubbedExit;
+  }) as typeof process.exit;
+  try {
+    idleCheck(startedAtMs, timeoutMs);
+    await shutdownInFlightForTests()?.catch((reason: unknown) => {
+      if (reason !== stubbedExit) throw reason;
+    });
+  } finally {
+    process.exit = realExit;
+  }
+  return exitCode;
+}
+
+test("idleCheck: recent observed inference keeps a long-started daemon alive", async () => {
   tmpHome();
   // Managed lifecycle ON, started long ago, tiny timeout -- WOULD exit if idle. A fresh
   // in-memory inference mark (what the observer records on a real model call) must hold it up.
   new CopilotEnvConfig().set({ "daemon.auto-start": true });
   writeRunState({ pid: process.pid, port: 4141 });
   markInference(Date.now());
-  // Stub the process-exit primitive the shared shutdown path calls, so a wrong
-  // decision surfaces as a failure instead of ending the test run.
-  const realExit = process.exit;
-  process.exit = ((code?: number): never => {
-    throw new Error(`idleCheck unexpectedly stopped the daemon (${code})`);
-  }) as typeof process.exit;
-  try {
-    idleCheck(0, 60_000); // started at epoch, 1-minute window: only the mark is recent
-  } finally {
-    process.exit = realExit;
-  }
-  expect(new CopilotEnvRunState().read().pid).toBe(process.pid); // never cleared -- the daemon stayed up
+  const exitCode = await idleCheckExit(0, 60_000); // started at epoch, 1-minute window: only the mark is recent
+  // never cleared -- the daemon stayed up
+  expect({ exitCode, pid: new CopilotEnvRunState().read().pid }).toEqual({
+    exitCode: null,
+    pid: process.pid,
+  });
 });
 
 // All marks ancient -> idle -> the shared shutdown path. No server was recorded in this process,
-// so there is nothing to drain and the exit is immediate. clearIfPid wipes the daemon tracking
+// so there is nothing to drain and the exit follows at once. clearIfPid wipes the daemon tracking
 // (pid matches this process); whether the port goes with it is the spawn's keep-port value: unset
 // or the default daemon's "0" releases it, a named profile's "1" keeps the stable reservation the
 // baked wiring points at.
-test("idleCheck: with no activity past the window, clears run state and exits; keep-port decides the port", () => {
+test("idleCheck: with no activity past the window, clears run state and exits; keep-port decides the port", async () => {
   const rows: { keepPort: string | undefined; port: number | undefined }[] = [
     { keepPort: undefined, port: undefined },
     { keepPort: "0", port: undefined },
@@ -67,26 +93,24 @@ test("idleCheck: with no activity past the window, clears run state and exits; k
   ];
   for (const row of rows) {
     tmpHome();
+    // The previous row's shutdown is the "already shutting down" state a new call would join.
+    resetDaemonShutdownForTests();
     new CopilotEnvConfig().set({ "daemon.auto-start": true });
     const state = new CopilotEnvRunState();
     state.set({ pid: process.pid, port: 4242, lastEnsureAt: 1 });
     if (row.keepPort === undefined) delete process.env[DAEMON_KEEP_PORT_ENV];
     else process.env[DAEMON_KEEP_PORT_ENV] = row.keepPort;
-    const realExit = process.exit;
-    let exitCode: number | undefined = -1;
-    process.exit = ((code?: number): never => {
-      exitCode = code;
-      throw new Error("exit"); // the shutdown path ends here, like the real process.exit
-    }) as typeof process.exit;
-    try {
-      expect(() => idleCheck(2, 1), String(row.keepPort)).toThrow("exit");
-    } finally {
-      process.exit = realExit;
-    }
-    expect(exitCode, String(row.keepPort)).toBe(0);
+    const exitCode = await idleCheckExit(2, 1);
     const after = state.read();
-    expect({ ...row, pid: after.pid, lastEnsureAt: after.lastEnsureAt, port: after.port }).toEqual({
+    expect({
       ...row,
+      exitCode,
+      pid: after.pid,
+      lastEnsureAt: after.lastEnsureAt,
+      port: after.port,
+    }).toEqual({
+      ...row,
+      exitCode: 0,
       pid: undefined,
       lastEnsureAt: undefined,
     });
@@ -138,31 +162,23 @@ test("isIdle: true exactly at and past the timeout boundary, false before it", (
   expect(isIdle(0, 1500, timeout)).toBe(true);
 });
 
-test("idleCheck: lifecycle OFF (auto-start unset) returns before touching run-state, even when idle", () => {
+test("idleCheck: lifecycle OFF (auto-start unset) returns before touching run-state, even when idle", async () => {
   tmpHome();
   // auto-start unset disables the managed lifecycle, so idleCheck must disengage before clearIfPid.
   // idleCheck(0, 1) is long-idle with a 1ms timeout: without the OFF gate it would clearIfPid and
-  // call shutdownDaemon(0), whose exit the process.exit stub below would turn into a thrown
-  // "exit", so a broken gate fails here rather than ending the file's run.
+  // call shutdownDaemon(0), which the stub reports as an exit code here instead of ending the
+  // file's run.
   expect(new CopilotEnvConfig().autoStartEnabled()).toBe(false);
   const state = new CopilotEnvRunState();
   state.set({ pid: process.pid, port: 4141, lastEnsureAt: 1 });
-  const realExit = process.exit;
-  let exited = false;
-  process.exit = ((code?: number): never => {
-    exited = true;
-    throw new Error(`idleCheck unexpectedly exited (${code})`);
-  }) as typeof process.exit;
-  try {
-    idleCheck(0, 1);
-  } finally {
-    process.exit = realExit;
-  }
-  expect(exited).toBe(false);
+  const exitCode = await idleCheckExit(0, 1);
   const after = state.read();
-  expect(after.pid).toBe(process.pid);
-  expect(after.port).toBe(4141);
-  expect(after.lastEnsureAt).toBe(1);
+  expect({ exitCode, pid: after.pid, port: after.port, lastEnsureAt: after.lastEnsureAt }).toEqual({
+    exitCode: null,
+    pid: process.pid,
+    port: 4141,
+    lastEnsureAt: 1,
+  });
 });
 
 // A timeout <= 0 arms nothing; a positive one arms an unref'd interval, so the timer never holds

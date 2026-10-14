@@ -257,6 +257,7 @@ test("payload: direct shape (headers + models + no discovery), proxy shape (disc
     { family: "fable", id: "claude-fable-5", is1m: true, familyDefault: true },
   ]);
   const direct = desktopConfigPayload({
+    effort: "high",
     mode: "direct",
     profile: null,
     baseUrl: DEFAULT_COPILOT_API_BASE,
@@ -286,17 +287,15 @@ test("payload: direct shape (headers + models + no discovery), proxy shape (disc
       isFamilyDefault: true,
     },
   ]);
-  // All capability switches on, cost display on, all telemetry off (incl. essential).
+  // Every switch the app ships OFF is turned on, cost display on, all telemetry off (incl.
+  // essential). A switch the app already ships on is NOT written (the app's documented defaults
+  // decide), so an in-app change to one of those stands.
   for (const key of [
     "chatTabEnabled",
-    "coworkTabEnabled",
-    "isClaudeCodeForDesktopEnabled",
     "isDesktopExtensionEnabled",
     "chatAdvancedFileAnalysisEnabled",
-    "skillCreationEnabled",
     "autoModeEnabled",
-    "userPluginMarketplacesEnabled",
-    "userPluginUploadsEnabled",
+    "builtinBrowserEnabled",
     "inferenceModelPricingEnabled",
     "modelPrefer1mContext",
     "disableEssentialTelemetry",
@@ -305,6 +304,21 @@ test("payload: direct shape (headers + models + no discovery), proxy shape (disc
   ]) {
     expect(direct[key]).toBe(true);
   }
+  for (const key of [
+    "coworkTabEnabled",
+    "isClaudeCodeForDesktopEnabled",
+    "skillCreationEnabled",
+    "userPluginMarketplacesEnabled",
+    "userPluginUploadsEnabled",
+    "scheduledTasksEnabled",
+    "keepAwakeEnabled",
+    "developerModeEnabled",
+    "alwaysStartWithDefaultModel",
+  ]) {
+    expect(direct, key).not.toHaveProperty(key);
+  }
+  // The default model's starting effort (Desktop's documented top-level key, 2.110.0+).
+  expect(direct.defaultModelEffort).toBe("high");
   // managedMcpServers is an ARRAY (the object shape is rejected as invalid_type and dropped).
   const servers = direct.managedMcpServers as { name: string; transport: string }[];
   expect(servers.map((s) => [s.name, s.transport])).toEqual([["copilot-env", "stdio"]]);
@@ -315,6 +329,7 @@ test("payload: direct shape (headers + models + no discovery), proxy shape (disc
   });
 
   const proxy = desktopConfigPayload({
+    effort: "high",
     mode: "proxy",
     profile: null,
     baseUrl: "http://127.0.0.1:4141",
@@ -332,6 +347,7 @@ test("payload: direct shape (headers + models + no discovery), proxy shape (disc
 
 test("payload: foreign keys in the existing document survive the surgical merge", () => {
   const merged = desktopConfigPayload({
+    effort: "medium",
     mode: "direct",
     direct: null,
     profile: null,
@@ -341,10 +357,13 @@ test("payload: foreign keys in the existing document survive the surgical merge"
       banner: { enabled: true, text: "keep me" },
       userKey: 42,
       claudeAiImport: { bannerBehavior: "detect", enabled: false },
+      defaultModelEffort: "low",
     },
   });
   expect(merged.banner).toEqual({ enabled: true, text: "keep me" });
   expect(merged.userKey).toBe(42);
+  // A level typed into the entry is a managed field: the configured one wins on every pass.
+  expect(merged.defaultModelEffort).toBe("medium");
   expect(merged.claudeAiImport).toEqual({
     bannerBehavior: "detect", // hand-set sibling field kept
     enabled: true, // managed value wins over the stale hand-set one
@@ -355,6 +374,7 @@ test("payload: foreign keys in the existing document survive the surgical merge"
 
 test("payload: a rotation to a null integration id drops the stale header; foreign extras survive", () => {
   const withId = desktopConfigPayload({
+    effort: "high",
     mode: "direct",
     profile: null,
     baseUrl: DEFAULT_COPILOT_API_BASE,
@@ -369,6 +389,7 @@ test("payload: a rotation to a null integration id drops the stale header; forei
   // PAT -> non-PAT rotation: directClientHeaders omits the id when it is null,
   // so the direct branch's own strip is what removes the stale header.
   const rotated = desktopConfigPayload({
+    effort: "high",
     mode: "direct",
     profile: null,
     baseUrl: DEFAULT_COPILOT_API_BASE,
@@ -388,6 +409,7 @@ test("payload: the static shape bakes the key and drops the helper keys; the com
     direct: null,
     profile: null,
     baseUrl: DEFAULT_COPILOT_API_BASE,
+    effort: "high" as const,
   };
   const command = { kind: "command", helperPath: "/x/h.sh" } as const;
   const viaHelper = desktopConfigPayload({ ...base, credential: command });
@@ -462,6 +484,8 @@ test("fresh upsert: config + meta entry + appliedId only when the library had no
   const configPath = join(library, `${entries[0]?.id}.json`);
   const doc = readJson(configPath);
   expect(doc.inferenceGatewayBaseUrl).toBe(DEFAULT_COPILOT_API_BASE);
+  // Nothing stored under claude.desktop-effort: the entry carries the built-in default.
+  expect(doc.defaultModelEffort).toBe("high");
   // One row per Claude id in the catalog; the gpt id is ignored.
   const models = doc.inferenceModels as {
     name: string;
@@ -885,6 +909,7 @@ test("Desktop status judges a Direct entry against the slot's stored pair: what 
 
 test("payload: MCP entry carries the profile selector and merges over foreign servers", () => {
   const doc = desktopConfigPayload({
+    effort: "high",
     mode: "direct",
     direct: null,
     profile: WORK,
@@ -918,6 +943,7 @@ test("payload: MCP entry carries the profile selector and merges over foreign se
   ]);
   // Our former object shape is not foreign rows: it goes.
   const fromObject = desktopConfigPayload({
+    effort: "high",
     mode: "direct",
     direct: null,
     profile: WORK,
@@ -933,6 +959,7 @@ test("payload: MCP entry carries the profile selector and merges over foreign se
 
   // A switch to proxy strips only OUR header names; the foreign extra survives.
   const proxy = desktopConfigPayload({
+    effort: "high",
     mode: "proxy",
     profile: WORK,
     baseUrl: "http://127.0.0.1:4141",
@@ -1364,6 +1391,14 @@ test("inspect + render: wired, missing, stale, orphaned, disabled-but-owned, abs
     reason: "the managed keys drifted (a rewire would change the entry)",
   });
   new CopilotEnvConfig().delProfile(null, "identity");
+  expect(inspected(inspectTargets(targets)).entries[0]?.verdict.kind).toBe("wired");
+  // A new default-effort level the entry lacks is the same drift (the key is a managed field), and
+  // the next wire lands it: a pre-existing entry reads stale before the sync, wired after.
+  expect(readJson(configPath).defaultModelEffort).toBe("high");
+  new CopilotEnvConfig().set({ "claude.desktop-effort": "xhigh" });
+  expect(inspected(inspectTargets(targets)).entries[0]?.verdict).toEqual(managedDrift);
+  await syncClaudeDesktopWiring(directWire());
+  expect(readJson(configPath).defaultModelEffort).toBe("xhigh");
   expect(inspected(inspectTargets(targets)).entries[0]?.verdict.kind).toBe("wired");
 
   // Stale: the helper body drifted, then lost its executable bit, then vanished --
@@ -2098,6 +2133,7 @@ test("entryProfileAt attributes by the managed MCP server's profile word alone",
   // Static entries name no helper script, so the helper can never be what attributes an entry.
   const payload = (profile: Profile) =>
     desktopConfigPayload({
+      effort: "high",
       mode: "direct",
       direct: null,
       profile,

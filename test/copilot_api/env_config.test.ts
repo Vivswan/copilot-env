@@ -152,6 +152,13 @@ test("the typed store: read() starts empty, each accessor answers stored else bu
       read: (c) => c.claudeDesktopEnabled(),
     },
     {
+      key: "claude.desktop-effort",
+      raw: "medium",
+      stored: "medium",
+      unset: "high",
+      read: (c) => c.claudeDesktopEffort(),
+    },
+    {
       key: "daemon.logs",
       raw: "true",
       stored: true,
@@ -275,6 +282,20 @@ test("the registry parsers accept valid input and reject bad input with a clear 
   // The boolean spelling the key had before it became a scope is refused with the four values.
   expect(() => configKeyDef("static-key")?.parse("true")).toThrow(
     "expected one of none|claude|codex|all, got 'true'",
+  );
+  // Desktop's documented effort levels, exactly: a level the app does not define is refused with
+  // the five it does (the entry would otherwise carry a value the app ignores).
+  const effort = registryEntry("claude.desktop-effort");
+  expect(["low", "medium", "high", "xhigh", "max"].map((l) => effort.parse(l))).toEqual([
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+  ]);
+  expect(effort.parse(" XHigh ")).toBe("xhigh");
+  expect(() => effort.parse("ultra")).toThrow(
+    "expected one of low|medium|high|xhigh|max, got 'ultra'",
   );
   expect(() => configKeyDef("daemon.idle-timeout")?.parse("-5")).toThrow();
   expect(() => configKeyDef("daemon.port")?.parse("70000")).toThrow(); // out of range
@@ -603,6 +624,7 @@ const ABS_CODEX_HOME = resolve("/srv/codex");
 
 const ROUND_TRIP_RAW: Record<ConfigKey, string> = {
   "claude.desktop": "false",
+  "claude.desktop-effort": "medium",
   "claude.wire-mcp": "false",
   "codex.home": ABS_CODEX_HOME,
   "codex.host": "true",

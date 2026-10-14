@@ -16,6 +16,7 @@ import {
   codexHomePrefsFor,
   configDefaultValue,
   configScope,
+  type DesktopEffortLevel,
   type GlobalConfigData,
   type GlobalKey,
   type GlobalMapKey,
@@ -306,6 +307,11 @@ export class CopilotEnvConfig {
   /** OFF sweeps the profile entries and leaves the default's in place (src/claude/desktop.ts). */
   claudeDesktopEnabled(): boolean {
     return this.setting("claude.desktop");
+  }
+
+  /** The `defaultModelEffort` every owned Desktop entry carries (src/claude/desktop_payload.ts). */
+  claudeDesktopEffort(): DesktopEffortLevel {
+    return this.setting("claude.desktop-effort");
   }
 
   codexHomePrefs(platform: NodeJS.Platform = process.platform): CodexHomePrefs {

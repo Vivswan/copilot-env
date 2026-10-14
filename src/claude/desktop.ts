@@ -290,6 +290,7 @@ export async function wireClaudeDesktopEntry(opts: DesktopWireOptions): Promise<
     profile: opts.profile,
     baseUrl,
     credential,
+    effort: new CopilotEnvConfig().claudeDesktopEffort(),
     models,
     existing,
   });

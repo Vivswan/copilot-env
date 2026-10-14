@@ -7,14 +7,16 @@
 //   a string value -> the header is SET to it
 //   a null value   -> the header is DELETED (the codex identity sends no integration id)
 // Applied where the bytes leave the process, AFTER copilot-api's own header preparation (its
-// /v1/messages path rewrites the User-Agent and drops the id before fetching): under bun the
-// proxy makes every HTTP call to the Copilot API hosts through `globalThis.fetch`, so one wrap of
-// the global covers them.
-//
-// Not covered: the /responses WebSocket handshake. copilot-api imports `WebSocket` from "undici",
-// which bun answers with its own built-in, a binding to the native class that no preload can
-// replace or compose (bun refuses a plugin over a built-in module), so that transport carries
-// the proxy's own identity.
+// /v1/messages path rewrites the User-Agent and drops the id before fetching), on both upstream
+// transports to the Copilot API hosts:
+//   every HTTP call             -> one wrap of `globalThis.fetch`, which the proxy uses throughout
+//   the /responses WS handshake -> `new WebSocket(url, { headers })` with the class the proxy imports
+//                                  from "undici", re-pointed at undici_identity.ts by a load hook
+//                                  over the proxy's own chunks (the files beside process.argv[1])
+// The hook exists because bun answers "undici" with a built-in whose WebSocket export is a native
+// binding (not a `globalThis.WebSocket` read) and refuses a plugin over a built-in module. It stays
+// off the proxy's dependencies: a CommonJS module fed back through a load hook loses its named
+// exports.
 
 // Duplicates DAEMON_CLIENT_HEADERS_ENV (integration_identity.ts) and DAEMON_COPILOT_HOST_ENV: this
 // preload stays import-free so it drags no CLI module into the daemon.
@@ -81,10 +83,79 @@ function fetchHeaders(
   );
 }
 
+/** The second argument of `new WebSocket(url, init)`: the protocols alone, or bun's options object
+ *  (`headers`, `protocols`, `proxy`, `tls` among them). */
+export type HandshakeInit =
+  | string
+  | string[]
+  | { headers?: HeadersInit; [option: string]: unknown };
+
 const rawSet = process.env[CLIENT_HEADERS_ENV]?.trim() || null;
-if (rawSet !== null) {
-  const set = parseClientHeaderSet(rawSet);
-  const configuredHost = process.env[COPILOT_HOST_ENV]?.trim() || null;
+const identity =
+  rawSet === null
+    ? null
+    : {
+        set: parseClientHeaderSet(rawSet),
+        configuredHost: process.env[COPILOT_HOST_ENV]?.trim() || null,
+      };
+
+/** `init` for a handshake to `url`: the header set applied for a Copilot API host, `init` as given
+ *  for any other (the Codex backend's WebSocket carries that backend's own headers). The
+ *  WebSocket subclass in undici_identity.ts calls this from the proxy's own construction. */
+export function handshakeInit(
+  url: string | URL,
+  init: HandshakeInit | undefined,
+): HandshakeInit | undefined {
+  if (identity === null || !isCopilotApiHost(String(url), identity.configuredHost)) return init;
+  // bun takes a bare protocol string, but under `protocols` only a sequence.
+  const options: Exclude<HandshakeInit, string | string[]> =
+    typeof init === "string"
+      ? { protocols: [init] }
+      : Array.isArray(init)
+        ? { protocols: init }
+        : { ...init };
+  return {
+    ...options,
+    headers: Object.fromEntries(applyClientHeaders(options.headers, identity.set)),
+  };
+}
+
+const IDENTITY_MODULE_URL = new URL("./undici_identity.ts", import.meta.url);
+/** The module's path as the hook sees it, so an entry whose directory holds the shims (one under
+ *  the install root) never has the module's own "undici" import re-pointed at itself. */
+const IDENTITY_MODULE_PATH = Bun.fileURLToPath(IDENTITY_MODULE_URL);
+/** The static and the dynamic import of "undici", whichever quote: the specifier is the one token
+ *  the hook replaces, so every import shape (named, aliased, namespace) keeps its bindings. */
+const UNDICI_SPECIFIER = /(\bfrom\s*|\bimport\s*\(\s*)(["'])undici\2/g;
+
+/** The proxy's chunks sit beside its entry (the daemon's `dist/main.js`, a test's target file):
+ *  that directory at any depth, minus a `node_modules` below it, since a dependency's CommonJS
+ *  module fed back through the hook loses its named exports (the entry's own directory may sit
+ *  under one). Separators match either way and Windows compares case-insensitively, the spelling
+ *  src/copilot_api/process.ts uses for the same paths. */
+/** The filter's comparison for one path: case-insensitive on Windows, exact elsewhere. */
+function samePath(a: string, b: string): boolean {
+  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
+
+function entryDirectoryFilter(): RegExp {
+  const entry = process.argv[1];
+  if (entry === undefined) throw new Error("client-headers preload: no entry script to cover");
+  const path = Bun.fileURLToPath(Bun.pathToFileURL(entry));
+  const directory = path.slice(0, Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\")));
+  const escaped = directory
+    .split(/[\\/]/)
+    .map((segment) => RegExp.escape(segment))
+    .join("[\\\\/]");
+  const segment = "(?!node_modules[\\\\/])[^\\\\/]+[\\\\/]";
+  return new RegExp(
+    `^${escaped}[\\\\/](?:${segment})*[^\\\\/]+\\.(js|mjs|ts)$`,
+    process.platform === "win32" ? "i" : "",
+  );
+}
+
+if (identity !== null) {
+  const { set, configuredHost } = identity;
   const originalFetch = globalThis.fetch;
   const wrappedFetch = (
     input: Parameters<typeof fetch>[0],
@@ -95,4 +166,22 @@ if (rawSet !== null) {
     return originalFetch(input, { ...init, headers: fetchHeaders(input, init, set) });
   };
   globalThis.fetch = wrappedFetch as typeof fetch;
+
+  Bun.plugin({
+    name: "copilot-env-websocket-identity",
+    setup(build) {
+      build.onLoad({ filter: entryDirectoryFilter() }, async (args) => {
+        const text = await Bun.file(args.path).text();
+        const loader = args.path.endsWith(".ts") ? "ts" : "js";
+        if (samePath(args.path, IDENTITY_MODULE_PATH)) return { contents: text, loader };
+        return {
+          contents: text.replace(
+            UNDICI_SPECIFIER,
+            (_match, lead: string) => `${lead}${JSON.stringify(IDENTITY_MODULE_URL.href)}`,
+          ),
+          loader,
+        };
+      });
+    },
+  });
 }

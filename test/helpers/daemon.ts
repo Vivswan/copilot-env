@@ -153,11 +153,11 @@ export function spawnDaemonShapedChild(
 export function runWithPreload(
   shim: string,
   source: string,
-  opts: RunOptions & { args?: string[] } = {},
+  opts: RunOptions & { args?: string[]; targetDir?: string } = {},
 ): ReturnType<typeof runSync> {
-  const target = join(tempDir("preload-target-"), "target.ts");
+  const { args = [], targetDir = tempDir("preload-target-"), ...run } = opts;
+  const target = join(targetDir, "target.ts");
   writeFileSync(target, source);
-  const { args = [], ...run } = opts;
   return runSync(process.execPath, [...bunRunArgs("--preload", shim), target, ...args], {
     ...run,
     env: { ...(run.env ?? process.env), ...BUN_CLI_ENV },

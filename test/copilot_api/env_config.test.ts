@@ -1184,7 +1184,7 @@ test("projectedProxyConfig(): force keys always project (built-in default or sto
   // an entry WITHOUT a value, the clear that lets the proxy's own default stand.
   const empty = projectedProxyConfig(null);
   expect(projectedValue(empty, ["smallModel"])).toBe("gpt-5-mini");
-  expect(projectedValue(empty, ["useResponsesApiWebSocket"])).toBe(false);
+  expect(projectedValue(empty, ["useResponsesApiWebSocket"])).toBe(true);
   expect(projectedValue(empty, ["useResponsesApiWebSearch"])).toBe(true);
   expect(projectedValue(empty, ["useMessagesApi"])).toBe(true);
   expect(empty.filter((e) => e.value !== undefined)).toHaveLength(4);

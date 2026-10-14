@@ -45,14 +45,19 @@ const ALLOWED = new Set([
 const EXEMPT_PREFIX = "src/migrations/";
 
 /** Raw reads the seam does not cover: the usage scanners (partial reads through a fd, on a hot
- *  path, over inputs no dry run touches) and the preload that runs before the seam exists. */
-const READ_ALLOWED = new Set(["src/scripts/node_compat_preload.ts"]);
+ *  path, over inputs no dry run touches). */
 const READ_EXEMPT_PREFIX = "src/usage/";
 
 /** The two read handles no run plans, opened raw where they are used (the release binary the
  *  updater hashes, the daemon's `/dev/null` stdin); every other read in these files still goes
  *  through the seam. */
 const READ_HANDLE_ALLOWED = new Set(["src/install/checksums.ts", "src/copilot_api/process.ts"]);
+
+/** The one `Bun.file` read: the import-free preload's load hook reading the proxy's own chunk text.
+ *  Allowed only as `Bun.file(...)` consumed by one read call in the same expression (`.text()`,
+ *  `.json()`, ...); a stored handle, or `.write` / `.delete` on one, is still a write and a read. */
+const BUN_FILE_READ_ALLOWED = new Set(["src/scripts/client_headers_preload.ts"]);
+const BUN_FILE_READ_METHODS = new Set(["text", "json", "arrayBuffer", "bytes", "stream", "exists"]);
 
 /** The one file that writes a descriptor rather than a path: the seam's own report line goes to
  *  fd 2 through node:fs `writeSync`, which is console output, not a mutation. Every path write in
@@ -246,8 +251,7 @@ function guarded(path: string): boolean {
 }
 
 function readGuarded(path: string): boolean {
-  if (!guarded(path)) return false;
-  return !path.startsWith(READ_EXEMPT_PREFIX) && !READ_ALLOWED.has(path);
+  return guarded(path) && !path.startsWith(READ_EXEMPT_PREFIX);
 }
 
 const WRITE_MESSAGE =
@@ -390,6 +394,8 @@ function isFsNamespace(node: Expression, locals: ReadonlySet<string>): boolean {
 interface Direction {
   fs: ReadonlySet<string>;
   bun: ReadonlySet<string>;
+  /** `Bun.file(...).text()` and its kin pass; every other reach of `Bun.file` is reported. */
+  bunFileReads: boolean;
   message: string;
 }
 
@@ -401,6 +407,8 @@ interface Scan {
    *  namespace, and aliases of either). */
   fsNamespaces: Set<string>;
   bunAliases: Set<string>;
+  /** Start offsets of the `Bun.file` members a read call consumes in place (bunFileReads). */
+  bunFileReadChains: Set<number>;
   /** Local names bound to node:fs `open`/`openSync`. */
   fsOpens: Set<string>;
   /** Local names bound to a child_process spawn entry point, by kind, and to the whole module. */
@@ -416,6 +424,7 @@ function newScan(rule: FsFinding["rule"], direction: Direction): Scan {
     direction,
     fsNamespaces: new Set(),
     bunAliases: new Set(),
+    bunFileReadChains: new Set(),
     fsOpens: new Set(),
     spawns: new Set(),
     execs: new Set(),
@@ -496,8 +505,21 @@ function reachVisitor(scan: Scan): VisitorObject {
         return;
       }
       if (isBunNamespace(node.object, scan.bunAliases) && direction.bun.has(name)) {
+        if (name === "file" && scan.bunFileReadChains.has(node.start)) return;
         report(scan, node);
       }
+    },
+    // `Bun.file("x").text()`: the outer call is visited before its callee, so the member it
+    // consumes is known when the handler above reaches it.
+    CallExpression(node) {
+      if (!direction.bunFileReads || node.callee.type !== "MemberExpression") return;
+      const method = memberName(node.callee);
+      const handle = node.callee.object;
+      if (method === null || !BUN_FILE_READ_METHODS.has(method)) return;
+      if (handle.type !== "CallExpression" || handle.callee.type !== "MemberExpression") return;
+      if (memberName(handle.callee) !== "file") return;
+      if (!isBunNamespace(handle.callee.object, scan.bunAliases)) return;
+      scan.bunFileReadChains.add(handle.callee.start);
     },
     // `const { rmSync } = fs;` / `const fsp = fs.promises;` / `const { promises: fsp } = fs;`
     // / `const bun = Bun;`
@@ -621,6 +643,7 @@ export function scanFsReach(path: string, source: string): FsFinding[] {
     const scan = newScan(WRITES_RULE, {
       fs: STDERR_WRITE_ALLOWED.has(path) ? withoutFdWrites(FS_WRITE_NAMES) : FS_WRITE_NAMES,
       bun: BUN_WRITE_NAMES,
+      bunFileReads: BUN_FILE_READ_ALLOWED.has(path),
       message: WRITE_MESSAGE,
     });
     scans.push(scan);
@@ -631,6 +654,7 @@ export function scanFsReach(path: string, source: string): FsFinding[] {
     const scan = newScan(READS_RULE, {
       fs: handles ? withoutOpens(FS_READ_NAMES) : FS_READ_NAMES,
       bun: BUN_READ_NAMES,
+      bunFileReads: BUN_FILE_READ_ALLOWED.has(path),
       message: READ_MESSAGE,
     });
     scans.push(scan);

@@ -132,7 +132,7 @@ test("every way of reaching a write or a read API is refused by its rule, and no
 test("scoped to src/, minus each rule's own exemptions", () => {
   const write = 'import { writeFileSync } from "node:fs";';
   const read = 'import { readFileSync } from "node:fs";';
-  // Both directions: the disk side, the marker, the lock layer, and migrations.
+  // Both directions: the disk side, the marker, the lock layer, the log preload, and migrations.
   for (const exempt of [
     "src/utils/fs_disk.ts",
     "src/utils/dry_run.ts",
@@ -142,10 +142,9 @@ test("scoped to src/, minus each rule's own exemptions", () => {
   ]) {
     expect(lint(write + read, exempt), exempt).toEqual({ writes: 0, reads: 0 });
   }
-  // Reads alone: the usage scanners and the preload that runs before the seam; a write-capable
-  // open there is still a write.
+  // Reads alone: the usage scanners; a write-capable open there is still a write.
   const writeOpen = 'import { openSync } from "node:fs"; openSync("x", "w");';
-  for (const readsOnly of ["src/usage/index.ts", "src/scripts/node_compat_preload.ts"]) {
+  for (const readsOnly of ["src/usage/index.ts"]) {
     expect(lint(write + read, readsOnly), readsOnly).toEqual({ writes: 1, reads: 0 });
     expect(lint(writeOpen, readsOnly), readsOnly).toEqual({ writes: 1, reads: 0 });
   }
@@ -157,6 +156,24 @@ test("scoped to src/, minus each rule's own exemptions", () => {
     expect(lint(write + read, handle), handle).toEqual({ writes: 1, reads: 1 });
     expect(lint(writeOpen, handle), handle).toEqual({ writes: 1, reads: 0 });
   }
+  // The one `Bun.file` read: the import-free preload reads the proxy's chunk text for its load
+  // hook, as a handle consumed by a read call in place. A stored handle, a write or delete through
+  // one, a Bun.write, a node:fs import, or a write-capable open there is still caught.
+  const preload = "src/scripts/client_headers_preload.ts";
+  expect(lint('await Bun.file("x").text();', preload)).toEqual({ writes: 0, reads: 0 });
+  expect(lint('JSON.parse(await globalThis.Bun.file("x").text());', preload)).toEqual({
+    writes: 0,
+    reads: 0,
+  });
+  expect(lint('const f = Bun.file("x"); await f.text();', preload)).toEqual({
+    writes: 1,
+    reads: 1,
+  });
+  expect(lint('await Bun.file("x").write("y");', preload)).toEqual({ writes: 1, reads: 1 });
+  expect(lint('await Bun.file("x").delete();', preload)).toEqual({ writes: 1, reads: 1 });
+  expect(lint('await Bun.write("x", "y");', preload)).toEqual({ writes: 1, reads: 0 });
+  expect(lint(write + read, preload)).toEqual({ writes: 1, reads: 1 });
+  expect(lint(writeOpen, preload)).toEqual({ writes: 1, reads: 1 });
   // The report writes its line to fd 2 raw; a path write there is still a write.
   const fdWrite = 'import { writeSync } from "node:fs"; writeSync(2, "x");';
   expect(lint(fdWrite, "src/utils/report_write.ts")).toEqual({ writes: 0, reads: 0 });

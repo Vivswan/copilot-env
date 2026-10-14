@@ -20,9 +20,12 @@
 //   a provider env var in the shell        -> dropped, so a leaked export cannot hijack auth
 //   the caller's cwd                       -> replaced by the temp home, so a project's own
 //                                             .claude/settings.json or codex trust never colours it
-import { spawn } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
+import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import type { Readable } from "node:stream";
+import { deadline } from "@std/async/deadline";
 import { settingsPathFor } from "../claude/paths.ts";
 import type { DirectSmoke } from "../copilot_api/endpoint_smoke.ts";
 import type { ProbeFetch } from "../copilot_api/integration_identity.ts";
@@ -287,6 +290,47 @@ function truncateReason(line: string): string {
   return flat.length > MAX ? `${flat.slice(0, MAX)}...` : flat;
 }
 
+export async function probeChildOutcome(child: ChildProcess): Promise<ProbeOutcome> {
+  let stdout = "";
+  let stderr = "";
+  const drained = (stream: Readable | null, append: (chunk: string) => void): Promise<unknown> =>
+    stream === null
+      ? Promise.resolve()
+      : once(
+          stream.setEncoding("utf8").on("data", (chunk) => append(String(chunk))),
+          "end",
+        );
+  // `exit` plus both stream ends, never `close`: bun on macOS can drop the child's close
+  // notification (oven-sh/bun#41024), and a wait on close alone then holds the probe until the
+  // spawn timeout kills a child that is already gone. The outer deadline is the same bound for
+  // the arm where the exit itself is lost.
+  const settled = Promise.all([
+    once(child, "exit") as Promise<[number | null, NodeJS.Signals | null]>,
+    drained(child.stdout, (chunk) => {
+      stdout += chunk;
+    }),
+    drained(child.stderr, (chunk) => {
+      stderr += chunk;
+    }),
+  ]).then(
+    ([[code, signal]]): ProbeOutcome => {
+      if (code === 0) return { ok: true };
+      const timedOut = code === null && child.killed ? "timed out" : undefined;
+      return { ok: false, detail: summarizeProbeFailure(code, signal, timedOut, stdout, stderr) };
+    },
+    (e: unknown): ProbeOutcome => ({
+      ok: false,
+      detail: summarizeProbeFailure(null, null, errMessage(e), stdout, stderr),
+    }),
+  );
+  try {
+    return await deadline(settled, PROBE_TIMEOUT_MS);
+  } catch {
+    child.unref();
+    return { ok: false, detail: summarizeProbeFailure(null, null, "timed out", stdout, stderr) };
+  }
+}
+
 function defaultRunProbe(
   cliPath: string,
   args: string[],
@@ -298,42 +342,16 @@ function defaultRunProbe(
   // a running proxy must never reach the child, or it answers the Claude smoke prompt for it.
   // `cwd` is the throwaway home, never the caller's: both CLIs read project-level config from the
   // working directory.
-  //
-  //   stdout/stderr piped, utf8 -> a failure carries a reason (summarizeProbeFailure)
-  //   close with a null code    -> our timeout when `killed`, so the detail says so
-  return new Promise((resolveOutcome) => {
-    // nosemgrep: javascript.lang.security.audit.spawn-shell-true.spawn-shell-true -- Windows-only, for .cmd shims; the spec quotes args
-    const child = spawn(s.file, s.args, {
-      cwd,
-      stdio: ["ignore", "pipe", "pipe"],
-      timeout: PROBE_TIMEOUT_MS,
-      windowsHide: true,
-      shell: s.shell,
-      env,
-    });
-    let stdout = "";
-    let stderr = "";
-    child.stdout?.setEncoding("utf8").on("data", (chunk) => {
-      stdout += String(chunk);
-    });
-    child.stderr?.setEncoding("utf8").on("data", (chunk) => {
-      stderr += String(chunk);
-    });
-    child.on("error", (e) => {
-      resolveOutcome({
-        ok: false,
-        detail: summarizeProbeFailure(null, null, errMessage(e), stdout, stderr),
-      });
-    });
-    child.on("close", (code, signal) => {
-      if (code === 0) return resolveOutcome({ ok: true });
-      const timedOut = code === null && child.killed ? "timed out" : undefined;
-      resolveOutcome({
-        ok: false,
-        detail: summarizeProbeFailure(code, signal, timedOut, stdout, stderr),
-      });
-    });
+  // nosemgrep: javascript.lang.security.audit.spawn-shell-true.spawn-shell-true -- Windows-only, for .cmd shims; the spec quotes args
+  const child = spawn(s.file, s.args, {
+    cwd,
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: PROBE_TIMEOUT_MS,
+    windowsHide: true,
+    shell: s.shell,
+    env,
   });
+  return probeChildOutcome(child);
 }
 
 /** POSIX `command -v` answers with a path that can be RELATIVE (dash, a relative or empty PATH

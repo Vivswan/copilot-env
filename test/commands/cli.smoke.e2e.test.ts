@@ -12,7 +12,6 @@ import {
 import { loadPricing } from "../../src/usage/pricing.ts";
 import { must } from "../../src/utils/assert.ts";
 import { getSanitizedHostname } from "../../src/utils/hostname.ts";
-import { MILLISECONDS_PER_DAY } from "../../src/utils/time.ts";
 import { agentHomeEnv } from "../helpers/env.ts";
 import { writeClaudeSettings, writeCodexConfigToml } from "../helpers/fixtures.ts";
 import { runCli } from "../helpers/run.ts";
@@ -1081,7 +1080,7 @@ test("cli.ts cost --no-index parses every log; without it the usage index is use
 // `--pricing-url` has no Commander default on purpose: an omitted flag must fall through
 // to the stored `pricing-url` key, and a given flag must reach the run. Only the price
 // CACHE tells the two URLs apart from outside (warnings never name a URL): each URL's
-// stale cache carries a different rate, so the total says which one priced the run.
+// same-day memo carries a different rate, so the total says which one priced the run.
 test("cli.ts cost prices at the stored pricing-url when the flag is omitted and at the flag's URL when given", async () => {
   const env = isolatedEnv();
   const projects = join(env.CLAUDE_CONFIG_DIR ?? "", "projects", "-Users-x-proj");
@@ -1114,8 +1113,8 @@ test("cli.ts cost prices at the stored pricing-url when the flag is omitted and 
       },
     }),
   );
-  // Two days old: expired, so the run refreshes (fails at 127.0.0.1:9) and falls back
-  // to the cached copy; the two URLs carry different prompt rates.
+  // Stamped now: today's memo answers without the network (a dead port would otherwise leave
+  // the run unpriced); the two URLs carry different prompt rates.
   const priced = (prompt: string): ProbeFetch =>
     (() =>
       Promise.resolve(
@@ -1133,7 +1132,7 @@ test("cli.ts cost prices at the stored pricing-url when the flag is omitted and 
       )) as ProbeFetch;
   const seed = {
     cacheDir: join(home, USAGE_INDEX_DIR_NAME),
-    nowMs: Date.now() - 2 * MILLISECONDS_PER_DAY,
+    nowMs: Date.now(),
   };
   await loadPricing(storedUrl, { ...seed, fetchImpl: priced("0.000015") });
   await loadPricing(flagUrl, { ...seed, fetchImpl: priced("0.000115") });

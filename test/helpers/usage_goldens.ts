@@ -7,6 +7,7 @@ import path from "node:path";
 import { zstdDecompressSync } from "node:zlib";
 import * as v from "valibot";
 import { SHA256_HEX_SCHEMA } from "../../src/copilot_api/config_registry.ts";
+import { CopilotEnvConfig } from "../../src/copilot_api/env_config.ts";
 import { type CostRuntime, runCost } from "../../src/usage/cost.ts";
 import { canonicalModelName } from "../../src/usage/pricing.ts";
 import { type ModelUsage, type ReadonlyUsageReport, usageReport } from "../../src/usage/usage.ts";
@@ -32,8 +33,8 @@ import {
 export const PRE_INDEX_COMMIT = "48384eaa9352b90c5d9f80894add828937d042e2";
 
 /** Port 1 is on the fetch spec's bad-port list, so the request fails inside the runtime
- *  before any socket opens: both implementations fall back to the token-only report the
- *  same way, offline, and no pricing cache is ever written. */
+ *  before any socket opens: both price sources point here, so both implementations produce
+ *  the token-only report the same way, offline, and no price cache is ever written. */
 const UNREACHABLE_PRICING_URL = "https://127.0.0.1:1/unreachable";
 
 /** The zone the goldens' per-day buckets are cut in: the generator's synthetic user's own. */
@@ -491,6 +492,8 @@ export async function runCurrentCost(
     if (opts.copilotApiHome !== undefined) process.env.COPILOT_API_HOME = opts.copilotApiHome;
     delete process.env.COPILOT_ENV_ROOT_HOME;
     process.env.TZ = GOLDEN_TIME_ZONE;
+    // The card has no flag; the stored key is the only way to keep it off the network.
+    new CopilotEnvConfig().set({ "cost.github-pricing-url": UNREACHABLE_PRICING_URL });
     console.log = (...args: unknown[]) => {
       lines.push(args.map(String).join(" "));
     };

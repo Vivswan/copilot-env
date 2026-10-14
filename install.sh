@@ -153,7 +153,12 @@ resolve_release_tag() {
         _url="$(retry "Resolve latest release" curl -fsSL -o /dev/null -w '%{url_effective}' \
             "${PUBLIC_CURL_ARGS[@]}" "https://github.com/$REPO/releases/latest")" \
             || die "could not resolve the latest copilot-env release."
-        TAG="${_url##*/}"
+        # The tag is the final URL's last path segment; a query, a fragment, or a trailing
+        # slash on the tag page is not part of it. Twin: Resolve-ReleaseTag in install.ps1.
+        _path="${_url%%\#*}"
+        _path="${_path%%\?*}"
+        _path="${_path%/}"
+        TAG="${_path##*/}"
     fi
     case "$TAG" in
         v[0-9]*) ;;

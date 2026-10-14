@@ -19,7 +19,7 @@ import {
   MATERIALIZED_ASSET_FILES,
 } from "../../src/install/installer.ts";
 import { readInstallMinimumReleaseAge } from "../../src/utils/bunfig.ts";
-import { withPowershellChildEnv } from "../../src/utils/command.ts";
+import { childPathPrepending, withPowershellChildEnv } from "../../src/utils/command.ts";
 import { readProjectConfig } from "../../src/utils/project_config.ts";
 import {
   currentReleaseTarget,
@@ -494,6 +494,84 @@ describe("installer checkout guard refuses before mutating, proceeds on legacy r
         expect(again.stderr, evidence(again, root)).not.toContain(`created -> ${root}`);
       } finally {
         cleanup(parent, downloadDir);
+      }
+    },
+  );
+
+  // POSIX only: the tokenless `latest` lookup is install.sh's. GitHub answers /releases/latest
+  // with a redirect to the tag page; the tag is that final URL's last path segment, whatever
+  // query, fragment, or trailing slash rides along. The tag is pinned where it leaves the
+  // installer: the download URLs a curl stand-in on PATH logs.
+  skipWin(
+    "install.sh takes the release tag from the redirect's final URL without its query, fragment, or trailing slash",
+    () => {
+      const target = currentReleaseTarget();
+      if (target === null) throw new Error("no release target for this platform");
+      const asset = releaseAssetName(target);
+      const tagPage = "https://github.com/Vivswan/copilot-env/releases/tag/v1.2.3";
+      const finalUrls = [tagPage, `${tagPage}?view=1`, `${tagPage}#notes`, `${tagPage}/`];
+      const downloadDir = makeDownloadDir();
+      const binDir = tempDir("ce-guard-curl-");
+      const log = join(binDir, "urls.log");
+      writeFileSync(
+        join(binDir, "curl"),
+        [
+          "#!/usr/bin/env bash",
+          "set -eu",
+          'dest=""; url=""; probe=false',
+          "while [ $# -gt 0 ]; do",
+          '  case "$1" in',
+          '    -o) shift; dest="$1" ;;',
+          "    -w) shift; probe=true ;;",
+          "    -H) shift ;;",
+          "    -*) ;;",
+          '    *) url="$1" ;;',
+          "  esac",
+          "  shift",
+          "done",
+          `printf '%s\\n' "$url" >> "$CE_TEST_CURL_LOG"`,
+          `if [ "$probe" = true ]; then printf '%s' "$CE_TEST_FINAL_URL"; exit 0; fi`,
+          'cp -- "$CE_TEST_ASSET_DIR/$(basename "$url")" "$dest"',
+          "",
+        ].join("\n"),
+        { mode: 0o755 },
+      );
+      try {
+        for (const finalUrl of finalUrls) {
+          const root = makeRoot(MARKER, "none");
+          rmSync(log, { force: true });
+          try {
+            const res = runSync("bash", [join(ROOT, "install.sh"), "--dir", root], {
+              env: {
+                ...process.env,
+                PATH: childPathPrepending([binDir]),
+                CI: "1",
+                CE_TEST_FINAL_URL: finalUrl,
+                CE_TEST_CURL_LOG: log,
+                CE_TEST_ASSET_DIR: downloadDir,
+                COPILOT_ENV_DOWNLOAD_BASE: undefined,
+                COPILOT_ENV_INSTALL_REF: undefined,
+                GH_TOKEN: undefined,
+                GITHUB_TOKEN: undefined,
+              },
+            });
+            const why = `final URL ${finalUrl}\n${evidence(res, root)}`;
+            expect(res.exitCode, why).toBe(0);
+            expect(existsSync(join(root, "bin", `${installedBinaryName()}.invoked`)), why).toBe(
+              true,
+            );
+            expect(readFileSync(log, "utf8").split("\n"), why).toEqual([
+              "https://github.com/Vivswan/copilot-env/releases/latest",
+              `https://github.com/Vivswan/copilot-env/releases/download/v1.2.3/${asset}`,
+              "https://github.com/Vivswan/copilot-env/releases/download/v1.2.3/checksums.txt",
+              "",
+            ]);
+          } finally {
+            cleanup(root);
+          }
+        }
+      } finally {
+        cleanup(binDir, downloadDir);
       }
     },
   );

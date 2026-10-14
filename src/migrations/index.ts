@@ -23,7 +23,7 @@ import {
   v409StateFold,
   v409StaticKeyScope,
 } from "./4.0.9.ts";
-import { v501DenoLeftovers, v501OsLockSidecars } from "./5.0.1.ts";
+import { v501DenoLeftovers, v501UnlockedDaemons } from "./5.0.1.ts";
 
 /** One step, named for the release it migrates AWAY FROM (authored against the current release,
  *  with no future number to predict). It runs when an update leaves that version behind:
@@ -63,8 +63,8 @@ const MIGRATIONS: Migration[] = [
   v409IdentityCache,
   v409LaunchersBlock,
   v409ProfileVerbTree,
+  v501UnlockedDaemons,
   v501DenoLeftovers,
-  v501OsLockSidecars,
 ];
 
 // versionLessThan tolerates unparseable input by answering "not less-than", so a

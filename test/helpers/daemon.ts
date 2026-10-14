@@ -6,7 +6,11 @@ import { copyFileSync, existsSync, mkdirSync, symlinkSync, writeFileSync } from 
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { abortable, delay } from "@std/async";
-import { acquireDaemonLockForLife, daemonLockPath } from "../../src/copilot_api/daemon_lock.ts";
+import {
+  acquireDaemonLockForLife,
+  daemonLockHolderPid,
+  daemonLockPath,
+} from "../../src/copilot_api/daemon_lock.ts";
 import { CopilotEnvConfig } from "../../src/copilot_api/env_config.ts";
 import {
   DEFAULT_COPILOT_API_BASE,
@@ -29,7 +33,16 @@ import { releaseFileLock } from "../../src/utils/file_lock.ts";
 import { pidAlive } from "../../src/utils/pid.ts";
 import { writeRunState } from "./fixtures.ts";
 import { freePort } from "./net.ts";
-import { bunRunArgs, ROOT, type RunOptions, runSync, spawnChild } from "./run.ts";
+import {
+  bunRunArgs,
+  CHILD_VALUES,
+  childValuesEnv,
+  importSpecifier,
+  ROOT,
+  type RunOptions,
+  runSync,
+  spawnChild,
+} from "./run.ts";
 import { step, tempDir, testAbortSignal } from "./testing.ts";
 
 /** `agent start`'s two credential steps as one call, the refusal gate and the resolution it feeds,
@@ -252,6 +265,42 @@ export function stageRefusedStop(home: string, profile?: ProfileName): RefusedSt
       await until(() => !pidAlive(child.pid));
     },
   };
+}
+
+// --- a lock holder of another process ---------------------------------------------------
+
+/** A child holding each home's daemon.lock as a daemon does (the OS lock on the sidecar, the marker
+ *  naming its pid): a plain bun (nothing of either release's daemon on its argv) or, with `daemon`,
+ *  this release's daemon shape on `--port`. Returns once every lock reads held by it. */
+export async function lockHoldingChild(
+  root: string,
+  homes: readonly string[],
+  daemon: { port: number } | null = null,
+): Promise<Bun.Subprocess> {
+  const script = join(root, "copilot-api", "lock-holder.ts");
+  mkdirSync(join(script, ".."), { recursive: true });
+  writeFileSync(
+    script,
+    `import { acquireDaemonLockForLife } from ${importSpecifier(
+      join(ROOT, "src", "copilot_api", "daemon_lock.ts"),
+    )};\n` +
+      `for (const home of ${CHILD_VALUES}.homes) {\n` +
+      "  if (!acquireDaemonLockForLife(home, { waitMs: 0 })) process.exit(1);\n" +
+      "}\n" +
+      "setInterval(() => {}, 60_000);\n",
+  );
+  const env = childValuesEnv({ homes });
+  const child =
+    daemon === null
+      ? spawnChild(process.execPath, {
+          args: [...bunRunArgs(), script],
+          env,
+          stdout: "ignore",
+          stderr: "ignore",
+        })
+      : spawnDaemonShapedChild(script, ["start", "--port", String(daemon.port)], env);
+  await until(() => homes.every((home) => daemonLockHolderPid(home) === child.pid));
+  return child;
 }
 
 // --- the deno release's daemon --------------------------------------------------------

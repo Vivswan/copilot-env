@@ -40,12 +40,15 @@ import {
 import { afterEach, expect, tempDir, test } from "../helpers/testing.ts";
 
 // The daemon holds `<home>/daemon.lock` for life (acquired by daemon_lock_preload), and the
-// liveness consults judge it BEFORE the pid table. The lock is the marker file naming the
-// holder's pid (src/utils/file_lock.ts): SIGKILL leaves the file behind with a dead pid in it,
-// which reads as dead with no unlock code running; that is the whole point.
+// liveness consults judge it BEFORE the pid table. The lock is the OS lock on the sidecar, with the
+// marker file naming the holder's pid (src/utils/file_lock.ts): SIGKILL drops the lock and leaves
+// the marker behind, which reads as dead with no unlock code running, whatever process now wears
+// the pid; that is the whole point.
 
 // A pid no real process holds (far above any OS pid ceiling we run on).
 const DEAD_PID = 2_147_483_646;
+// A live process that holds no lock: the launcher that runs this file.
+const LIVE_UNRELATED_PID = process.ppid;
 
 const restoreEnv = envSnapshot();
 let dir = "";
@@ -76,7 +79,7 @@ test("anyTrackedDaemonAlive: a named profile's live daemon counts, not only the 
   }
 });
 
-test("daemonLockVerdict: absent, dead-marker, held, and foreign-pid judgments", () => {
+test("daemonLockVerdict: absent, dead-marker, recycled-pid marker, held, and foreign-pid judgments", () => {
   dir = tempDir("copilot-daemon-lock-");
 
   // No lock file at all: a pre-lock daemon holds none, so nothing is proven either way.
@@ -90,7 +93,14 @@ test("daemonLockVerdict: absent, dead-marker, held, and foreign-pid judgments", 
   expect(daemonLockVerdict(dir, process.pid)).toBe("unproven");
   expect(daemonLockHolderPid(dir)).toBe(null); // free = nobody HOLDS it
 
-  // Acquired over the dead holder's leftover: held = alive for the holder pid only.
+  // The incident the OS lock ends: a crashed daemon's marker whose pid the OS gave to a live
+  // process. The pid table says alive; the lock nobody holds says the daemon is gone, and wins.
+  plantMarker(dir, LIVE_UNRELATED_PID);
+  expect(pidAlive(LIVE_UNRELATED_PID)).toBe(true);
+  expect(daemonLockVerdict(dir, LIVE_UNRELATED_PID)).toBe("dead");
+  expect(daemonLockHolderPid(dir)).toBe(null);
+
+  // Acquired over the leftover: held = alive for the holder pid only.
   expect(acquireDaemonLockForLife(dir, { waitMs: 0 })).toBe(true);
   try {
     expect(daemonLockVerdict(dir, process.pid)).toBe("alive");
@@ -134,17 +144,22 @@ test("a live holder blocks acquisition; SIGKILL releases the lock promptly", asy
     expect(daemonLockVerdict(home, child.pid)).toBe("alive");
     expect(acquireDaemonLockForLife(home, { waitMs: 300, retryMs: 30 })).toBe(false);
 
-    // SIGKILL: no unlock code runs, the marker stays, and its pid is now provably gone --
-    // the verdict flips to dead (same pid) promptly.
+    // SIGKILL: no unlock code runs, the marker stays, and the OS drops the lock with the
+    // process: the verdict flips to dead (same pid) at once, and a contender's very next retry
+    // takes the lock. The timing line is the crash-release evidence the lock's design rests on.
+    // The clock starts BEFORE the signal, so the interval holds the kill-to-exit time too.
+    const killedAt = Date.now();
     child.kill("SIGKILL");
     await child.exited;
-    const flippedAt = Date.now();
     await until(() => daemonLockVerdict(home, child.pid) === "dead");
-    expect(Date.now() - flippedAt).toBeLessThan(5_000);
-
-    // And the lock is genuinely re-acquirable (the dead holder's marker is taken over).
-    expect(acquireDaemonLockForLife(home, { waitMs: 1_000, retryMs: 50 })).toBe(true);
+    const deadAfterMs = Date.now() - killedAt;
+    expect(acquireDaemonLockForLife(home, { waitMs: 2_000, retryMs: 100 })).toBe(true);
+    const acquiredAfterMs = Date.now() - killedAt;
     releaseFileLock(daemonLockPath(home));
+    console.log(
+      `crash release: verdict dead ${deadAfterMs} ms after SIGKILL was sent, re-acquired ${acquiredAfterMs} ms after`,
+    );
+    expect(acquiredAfterMs).toBeLessThan(1_000);
   } finally {
     try {
       child.kill("SIGKILL");

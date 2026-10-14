@@ -47,9 +47,9 @@ export function promptRefusedInDryRun(what: string): Error {
  *  auth helper is this CLI again) so a child that finds it runs as a silent dry run, and nothing
  *  this CLI does on the child's behalf lands behind the plan either. The value is the marker the
  *  spawning run minted (underDryRunMarker): the path of a scratch directory named with a fresh
- *  nonce, whose hold file that run keeps as its lock (src/utils/file_lock.ts: the file names the
- *  minting pid) for as long as it collects. A child honours the value only while the process the
- *  hold names lives (spawnedByDryRun), so a value that reached an environment any other way (`=1`
+ *  nonce, whose hold file that run keeps as its lock (src/utils/file_lock.ts: the OS lock held
+ *  for as long as it collects, the file naming the minting pid). A child honours the value only
+ *  while that run holds it (spawnedByDryRun), so a value that reached an environment any other way (`=1`
  *  exported in a shell, a pid, a nonce with no run behind it, a directory made by hand, a marker a
  *  crashed run left behind) names nothing and changes nothing. */
 export const DRY_RUN_ENV = "COPILOT_ENV_DRY_RUN";
@@ -108,9 +108,9 @@ export function spawnedByDryRun(env: NodeJS.ProcessEnv = process.env): boolean {
   return markerHeld(value);
 }
 
-/** Only a hold file naming a live process reads held: a directory made by hand, a run that ended
- *  or crashed, and a hold file that cannot be read are no marker. A pid this process cannot probe
- *  is no marker either: a child that then wrote for real would be the child of no run of ours. */
+/** Only a hold file a live run still holds reads held (the OS lock on its sidecar, or on a
+ *  filesystem without one a live pid in the file): a directory made by hand, a run that ended or
+ *  crashed, and a hold file that cannot be read are no marker. */
 function markerHeld(marker: string): boolean {
   return probeFileLock(join(marker, DRY_RUN_MARKER_HOLD)).kind === "held";
 }

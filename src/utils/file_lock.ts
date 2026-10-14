@@ -1,17 +1,14 @@
-// Exclusion is the exclusive creation of the lock file, whose text names the holder: pid, then the
-// clock of the write. The file appears WITH its text (a fully written sibling is hard-linked into
-// place; a refresh renames one over it), so no reader ever meets an empty marker and takes a
-// creator mid-write for a leftover. A crashed holder (SIGKILL, a power loss) leaves its file behind, so the
-// next acquirer judges the pid it names (src/utils/pid.ts): a dead pid, a malformed marker, or
-// this process's own pid with no in-process hold is a leftover and is taken over; a live pid, or
-// one this permission set cannot signal (the daemon's), is a holder. The same file is the whole
-// protocol, so the CLI and the daemon (which loads this module through
-// src/scripts/daemon_lock_preload.ts) agree without an OS lock, which Bun does not expose.
-//
-// Two limits, accepted: a recycled pid reads as a live holder, and two contenders that judge one
-// leftover stale at the same instant race between the judgment and the unlink, so the loser can
-// take the winner's fresh file (the published pid lockfiles accept the same race).
-import { linkSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+// Exclusion is the OS advisory lock (src/utils/os_lock.ts) on a permanent `<lock>.oslock` sidecar,
+// released by the holder's death; the marker at `<lock>` (`pid\nts\n`) is the readable face for
+// the probes and the daemon verdict. The layer is the MACHINE's: the marker layer (exclusive
+// create, the holder's pid judged by src/utils/pid.ts, with its known limits: a recycled or
+// unsignallable pid reads as a holder, judge-then-unlink races) runs only where the libc or
+// kernel32 will not load, decided once per process and so the same for every process of this
+// binary here; a lock call the filesystem refuses is the lock's own failure, never a fallback. The
+// one mixed pair, a deno-era daemon holding the OS lock beside this binary without dlopen, reads
+// busy by the deno marker's live pid. The lock sits on the sidecar, never the marker (a Windows
+// range blinds other readers), and the sidecar is never unlinked (an orphan inode could be held).
+import { closeSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { setTimeout as sleepAsync } from "node:timers/promises";
 import { isEnoentOrNotdir, retryOpenHandleRefusal } from "./fs.ts";
@@ -19,6 +16,7 @@ import { renameWithRetry } from "./fs_disk.ts";
 import * as fs from "./fs_facade.ts";
 import { dryRunActive } from "./fs_facade.ts";
 import { isRecord } from "./json.ts";
+import { type OsLock, type OsLockHandle, osLock } from "./os_lock.ts";
 import { type PidLiveness, pidLiveness } from "./pid.ts";
 import { sleepSync } from "./time.ts";
 
@@ -37,17 +35,27 @@ interface FileLockOptions {
   /** One clock for the marker written and the age judgment, so an injected clock stays
    *  deterministic. */
   nowMs?: number;
-  /** The liveness judgment of another process's pid, replaceable so a test can play a live or a
-   *  dying holder without spawning one. */
+  /** The OS lock, replaceable so a test can play a machine whose libc will not load, or a
+   *  filesystem that refuses the lock call, which no scratch directory can. */
+  osLock?: OsLock;
+  /** The liveness judgment of another process's pid on the marker layer, replaceable so a test
+   *  can play a live or a dying holder without spawning one. Never consulted under the OS lock. */
   liveness?: (pid: number) => PidLiveness;
+  /** The grace the marker layer gives a marker with no pid yet (a creator between its exclusive
+   *  create and its text) before it is a leftover. */
+  retryMs?: number;
 }
+
+/** Which mechanism answered: `os-lock` is the sidecar's advisory lock, `pid` the marker's pid
+ *  judged alive or dead. */
+export type LockJudge = "os-lock" | "pid";
 
 function renderMarker(nowMs: number): string {
   return `${process.pid}\n${nowMs}\n`;
 }
 
 /** `busy` is a holder (another process, or this one); `unavailable` is the lock's own I/O failing
- *  (its directory, the create, the marker read), which a not-held consumer must not read as a
+ *  (its directory, the sidecar, the marker write), which a not-held consumer must not read as a
  *  holder. */
 type Acquire =
   | { readonly kind: "acquired" }
@@ -57,16 +65,27 @@ type Acquire =
 const ACQUIRED: Acquire = Object.freeze({ kind: "acquired" });
 const BUSY: Acquire = Object.freeze({ kind: "busy" });
 
+/** The OS lock a hold keeps open for its life, with the seam that took it so the same one lets go. */
+interface OsHold {
+  readonly lock: OsLock;
+  readonly handle: OsLockHandle;
+}
+
 /** `#ts` is the clock of the marker this process wrote, so a leaked in-process hold is judged by
- *  age alone, with no parse of the file. */
+ *  age alone, with no parse of the file. `os` is null for a hold the marker layer took. */
 class HeldFileLock {
   #ts: number;
 
   constructor(
     readonly path: string,
     ts: number,
+    readonly os: OsHold | null,
   ) {
     this.#ts = ts;
+  }
+
+  get judge(): LockJudge {
+    return this.os === null ? "pid" : "os-lock";
   }
 
   isAged(staleMs: number, nowMs: number): boolean {
@@ -78,24 +97,28 @@ class HeldFileLock {
    *  sees the marker between a truncate and a write. */
   refresh(nowMs: number): Acquire {
     try {
-      const staged = stageMarker(this.path, renderMarker(nowMs));
-      try {
-        renameWithRetry(staged, this.path);
-      } catch (cause) {
-        discardStaged(staged);
-        throw cause;
-      }
+      writeMarker(this.path, renderMarker(nowMs));
     } catch (cause) {
       return { kind: "unavailable", cause };
     }
     this.#ts = nowMs;
     return ACQUIRED;
   }
+
+  /** Does NOT delete the marker file (releaseFileLock's marker-verified job) and never the sidecar. */
+  drop(): void {
+    this.os?.lock.release(this.os.handle);
+  }
 }
 
-/** The one record of what this process holds: a marker naming our pid that is not here is a
- *  leftover (a release Windows refused, a crash under a recycled pid). */
+/** The one record of what this process holds: the OS lock is per open handle, so the handle lives
+ *  here for the lock's lifetime, and a marker naming our pid that is not here is a leftover (a
+ *  release Windows refused, a crash under a recycled pid). */
 const HELD_LOCKS = new Map<string, HeldFileLock>();
+
+function osLockPath(lockPath: string): string {
+  return `${lockPath}.oslock`;
+}
 
 /** `unreadable` is a marker we cannot judge: a probe answers unknown, a release deletes nothing. */
 type MarkerRead =
@@ -111,15 +134,19 @@ function readMarker(lockPath: string): MarkerRead {
   }
 }
 
+function sameMarker(a: MarkerRead, b: MarkerRead): boolean {
+  if (a.kind !== b.kind) return false;
+  return a.kind !== "present" || b.kind !== "present" || a.raw === b.raw;
+}
+
 /** Staging names count up per process: a sibling a refused delete left behind (an open handle on
- *  Windows) may still alias the marker through its hard link, and reopening that name would
- *  truncate the live marker. The exclusive open is the backstop for a name that exists anyway. */
+ *  Windows) must not be reopened under a live acquisition, and the exclusive open is the backstop
+ *  for a name that exists anyway. */
 let stagingSerial = 0;
 
-/** The marker's bytes, written to a sibling only this process names, so they can reach the lock
- *  path in one atomic step (a link for the create, a rename for a refresh). The sibling is removed
- *  where the OS allows, a failed write's included; a refused removal leaves a harmless alias that
- *  the per-process serial keeps from reuse. */
+/** The marker's bytes, written to a sibling only this process names, so they reach the lock path
+ *  in one rename. The sibling is removed where the OS allows, a failed write's included; a refused
+ *  removal leaves a harmless file that the per-process serial keeps from reuse. */
 function stageMarker(lockPath: string, text: string): string {
   for (;;) {
     const staged = `${lockPath}.${process.pid}.${(stagingSerial++).toString(36)}.staging`;
@@ -128,37 +155,48 @@ function stageMarker(lockPath: string, text: string): string {
       return staged;
     } catch (cause) {
       if (isRecord(cause) && cause.code === "EEXIST") continue;
-      discardStaged(staged);
+      removeQuietly(staged);
       throw cause;
     }
   }
 }
 
-/** A sibling left behind is named by its pid and harms nothing, so a refusal to delete it (an
- *  open handle on Windows) never undoes the step it followed. */
-function discardStaged(staged: string): void {
+/** A staging sibling left behind is named by its pid and harms nothing, and an empty marker guard
+ *  left by a failed create is the next acquirer's leftover, so a refusal to delete either (an open
+ *  handle on Windows) never undoes the step it followed. */
+function removeQuietly(path: string): void {
   try {
-    rmSync(staged, { force: true });
+    rmSync(path, { force: true });
   } catch {}
 }
 
-/** `exists` is the one refusal the create itself can answer; anything else is the lock's I/O, a
- *  filesystem without hard links included: a lock that cannot be taken without a window in which
- *  a contender reads an empty marker is not taken at all. */
-function createMarker(lockPath: string, text: string): "created" | "exists" | { cause: unknown } {
-  let staged: string;
+/** The text lands whole, by rename, over whatever the path holds. */
+function writeMarker(lockPath: string, text: string): void {
+  const staged = stageMarker(lockPath, text);
   try {
-    staged = stageMarker(lockPath, text);
+    renameWithRetry(staged, lockPath);
   } catch (cause) {
-    return { cause };
+    removeQuietly(staged);
+    throw cause;
   }
+}
+
+/** The marker layer's create: the exclusive open is the guard, and the text then lands by rename,
+ *  so a reader meets the marker empty for the instant between (which the layer's readers give one
+ *  retry) and never torn. `exists` is the one refusal the create itself can answer; anything else
+ *  is the lock's I/O. */
+function createMarker(lockPath: string, text: string): "created" | "exists" | { cause: unknown } {
   try {
-    linkSync(staged, lockPath);
-    return "created";
+    closeSync(openSync(lockPath, "wx"));
   } catch (cause) {
     return isRecord(cause) && cause.code === "EEXIST" ? "exists" : { cause };
-  } finally {
-    discardStaged(staged);
+  }
+  try {
+    writeMarker(lockPath, text);
+    return "created";
+  } catch (cause) {
+    removeQuietly(lockPath);
+    return { cause };
   }
 }
 
@@ -170,15 +208,16 @@ export function removeMarkerWithRetry(
   retryOpenHandleRefusal(() => remove(path));
 }
 
-/** Whether the marker at the path is a holder's or a leftover. Our own pid outside HELD_LOCKS is a
- *  leftover: nothing in this process holds a lock the record does not know. */
+/** The marker layer's judgment of a marker at the path. Our own pid outside HELD_LOCKS is a
+ *  leftover: nothing in this process holds a lock the record does not know. `unjudged` is a marker
+ *  with no pid in it: a creator between its exclusive create and its text, or garbage. */
 function markerHolds(
   lockPath: string,
   raw: string,
   liveness: (pid: number) => PidLiveness,
-): "held" | "leftover" {
+): "held" | "leftover" | "unjudged" {
   const pid = markerPid(raw);
-  if (pid === null) return "leftover";
+  if (pid === null) return "unjudged";
   if (pid === process.pid) return HELD_LOCKS.has(lockPath) ? "held" : "leftover";
   return liveness(pid) === "alive" ? "held" : "leftover";
 }
@@ -186,12 +225,11 @@ function markerHolds(
 /** A primitive: production code scopes lock lifetimes through withFileLock/withFileLockSync, bar
  *  src/copilot_api/daemon_lock.ts, and this stays exported for the on-disk contract tests.
  *
- *  the file names a live pid (or one we cannot
- *  signal)                                       -> false
- *  our own hold, marker still fresh              -> false
- *  our own hold, marker aged past staleMs        -> refreshed, true
- *  no file, or a leftover (dead pid, malformed,
- *  our pid with no hold)                         -> ours; the leftover is taken over */
+ *  the OS lock is held elsewhere             -> false
+ *  our own hold, fresh / aged past staleMs   -> false / refreshed, true
+ *  the OS lock is free                       -> ours; whatever marker the path holds is written over
+ *  no libc here (the marker layer)           -> a live pid's marker is false; no file or a leftover
+ *                                               (dead pid, malformed, our pid with no hold) is ours */
 export function tryAcquireFileLock(
   lockPath: string,
   staleMs: number,
@@ -209,24 +247,56 @@ function tryAcquire(lockPath: string, staleMs: number, opts: FileLockOptions): A
   }
 
   // The lock's directory is the store's home, made through the seam so a home outside
-  // copilot-env's own (its parents included) is named on stderr; the lock file itself stays raw
-  // (a dry run takes no lock, see withFileLockSync).
+  // copilot-env's own (its parents included) is named on stderr; the lock files themselves stay
+  // raw (a dry run takes no lock, see withFileLockSync).
   try {
     fs.mkdir(dirname(lockPath));
   } catch (cause) {
     return { kind: "unavailable", cause };
   }
 
+  const lock = opts.osLock ?? osLock;
+  let os: ReturnType<OsLock["tryExclusive"]>;
+  try {
+    os = lock.tryExclusive(osLockPath(lockPath));
+  } catch (cause) {
+    return { kind: "unavailable", cause };
+  }
+  if (os.kind === "busy") return BUSY;
+  if (os.kind === "unsupported") return acquireByMarker(lockPath, nowMs, opts);
+  try {
+    writeMarker(lockPath, renderMarker(nowMs));
+  } catch (cause) {
+    lock.release(os.handle);
+    return { kind: "unavailable", cause };
+  }
+  HELD_LOCKS.set(lockPath, new HeldFileLock(lockPath, nowMs, { lock, handle: os.handle }));
+  return ACQUIRED;
+}
+
+/** The marker layer: the create is the exclusion, and an existing marker is judged by its pid. */
+function acquireByMarker(lockPath: string, nowMs: number, opts: FileLockOptions): Acquire {
   const text = renderMarker(nowMs);
   const created = createMarker(lockPath, text);
-  if (created === "created") return record(lockPath, nowMs);
+  if (created === "created") return recordMarkerHold(lockPath, nowMs);
   if (created !== "exists") return { kind: "unavailable", cause: created.cause };
 
   const observed = readMarker(lockPath);
   if (observed.kind === "unreadable") return { kind: "unavailable", cause: observed.cause };
   // Released between the create and the read: the next attempt lands.
   if (observed.kind === "absent") return BUSY;
-  if (markerHolds(lockPath, observed.raw, opts.liveness ?? pidLiveness) === "held") return BUSY;
+  const liveness = opts.liveness ?? pidLiveness;
+  let holds = markerHolds(lockPath, observed.raw, liveness);
+  if (holds === "unjudged") {
+    // One grace for a creator still writing its text; a marker that changed meanwhile is a
+    // holder's progress, one that did not is a leftover.
+    sleepSync(opts.retryMs ?? LOCK_RETRY_MS);
+    const reread = readMarker(lockPath);
+    if (reread.kind !== "present" || reread.raw !== observed.raw) return BUSY;
+    holds = markerHolds(lockPath, reread.raw, liveness);
+    if (holds === "unjudged") holds = "leftover";
+  }
+  if (holds === "held") return BUSY;
 
   // The takeover: the leftover goes, then the create runs again; a contender that won the same
   // takeover is a holder now.
@@ -236,48 +306,91 @@ function tryAcquire(lockPath: string, staleMs: number, opts: FileLockOptions): A
     return { kind: "unavailable", cause };
   }
   const retaken = createMarker(lockPath, text);
-  if (retaken === "created") return record(lockPath, nowMs);
+  if (retaken === "created") return recordMarkerHold(lockPath, nowMs);
   return retaken === "exists" ? BUSY : { kind: "unavailable", cause: retaken.cause };
 }
 
-function record(lockPath: string, nowMs: number): Acquire {
-  HELD_LOCKS.set(lockPath, new HeldFileLock(lockPath, nowMs));
+function recordMarkerHold(lockPath: string, nowMs: number): Acquire {
+  HELD_LOCKS.set(lockPath, new HeldFileLock(lockPath, nowMs, null));
   return ACQUIRED;
 }
 
 /** `markerPid` is the holder's (`held`) or the LAST holder's (`free`), so a consumer can tie the
  *  verdict to a specific pid; `absent` means no marker file is there NOW, which a completed
- *  release also leaves behind. */
-type FileLockProbe =
-  | { readonly kind: "held"; readonly markerPid: number | null }
-  | { readonly kind: "free"; readonly markerPid: number | null }
+ *  release also leaves behind. `judge` says which layer answered. */
+export type FileLockProbe =
+  | { readonly kind: "held"; readonly markerPid: number | null; readonly judge: LockJudge }
+  | { readonly kind: "free"; readonly markerPid: number | null; readonly judge: LockJudge }
   | { readonly kind: "absent" }
   | { readonly kind: "unknown" };
 
 const PROBE_ABSENT: FileLockProbe = Object.freeze({ kind: "absent" });
 const PROBE_UNKNOWN: FileLockProbe = Object.freeze({ kind: "unknown" });
 
-/** Non-mutating: the marker is read and its pid judged. `unknown` is a marker this process cannot
- *  read, so a caller about to act on "nobody there" fails closed. */
-export function probeFileLock(
-  lockPath: string,
-  liveness: (pid: number) => PidLiveness = pidLiveness,
-): FileLockProbe {
+function probeHeld(markerPid: number | null, judge: LockJudge): FileLockProbe {
+  return Object.freeze({ kind: "held", markerPid, judge });
+}
+
+function probeFree(markerPid: number | null, judge: LockJudge): FileLockProbe {
+  return Object.freeze({ kind: "free", markerPid, judge });
+}
+
+/** Non-mutating: the sidecar is try-locked SHARED and released at once, and the marker is only
+ *  read. `unknown` is a marker this process cannot read or one that changed under the probe, so a
+ *  caller about to act on "nobody there" fails closed. */
+export function probeFileLock(lockPath: string, opts: FileLockOptions = {}): FileLockProbe {
   const observed = readMarker(lockPath);
   if (observed.kind === "unreadable") return PROBE_UNKNOWN;
-  if (observed.kind === "absent") return PROBE_ABSENT;
+  const pid = observed.kind === "present" ? markerPid(observed.raw) : null;
+  // The OS may report a second same-process attempt either way (flock on NFS is per process),
+  // so our own lock answers from the record.
+  const ours = HELD_LOCKS.get(lockPath);
+  if (ours !== undefined) return probeHeld(pid, ours.judge);
+  const lock = opts.osLock ?? osLock;
+  let os: ReturnType<OsLock["tryShared"]>;
+  try {
+    os = lock.tryShared(osLockPath(lockPath));
+  } catch {
+    return PROBE_UNKNOWN;
+  }
+  if (os.kind === "locked") lock.release(os.handle);
+  if (os.kind === "unsupported") return probeByMarker(lockPath, observed, opts);
+  // The marker must read the same BEFORE and AFTER the lock observation, or a holder change
+  // mid-probe would pair the previous holder's pid with the successor's lock state. The residual
+  // window (a successor between its lock and its marker write) is a sub-millisecond misread the
+  // next probe corrects.
+  if (!sameMarker(observed, readMarker(lockPath))) return PROBE_UNKNOWN;
+  if (os.kind === "busy") return probeHeld(pid, "os-lock");
+  return observed.kind === "present" ? probeFree(pid, "os-lock") : PROBE_ABSENT;
+}
+
+/** The marker layer's probe: a marker with no pid is `unknown` here (a creator mid-write and
+ *  garbage look alike, and a probe takes no grace); the acquirer's retry tells them apart. */
+function probeByMarker(
+  lockPath: string,
+  observed: MarkerRead,
+  opts: FileLockOptions,
+): FileLockProbe {
+  if (observed.kind !== "present") return PROBE_ABSENT;
   const pid = markerPid(observed.raw);
-  return markerHolds(lockPath, observed.raw, liveness) === "held"
-    ? Object.freeze({ kind: "held", markerPid: pid })
-    : Object.freeze({ kind: "free", markerPid: pid });
+  switch (markerHolds(lockPath, observed.raw, opts.liveness ?? pidLiveness)) {
+    case "held":
+      return probeHeld(pid, "pid");
+    case "leftover":
+      return probeFree(pid, "pid");
+    case "unjudged":
+      return PROBE_UNKNOWN;
+  }
 }
 
 /** A leftover (probeFileLock's `free`) is unlinked and true comes back; a holder, an absent file,
- *  and a marker this process cannot read are left alone. The CLI clears a dead daemon's leftover
- *  before the spawn (src/copilot_api/daemon_lock.ts), so the daemon's own acquire finds the way
- *  clear even where its token cannot judge the pid (EPERM reads as alive). */
-export function removeLeftoverLock(lockPath: string): boolean {
-  if (probeFileLock(lockPath).kind !== "free") return false;
+ *  and a marker this process cannot judge are left alone. Under the OS lock the next acquirer
+ *  would write over it anyway, so the unlink is tidiness for a home whose last daemon is gone; on
+ *  the marker layer it is the takeover the next acquirer cannot make where it cannot signal the
+ *  holder's pid (EPERM reads as alive), which is why the CLI clears a dead daemon's leftover
+ *  before the spawn (src/copilot_api/daemon_lock.ts). */
+export function removeLeftoverLock(lockPath: string, opts: FileLockOptions = {}): boolean {
+  if (probeFileLock(lockPath, opts).kind !== "free") return false;
   removeMarkerWithRetry(lockPath);
   return true;
 }
@@ -290,16 +403,19 @@ function markerPid(raw: string): number | null {
 }
 
 /** The marker is deleted only while it is OURS: a release by a non-holder (a test's cleanup, a stray
- *  primitive call) must not blind the probes to the live holder's pid. A delete Windows refuses (a
- *  scanner's open handle) is retried and then given up: the leftover names our pid and the next
- *  acquirer takes it over. A release of a SCOPE-held path is refused: it would strand SCOPE_HOLDS
- *  and let the scope's own exit release a lock a later acquirer holds. */
+ *  primitive call) must not blind the probes to the live holder's pid. The marker goes BEFORE the
+ *  OS lock, so no contender can have written its own marker under the path we delete. The sidecar
+ *  stays (the orphan-inode note in the header). A delete Windows refuses (a scanner's open handle)
+ *  is retried and then given up: the leftover names our pid and the next acquirer writes over it.
+ *  A release of a SCOPE-held path is refused: it would strand SCOPE_HOLDS and let the scope's own
+ *  exit release a lock a later acquirer holds. */
 export function releaseFileLock(lockPath: string): void {
   if (SCOPE_HOLDS.has(lockPath)) {
     throw new Error(
       "releaseFileLock called on a scope-held lock; the withFileLock/withFileLockSync scope owns the release",
     );
   }
+  const ours = HELD_LOCKS.get(lockPath);
   try {
     const observed = readMarker(lockPath);
     if (observed.kind === "present" && markerPid(observed.raw) === process.pid) {
@@ -309,6 +425,7 @@ export function releaseFileLock(lockPath: string): void {
     // gone / unreadable / still refused -> nothing to release
   } finally {
     HELD_LOCKS.delete(lockPath);
+    ours?.drop();
   }
 }
 
@@ -341,18 +458,16 @@ const NOT_HELD_BUSY: NotHeldOutcome = Object.freeze({ held: false, reason: "busy
 
 /** `waitMs` bounds the wait on ONE unchanged holder: the budget restarts whenever the marker read
  *  after a failed attempt differs from the last one (a release, a successor, a refresh), and
- *  Infinity never gives up, so the fn always observes `held`. `onWait` fires ONCE: on the first
- *  failed attempt, or with `noticeAfterMs` on the first failed attempt after more than that much
- *  waiting since the call. */
+ *  Infinity never gives up, so the fn always observes `held`. `onWait` fires ONCE, with the probe
+ *  of the holder it waits on: on the first failed attempt, or with `noticeAfterMs` on the first
+ *  failed attempt after more than that much waiting since the call. */
 export interface LockPolicy extends FileLockOptions {
-  /** Governs only a second acquire from THIS process (another process's marker is judged by its
-   *  pid's liveness, never its age): Infinity never refresh-acquires this process's own live hold,
-   *  however old, for a lock a process holds a long time (`agent start` across the float and the
-   *  cleanup). */
+  /** Governs only a second acquire from THIS process (another process's hold is never judged by
+   *  age): Infinity never refresh-acquires this process's own live hold, however old, for a lock a
+   *  process holds a long time (`agent start` across the float and the cleanup). */
   readonly staleMs: number;
   readonly waitMs: number;
-  readonly retryMs?: number;
-  readonly onWait?: () => void;
+  readonly onWait?: (holder: FileLockProbe) => void;
   readonly noticeAfterMs?: number;
 }
 
@@ -406,7 +521,7 @@ function acquireStep(
   const noticeable = policy.noticeAfterMs === undefined || elapsed > policy.noticeAfterMs;
   if (policy.onWait && !state.noticed && noticeable) {
     state.noticed = true;
-    policy.onWait();
+    policy.onWait(probeFileLock(lockPath, policy));
   }
   if (now - state.observedSinceMs >= policy.waitMs) {
     const done: NotHeldOutcome =
@@ -524,7 +639,7 @@ export class LockBusyError extends Error {
 
 /** For a read-modify-write that must never run unlocked (the JSON stores, the profile port
  *  reservation): `fn` sees the lock evidence only. A holder past the wait is a LockBusyError; a
- *  lock whose own I/O failed (its directory, the create, the marker read) rethrows that failure as
+ *  lock whose own I/O failed (its directory, the sidecar, the marker) rethrows that failure as
  *  itself, so nobody is told to stop a process that holds nothing. */
 export function withRequiredFileLockSync<T>(
   lockPath: string,

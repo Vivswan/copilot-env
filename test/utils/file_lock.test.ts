@@ -1,23 +1,31 @@
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { constants as osConstants } from "node:os";
 import { join } from "node:path";
 import {
+  type FileLockProbe,
   LockBusyError,
+  probeFileLock,
   releaseFileLock,
+  removeLeftoverLock,
   removeMarkerWithRetry,
   tryAcquireFileLock,
   withFileLock,
   withFileLockSync,
   withRequiredFileLockSync,
 } from "../../src/utils/file_lock.ts";
+import type { OsLock } from "../../src/utils/os_lock.ts";
+import { createPosixOsLock, osLock, osLockSupported } from "../../src/utils/os_lock.ts";
 import type { PidLiveness } from "../../src/utils/pid.ts";
 import { PROJECT_ROOT } from "../../src/utils/root.ts";
 import { expect, tempDir, test } from "../helpers/testing.ts";
 import { tsFilesUnder } from "../helpers/tree.ts";
 
-// The multi-process mutual-exclusion proof is config_lock.e2e.test.ts. Here every judgment is
-// deterministic: probes use an injected clock or staleMs=Infinity, so a suspended test
-// process can never age a lock mid-test, and another process is played by a marker naming a
-// foreign pid under an injected liveness.
+// The multi-process mutual-exclusion proof is config_lock.e2e.test.ts and file_lock.e2e.test.ts,
+// the crash release daemon_lock.e2e.test.ts. Here every judgment is deterministic: probes use an
+// injected clock or staleMs=Infinity, so a suspended test process can never age a lock mid-test.
+// Under the OS lock a marker is never judged, so the pid rows below play a holder only on the
+// marker layer, reached through an injected OS lock that will not load, as a machine without the
+// libc is.
 
 let dir = "";
 function tmp(name: string): string {
@@ -27,7 +35,38 @@ function tmp(name: string): string {
 
 const DEAD_PID = 2_147_483_646; // never a live process
 const OTHER_PID = process.pid + 1; // another process, as the injected liveness says
+const LIVE_UNRELATED_PID = process.ppid; // the launcher: alive for the test, and not a holder
 const marker = (pid: number, ts: number): string => `${pid}\n${ts}\n`;
+
+/** A machine whose libc or kernel32 will not load: the one state that puts this binary on the
+ *  marker layer, for every process of it alike. */
+const NO_LIBC: OsLock = {
+  tryExclusive: () => ({ kind: "unsupported", cause: new Error("dlopen failed") }),
+  tryShared: () => ({ kind: "unsupported", cause: new Error("dlopen failed") }),
+  release: () => {},
+};
+
+/** A filesystem that refuses the lock call (an exFAT or SMB home): the lock's own failure, never
+ *  a fallback to the marker layer. */
+const REFUSES_LOCKS: OsLock = {
+  tryExclusive: () => {
+    throw Object.assign(new Error("flock refused with ENOLCK"), { code: "ENOLCK" });
+  },
+  tryShared: () => {
+    throw Object.assign(new Error("flock refused with ENOLCK"), { code: "ENOLCK" });
+  },
+  release: () => {},
+};
+
+// The OS layer is the lock on every platform CI runs: a libc or kernel32 that will not load there
+// is a defect in the adapter (a wrong library name or symbol), never the silent fallback the marker
+// layer is for machines we do not run. The cause prints with the failure.
+test("the OS layer loads on linux, darwin, and win32", () => {
+  const loaded = osLockSupported();
+  if (["linux", "darwin", "win32"].includes(process.platform)) {
+    expect(loaded, loaded.supported ? "" : String(loaded.cause)).toEqual({ supported: true });
+  }
+});
 
 test("acquire, contend against a fresh live holder, release, re-acquire", () => {
   const path = tmp("x.lock");
@@ -39,13 +78,15 @@ test("acquire, contend against a fresh live holder, release, re-acquire", () => 
   expect(tryAcquireFileLock(path, 10_000, { nowMs: 3_000 })).toBe(true);
 });
 
-test("the lock file IS the marker: it names the holder's pid and clock, readable by path", () => {
-  // Other processes read it to judge the holder (the daemon verdict, LockBusyError's pid), and
-  // the daemon on the Deno sidecar creates the same file, so the text is the whole protocol.
+test("the lock file IS the marker: it names the holder's pid and clock, readable by path, beside a sidecar that outlives the release", () => {
+  // Other processes read it to name the holder (the daemon verdict, LockBusyError's pid), and the
+  // daemon's preload creates the same file, so the text is the whole readable protocol. The
+  // sidecar carries the OS lock and is never unlinked (the orphan-inode note in file_lock.ts).
   const path = tmp("x.lock");
   expect(tryAcquireFileLock(path, 10_000, { nowMs: 1_000 })).toBe(true);
   expect(readFileSync(path, "utf-8")).toBe(marker(process.pid, 1_000));
   releaseFileLock(path);
+  expect([existsSync(path), existsSync(`${path}.oslock`)]).toEqual([false, true]);
 });
 
 // The incident's first link: on Windows a scanner's open handle refuses the marker delete once,
@@ -73,21 +114,29 @@ test("the marker delete is retried through an open-handle refusal, and gives up 
   expect(refusals).toBe(1);
 });
 
-// The takeover rule, row by row. A leftover is a file no live process stands behind: a dead pid
-// (a crash, a SIGKILL), a malformed marker, or this process's own pid with nothing in the record
-// (a release Windows refused). Each is taken over at once, whatever its age; the acquirer's own
-// marker replaces it.
-test("a leftover marker (dead pid, malformed, or our own pid with no hold) is taken over, whatever its age", () => {
+// Under the OS lock the marker is never judged: a marker under a free sidecar is a leftover
+// whatever it says, so a crashed holder's file, garbage, our own pid outside the record (a release
+// Windows refused), and the two pids the marker layer cannot tell from a holder (the incident: a
+// pid the OS recycled onto a live process, and one this token cannot signal, which the injected
+// liveness plays by answering alive for every pid) are all written over at once.
+test("under a free OS lock any marker is written over: a dead pid, garbage, our own pid, a LIVE recycled pid, and a pid the liveness calls alive", () => {
   const rows: { label: string; leftover: string }[] = [
     { label: "this process, fresh, not held", leftover: marker(process.pid, Date.now()) },
     { label: "a dead pid, fresh", leftover: marker(DEAD_PID, Date.now()) },
     { label: "malformed", leftover: "garbage" },
+    { label: "a live unrelated pid", leftover: marker(LIVE_UNRELATED_PID, Date.now()) },
+    { label: "a pid the liveness reads alive", leftover: marker(OTHER_PID, Date.now()) },
   ];
   dir = tempDir("copilot-env-file-lock-");
+  let livenessReads = 0;
+  const alwaysAlive = (): PidLiveness => {
+    livenessReads += 1;
+    return "alive";
+  };
   rows.forEach((row, i) => {
     const path = join(dir, `${i}.lock`);
     writeFileSync(path, row.leftover);
-    const acquired = tryAcquireFileLock(path, 10_000, { nowMs: 5_000 });
+    const acquired = tryAcquireFileLock(path, 10_000, { nowMs: 5_000, liveness: alwaysAlive });
     expect({ label: row.label, acquired, marker: readFileSync(path, "utf-8") }).toEqual({
       label: row.label,
       acquired: true,
@@ -95,6 +144,176 @@ test("a leftover marker (dead pid, malformed, or our own pid with no hold) is ta
     });
     releaseFileLock(path);
   });
+  expect(livenessReads).toBe(0); // the OS lock judged, never the pid table
+});
+
+// The probe's contract with the daemon verdict and the dry-run marker: the shared try-lock on the
+// sidecar reads a holder, and a free sidecar beside a marker is a leftover naming its LAST holder.
+// The holder here is another handle on the sidecar, as another process would hold it, since an
+// in-process hold answers from the record without touching the OS.
+test("probeFileLock: a held sidecar reads held with the marker's pid, a free one free, no sidecar beside a marker free, and nothing absent", () => {
+  const path = tmp("probe.lock");
+  expect(probeFileLock(path)).toEqual({ kind: "absent" });
+  writeFileSync(path, marker(LIVE_UNRELATED_PID, 1_000));
+  expect(probeFileLock(path)).toEqual({
+    kind: "free",
+    markerPid: LIVE_UNRELATED_PID,
+    judge: "os-lock",
+  });
+  const held = osLock.tryExclusive(`${path}.oslock`);
+  if (held.kind !== "locked") throw new Error(`the sidecar did not lock: ${held.kind}`);
+  try {
+    expect(probeFileLock(path)).toEqual({
+      kind: "held",
+      markerPid: LIVE_UNRELATED_PID,
+      judge: "os-lock",
+    });
+    // A held sidecar still reads, from another handle, as the empty file it is: a home walker
+    // (a backup, `agent uninstall`'s look, a test's fingerprint) must never meet the lock. On
+    // Windows a LockFileEx range is mandatory, which is why the locked byte sits far past EOF.
+    expect(readFileSync(`${path}.oslock`, "utf-8")).toBe("");
+    // A held lock is never a leftover: nothing is removed, whatever the pid table says.
+    expect({ removed: removeLeftoverLock(path), marker: existsSync(path) }).toEqual({
+      removed: false,
+      marker: true,
+    });
+  } finally {
+    osLock.release(held.handle);
+  }
+  expect(probeFileLock(path)).toEqual({
+    kind: "free",
+    markerPid: LIVE_UNRELATED_PID,
+    judge: "os-lock",
+  });
+  // The probe's own try-lock is SHARED: it coexists with another shared holder (a concurrent
+  // probe) and reads the lock free. An exclusive probe would read that holder as held.
+  const shared = osLock.tryShared(`${path}.oslock`);
+  if (shared.kind !== "locked") throw new Error(`the sidecar did not share: ${shared.kind}`);
+  try {
+    expect(probeFileLock(path)).toEqual({
+      kind: "free",
+      markerPid: LIVE_UNRELATED_PID,
+      judge: "os-lock",
+    });
+  } finally {
+    osLock.release(shared.handle);
+  }
+  // A free one is the leftover the CLI clears before a spawn, its live pid notwithstanding.
+  expect({ removed: removeLeftoverLock(path), marker: existsSync(path) }).toEqual({
+    removed: true,
+    marker: false,
+  });
+});
+
+// --- the marker layer (a machine whose libc will not load) -------------------------------
+
+// Where the libc will not load the marker is still taken, without a link: the exclusive create is
+// the guard and the pid in the file the judge, with the layer's two known limits: a pid the
+// liveness calls alive (a sandboxed token's EPERM, a recycled pid) is a holder, and a leftover is
+// judged then unlinked. The probe says which layer answered, so the daemon verdict and the start
+// notice know. A filesystem that refuses the lock CALL is not this layer's: that is the lock's own
+// failure, and the caller sees `unavailable` with the refusal, never a second judge of the marker.
+test("the marker layer: taken without a link where the libc will not load; a refused lock call is unavailable, never a fallback", () => {
+  dir = tempDir("copilot-env-file-lock-");
+  const path = join(dir, "x.lock");
+  const alive = (): PidLiveness => "alive";
+  const dead = (): PidLiveness => "dead";
+  expect(tryAcquireFileLock(path, 10_000, { nowMs: 1_000, osLock: NO_LIBC })).toBe(true);
+  expect(readFileSync(path, "utf-8")).toBe(marker(process.pid, 1_000));
+  expect(probeFileLock(path, { osLock: NO_LIBC })).toEqual({
+    kind: "held",
+    markerPid: process.pid,
+    judge: "pid",
+  });
+  releaseFileLock(path);
+  expect(existsSync(path)).toBe(false);
+  // The incident this layer exists for: a home on a filesystem without hard links (exFAT, some
+  // SMB or FUSE). No scratch directory can refuse a link, so the pin is on the mechanism: the
+  // lock module never links; its create is an exclusive open and a rename.
+  const source = readFileSync(join(PROJECT_ROOT, "src", "utils", "file_lock.ts"), "utf-8");
+  expect(source).not.toMatch(/\blinkSync\b|\blink\(/);
+
+  const rows: {
+    label: string;
+    leftover: string;
+    liveness: () => PidLiveness;
+    acquired: boolean;
+    probe: FileLockProbe;
+  }[] = [
+    {
+      label: "a pid the liveness reads alive (EPERM, or recycled)",
+      leftover: marker(OTHER_PID, 1_000),
+      liveness: alive,
+      acquired: false,
+      probe: { kind: "held", markerPid: OTHER_PID, judge: "pid" },
+    },
+    {
+      label: "a dead pid",
+      leftover: marker(OTHER_PID, 1_000),
+      liveness: dead,
+      acquired: true,
+      probe: { kind: "free", markerPid: OTHER_PID, judge: "pid" },
+    },
+    {
+      label: "garbage, a creator mid-write or a torn file, after the grace",
+      leftover: "garbage",
+      liveness: alive,
+      acquired: true,
+      probe: { kind: "unknown" },
+    },
+    {
+      label: "an empty marker: a creator between its guard and its text",
+      leftover: "",
+      liveness: alive,
+      acquired: true,
+      probe: { kind: "unknown" },
+    },
+  ];
+  rows.forEach((row, i) => {
+    const rowPath = join(dir, `${i}.lock`);
+    writeFileSync(rowPath, row.leftover);
+    const probe = probeFileLock(rowPath, { osLock: NO_LIBC, liveness: row.liveness });
+    const acquired = tryAcquireFileLock(rowPath, 10_000, {
+      nowMs: 5_000,
+      osLock: NO_LIBC,
+      liveness: row.liveness,
+      retryMs: 5,
+    });
+    expect({ label: row.label, probe, acquired, marker: readFileSync(rowPath, "utf-8") }).toEqual({
+      label: row.label,
+      probe: row.probe,
+      acquired: row.acquired,
+      marker: row.acquired ? marker(process.pid, 5_000) : row.leftover,
+    });
+    if (acquired) releaseFileLock(rowPath);
+  });
+
+  // The CLI's pre-spawn clear for a daemon whose token cannot judge the pid: a dead holder's
+  // leftover goes, a pid the liveness calls alive stays.
+  writeFileSync(path, marker(OTHER_PID, 1_000));
+  expect(removeLeftoverLock(path, { osLock: NO_LIBC, liveness: alive })).toBe(false);
+  expect(removeLeftoverLock(path, { osLock: NO_LIBC, liveness: dead })).toBe(true);
+  expect(existsSync(path)).toBe(false);
+
+  // A refused lock call: unavailable with the refusal itself, the marker never written. Twice:
+  // through a seam that throws, and through the REAL POSIX adapter over a libc table whose flock
+  // fails ENOLCK, so an adapter that read that errno as "no libc" (a fallback) would show here.
+  const refusingLibc = createPosixOsLock(() => ({
+    kind: "loaded",
+    symbols: { flock: () => -1, errno: () => osConstants.errno.ENOLCK },
+  }));
+  for (const refusing of [REFUSES_LOCKS, refusingLibc]) {
+    const refused = withFileLockSync(
+      path,
+      { staleMs: 10_000, waitMs: 0, osLock: refusing },
+      (o) => o,
+    );
+    expect(refused).toEqual({ held: false, reason: "unavailable", cause: expect.any(Error) });
+    expect(() =>
+      withRequiredFileLockSync(path, { staleMs: 10_000, waitMs: 0, osLock: refusing }, () => {}),
+    ).toThrow("ENOLCK");
+    expect(existsSync(path)).toBe(false);
+  }
 });
 
 // The release judgment reads the marker at the path: only OUR marker is deleted. A release by a
@@ -259,17 +478,23 @@ test("a throwing fn (sync) or rejecting fn (async) releases exactly once, and th
   );
 });
 
-test("withFileLockSync bounded wait retries, notices once (never before noticeAfterMs), then proceeds not-held", () => {
+test("withFileLockSync bounded wait retries, notices once with the holder's probe (never before noticeAfterMs), then proceeds not-held", () => {
   const path = tmp("scoped.lock");
   withFileLockSync(path, { staleMs: Number.POSITIVE_INFINITY, waitMs: 0 }, () => {
-    let notices = 0;
+    const notices: FileLockProbe[] = [];
     const held = withFileLockSync(
       path,
-      { staleMs: Number.POSITIVE_INFINITY, waitMs: 40, retryMs: 5, onWait: () => notices++ },
+      {
+        staleMs: Number.POSITIVE_INFINITY,
+        waitMs: 40,
+        retryMs: 5,
+        onWait: (holder) => notices.push(holder),
+      },
       (outcome) => outcome.held,
     );
     expect(held).toBe(false);
-    expect(notices).toBe(1); // once, not per retry
+    // Once, not per retry, naming the holder it waits on (the start notice reads the judge).
+    expect(notices).toEqual([{ kind: "held", markerPid: process.pid, judge: "os-lock" }]);
 
     let lateNotices = 0;
     withFileLockSync(
@@ -402,12 +627,13 @@ test("withRequiredFileLockSync never runs fn unlocked: a holder past the wait is
 // The bounded wait measures one holder's silence, not the queue. Behind live writers the marker
 // changes at every hold (a release, then the successor's pid+ts), so a contender waits them all out
 // however long the queue is; only a marker unchanged for waitMs is a hung or leaked holder. The
-// other process is played by a marker naming a foreign pid, kept alive by the injected liveness,
-// which is consulted on every refused attempt and so can rewrite the marker between them.
+// other process is played on the marker layer by a marker naming a foreign pid, kept alive by the
+// injected liveness, which is consulted on every refused attempt and so can rewrite the marker
+// between them.
 test("the bounded wait restarts on every holder change: live writers never starve a contender, a silent holder still gives up at waitMs", () => {
   const path = tmp("queue.lock");
   const HOLDS = 20;
-  const policy = { staleMs: 10_000, waitMs: 40, retryMs: 5 };
+  const policy = { staleMs: 10_000, waitMs: 40, retryMs: 5, osLock: NO_LIBC };
 
   // One writer that releases and re-acquires between every attempt (same pid, a new ts): HOLDS
   // refusals x retryMs is far past waitMs, and the contender still takes the lock afterwards.

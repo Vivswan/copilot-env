@@ -1,6 +1,6 @@
 // The lock around the autoupdate preflight, so two shells racing at the same
 // moment do not both download and apply one release. A parameterization of the shared advisory
-// file lock (utils/file_lock.ts, which also carries the no-flock rationale).
+// file lock (utils/file_lock.ts: the OS lock on a sidecar, the pid marker as its readable face).
 //
 //   best-effort, a once-a-day personal self-update -> not a distributed mutex
 //   the 30-minute stale window dwarfs any update  -> a second scope in THIS process never

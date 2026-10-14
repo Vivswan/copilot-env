@@ -64,9 +64,8 @@ import {
   v409IdentityCache,
   v409ProfileVerbTree,
 } from "../../src/migrations/4.0.9.ts";
-import { removeOsLockSidecars } from "../../src/migrations/5.0.1.ts";
+import { stopUnlockedDaemons } from "../../src/migrations/5.0.1.ts";
 import { dueMigrations, type Migration, runMigrations } from "../../src/migrations/index.ts";
-import { denoLockSidecarPath } from "../../src/migrations/legacy_daemon.ts";
 import { MARKER, MARKER_END } from "../../src/shell/integration.ts";
 import { must } from "../../src/utils/assert.ts";
 import { renderDryRun } from "../../src/utils/dry_run_report.ts";
@@ -76,12 +75,20 @@ import { pidAlive } from "../../src/utils/pid.ts";
 import { deferWriteReports, flushWriteReports } from "../../src/utils/report_write.ts";
 import { agentAuthGetArgs, agentLauncherCommand, proxyTokenCommand } from "../../src/utils/root.ts";
 import type { SemverString } from "../../src/utils/semver.ts";
-import { type DenoEraDaemon, denoEraDaemon, until } from "../helpers/daemon.ts";
+import {
+  type DenoEraDaemon,
+  denoEraDaemon,
+  killAndAwaitExit,
+  lockHoldingChild,
+  spawnDaemonShapedChild,
+  until,
+} from "../helpers/daemon.ts";
 import { dryRunChanges, fingerprintTree } from "../helpers/dry_run.ts";
 import { envSnapshot, isolateAgentHomes, isolateProxyHome } from "../helpers/env.ts";
 import { writeRunState } from "../helpers/fixtures.ts";
+import { freePort } from "../helpers/net.ts";
 import { captureChannels } from "../helpers/output.ts";
-import { runCli } from "../helpers/run.ts";
+import { bunRunArgs, runCli, spawnChild } from "../helpers/run.ts";
 import { afterEach, expect, tempDir, test } from "../helpers/testing.ts";
 
 // A synthetic registry: the real migrations' side effects never run here.
@@ -1825,47 +1832,6 @@ test("4.0.9 profile verb tree: a verb-named profile becomes the first free <name
   }
 }, 120_000);
 
-test("5.0.1 sweeps every .oslock sidecar under the root home and the install's .autoupdate, nested dirs included, and nothing else", async () => {
-  // The marker file is the lock now (src/utils/file_lock.ts), so a sidecar a 5.0.0 run left is
-  // debris wherever it sits: beside a store lock at the root, a profile home's daemon.lock, a
-  // run dir's start lock, the autoupdate throttle. The marker itself and every neighbour stay.
-  const home = tempDir("copilot-migrate-oslock-");
-  const autoupdateHome = join(home, "install", ".autoupdate");
-  const debris = [
-    join(home, "locks", "credentials.json.lock.oslock"),
-    join(home, "profiles", "work", "daemon.lock.oslock"),
-    join(home, "run", "default", ".start.lock.oslock"),
-    join(autoupdateHome, "update.lock.oslock"),
-  ];
-  const kept = [
-    join(home, "locks", "credentials.json.lock"),
-    join(home, "profiles", "work", "daemon.lock"),
-    join(home, "notes.txt"),
-    join(autoupdateHome, "state.json"),
-  ];
-  // A daemon.lock a live NON-deno pid holds (this process, here) behind a deno sidecar is the
-  // deno release's lock with its pid recycled: a leftover to the proof, so the sidecar goes too.
-  const held = join(home, "profiles", "held");
-  mkdirSync(held, { recursive: true });
-  expect(acquireDaemonLockForLife(held, { waitMs: 0 })).toBe(true);
-  writeFileSync(denoLockSidecarPath(held), "");
-  debris.push(denoLockSidecarPath(held));
-  for (const path of [...debris, ...kept]) {
-    if (path === denoLockSidecarPath(held)) continue;
-    mkdirSync(join(path, ".."), { recursive: true });
-    writeFileSync(path, path.endsWith(".oslock") ? "" : "kept");
-  }
-  // The profile's marker names a dead pid: its sidecar goes on the proof's own verdict, whatever
-  // deno a sibling test file is running on this machine at the same time.
-  writeFileSync(join(home, "profiles", "work", "daemon.lock"), "2147483646\n0\n");
-  const said = (await captureChannels(() => removeOsLockSidecars([home, autoupdateHome]))).all;
-  releaseFileLock(daemonLockPath(held));
-  expect(debris.map((path) => existsSync(path))).toEqual([false, false, false, false, false]);
-  expect(kept.map((path) => existsSync(path))).toEqual([true, true, true, true]);
-  for (const path of debris) expect(said).toContain(path);
-  expect((await captureChannels(() => removeOsLockSidecars([home, autoupdateHome]))).all).toBe("");
-});
-
 /** The previous release's default daemon as 4.0.9 meets it: the deno-era fixture holding the ROOT
  *  home's daemon.lock (marker and sidecar), with the root daemon's files beside it. */
 async function legacyRootDaemon(root: string): Promise<DenoEraDaemon> {
@@ -1939,3 +1905,159 @@ test("the chain from 4.0.8 over a live root daemon ends with no daemon, its root
     await daemon.teardown();
   }
 }, 120_000);
+
+/** This release's daemon shape (the owner-filtered scan classifies it as ours) on a port, holding
+ *  `home`'s marker without the OS lock, as a build between the bun move and the OS lock's return
+ *  left it, beside a sidecar nobody holds (the deno release's, left where that build's sweep had
+ *  not run). */
+function unlockedOwnDaemon(
+  root: string,
+  home: string,
+  port: number,
+): Bun.Subprocess<"pipe", "ignore", "inherit"> {
+  const idle = join(root, "copilot-api", "idle.ts");
+  mkdirSync(join(idle, ".."), { recursive: true });
+  writeFileSync(idle, "setInterval(() => {}, 60_000);\n");
+  const child = spawnDaemonShapedChild(idle, ["start", "--port", String(port)]);
+  writeFileSync(daemonLockPath(home), `${child.pid}\n${Date.now()}\n`);
+  writeFileSync(`${daemonLockPath(home)}.oslock`, "");
+  return child;
+}
+
+// A daemon of ours that took daemon.lock while the lock was the marker alone holds no OS lock, so
+// this release's verdict reads it dead while it serves: `agent stop` would skip it and the next
+// start would find its port busy. The proof (`ours` shape) is the one licence to stop it. Each home
+// below is one marker kind; only the unlocked daemon's is the step's.
+test("5.0.1: a daemon of ours holding its lock without the OS lock is stopped once; a recycled pid, a held lock, a marker naming another home's live holder, and a dead marker are left alone", async () => {
+  const root = isolateProxyHome("copilot-migrate-unlocked-");
+  dir = root;
+  const [unlocked, recycled, held, dead, twin, reused] = [
+    "unlocked",
+    "recycled",
+    "held",
+    "dead",
+    "twin",
+    "reused",
+  ].map((name) => join(root, "profiles", name)) as [string, string, string, string, string, string];
+  const homes = [unlocked, recycled, held, dead, twin, reused];
+  for (const home of homes) mkdirSync(home, { recursive: true });
+  writeFileSync(join(root, "plain.ts"), "setInterval(() => {}, 60_000);\n");
+  // A plain bun that wears a pid a dead daemon's marker names; this process holding `held` with
+  // the OS lock under a marker naming that plain pid; a daemon of ours holding `twin`'s OS lock
+  // while `reused`'s crashed-daemon marker wears its pid: the live holder of one home is never
+  // stopped for another home's leftover.
+  const plain = spawnChild(process.execPath, {
+    args: [...bunRunArgs(), join(root, "plain.ts")],
+    stdout: "ignore",
+    stderr: "ignore",
+  });
+  const own = unlockedOwnDaemon(root, unlocked, await freePort());
+  const twinDaemon = await lockHoldingChild(root, [twin], { port: await freePort() });
+  const marker = (home: string, pid: number): void =>
+    writeFileSync(daemonLockPath(home), `${pid}\n${Date.now()}\n`);
+  try {
+    marker(recycled, plain.pid);
+    expect(acquireDaemonLockForLife(held, { waitMs: 0 })).toBe(true);
+    marker(held, plain.pid);
+    marker(dead, 2_147_483_646);
+    marker(reused, twinDaemon.pid);
+
+    // A dry run names the stop, plans the lock pair's removal as the real run lands it, and
+    // signals nothing.
+    const { result: previewed, changes } = await dryRunChanges(() =>
+      captureChannels(async () => void (await stopUnlockedDaemons(homes))),
+    );
+    expect(previewed.all).toContain(`would stop the proxy daemon (pid ${own.pid}) in ${unlocked}`);
+    expect(changes.map((change) => change.path).sort()).toEqual(
+      [daemonLockPath(unlocked), `${daemonLockPath(unlocked)}.oslock`].sort(),
+    );
+    expect(pidAlive(own.pid)).toBe(true);
+
+    const said = (await captureChannels(async () => void (await stopUnlockedDaemons(homes)))).all;
+    await until(() => !pidAlive(own.pid));
+    expect(said).toContain(`stopped the proxy daemon (pid ${own.pid}) in ${unlocked}:`);
+    expect(said).not.toContain(String(plain.pid));
+    expect(said).not.toContain(String(twinDaemon.pid));
+    expect({
+      alive: [plain.pid, twinDaemon.pid].map(pidAlive),
+      markers: homes.map((home) => existsSync(daemonLockPath(home))),
+      sidecar: existsSync(`${daemonLockPath(unlocked)}.oslock`),
+    }).toEqual({
+      alive: [true, true],
+      markers: [false, true, true, true, true, true],
+      sidecar: false,
+    });
+
+    // Idempotent: the stopped daemon's lock pair is gone, and nothing is said.
+    const again = (await captureChannels(async () => void (await stopUnlockedDaemons(homes)))).all;
+    expect(again).toBe("");
+  } finally {
+    releaseFileLock(daemonLockPath(held));
+    await killAndAwaitExit(own.pid);
+    await killAndAwaitExit(plain.pid);
+    await killAndAwaitExit(twinDaemon.pid);
+  }
+}, 60_000);
+
+// The stop's SIGKILL boundary (legacy_daemon.ts stopProvenDaemon) spares a pid that no longer
+// proves as the daemon and reports `spared`: the daemon is gone and the process under its number
+// is someone else's. The step must say so and never hand the user a kill of that process. The
+// outcome is the stop seam's, so the narration is pinned without a reused pid to stage.
+test("5.0.1: a daemon spared at the SIGKILL boundary reads as stopped, its lock pair removed, and no kill is advised", async () => {
+  const root = isolateProxyHome("copilot-migrate-unlocked-spared-");
+  dir = root;
+  const home = join(root, "profiles", "default");
+  mkdirSync(home, { recursive: true });
+  const own = unlockedOwnDaemon(root, home, await freePort());
+  try {
+    const said = (
+      await captureChannels(
+        async () =>
+          void (await stopUnlockedDaemons([home], {
+            stop: () => Promise.resolve({ kind: "stopped", verdict: "spared" }),
+          })),
+      )
+    ).all;
+    expect(said).toContain(
+      `stopped the proxy daemon (pid ${own.pid}) in ${home}: it ended inside the SIGKILL grace and its pid now belongs to another process`,
+    );
+    expect(said).not.toContain("stop it by hand");
+    // The process under the number was spared; the pair, nobody's now, is gone.
+    expect({ alive: pidAlive(own.pid), marker: existsSync(daemonLockPath(home)) }).toEqual({
+      alive: true,
+      marker: false,
+    });
+  } finally {
+    await killAndAwaitExit(own.pid);
+  }
+}, 30_000);
+
+// The two 5.0.1 steps in registry order over one home: the unlocked daemon must be stopped BEFORE
+// the deno step removes the pair of a marker whose author is gone, or that removal would hide the
+// daemon from the step that stops it and leave it serving on its port with no lock at all. The
+// dry run of the same chain plans exactly the removals the real run lands.
+test("the 5.0.1 steps over a live daemon holding its lock without the OS lock: stopped first, its lock pair removed, the plan equal to the real run", async () => {
+  const root = isolateProxyHome("copilot-migrate-unlocked-chain-");
+  dir = root;
+  const home = join(root, "profiles", "default");
+  mkdirSync(home, { recursive: true });
+  const own = unlockedOwnDaemon(root, home, await freePort());
+  const pair = [daemonLockPath(home), `${daemonLockPath(home)}.oslock`].sort();
+  const chain = () => runMigrations("5.0.1", "5.0.2", undefined, join(root, "install"));
+  try {
+    const { changes } = await dryRunChanges(() => captureChannels(chain));
+    expect({
+      planned: changes.map((change) => change.path).sort(),
+      alive: pidAlive(own.pid),
+    }).toEqual({ planned: pair, alive: true });
+
+    const said = (await captureChannels(chain)).all;
+    await until(() => !pidAlive(own.pid));
+    expect(said).not.toContain("did not complete");
+    expect(said).toContain(`stopped the proxy daemon (pid ${own.pid}) in ${home}:`);
+    expect(said).not.toContain("left by a daemon that is gone");
+    expect(pair.map((p) => existsSync(p))).toEqual([false, false]);
+  } finally {
+    await killAndAwaitExit(own.pid);
+  }
+}, 60_000);

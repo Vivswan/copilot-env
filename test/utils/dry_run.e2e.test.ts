@@ -50,7 +50,7 @@ import { missingDirectories } from "../../src/utils/fs_disk.ts";
 import * as fs from "../../src/utils/fs_facade.ts";
 import { deferWriteReports, flushWriteReports } from "../../src/utils/report_write.ts";
 import { wrapLine } from "../../src/utils/table.ts";
-import { stageRefusedStop } from "../helpers/daemon.ts";
+import { stageRefusedStop, until } from "../helpers/daemon.ts";
 import { dryRunChanges, fingerprintTree } from "../helpers/dry_run.ts";
 import {
   type AgentHomes,
@@ -61,7 +61,15 @@ import {
 } from "../helpers/env.ts";
 import { stubGithubLogins, writeCodexConfigToml } from "../helpers/fixtures.ts";
 import { captureChannels } from "../helpers/output.ts";
-import { runCli } from "../helpers/run.ts";
+import {
+  bunRunArgs,
+  CHILD_VALUES,
+  childValuesEnv,
+  importSpecifier,
+  ROOT,
+  runCli,
+  spawnChild,
+} from "../helpers/run.ts";
 import { afterEach, beforeEach, expect, removeDir, test } from "../helpers/testing.ts";
 
 const WORK = parseProfileName("work");
@@ -769,6 +777,51 @@ test("the dry-run marker a child honours is one a live run holds: an ambient `1`
   expect(spawnedByDryRun({ [DRY_RUN_ENV]: minted })).toBe(false);
   expect(process.env[DRY_RUN_ENV]).toBeUndefined();
 });
+
+// The marker is the minting run's lock (src/utils/file_lock.ts): a child honours it while that
+// run holds it and not after the run dies without releasing anything, since the OS drops the lock
+// with the process. The holder is another process, so the child's probe is the shared try-lock on
+// the sidecar, never this process's own record.
+test("a dry-run marker another process holds is honoured while that process lives, and not after SIGKILL", async () => {
+  const { dir } = scratch();
+  const ready = join(dir, "ready");
+  const minter = join(dir, "minter.ts");
+  writeFileSync(
+    minter,
+    `import { writeFileSync } from "node:fs";\n` +
+      `import { DRY_RUN_ENV, underDryRunMarker } from ${importSpecifier(
+        join(ROOT, "src", "utils", "dry_run.ts"),
+      )};\n` +
+      "await underDryRunMarker(async () => {\n" +
+      `  writeFileSync(${CHILD_VALUES}.ready, process.env[DRY_RUN_ENV] ?? "");\n` +
+      "  await new Promise(() => {});\n" +
+      "});\n",
+  );
+  const child = spawnChild(process.execPath, {
+    args: [...bunRunArgs(), minter],
+    env: childValuesEnv({ ready }),
+    stdout: "ignore",
+    stderr: "inherit",
+  });
+  let marker = "";
+  try {
+    await until(() => existsSync(ready) && readFileSync(ready, "utf8") !== "");
+    marker = readFileSync(ready, "utf8");
+    expect(spawnedByDryRun({ [DRY_RUN_ENV]: marker })).toBe(true);
+    child.kill("SIGKILL");
+    await child.exited;
+    // No release ran: the hold file still names the dead pid, and the OS lock is gone with it.
+    expect(existsSync(join(marker, "held"))).toBe(true);
+    await until(() => !spawnedByDryRun({ [DRY_RUN_ENV]: marker }));
+  } finally {
+    try {
+      child.kill("SIGKILL");
+    } catch {
+      // already gone
+    }
+    if (marker !== "") rmSync(marker, { recursive: true, force: true });
+  }
+}, 30_000);
 
 test("every PowerShell scan gets a scratch profile (the app looks hand powershell a USERPROFILE of their own, removed after)", async () => {
   const spawns: { file: string; env: Record<string, string | undefined> | undefined }[] = [];

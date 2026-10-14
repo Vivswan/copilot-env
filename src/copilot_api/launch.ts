@@ -92,8 +92,17 @@ export function withStartLock<T>(fn: () => Promise<T>): Promise<T> {
       waitMs: Number.POSITIVE_INFINITY,
       retryMs: START_LOCK_RETRY_MS,
       noticeAfterMs: START_LOCK_NOTICE_MS,
-      onWait: () =>
-        consola.info("Another `agent start` is in progress; waiting for it to finish ..."),
+      onWait: (holder) => {
+        // Under the OS lock a holder is a live process by definition; on the marker layer its pid
+        // reads alive even when recycled or unsignallable, which this process cannot tell apart.
+        const unverifiable =
+          holder.kind === "held" && holder.judge === "pid" && holder.markerPid !== null
+            ? ` (pid ${holder.markerPid}, unverifiable from this process)`
+            : "";
+        consola.info(
+          `Another \`agent start\` is in progress; waiting for it to finish ...${unverifiable}`,
+        );
+      },
     },
     fn,
   );

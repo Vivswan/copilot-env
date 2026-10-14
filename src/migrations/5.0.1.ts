@@ -1,15 +1,15 @@
-// Away from 5.0.1, two fix-ups: the deno-era daemon and files go, then the file locks' sidecars.
-//
-// The proxy daemon ran on a deno under `<rootHome>/deno/` with the float's deno files beside it;
-// it runs from the binary now, so all of it is debris. A daemon that release left running holds
-// its home's daemon.lock and reads as foreign to this release's classifier, so it is proved and
-// stopped first (legacy_daemon.ts). The file locks' `.oslock` sidecars are debris too, swept AFTER
-// the daemon step (index.ts registry order): the sidecar beside a daemon.lock is its proof.
-
-import { dirname, join } from "node:path";
+// Away from 5.0.1: a daemon of ours holding its lock without the OS lock is stopped, then the
+// deno-era daemon and files go. The deno release ran its daemon on a deno under `<rootHome>/deno/`
+// with the float's deno files beside it; the daemon runs from the binary now, so all of it is
+// debris, and a daemon that release left running holds its home's daemon.lock and reads as
+// foreign to this release's classifier, so it is proved and stopped first (legacy_daemon.ts). A
+// daemon of ours from a build between the bun move and the lock's return holds its marker without
+// the OS lock, which this release reads as dead while it serves; its proof (the `ours` shape)
+// licenses the one stop here, before the deno step (index.ts registry order) removes the pair of
+// a marker whose author is gone. The `.oslock` sidecars are the lock owner's files; no sweep.
+import { join } from "node:path";
 import { poll } from "@std/async";
 import { consola } from "consola";
-import { autoupdateDir } from "../autoupdate/state.ts";
 import { daemonLockPath } from "../copilot_api/daemon_lock.ts";
 import { allDaemonHomes, resolveRootHome } from "../copilot_api/paths.ts";
 import {
@@ -28,7 +28,6 @@ import type { Migration } from "./index.ts";
 import {
   argvPort,
   type DenoStopOutcome,
-  denoLockSidecarPath,
   isDenoRuntimeRow,
   type LockVerdict,
   type ProvenDaemon,
@@ -37,54 +36,6 @@ import {
   removeLockPair,
   stopProvenDaemon,
 } from "./legacy_daemon.ts";
-
-const OS_LOCK_SUFFIX = ".oslock";
-
-/** Every `*.oslock` under `dir`, through links never (a link is the link). */
-function osLockSidecarsUnder(dir: string): string[] {
-  let entries: ReturnType<typeof fs.readdirEntries>;
-  try {
-    entries = fs.readdirEntries(dir);
-  } catch {
-    return [];
-  }
-  return entries.flatMap((entry) => {
-    const path = join(dir, entry.name);
-    if (entry.isDirectory()) return osLockSidecarsUnder(path);
-    return entry.isFile() && entry.name.endsWith(OS_LOCK_SUFFIX) ? [path] : [];
-  });
-}
-
-/** A daemon.lock's sidecar is the daemon step's evidence that the lock is the deno release's
- *  (legacy_daemon.ts), so it goes only on that step's own verdict: the author gone (a leftover)
- *  or no marker at all. A live daemon, an unjudged marker, or one this process cannot read keeps
- *  it for the re-run the step asked for. */
-async function keepsDenoLockSidecar(path: string): Promise<boolean> {
-  if (path !== denoLockSidecarPath(dirname(path))) return false;
-  const verdict = await prove(dirname(path));
-  if (verdict instanceof ProvenLock) return verdict.isDaemon();
-  return verdict.kind !== "none";
-}
-
-/** Exported for the migration test; `roots` isolates. */
-export async function removeOsLockSidecars(roots: readonly string[]): Promise<void> {
-  for (const path of roots.flatMap(osLockSidecarsUnder)) {
-    if (await keepsDenoLockSidecar(path)) {
-      consola.info(
-        `  kept ${path}: its daemon.lock is not proved free (the daemon step owns both)`,
-      );
-      continue;
-    }
-    fs.rm(path, { force: true });
-    consola.info(`  removed ${path} (the lock is the marker file itself now)`);
-  }
-}
-
-export const v501OsLockSidecars: Migration = {
-  version: "5.0.1",
-  description: "remove the file locks' retired .oslock sidecars",
-  run: (installRoot) => removeOsLockSidecars([resolveRootHome(), autoupdateDir(installRoot)]),
-};
 
 /** The marker the float wrote into its `.npmrc`; an unmarked file is the user's and stays. */
 const NPMRC_MARKER = "# managed by copilot-env (proxy float); do not edit";
@@ -141,9 +92,84 @@ const UNREADABLE_ROW_RECHECK_MS = 1_000;
 const UNREADABLE_ROW_STEP_MS = 100;
 
 /**
+ * Each home whose daemon.lock proves as this release's daemon holding it without the OS lock
+ * (the `ours` shape) has that daemon stopped through its proof: SIGTERM, the grace, SIGKILL only
+ * if it re-proves as the same daemon. The stopped daemon's lock pair goes with it (a dry run
+ * stages the same removal, so the plan reads as the real run lands). Every other verdict is the
+ * deno step's or nobody's. Exported for the migration test; `homes` and the seams isolate.
+ */
+export async function stopUnlockedDaemons(
+  homes: readonly string[],
+  seams: Partial<DaemonStepSeams> = {},
+): Promise<void> {
+  const { prove, stop } = { ...REAL_SEAMS, ...seams };
+  for (const home of homes) {
+    const verdict = await prove(home);
+    if (!(verdict instanceof ProvenLock) || !verdict.isDaemon() || verdict.shape !== "ours") {
+      continue;
+    }
+    const { pid } = verdict;
+    const lock = daemonLockPath(home);
+    const outcome = await stop(verdict);
+    switch (outcome.kind) {
+      case "would-stop":
+        removeLockPair(verdict);
+        consola.info(
+          `  would stop the proxy daemon (pid ${pid}) in ${home}, which holds ${lock} without the OS lock, and remove ${lock} and its .oslock sidecar`,
+        );
+        continue;
+      case "stopped":
+        removeLockPair(verdict);
+        consola.info(
+          outcome.verdict === "spared"
+            ? `  stopped the proxy daemon (pid ${pid}) in ${home}: it ended inside the SIGKILL grace and its pid now belongs to another process; removed ${lock} and its .oslock sidecar`
+            : `  stopped the proxy daemon (pid ${pid}) in ${home}: ${outcome.verdict}; it held ${lock} without the OS lock; removed ${lock} and its .oslock sidecar, and the next \`agent start\` takes over`,
+        );
+        continue;
+      case "still-running":
+        consola.warn(
+          outcome.identity === "same"
+            ? scannable(
+                `the proxy daemon (pid ${pid}) did not stop: ${outcome.verdict}`,
+                `pid ${pid} is still that daemon after the SIGKILL grace; it holds ${lock} without the OS lock`,
+                `stop it by hand:  ${stopPidCommand(pid, true)}`,
+              )
+            : scannable(
+                `the proxy daemon (pid ${pid}) may not have stopped: ${outcome.verdict}`,
+                `pid ${pid} is alive after the SIGKILL grace, and this host can no longer read what it is`,
+                `look first:  ${processLookCommand(pid)}`,
+              ),
+        );
+        continue;
+      case "port-still-busy":
+        consola.warn(
+          scannable(
+            `the proxy daemon (pid ${pid}) stopped, but port ${outcome.port} is still busy`,
+            `127.0.0.1:${outcome.port} still answers; whatever listens there is not the daemon of ${home}`,
+            `find it:  ${listenerLookCommand(outcome.port)}`,
+          ),
+        );
+        continue;
+      default:
+        assertNever(outcome);
+    }
+  }
+}
+
+export const v501UnlockedDaemons: Migration = {
+  version: "5.0.1",
+  description: "stop a proxy daemon that holds its lock without the OS lock",
+  run: () => {
+    const rootHome = resolveRootHome();
+    return stopUnlockedDaemons([rootHome, ...allDaemonHomes()]);
+  },
+};
+
+/**
  * Each home's lock is proved against the live table (`prove`) and only a proof licenses a signal
  * or a delete; every other verdict narrates and, unless it is ours or a bystander, keeps the
- * files. Exported for the migration test.
+ * files. A daemon of ours holding its marker without the OS lock is the step above's and is
+ * passed over here. Exported for the migration test.
  *
  *   `clear` false -> a daemon may still run, so retireDenoDaemon keeps the files it may run from
  */
@@ -159,6 +185,7 @@ export async function stopPreviousDaemons(
     const verdict = await prove(home);
     if (verdict instanceof ProvenLock) {
       if (verdict.isDaemon()) {
+        if (verdict.shape === "ours") continue;
         const outcome = await stopDenoHolder(verdict, stop);
         if (outcome === "may-run") clear = false;
         if (outcome === "would-stop") wouldStop.add(verdict.pid);
@@ -217,7 +244,7 @@ function leftoverReason(lock: ProvenLock): string {
     case "zombie":
       return `pid ${lock.pid} is a zombie awaiting its parent: it holds no port and nothing stops it`;
     case "recycled":
-      return `the deno release's lock; pid ${lock.pid} is now ${lock.command}`;
+      return `left by a daemon that is gone; pid ${lock.pid} is now ${lock.command}`;
     case "stranger":
       return `the deno release's lock; pid ${lock.pid} started after it was written: ${lock.command}`;
     default:

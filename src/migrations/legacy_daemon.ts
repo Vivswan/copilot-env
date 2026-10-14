@@ -1,15 +1,19 @@
-// The daemon a previous release left running, proved from what that release left behind before
-// anything is signalled or removed. This release's classifier reads it as foreign (it ran under
-// deno), so the proof is `prove` and nothing else: the only builder of a ProvenLock or a
-// ProvenDaemon, read again on the live process table before a SIGKILL. A bare pid reaches no
-// signal and no delete.
-//
-//   `<home>/daemon.lock`  -> the pid and the marker's own timestamp (`pid\nts\n`)
-//   `.oslock` beside it   -> the deno release's file lock wrote one; this release's writes none
-//   the process table     -> `deno ... <entry>/copilot-api... start ... --port N`, that release's
-//                            spawn shape, started before the marker was written: the author
+// The daemon a previous release left running, proved from what it left behind before anything is
+// signalled or removed: `prove` is the only builder of a ProvenLock (the author gone) or a
+// ProvenDaemon (the author alive, re-read on the live table before a SIGKILL), so a bare pid
+// reaches no signal and no delete. The evidence: `<home>/daemon.lock` (`pid\nts\n`), the OS lock
+// on its `.oslock` sidecar (src/utils/file_lock.ts: held or unreadable is never a leftover), and
+// the process table (`deno ... <entry>/copilot-api... start ... --port N`, started before the
+// marker was written). This release's own daemon is proved in one case only: a marker it holds
+// under a free OS lock (a build between the bun move and the lock's return), which
+// src/migrations/5.0.1.ts stops; every other `ours` is left alone.
 import { poll } from "@std/async";
-import { daemonLockPath } from "../copilot_api/daemon_lock.ts";
+import {
+  daemonLockHold,
+  daemonLockPath,
+  daemonPidWithoutOsLock,
+} from "../copilot_api/daemon_lock.ts";
+import { allDaemonHomes, resolveRootHome } from "../copilot_api/paths.ts";
 import { proxyPortFree } from "../copilot_api/port.ts";
 import {
   DAEMON_SIGKILL_GRACE_MS,
@@ -27,10 +31,11 @@ import {
 } from "../copilot_api/process.ts";
 import { agentStopCommand } from "../copilot_api/profile.ts";
 import * as fs from "../utils/fs_facade.ts";
+import { type OsLock, osLock } from "../utils/os_lock.ts";
 import { pidAlive } from "../utils/pid.ts";
 
-/** An on-disk contract of the deno release's file lock (`<lock>.oslock`), read here and nowhere
- *  else in this release. */
+/** The file lock's sidecar beside a daemon.lock (`<lock>.oslock`, src/utils/file_lock.ts), named
+ *  here for the lock pair a proof removes. */
 export function denoLockSidecarPath(home: string): string {
   return `${daemonLockPath(home)}.oslock`;
 }
@@ -100,6 +105,10 @@ const PORT_RELEASE_STEP_MS = 100;
 /** The author is gone; what now answers to the marker's pid holds nothing of the lock's. */
 export type LeftoverReason = "dead" | "malformed" | "zombie" | "recycled" | "stranger";
 
+/** Whose daemon a proof names: the deno release's, or this release's holding its marker without
+ *  the OS lock. The identity reads differ; the stop is the same. */
+export type DaemonShape = "deno" | "ours";
+
 /** The construction token: never exported, so no subclass outside this module can call `super`
  *  without a cast (a cast is the one way past every type). */
 const PROOF: unique symbol = Symbol("legacy_daemon.prove");
@@ -114,6 +123,7 @@ let buildLeftover!: (
   reads: HolderReads,
 ) => ProvenLock;
 let buildDaemon!: (
+  shape: DaemonShape,
   home: string,
   pid: number,
   command: string,
@@ -163,6 +173,7 @@ export class ProvenDaemon extends ProvenLock {
   declare readonly pid: number;
 
   private constructor(
+    readonly shape: DaemonShape,
     home: string,
     pid: number,
     command: string,
@@ -174,8 +185,12 @@ export class ProvenDaemon extends ProvenLock {
   }
 
   static {
-    buildDaemon = (home, pid, command, startMs, port, reads) =>
-      new ProvenDaemon(home, pid, command, startMs, port, reads);
+    buildDaemon = (shape, home, pid, command, startMs, port, reads) =>
+      new ProvenDaemon(shape, home, pid, command, startMs, port, reads);
+  }
+
+  private isSameShape(row: ProcessRow): boolean {
+    return this.shape === "deno" ? isDenoDaemonRow(row) : isOwnDaemonRow(row);
   }
 
   /** Whether `prove` on the live table builds this daemon again: same home, pid, and start time.
@@ -184,6 +199,7 @@ export class ProvenDaemon extends ProvenLock {
     const again = await prove(this.home, this.reads);
     return (
       again instanceof ProvenDaemon &&
+      again.shape === this.shape &&
       again.pid === this.pid &&
       Math.abs(again.startMs - this.startMs) <= START_AFTER_MARKER_SLACK_MS
     );
@@ -196,7 +212,7 @@ export class ProvenDaemon extends ProvenLock {
     const look = await this.reads.lookup(this.pid);
     if (look.kind === "gone") return pidAlive(this.pid) ? "unknown" : "other";
     if (look.kind === "unreadable") return "unknown";
-    if (!isDenoDaemonRow(look.row)) return "other";
+    if (!this.isSameShape(look.row)) return "other";
     const startMs = await this.reads.start(this.pid);
     if (startMs === null) return "unknown";
     return Math.abs(startMs - this.startMs) > START_AFTER_MARKER_SLACK_MS ? "other" : "same";
@@ -225,16 +241,56 @@ export type LockVerdict =
   /** A pid this step must not place: fail closed, the user judges it. */
   | {
       readonly kind: "unjudged";
-      /** Null when the marker names no pid to look at. */
+      /** Null when the marker names no pid to look at, or when the pid it names is not the
+       *  lock's holder (a live process holds the OS lock). */
       readonly pid: number | null;
       readonly command: string;
       readonly reason: string;
     };
 
+/** The OS lock on `home`'s sidecar, observed on the sidecar itself (a shared try-lock, released
+ *  at once), never through a marker's say-so: `held` is a live process whatever the table calls
+ *  it; `unreadable` (a sidecar this process cannot open or lock, or a machine whose libc will not
+ *  load, where no holder could be seen) proves nothing either way. No sidecar is nobody's hold. */
+function osLockState(home: string): "held" | "free" | "unreadable" {
+  let shared: ReturnType<OsLock["tryShared"]>;
+  try {
+    shared = osLock.tryShared(denoLockSidecarPath(home));
+  } catch {
+    return "unreadable";
+  }
+  switch (shared.kind) {
+    case "locked":
+      osLock.release(shared.handle);
+      return "free";
+    case "absent":
+      return "free";
+    case "busy":
+      return "held";
+    case "unsupported":
+      return "unreadable";
+  }
+}
+
+/** Whether `pid` holds the OS lock of a daemon home other than `home`: then it is that home's
+ *  live daemon wearing a number a dead daemon's marker here still names. `unknown` is a home
+ *  whose lock cannot be read, so the question has no answer and nothing destructive follows. */
+function holdsAnotherHomesLock(pid: number, home: string): "yes" | "no" | "unknown" {
+  const rootHome = resolveRootHome();
+  let answer: "no" | "unknown" = "no";
+  for (const other of [rootHome, ...allDaemonHomes(rootHome)]) {
+    if (other === home) continue;
+    const hold = daemonLockHold(other);
+    if (hold.kind === "unreadable") answer = "unknown";
+    if (hold.kind === "held" && hold.judge === "os-lock" && hold.pid === pid) return "yes";
+  }
+  return answer;
+}
+
 /**
- * Reads the marker, the sidecar, and the table, and proves one of: the author alive (a
- * ProvenDaemon), the author gone (a ProvenLock leftover), or a verdict that licenses nothing. An
- * evidence input that is malformed or impossible fails closed as "unjudged" with the reason: it
+ * Reads the marker, the sidecar, the OS lock, and the table, and proves one of: the author alive
+ * (a ProvenDaemon), the author gone (a ProvenLock leftover), or a verdict that licenses nothing.
+ * An evidence input that is malformed or impossible fails closed as "unjudged" with the reason: it
  * never reads as proof, nor as absence.
  */
 export async function prove(
@@ -244,12 +300,27 @@ export async function prove(
   const marker = readMarker(home);
   if (marker.kind !== "text") return { kind: marker.kind };
   const { pid, writtenMs } = marker;
-  const leftover = (reason: LeftoverReason, command = ""): ProvenLock =>
-    buildLeftover(home, pid, command, reason, reads);
+  // The author is gone only if nothing holds the OS lock: a held sidecar is a live process's
+  // (removing it would orphan its lock), and one this process cannot open may be, so neither is
+  // ever a leftover, whatever the marker says.
+  const osLock = osLockState(home);
+  const leftover = (reason: LeftoverReason, command = ""): LockVerdict => {
+    if (osLock === "free") return buildLeftover(home, pid, command, reason, reads);
+    return {
+      kind: "unjudged",
+      pid: null,
+      command,
+      reason:
+        osLock === "held"
+          ? "its sidecar is locked by a live process"
+          : "its sidecar cannot be opened, so its lock may be held",
+    };
+  };
   if (pid === null) {
-    // A marker naming no pid beside the deno release's sidecar may be that daemon's, truncated:
-    // a leftover only once the table shows no deno at all.
-    if (!fs.exists(denoLockSidecarPath(home))) return leftover("malformed");
+    // The sidecar's own lock first: a held or unreadable one is the verdict whatever the table
+    // shows. Then a marker naming no pid beside the deno release's sidecar may be that daemon's,
+    // truncated: a leftover only once the table shows no deno at all.
+    if (osLock !== "free" || !fs.exists(denoLockSidecarPath(home))) return leftover("malformed");
     const rows = await reads.rows();
     if (rows === "unproven") {
       return {
@@ -276,11 +347,24 @@ export async function prove(
     return { kind: "unjudged", pid, command: "", reason: "the process table did not show it" };
   }
   const { command } = look.row;
-  if (isOwnDaemonRow(look.row)) return { kind: "ours", pid };
+  if (isOwnDaemonRow(look.row)) {
+    // Stopped only when provably this home's: its marker under a free OS lock here, and no OS
+    // lock of another home held by it (the cross-home pid reuse). Anything less is left alone.
+    if (daemonPidWithoutOsLock(home) !== pid) return { kind: "ours", pid };
+    if (holdsAnotherHomesLock(pid, home) !== "no") return { kind: "ours", pid };
+    const port = argvPort(command);
+    const startMs = port === null ? null : await reads.start(pid);
+    if (port === null || startMs === null) return { kind: "ours", pid };
+    return buildDaemon("ours", home, pid, command, startMs, port, reads);
+  }
   if ((await reads.zombie(pid)) === true) return leftover("zombie", command);
   const sidecar = fs.exists(denoLockSidecarPath(home));
   if (!DENO_RUNTIME_RE.test(look.row.ucomm)) {
-    return sidecar ? leftover("recycled", command) : { kind: "bystander", pid, command };
+    // A recycled pid's leftover only when no other home's OS lock is held by this pid (its own
+    // sidecar's state is the leftover rule above).
+    return sidecar && holdsAnotherHomesLock(pid, home) === "no"
+      ? leftover("recycled", command)
+      : { kind: "bystander", pid, command };
   }
   const unjudged = (reason: string): LockVerdict => ({ kind: "unjudged", pid, command, reason });
   if (!DENO_DAEMON_RE.test(command)) return unjudged("its argv is not the shape this step stops");
@@ -292,7 +376,7 @@ export async function prove(
   const startMs = await reads.start(pid);
   if (startMs === null) return unjudged("its start time could not be read");
   if (startMs > writtenMs + START_AFTER_MARKER_SLACK_MS) return leftover("stranger", command);
-  return buildDaemon(home, pid, command, startMs, port, reads);
+  return buildDaemon("deno", home, pid, command, startMs, port, reads);
 }
 
 type MarkerRead =
@@ -422,10 +506,11 @@ export type LockedDaemonOutcome =
 
 /** The 4.0.9 layout and rename steps' stop of a daemon at `home`: the same proof as the 5.0.1
  *  step's (their daemons ran under deno too), so a lock it cannot prove is left with the reason,
- *  never signalled. A stopped daemon's lock pair goes with it. */
+ *  never signalled. A stopped daemon's lock pair goes with it. This release's own daemon, OS lock
+ *  or not, is the user's to stop. */
 export async function stopLockedDaemon(home: string): Promise<LockedDaemonOutcome> {
   const verdict = await prove(home);
-  if (verdict instanceof ProvenLock) {
+  if (verdict instanceof ProvenLock && !(verdict.isDaemon() && verdict.shape === "ours")) {
     if (!verdict.isDaemon()) {
       removeLockPair(verdict);
       return { kind: "none" };
@@ -446,16 +531,18 @@ export async function stopLockedDaemon(home: string): Promise<LockedDaemonOutcom
     }
   }
   const lock = daemonLockPath(home);
+  const ours = (pid: number): LockedDaemonOutcome => ({
+    kind: "unjudged",
+    reason: `${lock} is held by this release's daemon (pid ${pid}); stop it: ${agentStopCommand(null)}`,
+  });
+  if (verdict instanceof ProvenLock) return ours(verdict.pid);
   switch (verdict.kind) {
     case "none":
       return { kind: "none" };
     case "unreadable":
       return { kind: "unjudged", reason: `${lock} cannot be read` };
     case "ours":
-      return {
-        kind: "unjudged",
-        reason: `${lock} is held by this release's daemon (pid ${verdict.pid}); stop it: ${agentStopCommand(null)}`,
-      };
+      return ours(verdict.pid);
     case "bystander":
       return {
         kind: "unjudged",

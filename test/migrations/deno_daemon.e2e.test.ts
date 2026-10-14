@@ -2,6 +2,7 @@
 // run's bun under the name `deno` (test/helpers/daemon.ts) and proves, stops, or spares it the way
 // `agent update` meets it.
 import {
+  chmodSync,
   copyFileSync,
   existsSync,
   mkdirSync,
@@ -38,6 +39,7 @@ import { pidAlive } from "../../src/utils/pid.ts";
 import {
   denoEraDaemon,
   killAndAwaitExit,
+  lockHoldingChild,
   spawnDaemonShapedChild,
   until,
 } from "../helpers/daemon.ts";
@@ -236,12 +238,123 @@ test("5.0.1: the deno-era daemon is stopped and its port freed; a recycled pid i
   }
 }, 60_000);
 
+// Under the OS lock (src/utils/file_lock.ts) a held sidecar is a live process's whatever the
+// marker beside it says: removing the pair would leave that process holding an orphaned inode
+// while the next acquirer locks a fresh sidecar. So no marker beside a held sidecar is ever a
+// leftover: not a live non-deno pid's, not a malformed one, not a dead pid's (the two the proof
+// would otherwise remove on the spot). Each is unjudged, the pair stays, nothing is signalled, and
+// the deno files stay for the re-run.
+const HELD_SIDECAR_MARKERS: {
+  label: string;
+  marker: "the holder's own" | "malformed" | "a dead pid" | "another live pid";
+}[] = [
+  { label: "the holder's own marker", marker: "the holder's own" },
+  { label: "a malformed marker", marker: "malformed" },
+  { label: "a dead pid's marker", marker: "a dead pid" },
+  { label: "a marker naming another live process (not the holder)", marker: "another live pid" },
+];
+for (const { label, marker } of HELD_SIDECAR_MARKERS) {
+  test(`5.0.1: a home whose sidecar a live process holds is never a leftover: ${label}`, async () => {
+    const root = isolateProxyHome("copilot-migrate-held-sidecar-");
+    const home = join(root, "profiles", "foreign");
+    mkdirSync(home, { recursive: true });
+    const holder = await lockHoldingChild(root, [home]);
+    // The marker's pid is judged by the table; the sidecar's lock is observed on the sidecar
+    // itself, so a live pid in the marker that is not the holder changes nothing.
+    writeFileSync(join(root, "plain.ts"), "setInterval(() => {}, 60_000);\n");
+    const other = spawnChild(process.execPath, {
+      args: [...bunRunArgs(), join(root, "plain.ts")],
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+    const text = {
+      "the holder's own": null,
+      malformed: "",
+      "a dead pid": "2147483646\n0\n",
+      "another live pid": `${other.pid}\n${Date.now()}\n`,
+    }[marker];
+    if (text !== null) writeFileSync(daemonLockPath(home), text);
+    try {
+      let clear: boolean | null = null;
+      const said = (
+        await captureChannels(async () => {
+          clear = (await stopPreviousDaemons([home])).clear;
+        })
+      ).all;
+      expect(said).toContain("left a home as it is: its sidecar is locked by a live process");
+      expect({
+        clear,
+        alive: [holder.pid, other.pid].map(pidAlive),
+        pair: [daemonLockPath(home), denoLockSidecarPath(home)].map((p) => existsSync(p)),
+      }).toEqual({ clear: false, alive: [true, true], pair: [true, true] });
+    } finally {
+      await killAndAwaitExit(holder.pid);
+      await killAndAwaitExit(other.pid);
+    }
+  }, 30_000);
+}
+
+// The order inside prove: the sidecar's lock is observed BEFORE the pid-less marker's own rule
+// (which asks the table whether a deno runs, and on a CI runner a sibling file's deno fixture may
+// be alive at that moment): a held sidecar is the verdict, deterministically, deno or no deno.
+test("5.0.1: a pid-less marker beside a held sidecar is the sidecar's verdict even while a deno runs", async () => {
+  const root = isolateProxyHome("copilot-migrate-held-sidecar-deno-");
+  const home = join(root, "profiles", "foreign");
+  mkdirSync(home, { recursive: true });
+  const holder = await lockHoldingChild(root, [home]);
+  writeFileSync(daemonLockPath(home), "");
+  try {
+    const verdict = await prove(home, {
+      ...REAL_HOLDER_READS,
+      rows: () => Promise.resolve([{ pid: 1, ucomm: "deno", command: "deno run x start" }]),
+    });
+    expect(verdict).toEqual({
+      kind: "unjudged",
+      pid: null,
+      command: "",
+      reason: "its sidecar is locked by a live process",
+    });
+  } finally {
+    await killAndAwaitExit(holder.pid);
+  }
+}, 30_000);
+
+// A sidecar this process cannot open proves nothing: the lock may be held. Nothing destructive
+// follows from "could not look". POSIX only: a mode of 000 means nothing to Windows.
+test.skipIf(process.platform === "win32")(
+  "5.0.1: a home whose sidecar cannot be opened is left alone: an unreadable OS lock is never a free one",
+  async () => {
+    const root = isolateProxyHome("copilot-migrate-unreadable-sidecar-");
+    const home = join(root, "profiles", "sealed");
+    mkdirSync(home, { recursive: true });
+    const holder = await lockHoldingChild(root, [home]);
+    const sidecar = denoLockSidecarPath(home);
+    chmodSync(sidecar, 0o000);
+    try {
+      const said = (await captureChannels(async () => void (await stopPreviousDaemons([home]))))
+        .all;
+      expect(said).toContain(
+        "left a home as it is: its sidecar cannot be opened, so its lock may be held",
+      );
+      expect({
+        alive: pidAlive(holder.pid),
+        pair: [daemonLockPath(home), sidecar].map((p) => existsSync(p)),
+      }).toEqual({ alive: true, pair: [true, true] });
+    } finally {
+      chmodSync(sidecar, 0o644);
+      await killAndAwaitExit(holder.pid);
+    }
+  },
+  30_000,
+);
+
 // A daemon that drops its lock while shutting down and then hangs once read as stopped, and its
 // files went under a live process. Without the lock the pid cannot be re-proved at the SIGKILL
 // boundary: nothing more is sent, it reads still-running, the files stay.
 //
 // A re-run finds no lock, yet the daemon's argv names this root home's deno.json, so the table
 // scan keeps the files until it is gone. POSIX only (no SIGTERM on Windows).
+
 test.skipIf(process.platform === "win32")(
   "5.0.1: a deno daemon that drops its lock on SIGTERM and hangs is still-running, and the files stay across a re-run",
   async () => {
@@ -427,11 +540,12 @@ test("5.0.1: a truncated or junk-suffixed marker beside a live deno, and a marke
   }
 }, 40_000);
 
-// The sidecar sweep that follows the daemon step once read an empty marker as free and took the
+// A sidecar sweep that once followed the daemon step read an empty marker as free and took the
 // sidecar, so the retry proved a malformed leftover, removed the marker, and the 4.0.9 move went
-// under a live deno. The sweep takes a daemon.lock's sidecar only on the daemon step's own
-// verdict (leftover or no marker): two full 5.0.1 runs over the truncated marker keep everything.
-test("5.0.1 twice over a truncated marker beside a live deno: the sweep keeps the sidecar, the files stay, nothing is signalled", async () => {
+// under a live deno. The sidecar is the file lock's own file now (src/utils/file_lock.ts) and no
+// step sweeps it: two full 5.0.1 runs over the truncated marker keep everything, the sidecar
+// included, with the proof unjudged both times.
+test("5.0.1 twice over a truncated marker beside a live deno: the sidecar and the files stay, nothing is signalled", async () => {
   const root = isolateProxyHome("copilot-migrate-deno-sweep-");
   const installRoot = join(root, "install");
   mkdirSync(installRoot, { recursive: true });
@@ -457,7 +571,6 @@ test("5.0.1 twice over a truncated marker beside a live deno: the sweep keeps th
       unjudgedBoth: runs.every((said) =>
         said.includes("left a home as it is: its lock marker names no pid while a deno runs"),
       ),
-      sidecarKeptBoth: runs.every((said) => said.includes(`kept ${denoLockSidecarPath(home)}`)),
       signalled: runs.some((said) => said.includes("stopped the deno-era proxy daemon")),
     }).toEqual({
       alive: true,
@@ -465,7 +578,6 @@ test("5.0.1 twice over a truncated marker beside a live deno: the sweep keeps th
       sidecar: true,
       denoFile: true,
       unjudgedBoth: true,
-      sidecarKeptBoth: true,
       signalled: false,
     });
   } finally {

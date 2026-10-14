@@ -33,11 +33,13 @@ const FS_MODULES = new Set(["node:fs", "node:fs/promises"]);
  *                            real
  *    file_lock.ts         -> the lock protocol's per-acquisition marker, a transient the seam
  *                            documents
+ *    os_lock.ts           -> the lock's sidecar, opened as the handle the OS lock lives on
  *    log_mute_preload.ts  -> patches the PROXY's own createWriteStream, no write of ours */
 const ALLOWED = new Set([
   "src/utils/fs_disk.ts",
   "src/utils/dry_run.ts",
   "src/utils/file_lock.ts",
+  "src/utils/os_lock.ts",
   "src/scripts/log_mute_preload.ts",
 ]);
 

@@ -188,7 +188,8 @@ for (const { name, reshape, problem } of RESHAPED) {
         nowMs: NOW,
         fetchImpl: textFetch(text).fetch,
       });
-      expect(loaded.kind === "none" && loaded.problem).toContain(problem);
+      expect(loaded.kind).toBe("none");
+      expect(loaded.problem).toContain(problem);
       expect(readdirSync(cacheDir)).toEqual([]);
     }));
 }
@@ -199,6 +200,7 @@ test("loadGitHubRateCard takes a whole card that lacks a mapped model as GitHub'
   withCacheDir(async (cacheDir) => {
     const loaded = await loadCard(cacheDir, NOW, textFetch(without("GPT-5.6 Sol")).fetch);
     expect(loaded.from).toEqual(FETCHED_NOW);
+    expect(loaded.problem).toBeUndefined();
     expect(loaded.card.rates.has("openai/gpt-5.6-sol")).toBe(false);
     expect(loaded.card.rates.get("openai/gpt-6-astra")).toEqual(ASTRA);
     expect(readdirSync(cacheDir)).toEqual([basename(rateCardCachePath(CARD_URL, cacheDir))]);
@@ -224,13 +226,12 @@ test("loadGitHubRateCard takes a whole card that lacks a mapped model as GitHub'
     expect(estimate.githubRated).toEqual([]);
   }));
 
-// A card kept past its day would otherwise price a run the moment GitHub is unreachable: the
-// fallback the owner ruled out ("no offline prices").
-test("loadGitHubRateCard fetches once a day, serves the cache inside the ttl, and prices nothing through a failed refresh", () =>
+test("loadGitHubRateCard fetches once a day, serves the cache inside the ttl, and keeps the last good card through a failed refresh", () =>
   withCacheDir(async (cacheDir) => {
     const net = textFetch(CARD_TEXT);
     const first = await loadCard(cacheDir, NOW, net.fetch);
     expect(first.from).toEqual(FETCHED_NOW);
+    expect(first.problem).toBeUndefined();
     expect(first.card.rates.get("openai/gpt-5.6-sol")).toEqual(SOL);
     const path = rateCardCachePath(CARD_URL, cacheDir);
     expect(readdirSync(cacheDir)).toEqual([basename(path)]);
@@ -251,13 +252,11 @@ test("loadGitHubRateCard fetches once a day, serves the cache inside the ttl, an
     expect(second.from).toEqual({ source: "cached", fetchedAtMs: NOW });
     expect(second.card).toEqual(first.card);
 
-    // Expired, network down: no card, the problem named, the expired file untouched.
-    const down = await loadGitHubRateCard(CARD_URL, {
-      cacheDir,
-      nowMs: NOW + DAY_MS,
-      fetchImpl: textFetch("", { fail: true }).fetch,
-    });
-    expect(down).toEqual({ kind: "none", problem: "rate card request failed" });
+    // Expired, network down: the cached card, the problem named, the stamp on disk untouched.
+    const down = await loadCard(cacheDir, NOW + DAY_MS, textFetch("", { fail: true }).fetch);
+    expect(down.from).toEqual({ source: "cached", fetchedAtMs: NOW });
+    expect(down.problem).toBe("rate card request failed");
+    expect(down.card).toEqual(first.card);
     expect(JSON.parse(readFileSync(path, "utf8")).fetched_at_ms).toBe(NOW);
 
     // Expired and readable: refreshed, restamped.

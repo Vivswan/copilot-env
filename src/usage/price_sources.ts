@@ -1,25 +1,28 @@
 // The two public price sources `agent cost` prices at, loaded together. A source read today
-// (fetched, or served from today's earlier read) prices the run; one that could not be fetched
-// prices nothing, whatever an earlier run kept on disk. No price is ever built in.
+// (fetched, or served from a copy under 24 hours old) prices the run; when today's fetch fails,
+// the last cached copy of that source prices the run instead, whatever its age, and a source with
+// nothing cached prices nothing. No price is ever built in.
 
 import type { ProbeFetch } from "../copilot_api/integration_identity.ts";
 import { errMessage } from "../utils/error.ts";
 import { loadGitHubRateCard, type RateCardSource } from "./github_rate_card.ts";
 import { loadPricing, type PricingTier, withGitHubRates } from "./pricing.ts";
 
-type SourceRead =
+export type SourceRead =
   | {
-      read: true;
+      kind: "read";
       /** Set when today's fetched copy could not be kept for the day: the next run fetches again. */
       cacheWriteError?: string;
     }
-  | { read: false; problem: string };
+  /** Today's fetch failed; the copy fetched at `fetchedAtMs` prices the run. */
+  | { kind: "cached"; fetchedAtMs: number; problem: string }
+  | { kind: "none"; problem: string };
 
 export interface PriceSources {
-  /** What the run prices at: GitHub's card over OpenRouter's list when both were read, either one
+  /** What the run prices at: GitHub's card over OpenRouter's list when both price, either one
    *  alone, or an empty map (tokens only). */
   pricing: Map<string, PricingTier>;
-  /** The card `pricing` carries GitHub's rates from; absent when the card was not read. */
+  /** The card `pricing` carries GitHub's rates from; absent when no card prices the run. */
   rateCard: RateCardSource | undefined;
   openRouter: SourceRead;
   gitHub: SourceRead;
@@ -42,13 +45,17 @@ export async function loadPriceSources(
     pricing: card.kind === "card" ? withGitHubRates(listed, card.card, card.from) : listed,
     rateCard: card.kind === "card" ? card.from : undefined,
     openRouter:
-      list.kind === "list"
-        ? { read: true, ...(list.source === "fetched" ? kept(list.cacheWriteError) : {}) }
-        : { read: false, problem: list.problem },
+      list.kind === "none"
+        ? { kind: "none", problem: list.problem }
+        : list.source === "stale-cache"
+          ? { kind: "cached", fetchedAtMs: list.fetchedAtMs, problem: list.fetchError }
+          : { kind: "read", ...(list.source === "fetched" ? kept(list.cacheWriteError) : {}) },
     gitHub:
-      card.kind === "card"
-        ? { read: true, ...kept(card.cacheWriteError) }
-        : { read: false, problem: card.problem },
+      card.kind === "none"
+        ? { kind: "none", problem: card.problem }
+        : card.problem !== undefined
+          ? { kind: "cached", fetchedAtMs: card.from.fetchedAtMs, problem: card.problem }
+          : { kind: "read", ...kept(card.cacheWriteError) },
   };
 }
 

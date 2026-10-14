@@ -689,8 +689,8 @@ const PRICES_OFF_LINE =
   "Prices are off: neither GitHub's rate card (rate card request failed) nor OpenRouter's price list (pricing request failed) could be fetched today; reporting tokens only.";
 
 /** How the price list was loaded and the stderr line that earns: the turn (10 in at $15/M +
- *  20 out at $75/M) is priced by a list fetched today and by nothing else, and no line ever names
- *  the URL, which a custom one may carry a token in. */
+ *  20 out at $75/M) is priced by a list fetched today or by its last cached copy, and no line ever
+ *  names the URL, which a custom one may carry a token in. */
 const PRICE_LIST_WARNINGS: {
   name: string;
   /** The URL the run resolves, stored under the config key or passed as the flag. */
@@ -704,8 +704,8 @@ const PRICE_LIST_WARNINGS: {
   totalUsd: number;
 }[] = [
   {
-    // A cache stamped two days ago, then the network taken away: the stale list is never priced
-    // from, and no line mentions it.
+    // A cache stamped two days ago, then the network taken away: the cached list prices the run
+    // and the line names it; the card has no copy, so the list prices alone.
     name: "the fetch fails with a stale list cached",
     url: PRICE_URL,
     stored: false,
@@ -717,8 +717,11 @@ const PRICE_LIST_WARNINGS: {
       });
     },
     fetchImpl: fakeFetch(null, { fail: true }),
-    lines: [PRICES_OFF_LINE],
-    totalUsd: 0,
+    lines: [
+      "OpenRouter's price list could not be fetched today (pricing request failed); using the cached price list from ",
+      "GitHub's rate card could not be fetched today (rate card request failed); priced at OpenRouter's list alone.",
+    ],
+    totalUsd: 0.0017,
   },
   {
     // A regular file where the cache directory belongs: the write fails, the report is still
@@ -770,7 +773,6 @@ for (const {
         { fetchImpl, ...rootsOf([], [claudeRoot]) },
       );
       for (const line of lines) expect(stderr).toContain(line);
-      expect(stderr).not.toContain("cached");
       // Neither the host nor any path segment (a token baked into the path) reaches either channel.
       const printed = stderr + JSON.stringify(payload);
       expect(printed).not.toContain(new URL(url).host);
@@ -981,22 +983,24 @@ test("runCost reads GitHub's card from the stored URL, prices at it, names the c
     expect(fallback.payload.claudeSessions.totalUsd).toBe(0.0017);
   }));
 
-// Both caches hold a list and a card from two days ago and both fetches fail: a run that priced
-// from either would show prices nobody fetched today, the owner's "no offline prices" rule.
-test("runCost prices nothing when neither source can be fetched today, whatever is cached, and from GitHub's card alone when only the list fails", () =>
+// Both caches hold a list and a card fetched two days ago and both fetches fail: the owner's
+// rule is that a cached copy prices the run whatever its age, and the report names the copy's day.
+// A source with nothing cached prices nothing.
+test("runCost prices from the cached copies when the fetches fail and names their day, prices nothing with no copy, and from GitHub's card alone when only the list is out", () =>
   withCostHome(async ({ home, claudeRoot }) => {
     const cacheDir = join(home, USAGE_INDEX_DIR_NAME);
     const twoDaysAgo = Date.now() - 2 * MILLISECONDS_PER_DAY;
+    const stamp = new Date(twoDaysAgo).toISOString();
+    const day = stamp.slice(0, 10);
     await loadPricing(PRICE_URL, {
       cacheDir,
       nowMs: twoDaysAgo,
       fetchImpl: fakeFetch(PRICED_BODY),
     });
-    const cardFetch = routedFetch(fakeFetch(null, { fail: true }), RATE_CARD_TEXT);
     const seeded = await loadGitHubRateCard(GITHUB_RATE_CARD_URL, {
       cacheDir,
       nowMs: twoDaysAgo,
-      fetchImpl: cardFetch,
+      fetchImpl: routedFetch(fakeFetch(null, { fail: true }), RATE_CARD_TEXT),
     });
     expect(seeded.kind).toBe("card");
     const down = fakeFetch(null, { fail: true });
@@ -1006,24 +1010,52 @@ test("runCost prices nothing when neither source can be fetched today, whatever 
     });
     const args: CostArgs = { pricingUrl: PRICE_URL, noIndex: true };
 
-    const offline = await jsonRun(args, deps(down));
+    // Offline with both copies: the card over the list (opus 4.8 at the card's $5/M in and $25/M
+    // out: 10 in + 20 out = $0.00055), each stderr line names the copy's day, and --json says
+    // cached with the copy's stamp.
+    const cached = await jsonRun(args, deps(down));
+    expect(cached.stderr).toContain(
+      `OpenRouter's price list could not be fetched today (pricing request failed); using the cached price list from ${day}.`,
+    );
+    expect(cached.stderr).toContain(
+      `GitHub's rate card could not be fetched today (rate card request failed); using the cached rate card from ${day}.`,
+    );
+    expect(cached.payload.claudeSessions.totalUsd).toBe(0.0006);
+    expect(cached.payload.runtime.githubRates).toEqual({ source: "cached", fetchedAt: stamp });
+    const copies = `the price list from a cached copy of ${day} and the rate card from a cached copy of ${day}`;
+    expect(cached.payload.note).toContain(
+      `priced at public OpenRouter rates, GitHub's own where the two differ (actual billing may differ), ${copies}; `,
+    );
+    const cachedReport = await captureChannels(() => runCost(args, deps(down)));
+    expect(cachedReport.stdout).toContain(
+      `Disclaimer: these numbers are approximate -- gathered from local logs and priced at public OpenRouter rates (GitHub's own where the two differ), ${copies}; actual billing may differ.`,
+    );
+    expect(cachedReport.stdout).toContain(
+      `Priced at GitHub's rate card (fetched ${day}), not OpenRouter's: claude-opus-4.8`,
+    );
+
+    // URLs with nothing cached and the network down: tokens only, under the one line.
+    const bareCard = "https://rates.example/other-card.yml";
+    new CopilotEnvConfig().set({ "cost.github-pricing-url": bareCard });
+    const bare: CostArgs = { pricingUrl: "https://pricing.example/other-models", noIndex: true };
+    const offline = await jsonRun(bare, deps(down));
     expect(offline.stderr).toContain(PRICES_OFF_LINE);
-    expect(offline.stderr).not.toContain("cached");
     expect(offline.payload.claudeSessions.totalUsd).toBe(0);
     expect("githubRates" in offline.payload.runtime).toBe(false);
     expect(offline.payload.note).toContain(
       "not priced (neither GitHub's rate card nor OpenRouter's price list could be fetched today)",
     );
-    const offlineReport = await captureChannels(() => runCost(args, deps(down)));
+    const offlineReport = await captureChannels(() => runCost(bare, deps(down)));
     expect(offlineReport.stdout).toContain(
       "Prices are off: neither GitHub's rate card nor OpenRouter's price list could be fetched today.",
     );
     expect(offlineReport.stdout).not.toContain("Disclaimer");
     expect(offlineReport.stdout).toContain("Unpriced (excluded from total): claude-opus-4.8");
 
-    // The card alone, the list unreachable: opus 4.8 at the card's $5/M in and $25/M out (10 in +
-    // 20 out = $0.00055), the footer names the one source, and the JSON names today's fetch.
-    const priced = await jsonRun(args, deps(cardFetch));
+    // The card alone: the list has no copy and its fetch is down, the card is served. The footer
+    // names the one source, and the JSON names today's fetch.
+    const cardOnly = routedFetch(down, RATE_CARD_TEXT, bareCard);
+    const priced = await jsonRun(bare, deps(cardOnly));
     expect(priced.stderr).toContain(
       "OpenRouter's price list could not be fetched today (pricing request failed); priced at GitHub's rate card alone.",
     );
@@ -1032,7 +1064,7 @@ test("runCost prices nothing when neither source can be fetched today, whatever 
     expect(priced.payload.note).toContain(
       "priced at GitHub's rate card alone (OpenRouter's price list could not be fetched today)",
     );
-    const cardReport = await captureChannels(() => runCost(args, deps(cardFetch)));
+    const cardReport = await captureChannels(() => runCost(bare, deps(cardOnly)));
     expect(cardReport.stdout).toContain(
       "Disclaimer: these numbers are approximate -- gathered from local logs and priced at GitHub's rate card alone (OpenRouter's price list could not be fetched today); actual billing may differ.",
     );

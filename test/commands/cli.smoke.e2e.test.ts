@@ -1043,10 +1043,16 @@ test("update --auto-status reports the auto-update key honestly, on and off (off
 });
 
 // `--no-index` is a Commander negated flag (stored as `index: false`); only a real
-// parse proves the mapping onto runCost's `noIndex`. The pricing URL points at a
-// closed local port so the run prices nothing and never leaves the machine.
+// parse proves the mapping onto runCost's `noIndex`. Both price sources point at a closed
+// local port so the run prices nothing and never leaves the machine.
 test("cli.ts cost --no-index parses every log; without it the usage index is used", () => {
   const env = isolatedEnv();
+  writeFileSync(
+    join(env.COPILOT_API_HOME ?? "", "state.json"),
+    JSON.stringify({
+      global: { "daemon.port": 4199, "cost.github-pricing-url": "https://127.0.0.1:9/rate-card" },
+    }),
+  );
   const projects = join(env.CLAUDE_CONFIG_DIR ?? "", "projects", "-Users-x-proj");
   mkdirSync(projects, { recursive: true });
   writeFileSync(

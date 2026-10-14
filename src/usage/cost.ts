@@ -26,7 +26,7 @@ import {
 } from "./day_metrics.ts";
 import type { RateCardSource } from "./github_rate_card.ts";
 import { openUsageIndex } from "./index.ts";
-import { loadPriceSources, type PriceSources } from "./price_sources.ts";
+import { loadPriceSources, type PriceSources, type SourceRead } from "./price_sources.ts";
 import {
   type CostEstimate,
   estimateCost,
@@ -70,19 +70,37 @@ const UNREAD_CARD = "GitHub's rate card could not be fetched today";
 const UNREAD_LIST = "OpenRouter's price list could not be fetched today";
 const UNREAD_BOTH = "neither GitHub's rate card nor OpenRouter's price list could be fetched today";
 
+/** A source prices the run when read today or served from its last cached copy. */
+function prices(source: SourceRead): boolean {
+  return source.kind !== "none";
+}
+
 /** What priced the run, for the footer and the --json note; `bothRead` is each one's own wording
- *  for the usual case. */
+ *  for the usual case. A source priced from a cached copy names the copy's day. */
 function pricingClause(sources: PriceSources, bothRead: string): string {
-  if (sources.openRouter.read && sources.gitHub.read) return bothRead;
-  if (sources.openRouter.read) return `priced at public OpenRouter rates alone (${UNREAD_CARD})`;
-  if (sources.gitHub.read) return `priced at GitHub's rate card alone (${UNREAD_LIST})`;
-  return `not priced (${UNREAD_BOTH})`;
+  const { openRouter, gitHub } = sources;
+  let clause: string;
+  if (prices(openRouter) && prices(gitHub)) clause = bothRead;
+  else if (prices(openRouter)) clause = `priced at public OpenRouter rates alone (${UNREAD_CARD})`;
+  else if (prices(gitHub)) clause = `priced at GitHub's rate card alone (${UNREAD_LIST})`;
+  else return `not priced (${UNREAD_BOTH})`;
+  const cached = [
+    openRouter.kind === "cached"
+      ? `the price list from a cached copy of ${isoDay(openRouter.fetchedAtMs)}`
+      : null,
+    gitHub.kind === "cached"
+      ? `the rate card from a cached copy of ${isoDay(gitHub.fetchedAtMs)}`
+      : null,
+  ].filter((part): part is string => part !== null);
+  return cached.length === 0 ? clause : `${clause}, ${cached.join(" and ")}`;
 }
 
 /** The footer's last line: the disclaimer when something priced the run, else the one line that
  *  says prices are off. */
 function disclaimer(sources: PriceSources): string {
-  if (!sources.openRouter.read && !sources.gitHub.read) return `\nPrices are off: ${UNREAD_BOTH}.`;
+  if (!prices(sources.openRouter) && !prices(sources.gitHub)) {
+    return `\nPrices are off: ${UNREAD_BOTH}.`;
+  }
   const clause = pricingClause(
     sources,
     "priced at public OpenRouter rates (GitHub's own where the two differ)",
@@ -90,17 +108,31 @@ function disclaimer(sources: PriceSources): string {
   return `\nDisclaimer: these numbers are approximate -- gathered from local logs and ${clause}; actual billing may differ.`;
 }
 
-/** One stderr line when a source could not be fetched: which, why, and what priced the run. */
-function unreadWarning(sources: PriceSources): string | undefined {
+/** One stderr line per source that could not be fetched today: why, and what priced the run
+ *  instead (its cached copy, the other source, or nothing). */
+function unreadWarnings(sources: PriceSources): string[] {
   const { openRouter, gitHub } = sources;
-  if (openRouter.read) {
-    if (gitHub.read) return undefined;
-    return `${UNREAD_CARD} (${gitHub.problem}); priced at OpenRouter's list alone.`;
+  if (openRouter.kind === "none" && gitHub.kind === "none") {
+    return [
+      `Prices are off: neither GitHub's rate card (${gitHub.problem}) nor OpenRouter's price list (${openRouter.problem}) could be fetched today; reporting tokens only.`,
+    ];
   }
-  if (gitHub.read) {
-    return `${UNREAD_LIST} (${openRouter.problem}); priced at GitHub's rate card alone.`;
-  }
-  return `Prices are off: neither GitHub's rate card (${gitHub.problem}) nor OpenRouter's price list (${openRouter.problem}) could be fetched today; reporting tokens only.`;
+  const line = (
+    unread: string,
+    source: SourceRead,
+    cachedName: string,
+    other: string,
+  ): string | null => {
+    if (source.kind === "read") return null;
+    if (source.kind === "cached") {
+      return `${unread} (${source.problem}); using the cached ${cachedName} from ${isoDay(source.fetchedAtMs)}.`;
+    }
+    return `${unread} (${source.problem}); priced at ${other} alone.`;
+  };
+  return [
+    line(UNREAD_LIST, openRouter, "price list", "GitHub's rate card"),
+    line(UNREAD_CARD, gitHub, "rate card", "OpenRouter's list"),
+  ].filter((part): part is string => part !== null);
 }
 
 const EMPTY_REPORT: ReadonlyUsageReport = usageReport();
@@ -147,9 +179,10 @@ export interface CostRuntime {
   indexed: boolean;
   index: IndexStats;
   timing: { walk: number; parse: number; fold: number; pricing: number; total: number };
-  /** Where the GitHub rate card came from (`cached` is today's earlier read); absent when today's
-   *  card could not be read. Under `runtime` with the other run facts: a fetched and a cached run
-   *  price the same, and the fetch stamp would otherwise make two runs over one tree differ. */
+  /** Where the GitHub rate card came from: `cached` is a copy an earlier run fetched at
+   *  `fetchedAt`, served fresh or in place of a fetch that failed today; absent when no card priced
+   *  the run. Under `runtime` with the other run facts: a fetched and a cached run price the same,
+   *  and the fetch stamp would otherwise make two runs over one tree differ. */
   githubRates?: { source: "fetched" | "cached"; fetchedAt: string };
 }
 
@@ -287,13 +320,12 @@ async function reportCost(
     run.fetchImpl,
   );
   const pricingWaitMs = now() - pricingWaitStartedAt;
-  const unread = unreadWarning(sources);
-  if (unread !== undefined) consola.warn(unread);
+  for (const line of unreadWarnings(sources)) consola.warn(line);
   for (const [name, source] of [
     ["the OpenRouter price list", sources.openRouter],
     ["GitHub's rate card", sources.gitHub],
   ] as const) {
-    if (source.read && source.cacheWriteError !== undefined) {
+    if (source.kind === "read" && source.cacheWriteError !== undefined) {
       consola.warn(
         `WARNING: could not cache ${name} (${source.cacheWriteError}); the next run fetches it again.`,
       );

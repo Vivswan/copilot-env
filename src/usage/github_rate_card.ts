@@ -1,7 +1,7 @@
 // GitHub's Copilot rate card: the table behind the docs' models-and-pricing page, read from the data
-// file that page renders and kept for a day beside the OpenRouter list (both are PUBLIC data). A
-// card that cannot be fetched today or does not parse WHOLE prices nothing, whatever an earlier run
-// kept on disk; the caller says so in one line.
+// file that page renders and cached for a day beside the OpenRouter list (both are PUBLIC data). A
+// card that cannot be fetched or does not parse WHOLE is never priced from: the last good cached
+// card prices the run, else the OpenRouter list alone, and the caller says so in one line.
 
 import { createHash } from "node:crypto";
 import { join } from "node:path";
@@ -40,20 +40,22 @@ export interface GitHubRateCard {
   unmapped: readonly string[];
 }
 
-/** Where the card that priced a run came from: `cached` is a read from earlier today, served
- *  without the network; `fetchedAtMs` is when GitHub was read. */
+/** Where the card that priced a run came from; `fetchedAtMs` is when GitHub was last read. */
 export interface RateCardSource {
   source: "fetched" | "cached";
   fetchedAtMs: number;
 }
 
-/** `none` when today's card could not be read: the run then prices from the OpenRouter list alone,
- *  or not at all. */
+/** `none` when today's card could not be read and no earlier one is cached: the run then prices
+ *  from the OpenRouter list alone. */
 export type LoadedRateCard =
   | {
       kind: "card";
       card: GitHubRateCard;
       from: RateCardSource;
+      /** Why today's card was not read (the run then prices from `card`, the last good one); absent
+       *  when it was. */
+      problem?: string;
       /** Set when a fetched card could not be persisted: the next run fetches again. */
       cacheWriteError?: string;
     }
@@ -277,11 +279,11 @@ function timeoutError(timeout: AbortSignal): Error | null {
 }
 
 /** A fresh cache answers without the network. Otherwise today's card is fetched and parsed whole;
- *  a fetch or parse failure names the problem and prices nothing, whatever expired copy is on
- *  disk. A card that parses whole is GitHub's current table whatever it dropped since: a model it
- *  lacks keeps the list's rate, and a rate a row leaves out keeps the rate beneath it (the list's
- *  under a base row, the base rate under a long-context row). A cache stamped in the future (clock
- *  moved back) is expired, never fresh. */
+ *  a fetch or parse failure keeps the cached card (expired or not) and names the problem, or names
+ *  it alone when nothing is cached. A card that parses whole is GitHub's current table whatever
+ *  it dropped since: a model it lacks keeps the list's rate, and a rate a row leaves out keeps the
+ *  rate beneath it (the list's under a base row, the base rate under a long-context row). A cache
+ *  stamped in the future (clock moved back) is expired, never fresh. */
 export async function loadGitHubRateCard(
   url: string,
   opts: {
@@ -305,7 +307,8 @@ export async function loadGitHubRateCard(
   try {
     card = parseRateCard(await fetchRateCardText(canonical, opts.fetchImpl ?? fetch));
   } catch (e) {
-    return { kind: "none", problem: errMessage(e) };
+    const problem = errMessage(e);
+    return cached === null ? { kind: "none", problem } : { ...cached, problem };
   }
   const from: RateCardSource = { source: "fetched", fetchedAtMs: nowMs };
   try {

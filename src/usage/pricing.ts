@@ -1,5 +1,5 @@
-// The price list is PUBLIC data, which is why loadPricing keeps today's copy on disk for the runs
-// that follow it; nothing else `agent cost` reads is ever cached by this module.
+// The price list is PUBLIC data, which is why loadPricing may keep a day-old copy on disk; nothing
+// else `agent cost` reads is ever cached by this module.
 
 import { createHash } from "node:crypto";
 import { join } from "node:path";
@@ -176,7 +176,6 @@ function tierOf(pricing: Record<string, unknown>): PricingTier | null {
   return v.is(TIER_SCHEMA, tier) ? tier : null;
 }
 
-/** `cache` is a read from earlier today, served without the network. */
 type LoadedPricing =
   | { source: "cache"; pricing: Map<string, PricingTier>; fetchedAtMs: number }
   | {
@@ -185,11 +184,17 @@ type LoadedPricing =
       fetchedAtMs: number;
       /** Set when the list could not be persisted: the next run fetches again. */
       cacheWriteError?: string;
+    }
+  | {
+      source: "stale-cache";
+      pricing: Map<string, PricingTier>;
+      fetchedAtMs: number;
+      fetchError: string;
     };
 
-/** Rejects when today's list cannot be fetched, whatever an earlier run left on disk: an expired
- *  copy is never priced from. A cache that fails validation or was written for another URL is
- *  absent; one stamped in the future (clock moved back) is expired, never fresh. */
+/** A refresh failure falls back to the expired copy rather than to a token-only report. A cache
+ *  that fails validation or was written for another URL is absent; one stamped in the future (clock
+ *  moved back) is expired, never fresh. */
 export async function loadPricing(
   url: string,
   opts: {
@@ -211,11 +216,22 @@ export async function loadPricing(
       return { pricing: cached.pricing, source: "cache", fetchedAtMs: cached.fetchedAtMs };
     }
   }
-  const pricing = await fetchPricing(canonical, opts.fetchImpl ?? fetch);
-  // A 200 without a usable price list is a broken response: persisting it would silence pricing
-  // for a TTL.
-  const problem = priceListProblem(pricing);
-  if (problem !== null) throw new Error(`pricing response ${problem}`);
+  let pricing: Map<string, PricingTier>;
+  try {
+    pricing = await fetchPricing(canonical, opts.fetchImpl ?? fetch);
+    // A 200 without a usable price list is a broken response: persisting it would silence pricing
+    // for a TTL.
+    const problem = priceListProblem(pricing);
+    if (problem !== null) throw new Error(`pricing response ${problem}`);
+  } catch (e) {
+    if (cached === null) throw e;
+    return {
+      pricing: cached.pricing,
+      source: "stale-cache",
+      fetchedAtMs: cached.fetchedAtMs,
+      fetchError: errMessage(e),
+    };
+  }
   // The cache only accelerates the next run; a fetched list is served whether or not it could be
   // persisted.
   try {

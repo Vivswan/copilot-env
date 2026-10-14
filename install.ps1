@@ -60,8 +60,8 @@ if ($Yes -and $No) { throw '-Yes and -No conflict; pass one.' }
 $PSNativeCommandUseErrorActionPreference = $false
 
 # 5.1 spawned from pwsh inherits pwsh's PSModulePath, whose PowerShell 7 directories shadow
-# its own: Get-FileHash and ConvertFrom-Json then autoload Core modules 5.1 cannot load.
-# The same defense as src/shell/integration.ts's execution-policy command.
+# its own: Get-FileHash, ConvertFrom-Json, and Invoke-WebRequest then autoload Core modules 5.1
+# cannot load. The same defense as src/shell/integration.ts's execution-policy command.
 if ($PSVersionTable.PSVersion.Major -lt 6) {
     $MachineModulePath = [Environment]::GetEnvironmentVariable('PSModulePath', 'Machine')
     # No cmdlet in the fallback: it runs exactly when autoload cannot be trusted.
@@ -74,28 +74,33 @@ if ($PSVersionTable.PSVersion.Major -lt 6) {
 $InstallRef = if ($env:COPILOT_ENV_INSTALL_REF) { $env:COPILOT_ENV_INSTALL_REF } else { 'latest' }
 $Repo = 'Vivswan/copilot-env'
 $BinaryName = 'copilot-env.exe'
+$UserAgent = 'copilot-env'
 # The Authorization header goes only to api.github.com (tag resolution);
 # release-asset downloads ride the public URL anonymously.
-$AuthCurlArgs = @('-H', 'User-Agent: copilot-env', '-H', 'Accept: application/vnd.github+json')
-$PublicCurlArgs = @('-H', 'User-Agent: copilot-env')
 $AuthToken = if ($env:GH_TOKEN) { $env:GH_TOKEN } else { $env:GITHUB_TOKEN }
 if (-not $InstallDir) {
     $InstallDir = if ($env:COPILOT_ENV_DIR) { $env:COPILOT_ENV_DIR } else { Join-Path $env:USERPROFILE '.copilot-env' }
 }
 
-# install.sh's retry() over curl.exe: there a launch failure and a non-zero exit both spend a
-# try, so the catch retries too.
-function Invoke-Curl {
+# curl.exe runs install.sh's exact exchanges where PATH has one; the web cmdlets every PowerShell
+# ships stand in where it does not, so a box without curl.exe installs the same way.
+$UseCurl = [bool](Get-Command curl.exe -ErrorAction SilentlyContinue)
+if (-not $UseCurl -and $PSVersionTable.PSVersion.Major -lt 6) {
+    # Windows PowerShell 5.1 inherits .NET Framework's protocol default, which can exclude the
+    # TLS 1.2 GitHub requires; -bor keeps anything newer. pwsh's HttpClient ignores this property.
+    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+}
+
+# install.sh's retry(): a launch failure and a failed exchange both spend a try.
+function Invoke-WithRetry {
     param(
         [Parameter(Mandatory)][string]$Label,
-        [Parameter(Mandatory)][string[]]$CurlArgs
+        [Parameter(Mandatory)][scriptblock]$Attempt
     )
 
     for ($try = 1; $try -le 3; $try++) {
         try {
-            $out = & curl.exe @CurlArgs
-            if ($LASTEXITCODE -eq 0) { return $out }
-            $failure = "curl.exe exited $LASTEXITCODE."
+            return & $Attempt
         } catch {
             $failure = $_.Exception.Message
         }
@@ -103,6 +108,53 @@ function Invoke-Curl {
         Write-Warning "$Label failed; retrying ($try/3): $failure"
         Start-Sleep -Seconds ($try * 2)
     }
+}
+
+# Headers never enter argv, which the process list shows while curl.exe runs: curl reads them
+# from a scratch file, the cmdlet takes them in-process.
+function Invoke-Fetch {
+    param(
+        [Parameter(Mandatory)][string]$Label,
+        [Parameter(Mandatory)][string]$Uri,
+        [hashtable]$Headers = @{},
+        [string]$OutFile = '',
+        [switch]$FinalUri
+    )
+
+    if ($UseCurl) {
+        $hdr = Join-Path ([System.IO.Path]::GetTempPath()) ([System.IO.Path]::GetRandomFileName())
+        $lines = @("User-Agent: $UserAgent") + @($Headers.Keys | ForEach-Object { "${_}: $($Headers[$_])" })
+        [System.IO.File]::WriteAllLines($hdr, [string[]]$lines)
+        $curlArgs = @('-fsSL', '-H', "@$hdr")
+        if ($OutFile) { $curlArgs += @('-o', $OutFile) }
+        elseif ($FinalUri) { $curlArgs += @('-o', 'NUL', '-w', '%{url_effective}') }
+        $curlArgs += $Uri
+        try {
+            return Invoke-WithRetry $Label {
+                $out = & curl.exe @curlArgs
+                if ($LASTEXITCODE -ne 0) { throw "curl.exe exited $LASTEXITCODE." }
+                $out -join "`n"
+            }
+        } finally {
+            Remove-Item -LiteralPath $hdr -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    # 5.1's Invoke-WebRequest redraws its progress bar per buffer, slowing large downloads by
+    # orders of magnitude; the installer has no other progress UI. Function scope, so a session
+    # that ran the one-liner through iex keeps its own setting.
+    $ProgressPreference = 'SilentlyContinue'
+    $request = @{ Uri = $Uri; Headers = $Headers; UserAgent = $UserAgent; UseBasicParsing = $true }
+    if ($OutFile) { $request.OutFile = $OutFile }
+    $response = Invoke-WithRetry $Label { Invoke-WebRequest @request }
+    if ($FinalUri) {
+        # Windows PowerShell's HttpWebResponse knows the URI it ended on; pwsh's HttpResponseMessage
+        # knows only the request the redirects rewrote.
+        $final = $response.BaseResponse.ResponseUri
+        if (-not $final) { $final = $response.BaseResponse.RequestMessage.RequestUri }
+        return [string]$final
+    }
+    if (-not $OutFile) { return [string]$response.Content }
 }
 
 # Purely lexical on purpose: the binary's `install` re-checks the CANONICAL path (reparse
@@ -146,31 +198,24 @@ function Resolve-Target {
 function Resolve-ReleaseTag {
     if ($Version) { return $Version }
     if ($InstallRef -ne 'latest') { return $InstallRef }
-    # Either lookup, once its retries run out, dies with install.sh's message, not the raw curl
-    # exit.
+    # Either lookup, once its retries run out, dies with install.sh's message, not the raw failure.
     if ($AuthToken) {
         # A token raises the API rate limit and sees private repos, so resolve `latest` through
-        # the API when one is available. The token rides a header file, not curl.exe's argv,
-        # which the process list shows while it runs.
-        $hdr = Join-Path ([System.IO.Path]::GetTempPath()) ([System.IO.Path]::GetRandomFileName())
-        [System.IO.File]::WriteAllText($hdr, "Authorization: Bearer $AuthToken")
+        # the API when one is available.
         try {
-            $json = Invoke-Curl 'Resolve latest release' (
-                @('-fsSL') + $AuthCurlArgs + @('-H', "@$hdr", "https://api.github.com/repos/$Repo/releases/latest"))
-        } catch {
-            throw 'Could not resolve the latest copilot-env release.'
-        } finally {
-            Remove-Item -LiteralPath $hdr -Force -ErrorAction SilentlyContinue
-        }
-        $tag = [string](ConvertFrom-Json ($json -join "`n")).tag_name
+            $json = Invoke-Fetch 'Resolve latest release' "https://api.github.com/repos/$Repo/releases/latest" -Headers @{
+                Accept        = 'application/vnd.github+json'
+                Authorization = "Bearer $AuthToken"
+            }
+        } catch { throw 'Could not resolve the latest copilot-env release.' }
+        $tag = [string](ConvertFrom-Json $json).tag_name
     } else {
         # Tokenless: follow the /releases/latest redirect to the tag page instead of burning the
         # 60/hour unauthenticated API quota.
         try {
-            $url = Invoke-Curl 'Resolve latest release' (
-                @('-fsSL', '-o', 'NUL', '-w', '%{url_effective}') + $PublicCurlArgs + "https://github.com/$Repo/releases/latest")
+            $url = Invoke-Fetch 'Resolve latest release' "https://github.com/$Repo/releases/latest" -FinalUri
         } catch { throw 'Could not resolve the latest copilot-env release.' }
-        $tag = ([string]$url).Split('/')[-1]
+        $tag = ([System.Uri]$url).Segments[-1].TrimEnd('/')
     }
     if ($tag -notmatch '^v[0-9]') { throw "Could not resolve a release tag (got '$tag')." }
     return $tag
@@ -185,8 +230,7 @@ function Get-ReleaseFile {
     if ($DownloadDir) {
         Copy-Item -LiteralPath (Join-Path $DownloadDir $Name) -Destination $Destination -Force
     } else {
-        Invoke-Curl "Download $Name" (
-            @('-fsSL') + $PublicCurlArgs + @("$DownloadUrlBase/$Name", '-o', $Destination)) | Out-Null
+        Invoke-Fetch "Download $Name" "$DownloadUrlBase/$Name" -OutFile $Destination | Out-Null
     }
 }
 
@@ -220,9 +264,6 @@ if (Test-Path -LiteralPath (Join-Path $InstallDir '.git')) {
 
 $Target = Resolve-Target
 $AssetName = "copilot-env-$Target.exe"
-if (-not (Get-Command curl.exe -ErrorAction SilentlyContinue)) {
-    throw 'curl.exe is required to download copilot-env and was not found on PATH.'
-}
 
 $DownloadDir = ''
 $DownloadUrlBase = ''

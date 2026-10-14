@@ -137,3 +137,58 @@ test("both spawns put the temp root on the child, whatever the caller's env says
   const out = await outputOf(child);
   expect(JSON.parse(out.stdout)).toBe(root);
 });
+
+// --- the width: a child has no COLUMNS unless the caller's env names it -------------------
+//
+// The caller's env is the channel: a COLUMNS key in it is the child's verbatim, whatever its
+// value (one equal to the runner's export included), and otherwise the child has none, as the
+// process has none.
+
+/** Stands in for a width the runner exported; the preload leaves the test process with none. */
+const RUNNER_COLUMNS = "81";
+
+const READ_COLUMNS = "console.log(JSON.stringify(process.env.COLUMNS ?? null))";
+
+/** `passed` is the env the caller hands the helper, or none; the essentials ride along under
+ *  runSync's replacement semantics so COLUMNS alone comes from `passed`. */
+async function childColumns(
+  helper: "spawnChild" | "runSync",
+  passed: Record<string, string | undefined> | undefined,
+): Promise<string | null> {
+  if (helper === "runSync") {
+    const env = passed === undefined ? undefined : { ...platformEssentials(), ...passed };
+    return JSON.parse(runSync(process.execPath, ["-e", READ_COLUMNS], { env }).stdout);
+  }
+
+  const child = spawnChild(process.execPath, {
+    args: ["-e", READ_COLUMNS],
+    env: passed,
+    stdout: "pipe",
+    stderr: "ignore",
+  });
+  return JSON.parse((await outputOf(child)).stdout);
+}
+
+test("both spawns: the child has no COLUMNS unless the caller's env names it, whose value it gets verbatim, the runner's own included", async () => {
+  const rows: {
+    name: string;
+    passed: Record<string, string | undefined> | undefined;
+    child: string | null;
+  }[] = [
+    { name: "no env", passed: undefined, child: null },
+    { name: "an env without the key", passed: {}, child: null },
+    { name: "a width of its own", passed: { COLUMNS: "60" }, child: "60" },
+    { name: "the runner's own width", passed: { COLUMNS: RUNNER_COLUMNS }, child: RUNNER_COLUMNS },
+    { name: "the key scrubbed", passed: { COLUMNS: undefined }, child: null },
+  ];
+  process.env.COLUMNS = RUNNER_COLUMNS;
+  try {
+    for (const helper of ["spawnChild", "runSync"] as const) {
+      for (const row of rows) {
+        expect(await childColumns(helper, row.passed), `${helper}: ${row.name}`).toBe(row.child);
+      }
+    }
+  } finally {
+    delete process.env.COLUMNS;
+  }
+});

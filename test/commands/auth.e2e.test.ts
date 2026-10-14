@@ -62,16 +62,10 @@ import { envSnapshot, isolateAgentHomes, resetExitCode } from "../helpers/env.ts
 import { stubGithubLogins, writeRunState } from "../helpers/fixtures.ts";
 import { captureChannels } from "../helpers/output.ts";
 import { runCli } from "../helpers/run.ts";
-import { afterEach, beforeEach, expect, removeDir, test } from "../helpers/testing.ts";
+import { afterEach, expect, removeDir, test } from "../helpers/testing.ts";
 
 const restoreEnv = envSnapshot(["PATH", "COLUMNS"]);
 let dir = "";
-
-// Every test renders at 80 columns unless it pins its own width, so the runner's terminal never
-// reaches an assertion; restoreEnv puts the runner's COLUMNS back after each.
-beforeEach(() => {
-  process.env.COLUMNS = "80";
-});
 
 afterEach(() => {
   restoreEnv();

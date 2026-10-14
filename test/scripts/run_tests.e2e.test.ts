@@ -5,7 +5,8 @@
 // machine with neither, the run is refused before any test starts, and --unit leaves the file out),
 // and a file named outright must match **/*.test.ts, or it reaches `bun test` outside the gate.
 // A file that never registers a test (a module-scope await that never settles) is outside bun's
-// own --timeout, so the launcher's file budget must end it and fail it.
+// own --timeout, so the launcher's file budget must end it and fail it, and a file whose process
+// ends before bun:test prints its end-of-run summary must fail the run whatever its exit code.
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pidAlive } from "../../src/utils/pid.ts";
@@ -48,6 +49,15 @@ test("the launcher's exit code and file count over files, a directory, a missing
   const none: string[] = [];
   const rows = [
     { args: [passing], env: OUTSIDE_CI, exitCode: 0, ran: 1, failed: none, mentions: none },
+    // bun dims the summary's timing under FORCE_COLOR: the launcher still reads the line.
+    {
+      args: [passing],
+      env: { ...OUTSIDE_CI, FORCE_COLOR: "1" },
+      exitCode: 0,
+      ran: 1,
+      failed: none,
+      mentions: none,
+    },
     {
       args: [passing, failing],
       env: OUTSIDE_CI,
@@ -214,6 +224,57 @@ test("a file that hangs before registering a test is killed with its tree at the
     budgetNamed: res.stdout.includes("ran past the launcher's file budget"),
     sleeperAlive: pidAlive(sleeper),
   }).toEqual({ exitCode: 1, ran: 1, named: true, budgetNamed: true, sleeperAlive: false });
+}, 90_000);
+
+// The exit mechanism is the axis: whatever ends the child before bun:test reports, its exit 0
+// says nothing about the tests it never reached, and the failing second test proves they never
+// ran. The incident: test/copilot_api/idle_watchdog.test.ts left a process.exit in a microtask
+// from the bun move until this guard, and the launcher read its exit 0 as passed.
+test("a file whose process exits 0 before bun:test prints its summary fails the run, whichever mechanism ended it", () => {
+  const dir = tempDir("run-tests-early-exit-");
+  const verdict =
+    'exited 0 before bun:test printed its end-of-run summary (no "Ran N tests across 1 file" line), so the tests it never reached were not judged';
+  // The timer needs a test still awaiting when it fires: bun runs sync bodies back to back.
+  const endings = {
+    microtask: 'test("first", () => { Promise.resolve().then(() => process.exit(0)); });',
+    timer:
+      'test("first", async () => { setTimeout(() => process.exit(0), 0); await Bun.sleep(50); });',
+    "module-scope": "process.exit(0);",
+  };
+  const seen = Object.entries(endings).map(([name, ending]) => {
+    const file = join(dir, `${name}.test.ts`);
+    writeFileSync(
+      file,
+      [
+        'import { expect, test } from "bun:test";',
+        ending,
+        'test("never reached", () => { expect(1).toBe(2); });',
+        "",
+      ].join("\n"),
+    );
+    const res = runSync(process.execPath, [...bunRunArgs(), LAUNCHER, file], {
+      env: { ...process.env, ...OUTSIDE_CI },
+      timeoutMs: 60_000,
+    });
+    return {
+      name,
+      exitCode: res.exitCode,
+      judged: filesRan(res.stdout),
+      header: res.stdout.includes(`=== ${file}: failed (exit 1) in `),
+      verdict: res.stdout.includes(`${file} ${verdict}`),
+      named: res.stdout.includes(`failed: ${file}`),
+    };
+  });
+  expect(seen).toEqual(
+    Object.keys(endings).map((name) => ({
+      name,
+      exitCode: 1,
+      judged: 1,
+      header: true,
+      verdict: true,
+      named: true,
+    })),
+  );
 }, 90_000);
 
 // Bun's crash handler labels a panic line by the thread that died: the main thread, a Windows

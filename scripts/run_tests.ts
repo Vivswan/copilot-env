@@ -7,10 +7,12 @@
 //                       block when the file finishes, so parallel files never interleave
 //   *.e2e.test.ts    -> the realistic files run in CI or under --e2e only; --unit leaves them out
 //   a Bun crash      -> the file runs once more and the second run is judged (bunCrashed)
+//   no bun summary   -> the file fails whatever its exit code: the tests past the exit never ran
 import { mkdirSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { availableParallelism, tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { stripVTControlCharacters } from "node:util";
 import { deadline } from "@std/async";
 import { Command, CommanderError, Option } from "commander";
 import treeKill from "tree-kill";
@@ -53,6 +55,13 @@ function bunCrashed(exitCode: number, output: string): boolean {
   if (exitCode === BUN_PANIC_EXIT) return BUN_PANIC_MARKER.test(output);
   return process.platform === "win32" && exitCode === WINDOWS_FAIL_FAST_EXIT;
 }
+
+/** bun:test's end-of-run line, `Ran 8 tests across 1 file. [12.00ms]`: a child without it ended
+ *  before bun:test reported, whatever ended it and whatever code it exited with. The singular
+ *  forms are bun's own. Matched with the escape codes stripped, since FORCE_COLOR dims the timing
+ *  with codes between the period and the bracket. Not anchored to a line start, for the reason
+ *  the panic marker is not. */
+const BUN_SUMMARY_LINE = /Ran \d+ tests? across \d+ files?\. \[/;
 
 interface FileResult {
   file: string;
@@ -253,17 +262,23 @@ async function runFile(file: string, budgetMs: number): Promise<FileResult> {
       if (!(error instanceof DOMException && error.name === "TimeoutError")) throw error;
       for (const reader of readers) await reader.cancel();
     }
-    const output = overran
-      ? `${chunks.join("")}\n${displayName(file)} ran past the launcher's file budget (${seconds(
-          budgetMs,
-        )}) and was killed\n`
-      : chunks.join("");
+    const printed = chunks.join("");
+    // The crash rerun decides first: a crashed child printed no summary either, and its second
+    // run is the one judged.
+    const crashed = !overran && bunCrashed(exitCode, printed);
+    const unreported =
+      !overran && !crashed && !BUN_SUMMARY_LINE.test(stripVTControlCharacters(printed));
+    const verdict = overran
+      ? `ran past the launcher's file budget (${seconds(budgetMs)}) and was killed`
+      : unreported
+        ? `exited ${exitCode} before bun:test printed its end-of-run summary (no "Ran N tests across 1 file" line), so the tests it never reached were not judged`
+        : null;
     return {
       file,
-      exitCode: overran ? 1 : exitCode,
-      output,
+      exitCode: overran || (unreported && exitCode === 0) ? 1 : exitCode,
+      output: verdict === null ? printed : `${printed}\n${displayName(file)} ${verdict}\n`,
       ms: performance.now() - started,
-      crashed: !overran && bunCrashed(exitCode, output),
+      crashed,
     };
   } finally {
     dispose();

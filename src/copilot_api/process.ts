@@ -323,10 +323,35 @@ export async function classifyOwnedDaemonPid(pid: number): Promise<"yes" | "no" 
 }
 
 async function classifyDaemonPidWindows(pid: number): Promise<"yes" | "no" | "unknown"> {
-  // The SPECIFIC pid is queried so a different process (CommandLine present, judged here) is told
-  // apart from an unreadable one (CommandLine null: a restricted token); `pid` is our own integer,
-  // so inlining it is safe. CIM errors are non-terminating (an empty $p and exit 0, which would
-  // flatten into "no"), so the query is trapped to exit non-zero and read "unknown".
+  const look = await lookupCommandLineWindows(pid);
+  if (look.kind === "unproven") return "unknown";
+  if (look.kind === "absent") return "no";
+  return isDaemonCommandLine(look.command) ? "yes" : "no";
+}
+
+export type CommandLineLookup =
+  | { kind: "found"; command: string }
+  /** No such pid in the table read: gone, or (on POSIX, where `ps -U` is owner-filtered) another
+   *  user's. */
+  | { kind: "absent" }
+  /** The table could not be read (a failed `ps`, a restricted token): never "absent". */
+  | { kind: "unproven" };
+
+/** One pid's command line as the process table shows it, read where the pre-signal gates read
+ *  theirs: `ps -U <uid>` on POSIX (this user's processes), Win32_Process on Windows (any user's). */
+export async function lookupCommandLine(pid: number): Promise<CommandLineLookup> {
+  if (process.platform === "win32") return lookupCommandLineWindows(pid);
+  const rows = await listUserProcesses();
+  if (!rows.some((row) => row.pid === process.pid)) return { kind: "unproven" };
+  const row = rows.find((candidate) => candidate.pid === pid);
+  return row === undefined ? { kind: "absent" } : { kind: "found", command: row.command };
+}
+
+async function lookupCommandLineWindows(pid: number): Promise<CommandLineLookup> {
+  // The SPECIFIC pid is queried so a different process (CommandLine present, judged by the caller)
+  // is told apart from an unreadable one (CommandLine null: a restricted token); `pid` is our own
+  // integer, so inlining it is safe. CIM errors are non-terminating (an empty $p and exit 0, which
+  // would flatten into "absent"), so the query is trapped to exit non-zero and read "unproven".
   const script =
     "$ErrorActionPreference = 'Stop'; " +
     `try { $p = Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}' } catch { exit 1 }; ` +
@@ -334,13 +359,13 @@ async function classifyDaemonPidWindows(pid: number): Promise<"yes" | "no" | "un
     "elseif ([string]::IsNullOrEmpty($p.CommandLine)) { 'unknown' } " +
     `else { 'cmd:' + ${base64CommandLine("$p")} }`;
   const { exitCode, stdout } = await runPowershell(script);
-  if (exitCode !== 0) return "unknown";
+  if (exitCode !== 0) return { kind: "unproven" };
   const answer = stdout.trim();
-  if (answer === "no") return "no";
+  if (answer === "no") return { kind: "absent" };
   if (answer.startsWith("cmd:")) {
-    return isDaemonCommandLine(decodeCommandLine(answer.slice(4))) ? "yes" : "no";
+    return { kind: "found", command: decodeCommandLine(answer.slice(4)) };
   }
-  return "unknown";
+  return { kind: "unproven" };
 }
 
 /** A command line crosses the PowerShell boundary base64-encoded: an argument may itself carry a
@@ -434,16 +459,18 @@ export function parseProcessRows(stdout: string): ProcessRow[] {
 
 /**
  * `-U <uid>` restricts the scan to OUR processes on both BSD and procps: the orphan sweep SIGKILLs what
- * this feeds, so an elevated shell must never see another user's daemons. Any failure (including a
- * user with no processes, where `ps` exits non-zero) degrades to no rows, which the selfPid control
- * downstream reads as a FAILED scan; the raised maxBuffer keeps a process-heavy listing out of that path.
+ * this feeds, so an elevated shell must never see another user's daemons. `-ww` asks for the whole
+ * command line: a piped `ps` otherwise cuts each row at an exported COLUMNS, and the gates read argv.
+ * Any failure (including a user with no processes, where `ps` exits non-zero) degrades to no rows,
+ * which the selfPid control downstream reads as a FAILED scan; the raised maxBuffer keeps a
+ * process-heavy listing out of that path.
  */
 async function listUserProcesses(): Promise<ProcessRow[]> {
   const uid = process.getuid?.();
   if (uid === undefined) return [];
   const { exitCode, stdout } = await runCaptured(
     "ps",
-    ["-U", String(uid), "-o", "pid=,ucomm=,args="],
+    ["-ww", "-U", String(uid), "-o", "pid=,ucomm=,args="],
     { timeoutMs: PROCESS_SCAN_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024 },
   );
   if (exitCode !== 0) return [];

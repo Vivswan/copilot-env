@@ -100,7 +100,7 @@ import {
 import { isTomlTable } from "../utils/toml.ts";
 import { FENCE_LINES, failIfAny, LAUNCHERS_MARKER, LAUNCHERS_MARKER_END } from "./4.0.0.ts";
 import type { Migration } from "./index.ts";
-import { stopLockedDaemon } from "./legacy_daemon.ts";
+import { foreignHolderWarning, stopLockedDaemon } from "./legacy_daemon.ts";
 
 /** Key-wise, recursing into tables, `over`'s leaves winning: a table's `features.multi_agent`
  *  survives a file that only sets `features.shell_tool`, as Codex itself layers the two. */
@@ -813,11 +813,11 @@ export async function moveRootDaemonHome(
 }
 
 /** The root daemon's home IS the root (the layout before this step), so its lock is read there, and
- *  it is stopped by the lock alone (stopLockedDaemon): this release's classifier reads the previous
- *  release's daemon as foreign, so no pid-table judgment could own it. A migration never starts a
- *  daemon (that is the launch pipeline's), so a live one stays down until the next `agent start`;
- *  said out loud because an autoupdate inside `agent start` reaches this step right after that
- *  start spawned it. Exported for the migration test. */
+ *  it is stopped by the lock and its pid's command line (stopLockedDaemon): this release's
+ *  classifier reads the previous release's daemon as foreign, so no pid-table judgment could own
+ *  it. A migration never starts a daemon (that is the launch pipeline's), so a live one stays down
+ *  until the next `agent start`; said out loud because an autoupdate inside `agent start` reaches
+ *  this step right after that start spawned it. Exported for the migration test. */
 export async function stopRootDaemon(root: string): Promise<void> {
   const outcome = await stopLockedDaemon(root);
   switch (outcome.kind) {
@@ -830,6 +830,9 @@ export async function stopRootDaemon(root: string): Promise<void> {
       throw new Error(
         `a daemon may still run at ${root}: ${outcome.reason}. Run \`agent stop\` there, then re-run`,
       );
+    case "foreign":
+      consola.warn(foreignHolderWarning(root, outcome));
+      return;
     case "stopped":
       if (outcome.stillRunning) {
         throw new Error(`the daemon (pid ${outcome.pid}) running at ${root} would not stop`);
@@ -1166,9 +1169,12 @@ async function moveProfile(
   const rename = renameOf(move);
   if (rename !== null) {
     assertMovable(rename, claudeHome, codexHomes);
-    // By the lock alone, like the root daemon's stop: the previous release's daemon reads as
-    // foreign to this release's classifier.
+    // By the lock and the command line, like the root daemon's stop: the previous release's
+    // daemon reads as foreign to this release's classifier.
     const outcome = await stopLockedDaemon(profileHome(rename.from));
+    if (outcome.kind === "foreign") {
+      consola.warn(foreignHolderWarning(profileHome(rename.from), outcome));
+    }
     if (outcome.kind === "unjudged" || (outcome.kind === "stopped" && outcome.stillRunning)) {
       // The profile's name is a verb, so no command addresses its daemon any more: by hand it is.
       throw new Error(

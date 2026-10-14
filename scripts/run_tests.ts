@@ -5,10 +5,8 @@
 //                       never preempts the deadline race that tears a test's children down
 //   output           -> a file's stdout and stderr are kept in arrival order and printed as one
 //                       block when the file finishes, so parallel files never interleave
-//   *.e2e.test.ts    -> the realistic files (a process, a listener, a home-shaped sandbox, a real
-//                       CLI or the network) run in CI or under --e2e only; --unit leaves them out
-//   a Bun panic      -> a file whose process Bun itself killed runs once more and the second run
-//                       is judged; a test failure and the budget kill are final
+//   *.e2e.test.ts    -> the realistic files run in CI or under --e2e only; --unit leaves them out
+//   a Bun crash      -> the file runs once more and the second run is judged (bunCrashed)
 import { mkdirSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { availableParallelism, tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
@@ -36,21 +34,32 @@ const FILE_BUDGET_MS = 10 * 60_000;
 const FILE_BUDGET_ENV = "COPILOT_ENV_TEST_FILE_BUDGET_MS";
 /** The pipes settle with the child unless a descendant still holds them. */
 const PIPE_GRACE_MS = 5_000;
-/** Bun dying of its own fault: this exit code AND a panic line in the output (a test failure is
- *  exit 1, whatever it prints). Bun's crash handler labels the line by the thread that died:
- *  `panic(main thread): `, on Windows `panic(thread 7032): ` or `panic(<thread name>): `, and a
- *  bare `panic: ` for a thread on macOS or Linux. Not anchored to a line start: stdout and
- *  stderr chunks join in arrival order, so an unterminated stdout line may sit right before it,
- *  and a false match only costs one more run, which is judged. */
 const BUN_PANIC_EXIT = 3;
 const BUN_PANIC_MARKER = /panic(\([^)]*\))?: /;
+/** Read as the low byte of NTSTATUS 0xC0000409, the fail-fast status: inferred from three CI
+ *  deaths and oven-sh/bun#40376's exit list, not read from Bun's source. */
+const WINDOWS_FAIL_FAST_EXIT = 9;
+
+/**
+ * Bun's own death in its two shapes, each judged by one more run; a test failure is exit 1,
+ * whatever it prints, so a false match only costs that run.
+ *   exit 3 + a panic line  -> Bun's crash handler, which labels the line by the dying thread
+ *                             (`panic(main thread): `, `panic(thread 7032): `, a bare `panic: `);
+ *                             unanchored, as stdout and stderr chunks join in arrival order
+ *   exit 9 on Windows      -> a silent fail-fast; oven-sh/bun#40376 (the Windows event loop's
+ *                             use-after-free in socket teardown, still in 1.4.3) dies either way
+ */
+function bunCrashed(exitCode: number, output: string): boolean {
+  if (exitCode === BUN_PANIC_EXIT) return BUN_PANIC_MARKER.test(output);
+  return process.platform === "win32" && exitCode === WINDOWS_FAIL_FAST_EXIT;
+}
 
 interface FileResult {
   file: string;
   exitCode: number;
   output: string;
   ms: number;
-  panicked: boolean;
+  crashed: boolean;
 }
 
 interface Selection {
@@ -249,13 +258,12 @@ async function runFile(file: string, budgetMs: number): Promise<FileResult> {
           budgetMs,
         )}) and was killed\n`
       : chunks.join("");
-    const panicked = !overran && exitCode === BUN_PANIC_EXIT && BUN_PANIC_MARKER.test(output);
     return {
       file,
       exitCode: overran ? 1 : exitCode,
       output,
       ms: performance.now() - started,
-      panicked,
+      crashed: !overran && bunCrashed(exitCode, output),
     };
   } finally {
     dispose();
@@ -299,7 +307,7 @@ async function runAll(files: string[], limit: number, budgetMs: number): Promise
   const worker = async (): Promise<void> => {
     for (let file = queue.shift(); file !== undefined; file = queue.shift()) {
       let result = await runFile(file, budgetMs);
-      if (result.panicked) {
+      if (result.crashed) {
         report(result, "retrying");
         result = await runFile(file, budgetMs);
       }
@@ -327,7 +335,7 @@ function report(result: FileResult, retrying?: "retrying"): void {
   const name = displayName(result.file);
   const passed = result.exitCode === 0;
   const outcome = retrying
-    ? `died of a Bun runtime panic (exit ${result.exitCode}), running it once more`
+    ? `died of a Bun runtime crash (exit ${result.exitCode}), running it once more`
     : passed
       ? "passed"
       : `failed (exit ${result.exitCode})`;

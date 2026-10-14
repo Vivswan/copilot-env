@@ -212,12 +212,19 @@ The server is client-agnostic. Register it in Cursor or any other MCP client by 
 
 ## Cost reporting
 
-`agent cost` prices the proxy's usage DBs plus the Codex and Claude session logs. Two public price sources, each fetched once a day:
+`agent cost` prices the proxy's usage DBs plus the Codex and Claude session logs. Two public price sources, each fetched once a day, and nothing else: no price is built in, and a copy kept from an earlier day is never priced from.
 
 - **OpenRouter's model list** ([`cost.pricing-url`](configuration.md#cost)): the base rate for every model.
 - **GitHub's published Copilot rate card** ([`cost.github-pricing-url`](configuration.md#cost), the data file behind the docs' models-and-pricing page): its rate wins for every model it names, and a Codex request on a model whose card has a long-context tier (the OpenAI and xAI rows) with a prompt over 272K tokens is priced at that tier. The report's footer names the models whose price the card changed and the day it was read.
 
-A card that cannot be read or does not parse whole is never priced from: the last cached card, else OpenRouter's list alone, prices the run, and one stderr line says so. A model the card does not name is priced from the list either way.
+What prices a run is whichever sources were fetched today, and the footer says which. A copy kept from an earlier day never counts; a card that does not parse whole counts as not fetched.
+
+| OpenRouter list | GitHub card | Prices in the report                                              |
+| --------------- | ----------- | ----------------------------------------------------------------- |
+| fetched         | fetched     | the card's rate where it names the model, else the list's         |
+| fetched         | not fetched | the list alone; one stderr line names the card's problem          |
+| not fetched     | fetched     | the card alone; one stderr line names the list's problem          |
+| not fetched     | not fetched | none: tokens only, under one line saying prices are off           |
 
 Re-parsing every log on each run is slow, so the readers keep a usage index.
 
@@ -225,7 +232,7 @@ Re-parsing every log on each run is slow, so the readers keep a usage index.
 - **What it never stores:** message text or any other session content.
 - **Pre-index, not a cache:** every run folds the report fresh from the files that exist right now, so a deleted session drops out of the next report.
 - **Where:** `<copilot-api home>/usage-index/index.sqlite`, by default `~/.local/share/copilot-env/usage-index/index.sqlite`.
-- **Also there:** the two things that ARE cached, the public OpenRouter price list (`pricing-*.json`) and GitHub's rate card (`rate-card-*.json`), each with a 24-hour TTL. `agent uninstall` removes all of it.
+- **Also there:** today's copies of the public OpenRouter price list (`pricing-*.json`) and GitHub's rate card (`rate-card-*.json`), each served for 24 hours after its fetch so later runs that day skip the network. `agent uninstall` removes all of it.
 - **Verify it:** `agent cost --no-index` parses every file from scratch.
 
 `--days N` takes a whole number as local calendar days (`1` = today, `7` = today and the six days before) and a decimal as an exact span of 24-hour days (`0.5` = the last 12 hours).

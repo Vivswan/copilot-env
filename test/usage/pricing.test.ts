@@ -637,8 +637,12 @@ const CACHE_AGES: {
   { name: "stamped in the future", seededAt: NOW + HOUR_MS, readAt: NOW, fresh: false },
 ];
 
+// An expired cache would otherwise price a run from last week's list the moment the network drops:
+// the fallback the owner ruled out ("no offline prices").
 for (const { name, seededAt, readAt, ttlMs, fresh } of CACHE_AGES) {
-  test(`loadPricing: a cache ${name} is ${fresh ? "answered from disk" : "refreshed"}`, () =>
+  test(`loadPricing: a cache ${name} is ${
+    fresh ? "answered from disk" : "refreshed, and prices nothing when the refresh fails"
+  }`, () =>
     withCacheDir(async (cacheDir) => {
       const seed = fakeFetch(openRouterBody("anthropic/claude-opus-4.8", "0.000015"));
       await loadPricing(PRICE_URL, { cacheDir, nowMs: seededAt, fetchImpl: seed.fetch });
@@ -652,18 +656,22 @@ for (const { name, seededAt, readAt, ttlMs, fresh } of CACHE_AGES) {
         };
       };
 
-      // A failing refresh: a fresh cache is the answer; an expired one is the fallback, and
+      // A failing refresh: a fresh cache is the answer; an expired one is never priced from, and
       // the failed refresh leaves the stale file untouched.
       const down = fakeFetch(null, { fail: true });
-      const fallback = await loadPricing(PRICE_URL, {
+      const outcome = await loadPricing(PRICE_URL, {
         cacheDir,
         nowMs: readAt,
         ttlMs,
         fetchImpl: down.fetch,
-      });
-      expect(fallback.source).toBe(fresh ? "cache" : "stale-cache");
-      expect(fallback.fetchedAtMs).toBe(seededAt);
-      expect(fallback.pricing.get("anthropic/claude-opus-4.8")?.input).toBe(15);
+      }).then(
+        (loaded) => ({
+          source: loaded.source,
+          input: loaded.pricing.get("anthropic/claude-opus-4.8")?.input,
+        }),
+        (e: unknown) => (e instanceof Error ? e.message : String(e)),
+      );
+      expect(outcome).toEqual(fresh ? { source: "cache", input: 15 } : "pricing request failed");
       expect(down.calls).toBe(fresh ? 0 : 1);
       expect(onDisk()).toEqual({ stamp: seededAt, input: 15 });
 
@@ -860,15 +868,12 @@ test("loadPricing treats a response with no priced model as a failed refresh", (
     await loadPricing(PRICE_URL, { cacheDir, nowMs: now, fetchImpl: seed.fetch });
     const later = now + 2 * DAY_MS;
 
-    // With an expired cache: the stale list wins over a body with no list at all.
+    // With an expired cache: a body with no list at all is the same failed refresh, and the
+    // expired list is not an answer.
     const bodyless = fakeFetch({});
-    const loaded = await loadPricing(PRICE_URL, {
-      cacheDir,
-      nowMs: later,
-      fetchImpl: bodyless.fetch,
-    });
-    expect(loaded.source).toBe("stale-cache");
-    expect(loaded.pricing.get("anthropic/claude-opus-4.8")?.input).toBe(15);
+    await expect(
+      loadPricing(PRICE_URL, { cacheDir, nowMs: later, fetchImpl: bodyless.fetch }),
+    ).rejects.toThrow("pricing response has no priced models");
 
     // Router entries only, models with no rates at all, and unroutable ids
     // (empty or with whitespace): nothing here is a priced model.
@@ -882,18 +887,9 @@ test("loadPricing treats a response with no priced model as a failed refresh", (
         { id: "a b", pricing: { prompt: "0.001" } },
       ],
     });
-    const kept = await loadPricing(PRICE_URL, {
-      cacheDir,
-      nowMs: later,
-      fetchImpl: unpriced.fetch,
-    });
-    expect(kept).toMatchObject({
-      source: "stale-cache",
-      fetchedAtMs: now,
-      fetchError: "pricing response has no priced models",
-    });
-    expect(kept.pricing.get("anthropic/claude-opus-4.8")?.input).toBe(15);
-    expect(kept.pricing.has("openai/gpt-5.5")).toBe(false);
+    await expect(
+      loadPricing(PRICE_URL, { cacheDir, nowMs: later, fetchImpl: unpriced.fetch }),
+    ).rejects.toThrow("pricing response has no priced models");
 
     // The stale file is untouched by the failed refreshes.
     const record = JSON.parse(readFileSync(pricingCachePath(PRICE_URL, cacheDir), "utf8"));
@@ -1015,21 +1011,14 @@ test("loadPricing never echoes the URL in its errors", () =>
       loadPricing(secretUrl, { cacheDir, nowMs: now, fetchImpl: html.fetch }),
     ).rejects.toThrow("pricing response was not valid JSON");
 
-    // Stale fallback: the recorded fetchError is equally URL-free, and so is the file.
+    // An expired cache behind a failing refresh: the rejection is equally URL-free, and so is
+    // the file.
     const seed = fakeFetch(openRouterBody("anthropic/claude-opus-4.8", "0.000015"));
     await loadPricing(secretUrl, { cacheDir, nowMs: now, fetchImpl: seed.fetch });
-    const stale = await loadPricing(secretUrl, {
-      cacheDir,
-      nowMs: now + 2 * DAY_MS,
-      fetchImpl: down.fetch,
-    });
-    expect(stale).toMatchObject({
-      source: "stale-cache",
-      fetchedAtMs: now,
-      fetchError: "pricing request failed",
-    });
-    const text =
-      JSON.stringify(stale) + readFileSync(pricingCachePath(secretUrl, cacheDir), "utf8");
+    await expect(
+      loadPricing(secretUrl, { cacheDir, nowMs: now + 2 * DAY_MS, fetchImpl: down.fetch }),
+    ).rejects.toThrow(/^pricing request failed$/);
+    const text = readFileSync(pricingCachePath(secretUrl, cacheDir), "utf8");
     expect(text).not.toContain("SECRET-TOKEN");
     expect(text).not.toContain("pricing.example");
     // Negative control: the fake transport's own error DOES carry the token.

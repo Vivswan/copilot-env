@@ -8,7 +8,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { join, parse, posix, relative, sep } from "node:path";
+import { basename, join, parse, posix, relative, sep } from "node:path";
 import { compiledHealthFailures } from "../../.github/scripts/installer-smoke.ts";
 import { INSTALLER_PINS } from "../../.github/scripts/release-assets.ts";
 import { DAEMON_SHIM_DEPENDENCIES } from "../../src/copilot_api/shims.ts";
@@ -27,7 +27,7 @@ import {
   RELEASE_TARGETS,
   releaseAssetName,
 } from "../../src/utils/targets.ts";
-import { ROOT, runScript, runSync } from "../helpers/run.ts";
+import { ROOT, runScript, runSync, spawnChild } from "../helpers/run.ts";
 import { moduleSpecifiers, parseModule, resolveRelative, visit } from "../helpers/syntax.ts";
 import { describe, expect, removeDir, tempDir, test } from "../helpers/testing.ts";
 import { tsFilesUnder as srcFiles } from "../helpers/tree.ts";
@@ -329,35 +329,53 @@ describe("installer checkout guard refuses before mutating, proceeds on legacy r
     return root;
   }
 
+  /** The installer's argv and environment for this platform. The Windows side runs under the
+   *  real Windows PowerShell 5.1, by its fixed path so a PATH a test strips still finds it. */
+  function installerCommand(
+    root: string,
+    downloadBase: string,
+    extraEnv: Record<string, string> = {},
+    extraArgs: string[] = [],
+  ): { cmd: string; args: string[]; env: Record<string, string | undefined> } {
+    const extra = { COPILOT_ENV_DOWNLOAD_BASE: downloadBase, CI: "1", ...extraEnv };
+    if (process.platform === "win32") {
+      return withPowershellChildEnv("powershell", (env) => ({
+        cmd: join(
+          process.env.SystemRoot ?? "C:\\Windows",
+          "System32",
+          "WindowsPowerShell",
+          "v1.0",
+          "powershell.exe",
+        ),
+        args: [
+          "-NoProfile",
+          "-NonInteractive",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-File",
+          join(ROOT, "install.ps1"),
+          "-InstallDir",
+          root,
+          ...extraArgs,
+        ],
+        env: { ...env, ...extra },
+      }));
+    }
+    return {
+      cmd: "bash",
+      args: [join(ROOT, "install.sh"), "--dir", root, ...extraArgs],
+      env: { ...process.env, ...extra },
+    };
+  }
+
   function runInstaller(
     root: string,
     downloadDir: string,
     extraEnv: Record<string, string> = {},
     extraArgs: string[] = [],
   ): ReturnType<typeof runSync> {
-    const extra = { COPILOT_ENV_DOWNLOAD_BASE: downloadDir, CI: "1", ...extraEnv };
-    if (process.platform === "win32") {
-      return withPowershellChildEnv("powershell", (env) =>
-        runSync(
-          "powershell",
-          [
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            join(ROOT, "install.ps1"),
-            "-InstallDir",
-            root,
-            ...extraArgs,
-          ],
-          { env: { ...env, ...extra } },
-        ),
-      );
-    }
-    return runSync("bash", [join(ROOT, "install.sh"), "--dir", root, ...extraArgs], {
-      env: { ...process.env, ...extra },
-    });
+    const { cmd, args, env } = installerCommand(root, downloadDir, extraEnv, extraArgs);
+    return runSync(cmd, args, { env });
   }
 
   /** install.sh on a pseudo-terminal (`script`), CI unset, so the shell-reload offer at the end
@@ -467,6 +485,70 @@ describe("installer checkout guard refuses before mutating, proceeds on legacy r
       cleanup(root, downloadDir);
     }
   });
+
+  // The one run that fetches over HTTP: the smokes and every other case here hand the installer
+  // a directory, so the transport (curl on POSIX; on Windows the web cmdlets once curl.exe is off
+  // PATH) runs against a real server nowhere else before a release. curl is install.sh's only
+  // transport, and the container image (Dockerfile) ships none: there the POSIX run skips.
+  const posixWithCurl = test.skipIf(process.platform !== "win32" && Bun.which("curl") === null);
+  posixWithCurl(
+    "the installer downloads from a URL base, on Windows with no curl.exe on PATH",
+    async () => {
+      const win = process.platform === "win32";
+      const downloadDir = makeDownloadDir();
+      const served = Bun.serve({
+        hostname: "127.0.0.1",
+        port: 0,
+        fetch(req) {
+          const file = join(downloadDir, basename(new URL(req.url).pathname));
+          return existsSync(file)
+            ? new Response(Bun.file(file))
+            : new Response("not here", { status: 404 });
+        },
+      });
+      const root = makeRoot(MARKER, "none");
+      // POSIX keeps its PATH: curl IS install.sh's transport, and the fallback under test is
+      // install.ps1's. The key is spelled as this process's environment spells it, so the override
+      // replaces the entry instead of adding a second one.
+      const barePath = tempDir("ce-guard-bare-path-");
+      const pathKey = Object.keys(process.env).find((k) => k.toUpperCase() === "PATH") ?? "PATH";
+      try {
+        const { cmd, args, env } = installerCommand(
+          root,
+          `http://127.0.0.1:${served.port}`,
+          win ? { [pathKey]: barePath } : {},
+        );
+        const child = spawnChild(cmd, { args, env, stdout: "pipe", stderr: "pipe" });
+        const [stdout, stderr, exitCode] = await Promise.all([
+          new Response(child.stdout).text(),
+          new Response(child.stderr).text(),
+          child.exited,
+        ]);
+        const res = { exitCode, stdout, stderr };
+        const why = evidence(res, root);
+        const installed = join(root, "bin", installedBinaryName());
+        const target = currentReleaseTarget();
+        if (target === null) throw new Error("no release target for this platform");
+        const asset = releaseAssetName(target);
+        // The bytes that reached bin/ are the served asset's: a run that skipped the fetch, or
+        // fetched the wrong thing, fails the installer's own SHA256 check before this.
+        expect(existsSync(installed), why).toBe(true);
+        expect(readFileSync(installed, "utf8"), why).toBe(
+          readFileSync(join(downloadDir, asset), "utf8"),
+        );
+        if (win) {
+          // The stand-in .exe cannot run, so the handoff's non-zero exit is the only exit on offer.
+          expect(exitCode, why).not.toBe(0);
+        } else {
+          expect(exitCode, why).toBe(0);
+          expect(existsSync(`${installed}.invoked`), why).toBe(true);
+        }
+      } finally {
+        served.stop(true);
+        cleanup(root, downloadDir, barePath);
+      }
+    },
+  );
 
   // POSIX only: the Windows stand-in asset is deliberately not executable (the refusal
   // tests never reach the handoff), and this case needs the handoff to succeed.

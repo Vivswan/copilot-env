@@ -25,6 +25,7 @@ This downloads one self-contained `agent` binary for your platform into `~/.copi
 - **Install from a release, not `main`.** `main` is for development and can run ahead of the released installer flow.
 - **Replaceable:** re-run the installer any time to move to the selected release.
 - **Optional:** `agent shell --clis` installs or updates the Claude/Copilot/Codex CLIs. `agent config set shell.launchers true` adds the `cl` / `co` / `cx` [launchers](usage.md#launchers).
+- **Windows needs only PowerShell:** Windows PowerShell 5.1 or pwsh 7; the installer uses `curl.exe` when PATH has it and PowerShell's own web cmdlets otherwise.
 
 **Specific version:** replace `latest` with an exact release tag, or pass `--version`.
 

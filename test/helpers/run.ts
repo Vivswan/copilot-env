@@ -58,29 +58,23 @@ export interface RunOptions {
 }
 
 /**
- * Written LAST: no caller's map can drop the harness keys.
+ * The process's width rule (node_env.ts) holds for a child: no COLUMNS unless `given`, the test's
+ * own env, names it, whatever the value; a finite default would wrap a long path. The harness
+ * keys are written LAST so no caller's map can drop them.
  *   TEST_ROOT_ENV  -> the child's temp root nests inside this process's (testing.ts)
  *   NODE_PATH      -> a child program written under that root resolves a bare package import
  *                     from this checkout's node_modules, which no ancestor of a tmp dir holds
+ *   BUN_RUNTIME_TRANSPILER_CACHE_PATH -> off: it lives under the child's HOME, and a test that
+ *                     retargets HOME and fingerprints it would find its `.pile` files there
  */
-/** Bun's runtime transpiler cache is off in every child: it lives under the child's HOME (macOS
- *  `Library/Caches/bun`, Windows AppData), and a test that retargets HOME and fingerprints it would
- *  find the `.pile` files among its own writes. */
-/** A child renders at this width unless the test pins its own, so the runner's terminal never
- *  reaches an assertion on a child's output: a COLUMNS the caller merely inherited from this
- *  process is the runner's and is replaced, one it set itself stays. Wide, as a pipe without
- *  COLUMNS is: the children's assertions were written against unwrapped lines. */
-const CHILD_COLUMNS = "400";
-
-function childColumns(env: Record<string, string | undefined>): string {
-  const given = env.COLUMNS;
-  return given === undefined || given === process.env.COLUMNS ? CHILD_COLUMNS : given;
-}
-
-function harnessEnv(env: Record<string, string | undefined>): Record<string, string | undefined> {
+function childEnv(
+  base: Record<string, string | undefined>,
+  given: Record<string, string | undefined>,
+): Record<string, string | undefined> {
+  const { COLUMNS: _runnerWidth, ...inherited } = base;
   return {
-    ...env,
-    COLUMNS: childColumns(env),
+    ...inherited,
+    ...given,
     [TEST_ROOT_ENV]: ISOLATE_ROOT,
     NODE_PATH: join(ROOT, "node_modules"),
     BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0",
@@ -127,7 +121,7 @@ export function spawnChild<
 >(cmd: string, options: SpawnChildOptions<In, Out, Err> = {}): Bun.Subprocess<In, Out, Err> {
   const signal = liveTestSignal();
   const { args = [], clearEnv = false, env: given = {}, ...stdio } = options;
-  const env = harnessEnv(clearEnv ? given : { ...process.env, ...given });
+  const env = childEnv(clearEnv ? {} : process.env, given);
   return Bun.spawn([cmd, ...args], { ...stdio, env, signal, killSignal: "SIGKILL" });
 }
 
@@ -142,7 +136,7 @@ export function runSync(cmd: string, args: string[], opts: RunOptions = {}): Run
   liveTestSignal();
   const res = spawnSync(cmd, args, {
     cwd: opts.cwd ?? ROOT,
-    env: harnessEnv(opts.env ?? process.env),
+    env: opts.env === undefined ? childEnv(process.env, {}) : childEnv({}, opts.env),
     encoding: "utf-8",
     input: opts.input ?? "",
     maxBuffer: 16 * 1024 * 1024,

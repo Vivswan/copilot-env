@@ -39,6 +39,7 @@ import {
   parseWindowFlags,
   perDayRows,
 } from "../../src/usage/day_metrics.ts";
+import { loadGitHubRateCard } from "../../src/usage/github_rate_card.ts";
 import { openUsageIndex } from "../../src/usage/index.ts";
 import {
   estimateCost,
@@ -455,8 +456,8 @@ const PRICED_BODY = {
 };
 
 /** `fail` rejects with the TypeError shape the real transport throws. Serves `body` to every URL,
- *  the rate card's included: the card then fails to parse and, with none cached, the run prices
- *  from the list alone, which is what these tests price against. */
+ *  the rate card's included: the card then fails to parse and the run prices from the list alone,
+ *  which is what these tests price against. */
 function fakeFetch(body: unknown, opts: { fail?: boolean } = {}): typeof fetch {
   return ((input: string | URL | Request, init?: RequestInit): Promise<Response> => {
     if (init?.signal?.aborted) return Promise.reject(init.signal.reason);
@@ -478,14 +479,13 @@ const RATE_CARD_TEXT = readFileSync(
   "utf8",
 );
 
-/** `body` for the price list and `card` for the rate card at `cardUrl` (the built-in URL unless a
- *  test stored another). */
+/** `card` for the rate card at `cardUrl` (the built-in URL unless a test stored another), `list`
+ *  for everything else. */
 function routedFetch(
-  body: unknown,
+  list: typeof fetch,
   card: string,
   cardUrl: string = GITHUB_RATE_CARD_URL,
 ): typeof fetch {
-  const list = fakeFetch(body);
   return ((input: string | URL | Request, init?: RequestInit): Promise<Response> =>
     String(input) === cardUrl
       ? Promise.resolve(new Response(card, { status: 200 }))
@@ -590,6 +590,7 @@ interface CostJson {
   runtime: CostRuntime;
   usageByModel: Record<string, ModelUsage>;
   claudeSessions: { totalUsd: number; billedUsd?: number };
+  note: string;
 }
 
 /** The payload minus `runtime`: what two runs over the same logs must agree on, and what the
@@ -618,7 +619,7 @@ test("runCost with no sources returns early and never asks for the price list", 
       runCost({ pricingUrl: PRICE_URL }, { fetchImpl: net.fetch, ...NO_SOURCES }),
     );
     expect(out).toContain("no copilot-api usage databases");
-    expect(out).not.toContain("could not fetch OpenRouter pricing");
+    expect(out).not.toContain("could not be fetched today");
     expect(net.urls).toEqual([]);
   }));
 
@@ -639,7 +640,7 @@ test("a cold run fetches the price list only after the synchronous parse, so the
     const afterParse = { open: false, paths: [transcript] };
     expect(net.sawAtRequests()).toEqual([afterParse]);
     expect(net.requests()).toBe(2);
-    expect(stderr).not.toContain("could not fetch OpenRouter pricing");
+    expect(stderr).not.toContain("OpenRouter's price list could not be fetched");
     // Priced: 10 in at $15/M + 20 out at $75/M.
     expect(payload.claudeSessions.totalUsd).toBe(0.0017);
   }));
@@ -683,9 +684,13 @@ test("runCost discovers roots before it opens the index, so a failing discovery 
 
 const STORED_URL = "https://stored.example/with-secret-token/models";
 
+/** The one stderr line of a run that fetched neither source. */
+const PRICES_OFF_LINE =
+  "Prices are off: neither GitHub's rate card (rate card request failed) nor OpenRouter's price list (pricing request failed) could be fetched today; reporting tokens only.";
+
 /** How the price list was loaded and the stderr line that earns: the turn (10 in at $15/M +
- *  20 out at $75/M) is priced by any list that loaded, and no line ever names the URL, which a
- *  custom one may carry a token in. */
+ *  20 out at $75/M) is priced by a list fetched today or by its last cached copy, and no line ever
+ *  names the URL, which a custom one may carry a token in. */
 const PRICE_LIST_WARNINGS: {
   name: string;
   /** The URL the run resolves, stored under the config key or passed as the flag. */
@@ -699,8 +704,9 @@ const PRICE_LIST_WARNINGS: {
   totalUsd: number;
 }[] = [
   {
-    // A cache stamped two days ago, then the network taken away.
-    name: "it prices against a stale cached list",
+    // A cache stamped two days ago, then the network taken away: the cached list prices the run
+    // and the line names it; the card has no copy, so the list prices alone.
+    name: "the fetch fails with a stale list cached",
     url: PRICE_URL,
     stored: false,
     seed: async (home) => {
@@ -712,8 +718,8 @@ const PRICE_LIST_WARNINGS: {
     },
     fetchImpl: fakeFetch(null, { fail: true }),
     lines: [
-      "WARNING: could not refresh OpenRouter pricing (pricing request failed)",
-      "using the cached price list from",
+      "OpenRouter's price list could not be fetched today (pricing request failed); using the cached price list from ",
+      "GitHub's rate card could not be fetched today (rate card request failed); priced at OpenRouter's list alone.",
     ],
     totalUsd: 0.0017,
   },
@@ -743,7 +749,7 @@ const PRICE_LIST_WARNINGS: {
     seed: () => {},
     noIndex: true,
     fetchImpl: fakeFetch(null, { fail: true }),
-    lines: ["could not fetch OpenRouter pricing (pricing request failed)"],
+    lines: [PRICES_OFF_LINE],
     totalUsd: 0,
   },
 ];
@@ -900,14 +906,14 @@ test("runtime.timing.pricing is the wait for the price list alone, never the war
         );
         return payload.runtime;
       };
-      // Rejected load: the warning prints, the clock jumps, pricing stays at the wait. The rate
-      // card is not asked for when the list failed, so the one warning is the list's.
+      // Neither source fetched: the one prices-off warning prints, the clock jumps, pricing stays
+      // at the wait.
       const failed = await runtime(fakeFetch(null, { fail: true }));
       expect(failed.timing.pricing).toBe(0);
       expect(failed.timing.total).toBe(warnedMs);
       // Seed both caches with one fetched run; fresh caches then answer without the network, so
       // the load reads as exactly 0, no warning.
-      await runtime(routedFetch(PRICED_BODY, RATE_CARD_TEXT));
+      await runtime(routedFetch(fakeFetch(PRICED_BODY), RATE_CARD_TEXT));
       nowMs = 0;
       const cached = await runtime(fakeFetch(null, { fail: true }));
       expect(cached.timing.pricing).toBe(0);
@@ -920,14 +926,14 @@ test("runtime.timing.pricing is the wait for the price list alone, never the war
 // The card's provenance (source, fetch stamp) sits under `runtime`: a fetched and a cached run
 // over the same logs must otherwise agree, or the cost-metrics check reads its own base twice
 // and calls the inputs unstable.
-test("runCost reads GitHub's card from the stored URL, prices at it, names the card and its day, and prices from the list alone in one line when it cannot be read and none is cached", () =>
+test("runCost reads GitHub's card from the stored URL, prices at it, names the card and its day, and prices from the list alone in one line when it cannot be read", () =>
   withCostHome(async ({ claudeRoot }) => {
     const cardUrl = "https://rates.example/models-and-pricing.yml";
     new CopilotEnvConfig().set({ "cost.github-pricing-url": cardUrl });
     // The published card plus a row this build has no id for.
     const card = `${RATE_CARD_TEXT}\n- model: GPT-7\n  provider: openai\n  input: $1.00\n  cached_input: $0.10\n  output: $2.00\n`;
     const deps = (text: string, url = cardUrl): CostDeps => ({
-      fetchImpl: routedFetch(PRICED_BODY, text, url),
+      fetchImpl: routedFetch(fakeFetch(PRICED_BODY), text, url),
       ...rootsOf([], [claudeRoot]),
     });
 
@@ -960,9 +966,8 @@ test("runCost reads GitHub's card from the stored URL, prices at it, names the c
     expect(cached.payload.runtime.githubRates).toEqual({ source: "cached", fetchedAt });
     expect(withoutRuntime(cached.payload)).toEqual(withoutRuntime(fetched.payload));
 
-    // A URL with no cached card that serves something that is not the card: one line names the
-    // problem (never the URL), the list alone prices the run at its own rate, and the JSON names
-    // no card.
+    // A URL that serves something that is not the card: one line names the problem (never the
+    // URL), the list alone prices the run at its own rate, and the JSON names no card.
     const garbledUrl = "https://rates.example/with-secret-token/garbled.yml";
     new CopilotEnvConfig().set({ "cost.github-pricing-url": garbledUrl });
     const fallback = await jsonRun(
@@ -970,12 +975,100 @@ test("runCost reads GitHub's card from the stored URL, prices at it, names the c
       deps("not a card", garbledUrl),
     );
     expect(fallback.stderr).toContain(
-      "GitHub rate card could not be read today (the rate card is not a list of rows) and none is cached; priced at OpenRouter rates.",
+      "GitHub's rate card could not be fetched today (the rate card is not a list of rows); priced at OpenRouter's list alone.",
     );
     expect(fallback.stderr).not.toContain("rates.example");
     expect(fallback.stderr).not.toContain("with-secret-token");
     expect("githubRates" in fallback.payload.runtime).toBe(false);
     expect(fallback.payload.claudeSessions.totalUsd).toBe(0.0017);
+  }));
+
+// Both caches hold a list and a card fetched two days ago and both fetches fail: the owner's
+// rule is that a cached copy prices the run whatever its age, and the report names the copy's day.
+// A source with nothing cached prices nothing.
+test("runCost prices from the cached copies when the fetches fail and names their day, prices nothing with no copy, and from GitHub's card alone when only the list is out", () =>
+  withCostHome(async ({ home, claudeRoot }) => {
+    const cacheDir = join(home, USAGE_INDEX_DIR_NAME);
+    const twoDaysAgo = Date.now() - 2 * MILLISECONDS_PER_DAY;
+    const stamp = new Date(twoDaysAgo).toISOString();
+    const day = stamp.slice(0, 10);
+    await loadPricing(PRICE_URL, {
+      cacheDir,
+      nowMs: twoDaysAgo,
+      fetchImpl: fakeFetch(PRICED_BODY),
+    });
+    const seeded = await loadGitHubRateCard(GITHUB_RATE_CARD_URL, {
+      cacheDir,
+      nowMs: twoDaysAgo,
+      fetchImpl: routedFetch(fakeFetch(null, { fail: true }), RATE_CARD_TEXT),
+    });
+    expect(seeded.kind).toBe("card");
+    const down = fakeFetch(null, { fail: true });
+    const deps = (fetchImpl: typeof fetch): CostDeps => ({
+      fetchImpl,
+      ...rootsOf([], [claudeRoot]),
+    });
+    const args: CostArgs = { pricingUrl: PRICE_URL, noIndex: true };
+
+    // Offline with both copies: the card over the list (opus 4.8 at the card's $5/M in and $25/M
+    // out: 10 in + 20 out = $0.00055), each stderr line names the copy's day, and --json says
+    // cached with the copy's stamp.
+    const cached = await jsonRun(args, deps(down));
+    expect(cached.stderr).toContain(
+      `OpenRouter's price list could not be fetched today (pricing request failed); using the cached price list from ${day}.`,
+    );
+    expect(cached.stderr).toContain(
+      `GitHub's rate card could not be fetched today (rate card request failed); using the cached rate card from ${day}.`,
+    );
+    expect(cached.payload.claudeSessions.totalUsd).toBe(0.0006);
+    expect(cached.payload.runtime.githubRates).toEqual({ source: "cached", fetchedAt: stamp });
+    const copies = `the price list from a cached copy of ${day} and the rate card from a cached copy of ${day}`;
+    expect(cached.payload.note).toContain(
+      `priced at public OpenRouter rates, GitHub's own where the two differ (actual billing may differ), ${copies}; `,
+    );
+    const cachedReport = await captureChannels(() => runCost(args, deps(down)));
+    expect(cachedReport.stdout).toContain(
+      `Disclaimer: these numbers are approximate -- gathered from local logs and priced at public OpenRouter rates (GitHub's own where the two differ), ${copies}; actual billing may differ.`,
+    );
+    expect(cachedReport.stdout).toContain(
+      `Priced at GitHub's rate card (fetched ${day}), not OpenRouter's: claude-opus-4.8`,
+    );
+
+    // URLs with nothing cached and the network down: tokens only, under the one line.
+    const bareCard = "https://rates.example/other-card.yml";
+    new CopilotEnvConfig().set({ "cost.github-pricing-url": bareCard });
+    const bare: CostArgs = { pricingUrl: "https://pricing.example/other-models", noIndex: true };
+    const offline = await jsonRun(bare, deps(down));
+    expect(offline.stderr).toContain(PRICES_OFF_LINE);
+    expect(offline.payload.claudeSessions.totalUsd).toBe(0);
+    expect("githubRates" in offline.payload.runtime).toBe(false);
+    expect(offline.payload.note).toContain(
+      "not priced (neither GitHub's rate card nor OpenRouter's price list could be fetched today)",
+    );
+    const offlineReport = await captureChannels(() => runCost(bare, deps(down)));
+    expect(offlineReport.stdout).toContain(
+      "Prices are off: neither GitHub's rate card nor OpenRouter's price list could be fetched today.",
+    );
+    expect(offlineReport.stdout).not.toContain("Disclaimer");
+    expect(offlineReport.stdout).toContain("Unpriced (excluded from total): claude-opus-4.8");
+
+    // The card alone: the list has no copy and its fetch is down, the card is served. The footer
+    // names the one source, and the JSON names today's fetch.
+    const cardOnly = routedFetch(down, RATE_CARD_TEXT, bareCard);
+    const priced = await jsonRun(bare, deps(cardOnly));
+    expect(priced.stderr).toContain(
+      "OpenRouter's price list could not be fetched today (pricing request failed); priced at GitHub's rate card alone.",
+    );
+    expect(priced.payload.claudeSessions.totalUsd).toBe(0.0006);
+    expect(priced.payload.runtime.githubRates?.source).toBe("fetched");
+    expect(priced.payload.note).toContain(
+      "priced at GitHub's rate card alone (OpenRouter's price list could not be fetched today)",
+    );
+    const cardReport = await captureChannels(() => runCost(bare, deps(cardOnly)));
+    expect(cardReport.stdout).toContain(
+      "Disclaimer: these numbers are approximate -- gathered from local logs and priced at GitHub's rate card alone (OpenRouter's price list could not be fetched today); actual billing may differ.",
+    );
+    expect(cardReport.stdout).toContain("), not OpenRouter's: claude-opus-4.8");
   }));
 
 function codexRootWithTwoRollouts(dir: string): string {

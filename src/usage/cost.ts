@@ -2,9 +2,7 @@ import { consola } from "consola";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import type { ProbeFetch } from "../copilot_api/integration_identity.ts";
 import { colorEnabled, paintFor } from "../utils/ansi.ts";
-import { errMessage } from "../utils/error.ts";
 import { type Align, printTable, printWrapped, printWrappedToStderr } from "../utils/table.ts";
-import { formatDuration } from "../utils/time.ts";
 import { discoverClaudeSessionRoots, readClaudeSessions } from "./claude_sessions.ts";
 import { discoverCodexSessionRoots, readCodexSessions } from "./codex_sessions.ts";
 import {
@@ -26,18 +24,17 @@ import {
   perDayRows,
   UNDATED_DAY_LABEL,
 } from "./day_metrics.ts";
-import { loadGitHubRateCard, type RateCardSource } from "./github_rate_card.ts";
+import type { RateCardSource } from "./github_rate_card.ts";
 import { openUsageIndex } from "./index.ts";
+import { loadPriceSources, type PriceSources, type SourceRead } from "./price_sources.ts";
 import {
   type CostEstimate,
   estimateCost,
-  loadPricing,
   type ModelCost,
   nanoAiuToUsd,
-  type PriceList,
+  PriceList,
   type PricingTier,
   roundUsd,
-  withGitHubRates,
 } from "./pricing.ts";
 import {
   type ClientRequest,
@@ -59,21 +56,84 @@ import {
 const SOURCES_INTRO =
   "Note: three sources -- the proxy DBs (proxied traffic) plus Codex session logs and Claude transcripts " +
   "(each agent's full traffic, Direct included). ";
-const DISCLAIMER =
-  "\nDisclaimer: these numbers are approximate -- gathered from local logs and priced at public OpenRouter rates " +
-  "(GitHub's own where the two differ); " +
-  "actual billing may differ.";
 /** The combined table pairs a proxied request's two records; the per-source tables are each whole. */
 const COMBINED_NOTE =
   SOURCES_INTRO +
   "The table merges all three; a request both the proxy and a client log recorded " +
-  "(same model, token counts, and time) is counted once. Use --sources for per-source tables." +
-  DISCLAIMER;
+  "(same model, token counts, and time) is counted once. Use --sources for per-source tables.";
 const SOURCES_NOTE =
   SOURCES_INTRO +
   "Each table is whole, so summing them double counts traffic that went through the proxy; " +
-  "the default view counts such a request once." +
-  DISCLAIMER;
+  "the default view counts such a request once.";
+
+const UNREAD_CARD = "GitHub's rate card could not be fetched today";
+const UNREAD_LIST = "OpenRouter's price list could not be fetched today";
+const UNREAD_BOTH = "neither GitHub's rate card nor OpenRouter's price list could be fetched today";
+
+/** A source prices the run when read today or served from its last cached copy. */
+function prices(source: SourceRead): boolean {
+  return source.kind !== "none";
+}
+
+/** What priced the run, for the footer and the --json note; `bothRead` is each one's own wording
+ *  for the usual case. A source priced from a cached copy names the copy's day. */
+function pricingClause(sources: PriceSources, bothRead: string): string {
+  const { openRouter, gitHub } = sources;
+  let clause: string;
+  if (prices(openRouter) && prices(gitHub)) clause = bothRead;
+  else if (prices(openRouter)) clause = `priced at public OpenRouter rates alone (${UNREAD_CARD})`;
+  else if (prices(gitHub)) clause = `priced at GitHub's rate card alone (${UNREAD_LIST})`;
+  else return `not priced (${UNREAD_BOTH})`;
+  const cached = [
+    openRouter.kind === "cached"
+      ? `the price list from a cached copy of ${isoDay(openRouter.fetchedAtMs)}`
+      : null,
+    gitHub.kind === "cached"
+      ? `the rate card from a cached copy of ${isoDay(gitHub.fetchedAtMs)}`
+      : null,
+  ].filter((part): part is string => part !== null);
+  return cached.length === 0 ? clause : `${clause}, ${cached.join(" and ")}`;
+}
+
+/** The footer's last line: the disclaimer when something priced the run, else the one line that
+ *  says prices are off. */
+function disclaimer(sources: PriceSources): string {
+  if (!prices(sources.openRouter) && !prices(sources.gitHub)) {
+    return `\nPrices are off: ${UNREAD_BOTH}.`;
+  }
+  const clause = pricingClause(
+    sources,
+    "priced at public OpenRouter rates (GitHub's own where the two differ)",
+  );
+  return `\nDisclaimer: these numbers are approximate -- gathered from local logs and ${clause}; actual billing may differ.`;
+}
+
+/** One stderr line per source that could not be fetched today: why, and what priced the run
+ *  instead (its cached copy, the other source, or nothing). */
+function unreadWarnings(sources: PriceSources): string[] {
+  const { openRouter, gitHub } = sources;
+  if (openRouter.kind === "none" && gitHub.kind === "none") {
+    return [
+      `Prices are off: neither GitHub's rate card (${gitHub.problem}) nor OpenRouter's price list (${openRouter.problem}) could be fetched today; reporting tokens only.`,
+    ];
+  }
+  const line = (
+    unread: string,
+    source: SourceRead,
+    cachedName: string,
+    other: string,
+  ): string | null => {
+    if (source.kind === "read") return null;
+    if (source.kind === "cached") {
+      return `${unread} (${source.problem}); using the cached ${cachedName} from ${isoDay(source.fetchedAtMs)}.`;
+    }
+    return `${unread} (${source.problem}); priced at ${other} alone.`;
+  };
+  return [
+    line(UNREAD_LIST, openRouter, "price list", "GitHub's rate card"),
+    line(UNREAD_CARD, gitHub, "rate card", "OpenRouter's list"),
+  ].filter((part): part is string => part !== null);
+}
 
 const EMPTY_REPORT: ReadonlyUsageReport = usageReport();
 
@@ -119,10 +179,10 @@ export interface CostRuntime {
   indexed: boolean;
   index: IndexStats;
   timing: { walk: number; parse: number; fold: number; pricing: number; total: number };
-  /** Where the GitHub rate card came from; absent when no card priced the run (no price list
-   *  loaded, or today's card unreadable with none cached). Under `runtime` with the other run
-   *  facts: a fetched and a cached run price the same, and the fetch stamp would otherwise make
-   *  two runs over one tree differ. */
+  /** Where the GitHub rate card came from: `cached` is a copy an earlier run fetched at
+   *  `fetchedAt`, served fresh or in place of a fetch that failed today; absent when no card priced
+   *  the run. Under `runtime` with the other run facts: a fetched and a cached run price the same,
+   *  and the fetch stamp would otherwise make two runs over one tree differ. */
   githubRates?: { source: "fetched" | "cached"; fetchedAt: string };
 }
 
@@ -253,62 +313,25 @@ async function reportCost(
   }
 
   // After the readers, never beside them: they are synchronous, so a fetch in flight across them
-  // could make no progress and its timeout fired the moment the event loop was free again. A fetch
-  // failure prices from an expired cache when one exists, and reports tokens only when none does.
-  // GitHub's rate card goes over the loaded list (the list and its cache stay as fetched), so it is
-  // read only once a list loaded; a card that could not be read today falls back to the last cached
-  // one, else to the list alone, and says so.
-  let listed: Map<string, PricingTier> | undefined;
-  let priced: PriceList | undefined;
+  // could make no progress and its timeout fired the moment the event loop was free again.
   const pricingWaitStartedAt = now();
-  let pricingWaitMs = 0;
-  const loadRates = async () => {
-    const list = await loadPricing(run.pricingUrl, { fetchImpl: run.fetchImpl });
-    const card = await loadGitHubRateCard(run.rateCardUrl, { fetchImpl: run.fetchImpl });
-    return { list, card };
-  };
-  try {
-    const { list, card } = await loadRates().finally(() => {
-      pricingWaitMs = now() - pricingWaitStartedAt;
-    });
-    listed = list.pricing;
-    if (card.kind === "card") priced = withGitHubRates(list.pricing, card.card, card.from);
-    if (list.source === "stale-cache") {
+  const sources = await loadPriceSources(
+    { pricingUrl: run.pricingUrl, rateCardUrl: run.rateCardUrl },
+    run.fetchImpl,
+  );
+  const pricingWaitMs = now() - pricingWaitStartedAt;
+  for (const line of unreadWarnings(sources)) consola.warn(line);
+  for (const [name, source] of [
+    ["the OpenRouter price list", sources.openRouter],
+    ["GitHub's rate card", sources.gitHub],
+  ] as const) {
+    if (source.kind === "read" && source.cacheWriteError !== undefined) {
       consola.warn(
-        `WARNING: could not refresh OpenRouter pricing (${list.fetchError}); using the cached price list from ${formatDuration(
-          Date.now() - list.fetchedAtMs,
-        )} ago.`,
+        `WARNING: could not cache ${name} (${source.cacheWriteError}); the next run fetches it again.`,
       );
     }
-    if (list.source === "fetched" && list.cacheWriteError !== undefined) {
-      consola.warn(
-        `WARNING: could not cache the OpenRouter price list (${list.cacheWriteError}); the next run fetches it again.`,
-      );
-    }
-    if (card.kind === "none") {
-      consola.warn(
-        `GitHub rate card could not be read today (${card.problem}) and none is cached; priced at OpenRouter rates.`,
-      );
-    } else if (card.problem !== undefined) {
-      consola.warn(
-        `GitHub rate card could not be read today (${card.problem}); using cached ${isoDay(
-          card.from.fetchedAtMs,
-        )} rates.`,
-      );
-    }
-    if (card.kind === "card" && card.cacheWriteError !== undefined) {
-      consola.warn(
-        `WARNING: could not cache GitHub's rate card (${card.cacheWriteError}); the next run fetches it again.`,
-      );
-    }
-  } catch (e) {
-    consola.warn(
-      `WARNING: could not fetch OpenRouter pricing (${errMessage(e)}); reporting tokens only.`,
-    );
   }
-  // Tokens only when no list loaded (an empty list prices nothing); the list alone when no card
-  // priced the run.
-  const pricing: Map<string, PricingTier> = priced ?? listed ?? new Map();
+  const { pricing } = sources;
 
   const measured: MeasuredRun = {
     indexed: logs.indexed,
@@ -353,13 +376,12 @@ async function reportCost(
         buildCostJson(
           proxyReport,
           proxyEstimate,
-          pricing,
+          sources,
           dbPaths.length,
           sinceMs,
           Boolean(args.perDay),
           codexSessions,
           claudeSessions,
-          priced?.from,
           measured,
         ),
         null,
@@ -378,7 +400,7 @@ async function reportCost(
   };
   const reportOpts: ReportOpts = {
     pricing,
-    rateCard: priced?.from,
+    rateCard: sources.rateCard,
     window,
     perDay: Boolean(args.perDay),
     roots: sessionRoots.length,
@@ -389,18 +411,17 @@ async function reportCost(
     printCombinedView(proxy, codexByProvider, claude, reportOpts, logs.clients);
   }
 
-  if (priced !== undefined && priced.card.unmapped.length > 0) {
+  const unmapped = pricing instanceof PriceList ? pricing.card.unmapped : [];
+  if (unmapped.length > 0) {
     printWrapped(
       paintFor(colorEnabled()).dim(
-        `  GitHub's rate card also lists models with no id here (unmapped): ${priced.card.unmapped.join(
-          ", ",
-        )}`,
+        `  GitHub's rate card also lists models with no id here (unmapped): ${unmapped.join(", ")}`,
       ),
     );
     console.log("");
   }
   printBilledCheck([proxyReport, ...codexByProvider.values(), claudeReport], pricing);
-  printWrapped(args.sources ? SOURCES_NOTE : COMBINED_NOTE);
+  printWrapped((args.sources ? SOURCES_NOTE : COMBINED_NOTE) + disclaimer(sources));
   console.log("");
   if (logs.indexed) {
     printWrappedToStderr(describeIndexRun(logs.meter.stats));
@@ -1044,14 +1065,12 @@ function completeRuntime(measured: MeasuredRun, rateCard: RateCardSource | undef
 function buildCostJson(
   report: ReadonlyUsageReport,
   estimate: CostEstimate,
-  pricing: Map<string, PricingTier>,
+  sources: PriceSources,
   dbCount: number,
   sinceMs: number | undefined,
   perDay: boolean,
   codexSessions: { roots: number; providers: Record<string, Record<string, unknown>> },
   claudeSessions: Record<string, unknown>,
-  /** The card the run priced GitHub-rated models from; absent when no card priced the run. */
-  rateCard: RateCardSource | undefined,
   measured: MeasuredRun,
 ): Record<string, unknown> {
   // Property order is evaluation order: `runtime` last, so its `total` covers the construction of
@@ -1059,14 +1078,17 @@ function buildCostJson(
   return {
     dbCount,
     sinceMs: sinceMs ?? null,
-    ...buildSourceJson(report, estimate, pricing, { perDay }),
+    ...buildSourceJson(report, estimate, sources.pricing, { perDay }),
     codexSessions,
     claudeSessions,
     note:
       "approximate numbers gathered from local logs and keyed by canonical model spellings " +
-      "(dashed/dated claude ids fold into the dotted form), priced at public OpenRouter rates, GitHub's own where the two differ (actual billing may differ); " +
+      `(dashed/dated claude ids fold into the dotted form), ${pricingClause(
+        sources,
+        "priced at public OpenRouter rates, GitHub's own where the two differ (actual billing may differ)",
+      )}; ` +
       "top-level keys cover proxied traffic only, while codexSessions/claudeSessions cover each agent's FULL traffic " +
       "(proxy and Direct), so they overlap the proxy keys when an agent is proxy-wired -- never sum them",
-    runtime: completeRuntime(measured, rateCard),
+    runtime: completeRuntime(measured, sources.rateCard),
   };
 }

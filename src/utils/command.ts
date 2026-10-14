@@ -9,11 +9,15 @@ import * as fs from "./fs_facade.ts";
 
 const POSIX_NVM_SH = '"$' + '{NVM_DIR:-$HOME/.nvm}/nvm.sh"';
 
-/** A PowerShell look's cost is its startup: Windows PowerShell 5.1 takes seconds on a cold or
- *  loaded machine, the query itself milliseconds. */
-export const POWERSHELL_LOOK_TIMEOUT_MS = 10_000;
-/** `command -v` with the nvm fallback sourced, or a where.exe walk: well under a second. */
-const COMMAND_LOOK_TIMEOUT_MS = 5_000;
+/** A one-shot PowerShell command's cost is its startup: Windows PowerShell 5.1 takes seconds on a
+ *  cold or loaded machine, the work itself milliseconds. */
+export const POWERSHELL_COMMAND_TIMEOUT_MS = 10_000;
+/** The `Get-Command` look walks PATH and the module catalog on top of that startup, and shares the
+ *  bound of its POSIX twin below. */
+const POWERSHELL_LOOK_TIMEOUT_MS = 30_000;
+/** `command -v` alone answers in milliseconds, but the nvm fallback sources nvm.sh, which a slow
+ *  shell startup stretches to many seconds; a tighter bound read an installed codex as unproven. */
+const COMMAND_LOOK_TIMEOUT_MS = 30_000;
 /** SIGKILL, not the default TERM: a child that ignores TERM holds a sync spawn forever, since the
  *  runtime waits for the exit, not for the signal. */
 export const LOOK_KILL_SIGNAL = "SIGKILL";
@@ -82,8 +86,11 @@ export function scratchPowershellProfile(): {
   };
 }
 
-export function findCommand(command: string): CommandLook {
+/** `timeoutMs` replaces the platform's look bound; a test that provokes a stall cannot wait out the
+ *  shipped one. */
+export function findCommand(command: string, opts: { timeoutMs?: number } = {}): CommandLook {
   if (process.platform === "win32") {
+    const timeout = opts.timeoutMs ?? POWERSHELL_LOOK_TIMEOUT_MS;
     const profile = scratchPowershellProfile();
     try {
       const result = withPowershellChildEnv("powershell", (env) =>
@@ -97,7 +104,7 @@ export function findCommand(command: string): CommandLook {
           {
             stdio: "ignore",
             env: { ...env, ...profile.env },
-            timeout: POWERSHELL_LOOK_TIMEOUT_MS,
+            timeout,
             killSignal: LOOK_KILL_SIGNAL,
           },
         ),
@@ -108,6 +115,7 @@ export function findCommand(command: string): CommandLook {
     }
   }
 
+  const timeout = opts.timeoutMs ?? COMMAND_LOOK_TIMEOUT_MS;
   const result = spawnSync(
     "sh",
     [
@@ -116,7 +124,7 @@ export function findCommand(command: string): CommandLook {
       "sh",
       command,
     ],
-    { encoding: "utf8", timeout: COMMAND_LOOK_TIMEOUT_MS, killSignal: LOOK_KILL_SIGNAL },
+    { encoding: "utf8", timeout, killSignal: LOOK_KILL_SIGNAL },
   );
   return commandLookFromSpawn(result, () => result.stdout.trim() || null);
 }

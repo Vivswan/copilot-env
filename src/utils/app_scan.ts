@@ -5,7 +5,7 @@
 // (src/copilot_api/process.ts).
 import {
   type CapturedRun,
-  POWERSHELL_LOOK_TIMEOUT_MS,
+  POWERSHELL_COMMAND_TIMEOUT_MS,
   runCaptured,
   scratchPowershellProfile,
   withPowershellChildEnv,
@@ -34,7 +34,7 @@ export async function runPowershell(
   try {
     return await withPowershellChildEnv("powershell", (env) =>
       exec("powershell", ["-NoProfile", "-NonInteractive", "-Command", script], {
-        timeoutMs: POWERSHELL_LOOK_TIMEOUT_MS,
+        timeoutMs: POWERSHELL_COMMAND_TIMEOUT_MS,
         env: { ...env, ...profile.env },
       }),
     );

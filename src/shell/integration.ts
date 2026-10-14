@@ -3,7 +3,7 @@ import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import { consola } from "consola";
 import {
   LOOK_KILL_SIGNAL,
-  POWERSHELL_LOOK_TIMEOUT_MS,
+  POWERSHELL_COMMAND_TIMEOUT_MS,
   withPowershellChildEnv,
 } from "../utils/command.ts";
 import { isEnoent } from "../utils/fs.ts";
@@ -457,7 +457,7 @@ function psEval(command: string): string {
       spawnSync(exe, ["-NoProfile", "-Command", command], {
         encoding: "utf-8",
         env,
-        timeout: POWERSHELL_LOOK_TIMEOUT_MS,
+        timeout: POWERSHELL_COMMAND_TIMEOUT_MS,
         killSignal: LOOK_KILL_SIGNAL,
       }),
     );

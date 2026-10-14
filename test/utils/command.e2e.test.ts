@@ -1,4 +1,4 @@
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   childEnvWithPath,
@@ -20,6 +20,8 @@ const SAVED_PATH = process.env.PATH;
 const HAD_PATH_CASE = Object.hasOwn(process.env, "Path");
 const SAVED_PATH_CASE = process.env.Path;
 // On Windows the two spellings are one variable, so both saves and both restores agree there.
+const HAD_NVM_DIR = Object.hasOwn(process.env, "NVM_DIR");
+const SAVED_NVM_DIR = process.env.NVM_DIR;
 const SAVED_PSMODULEPATH = [
   ["PSModulePath", process.env.PSModulePath],
   ["psmodulepath", process.env.psmodulepath],
@@ -33,6 +35,8 @@ afterEach(() => {
     if (saved === undefined) delete process.env[key];
     else process.env[key] = saved;
   }
+  if (HAD_NVM_DIR) process.env.NVM_DIR = SAVED_NVM_DIR;
+  else delete process.env.NVM_DIR;
   delete process.env.COPILOT_TEST_LEAK;
   delete process.env.Copilot_Mixed_Var;
 });
@@ -258,12 +262,38 @@ test.skipIf(process.platform === "win32")(
     writeFileSync(join(bin, "sh"), HANGING_SHIM, { mode: 0o755 });
     process.env.PATH = childPathPrepending([bin]);
     const started = performance.now();
-    const look = findCommand("gh");
+    const look = findCommand("gh", { timeoutMs: 2_000 });
     const elapsed = performance.now() - started;
     // Control: a missing shell fails in milliseconds; only the bound ending a live child takes
-    // seconds, and it must end it well before a caller's own deadline would.
+    // seconds, and the sleeper on its own would run 20 s, past the test's deadline.
     expect({ look, waited: elapsed > 1000 && elapsed < 15_000 }).toEqual({
       look: { kind: "unproven" },
+      waited: true,
+    });
+  },
+);
+
+// A look bound retuned below a slow shell startup reads installed tools as absent: the nvm fallback
+// sources nvm.sh, and a slow one once outran a 5 s bound, so an installed codex read as not found.
+// The fixture is the shape of that nvm.sh, a startup that takes seconds before the tool is on PATH.
+const SLOW_NVM_SH = '#!/bin/sh\nsleep 6\nexport PATH="$NVM_DIR/bin:$PATH"\n';
+
+test.skipIf(process.platform === "win32")(
+  "findCommand: a tool that a slow nvm.sh exposes after seconds is found under the default bound",
+  () => {
+    const nvmDir = tempDir("copilot-env-slow-nvm-");
+    const bin = join(nvmDir, "bin");
+    mkdirSync(bin);
+    writeFileSync(join(nvmDir, "nvm.sh"), SLOW_NVM_SH, { mode: 0o755 });
+    writeFileSync(join(bin, "copilot-env-nvm-only-codex"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    process.env.NVM_DIR = nvmDir;
+    process.env.PATH = BASE_PATH;
+    const started = performance.now();
+    const look = findCommand("copilot-env-nvm-only-codex");
+    // Control: the tool is on no PATH entry before nvm.sh runs, so a found that skipped the sleep is
+    // impossible; the wait proves the slow sourcing was crossed, not bypassed.
+    expect({ look, waited: performance.now() - started > 5000 }).toEqual({
+      look: { kind: "found", path: join(bin, "copilot-env-nvm-only-codex") },
       waited: true,
     });
   },

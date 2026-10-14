@@ -12,7 +12,7 @@ import {
   runPowershell,
 } from "../utils/app_scan.ts";
 import {
-  POWERSHELL_LOOK_TIMEOUT_MS,
+  POWERSHELL_COMMAND_TIMEOUT_MS,
   runCaptured,
   withPowershellChildEnv,
 } from "../utils/command.ts";
@@ -175,7 +175,7 @@ async function openApp(): Promise<void> {
           `$a = Get-StartApps | Where-Object { $_.Name -like '${APP_NAME}*' } | Select-Object -First 1;` +
             `if ($a) { Start-Process ('shell:AppsFolder\\' + $a.AppID) } else { Start-Process '${APP_NAME}' }`,
         ],
-        { timeoutMs: POWERSHELL_LOOK_TIMEOUT_MS, env },
+        { timeoutMs: POWERSHELL_COMMAND_TIMEOUT_MS, env },
       ),
     );
     if (r.exitCode !== 0) {

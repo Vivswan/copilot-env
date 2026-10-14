@@ -537,7 +537,7 @@ skipWin("e2e: a proxy-wired Claude launch aborts (exit 1) when the start offer i
     input: "n\n",
   });
   expect(res.exitCode).toBe(1);
-  expect(res.stderr).toContain("copilot proxy not running. Start it now? [Y/n]");
+  expect(res.stderr).toContain("copilot proxy not running. Start it now?");
   expect(res.stderr).toContain("Continuing without the proxy");
   expect(res.stdout).not.toContain("ARGS="); // claude was never launched
   expect(recordedMode(root)).toBe("proxy"); // aborted before the wire: only the fixture's record

@@ -7,7 +7,12 @@ import { PROJECT_ROOT } from "../../src/utils/root.ts";
 import { moduleSpecifiers, parseModule, resolveRelative } from "../helpers/syntax.ts";
 import { expect, test } from "../helpers/testing.ts";
 import { tsFilesUnder } from "../helpers/tree.ts";
-import { type ImportGraph, lintArchitecture, readArchitecture } from "../lint/architecture.ts";
+import {
+  type ImportGraph,
+  lintArchitecture,
+  lintConfinedPackages,
+  readArchitecture,
+} from "../lint/architecture.ts";
 
 const arch = readArchitecture(PROJECT_ROOT);
 
@@ -18,34 +23,71 @@ const arch = readArchitecture(PROJECT_ROOT);
  * alike) that resolves to another file under src/. A relative specifier naming no file throws
  * in the resolver: a graph that silently dropped it would read a broken import as a missing edge.
  */
-function importGraph(): ImportGraph {
+interface Graphs {
+  graph: ImportGraph;
+  /** Repo-relative src file -> the bare (package and `node:`) specifiers it names. */
+  packages: ReadonlyMap<string, readonly string[]>;
+}
+
+function importGraphs(): Graphs {
   const files = tsFilesUnder(join(PROJECT_ROOT, "src"));
   const repoPath = (file: string): string => relative(PROJECT_ROOT, file).replaceAll("\\", "/");
   const graph = new Map<string, string[]>();
+  const packages = new Map<string, string[]>();
   for (const file of files) {
     const targets = new Set<string>();
+    const bare = new Set<string>();
     for (const specifier of moduleSpecifiers(parseModule(file))) {
       const target = resolveRelative(file, specifier);
-      if (target === null) continue;
+      if (target === null) {
+        bare.add(specifier);
+        continue;
+      }
       const path = repoPath(target);
       if (path.startsWith("src/")) targets.add(path);
     }
     graph.set(repoPath(file), [...targets].sort());
+    packages.set(repoPath(file), [...bare].sort());
   }
   if (graph.size !== files.length) {
     throw new Error(`the graph lists ${graph.size} of ${files.length} source files as modules`);
   }
-  return graph;
+  return { graph, packages };
 }
 
-let graphMemo: ImportGraph | undefined;
+let graphsMemo: Graphs | undefined;
 function graph(): ImportGraph {
-  graphMemo ??= importGraph();
-  return graphMemo;
+  graphsMemo ??= importGraphs();
+  return graphsMemo.graph;
+}
+function packages(): Graphs["packages"] {
+  graphsMemo ??= importGraphs();
+  return graphsMemo.packages;
 }
 
 test("the imports under src/ match architecture.json exactly", () => {
   expect(lintArchitecture(arch, graph())).toEqual([]);
+});
+
+// What would drift silently: nothing but this rule stops a second module from importing the
+// prompt library around the wrapper, and the first such import drew a question on stdout.
+test("a confined package is imported by its one wrapper module and nowhere else under src/", () => {
+  expect(lintConfinedPackages(packages())).toEqual([]);
+  // Both derivations must find the owner, or the planted rows below would pin an empty graph.
+  expect(packages().get("src/utils/prompt.ts")).toContain("@clack/prompts");
+  const planted = new Map([
+    ["src/utils/prompt.ts", ["@clack/prompts"]],
+    ["src/commands/auth.ts", ["@clack/prompts", "node:readline"]],
+    ["src/commands/profile.ts", ["@clack/prompts/dist/index.mjs"]],
+  ]);
+  expect(lintConfinedPackages(planted)).toEqual([
+    "src/commands/auth.ts imports @clack/prompts, which only src/utils/prompt.ts may import; call its wrapper instead",
+    "src/commands/profile.ts imports @clack/prompts/dist/index.mjs, which only src/utils/prompt.ts may import; call its wrapper instead",
+  ]);
+  const ownerless = new Map([["src/commands/auth.ts", ["node:readline"]]]);
+  expect(lintConfinedPackages(ownerless)).toEqual([
+    "src/utils/prompt.ts no longer imports @clack/prompts; drop it from CONFINED_PACKAGES",
+  ]);
 });
 
 // Each row breaks the declaration one way; the lint must name the break and nothing else.

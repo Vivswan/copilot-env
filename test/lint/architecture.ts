@@ -4,7 +4,7 @@
 //   an import between layers with no declared edge  -> "forbidden import"
 //   a declared edge no file draws                   -> "stale allowance"
 //   a graph file no layer owns                      -> "belongs to no layer"
-//
+//   a package confined to one module imported elsewhere -> "only ... may import"
 // The import graph itself is read from syntax (test/helpers/syntax.ts, by test/utils/architecture.test.ts),
 // so an edge is every specifier a file names: static, type-only, re-export, side-effect, and
 // string-literal dynamic imports alike. Imports inside one layer are not edges.
@@ -12,6 +12,13 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const ARCHITECTURE_FILE = "architecture.json";
+
+/** A package one module wraps for the rest of src/: package -> the one file that may import it.
+ *  @clack/prompts draws every question through src/utils/prompt.ts, which owns the output stream,
+ *  the cancel mapping, and the closed-stdin answer. */
+const CONFINED_PACKAGES: Readonly<Record<string, string>> = {
+  "@clack/prompts": "src/utils/prompt.ts",
+};
 
 interface Architecture {
   /** layer -> the repo-relative paths it owns; a trailing slash means a directory. */
@@ -142,6 +149,38 @@ export function lintArchitecture(arch: Architecture, graph: ImportGraph): string
       problems.push(
         `stale allowance ${key}: no file draws it; remove it from ${ARCHITECTURE_FILE}`,
       );
+    }
+  }
+  return problems;
+}
+
+/** `packages` is repo-relative src file -> the bare specifiers it names. The verdict is empty when
+ *  each confined package is imported by its one owner and nowhere else; it fails in both directions,
+ *  so a stray import and an owner that stopped importing the package are both named. */
+export function lintConfinedPackages(
+  packages: ReadonlyMap<string, readonly string[]>,
+  confined: Readonly<Record<string, string>> = CONFINED_PACKAGES,
+): string[] {
+  const problems: string[] = [];
+  const owners = new Set<string>();
+  for (const [file, specifiers] of [...packages].sort()) {
+    for (const specifier of specifiers) {
+      const name = Object.keys(confined).find(
+        (pkg) => specifier === pkg || specifier.startsWith(`${pkg}/`),
+      );
+      if (name === undefined) continue;
+      if (confined[name] === file) {
+        owners.add(name);
+      } else {
+        problems.push(
+          `${file} imports ${specifier}, which only ${confined[name]} may import; call its wrapper instead`,
+        );
+      }
+    }
+  }
+  for (const [name, owner] of Object.entries(confined)) {
+    if (!owners.has(name)) {
+      problems.push(`${owner} no longer imports ${name}; drop it from CONFINED_PACKAGES`);
     }
   }
   return problems;

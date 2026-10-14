@@ -204,7 +204,7 @@ test("proxy-token --dry-run takes the start's own preview, prints no key, and pl
     autoStartEnabled: () => true,
     // In production this is `agent start --dry-run` in process under a dry run (launchProxy).
     launchProxy: () => void launches.push("launched"),
-    readAnswer: () => Promise.resolve(""),
+    confirmStart: () => Promise.resolve(true),
     recordHeartbeat: () => {},
     printProxyToken: () => {
       printed++;

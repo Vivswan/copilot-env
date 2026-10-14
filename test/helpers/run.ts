@@ -66,9 +66,21 @@ export interface RunOptions {
 /** Bun's runtime transpiler cache is off in every child: it lives under the child's HOME (macOS
  *  `Library/Caches/bun`, Windows AppData), and a test that retargets HOME and fingerprints it would
  *  find the `.pile` files among its own writes. */
+/** A child renders at this width unless the test pins its own, so the runner's terminal never
+ *  reaches an assertion on a child's output: a COLUMNS the caller merely inherited from this
+ *  process is the runner's and is replaced, one it set itself stays. Wide, as a pipe without
+ *  COLUMNS is: the children's assertions were written against unwrapped lines. */
+const CHILD_COLUMNS = "400";
+
+function childColumns(env: Record<string, string | undefined>): string {
+  const given = env.COLUMNS;
+  return given === undefined || given === process.env.COLUMNS ? CHILD_COLUMNS : given;
+}
+
 function harnessEnv(env: Record<string, string | undefined>): Record<string, string | undefined> {
   return {
     ...env,
+    COLUMNS: childColumns(env),
     [TEST_ROOT_ENV]: ISOLATE_ROOT,
     NODE_PATH: join(ROOT, "node_modules"),
     BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0",

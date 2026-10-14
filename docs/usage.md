@@ -12,7 +12,7 @@ The `agent` subcommands and the mechanisms behind the ones that need more than a
 
 ```bash
 agent profile [<name>] <verb>  # everything about ONE profile; no name = the default profile
-                           #   add --direct|--proxy|--auto [--yes] [--no-auth]  its mode (both agents), then the credential
+                           #   add --direct|--proxy|--auto [--yes] [--no-auth] [--gh-user <login|auto>]  its mode (both agents), then the credential
                            #                              step unless --no-auth; --auto signs in first and probes direct vs
                            #                              proxy under that credential (the default with no flag probes
                            #                              every run); a mode change asks first, and when the probe's
@@ -20,7 +20,7 @@ agent profile [<name>] <verb>  # everything about ONE profile; no name = the def
                            #   del [--yes]                delete the named profile everywhere (asks first)
                            #   show                       mode, provider, daemon
                            #   auth                       its credential: --provider copilot|gh-cli|gh-token|gh-env,
-                           #                              --set <token>, --get, --del, --check, --gh-user <login>;
+                           #                              --set <token>, --get, --del, --check, --gh-user <login|auto>;
                            #                              a new named profile is wired here
                            #   identity                   the client identity survey; --set <id|auto> = set identity,
                            #                              --get = get identity, --del = unset identity
@@ -45,7 +45,7 @@ agent profile [<name>] <verb>  # everything about ONE profile; no name = the def
                            #   settings --export|--import a bundle of this profile alone (same flags as agent settings)
                            #   reserved words, never a new profile's name: the verbs, help, and list
 agent list                 # every profile: NAME  MODE  PROVIDER  DAEMON (also bare `agent profile`)
-agent init [--direct|--proxy|--auto] [--yes] [--no-auth]  # = agent profile add for the default profile
+agent init [--direct|--proxy|--auto] [--yes] [--no-auth] [--gh-user <login|auto>]  # = agent profile add for the default profile
 agent auth <flags>         # = agent profile auth for the default profile
 agent identity <flags>     # = agent profile identity for the default profile
 agent models <flags>       # = agent profile models for the default profile

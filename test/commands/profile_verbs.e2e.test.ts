@@ -362,24 +362,24 @@ test("add runs the credential step on a profile without one: headless it refuses
   expect(init.stderr).toContain("pass --no-auth to record the mode alone");
   expect(init.stderr).toContain("agent auth --provider");
   expect(treeContents(scratch.home)).toEqual(before);
-  // --dry-run: the mode's plan and the planned step, nothing run.
+  // --dry-run, headless: the bare sign-in would prompt, so the dry run refuses as the real run
+  // does, before planning anything (a terminal's bare dry run names the step instead).
   const dry = observe(["profile", "work", "add", "--proxy", "--dry-run"], scratch);
-  expect(dry.exitCode).toBe(0);
-  expect(dry.stdout).toContain('profiles.work.mode  (absent) -> "proxy"');
-  expect(dry.stderr).toContain("Would run the credential step (agent profile work auth)");
+  expect(dry.exitCode).toBe(1);
+  expect(dry.stderr).toContain("pass --no-auth to record the mode alone");
+  expect(dry.stdout).not.toContain("DRY RUN");
   expect(treeContents(scratch.home)).toEqual(before);
   // --no-auth: the mode lands, the step is printed.
   const noAuth = observe(["profile", "work", "add", "--proxy", "--no-auth"], scratch);
   expect(noAuth.exitCode).toBe(0);
   expect(noAuth.stderr).toContain("Next:  agent profile work auth --provider");
   expect(observe(["profile", "work", "show"], scratch).stdout).toContain("provider: no credential");
-  // The default's add records its mode like a named profile's: a dry run plans the record and
-  // names the step, --no-auth lands the record and prints the one next step.
+  // The default's add records its mode like a named profile's: headless, a bare dry run refuses
+  // as the real run does; --no-auth lands the record and prints the one next step.
   const afterNamed = treeContents(scratch.home);
   const initDry = observe(["init", "--proxy", "--dry-run"], scratch);
-  expect(initDry.exitCode).toBe(0);
-  expect(initDry.stdout).toContain('profiles.default.mode  (absent) -> "proxy"');
-  expect(initDry.stderr).toContain("Would run the credential step (agent auth)");
+  expect(initDry.exitCode).toBe(1);
+  expect(initDry.stderr).toContain("pass --no-auth to record the mode alone");
   expect(treeContents(scratch.home)).toEqual(afterNamed);
   const initNoAuth = observe(["init", "--proxy", "--no-auth"], scratch);
   expect(initNoAuth.exitCode).toBe(0);

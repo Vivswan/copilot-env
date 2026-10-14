@@ -2,7 +2,6 @@ import { createConsola, type LogObject } from "consola";
 import stringWidth from "string-width";
 import {
   createStderrLogger,
-  promptLayout,
   taggedLogger,
   WrappingReporter,
   withNarrationMuted,
@@ -141,29 +140,6 @@ test("with color on, the whole wrapped warning body is yellow, an inline backtic
   expect(String(split.seen[1]?.args[0]).split("\n")[1]).toBe(
     `${yellow}${cyan}health${close}${yellow} next${close}`,
   );
-});
-
-test("promptLayout wraps the question under Clack's three-column lead and select labels under five, keeping every option's value", () => {
-  const laid = promptLayout(
-    "Which Copilot client identity should be pinned for this profile?",
-    {
-      type: "select",
-      options: [
-        "gh-env",
-        { label: "copilot-developer-cli (GitHub Copilot CLI; accepts PATs)", value: "cli" },
-      ],
-    },
-    40,
-  );
-  expect(laid.message.split("\n")[0]?.length).toBeLessThanOrEqual(37);
-  const [bare, rich] = laid.options?.options ?? [];
-  expect(bare).toEqual({ label: "gh-env", value: "gh-env" });
-  expect(typeof rich === "object" && rich.value).toBe("cli");
-  expect(typeof rich === "object" && rich.label.split("\n")[0]?.length).toBeLessThanOrEqual(35);
-  expect(promptLayout("short?", { type: "confirm" }, null)).toEqual({
-    message: "short?",
-    options: { type: "confirm" },
-  });
 });
 
 // The import's preview runs the wiring once on the fs overlay; its narration belongs to the real

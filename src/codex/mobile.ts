@@ -18,7 +18,8 @@ import {
 } from "../utils/command.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { isRecord } from "../utils/json.ts";
-import { createStderrLogger, prompt } from "../utils/logger.ts";
+import { createStderrLogger } from "../utils/logger.ts";
+import { prompt } from "../utils/prompt.ts";
 import { parseToml, stringify } from "../utils/toml.ts";
 import { inspectCatalogFile } from "./catalog.ts";
 import { effectiveCodexHome } from "./host.ts";

@@ -49,7 +49,8 @@ import { cyan } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
 import { PLANNED_SECRET } from "../utils/dry_run.ts";
 import { dryRunActive } from "../utils/fs_facade.ts";
-import { createStderrLogger, prompt } from "../utils/logger.ts";
+import { createStderrLogger } from "../utils/logger.ts";
+import { prompt } from "../utils/prompt.ts";
 import { printWrapped, terminalWidth, wrapMessage } from "../utils/table.ts";
 import { runDryRun } from "./dry_run.ts";
 import {

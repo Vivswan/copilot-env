@@ -27,6 +27,7 @@
     "knip": "knip"
   },
   "dependencies": {
+    "@clack/prompts": "^1.8.1",
     "@copilotkit/aimock": "1.43.0",
     "@jeffreycao/copilot-api": "^2.6.19",
     "@modelcontextprotocol/client": "^2.1.0",

@@ -100,6 +100,8 @@ export interface SpawnChildOptions<
   stderr?: Err;
   /** Bun's own: the argv is handed to CreateProcess as written, for a prequoted cmd.exe line. */
   windowsVerbatimArguments?: boolean;
+  /** A pty the child's three streams attach to (POSIX only), so it sees a real terminal. */
+  terminal?: Bun.Terminal;
 }
 
 /** The one async child spawn under test/: reaching a child-process API anywhere else is a lint

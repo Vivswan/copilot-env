@@ -95,7 +95,9 @@ floors too wide  -> one block per record: "identity: codex", then "  header: cel
 
 The lines under the identities table wrap the same way, with a hanging indent. An exported `COLUMNS` never overrides a TTY's own size. With `COLUMNS` unset, `agent profile identity | cat` prints the full-width lines; `COLUMNS=80 agent profile identity | cat` prints the 80-column layout.
 
-Every other line wraps at the logger: a consola message is wrapped before its icon or frame goes on, each line under its own indent with the continuation one step deeper; a word wider than the line splits at the width. Reports printed without a logger (`agent health`, `agent cost`, the installer's next steps) and every prompt use the same wrapper. Down a pipe nothing wraps unless `COLUMNS` is set.
+Every other line wraps at the logger: a consola message is wrapped before its icon or frame goes on, each line under its own indent with the continuation one step deeper; a word wider than the line splits at the width. Reports printed without a logger (`agent health`, `agent cost`, the installer's next steps) use the same wrapper. Down a pipe nothing wraps unless `COLUMNS` is set.
+
+A prompt's question and options wrap at the prompt library, under its own frame, to the terminal's width. Down a pipe a prompt wraps at 80 columns, `COLUMNS` or not.
 
 ### Color
 

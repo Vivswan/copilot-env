@@ -23,7 +23,7 @@ import {
   type ProfileVerb,
   parseProfileName,
 } from "../copilot_api/profile.ts";
-import { prompt } from "../utils/logger.ts";
+import { prompt } from "../utils/prompt.ts";
 import { runAuth } from "./auth.ts";
 import { type ConfigView, resolveSetPair, runConfig } from "./config.ts";
 import { runDryRun } from "./dry_run.ts";

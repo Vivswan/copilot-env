@@ -63,8 +63,8 @@ const MIGRATIONS: Migration[] = [
   v409IdentityCache,
   v409LaunchersBlock,
   v409ProfileVerbTree,
-  v501OsLockSidecars,
   v501DenoLeftovers,
+  v501OsLockSidecars,
 ];
 
 // versionLessThan tolerates unparseable input by answering "not less-than", so a

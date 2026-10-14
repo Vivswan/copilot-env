@@ -24,11 +24,13 @@ import {
   isDaemonCommandLine,
   isDaemonProcess,
   launchDaemon,
+  listenersFromLsof,
   noProxyWithLoopback,
   parseProcessRows,
   type RunnableEntry,
   renderDaemonPreload,
   resolveCopilotApiEntry,
+  rowsWithSelfControl,
 } from "../../src/copilot_api/process.ts";
 import { installedProxyPackage } from "../../src/copilot_api/version.ts";
 import { proxyHome, proxyInstallDir, writeResolvedVersionRecord } from "../../src/proxy_float.ts";
@@ -418,6 +420,48 @@ test("DAEMON_RUNTIMES names the installed binary and the checkout's bun", () => 
   expect(DAEMON_RUNTIMES).toContain(parse(process.execPath).name);
 });
 
+// lsof's `-F ptn` record format is an external fact: `p<pid>`, then `t<family>` and `n<address>`
+// per socket. The filter decides which listener a busy-port refusal tells the user to stop.
+//
+// A bind on 127.0.0.1 fails against that address or a wildcard, never against another loopback
+// address or ::1. An IPv6 wildcard beside ANY IPv4 row of the port is v6-only, so that question
+// is decided over every row before the address filter.
+test("listenersFromLsof keeps the pids whose listener covers 127.0.0.1 and drops the rest", () => {
+  const rows = (lines: string[]): string => `${lines.join("\n")}\n`;
+  const v4 = ["p101", "tIPv4", "n127.0.0.1:4141"];
+  const otherLoopback = ["p202", "tIPv4", "n127.0.0.2:4141"];
+  const v6Wildcard = ["p303", "tIPv6", "n*:4141"];
+  const v6Loopback = ["p404", "tIPv6", "n[::1]:4141"];
+  const v4Wildcard = ["p505", "tIPv4", "n*:4141", "n0.0.0.0:4141"];
+  expect(listenersFromLsof(rows([...v4, ...otherLoopback, ...v6Wildcard, ...v6Loopback]))).toEqual([
+    101,
+  ]);
+  expect(listenersFromLsof(rows([...v6Wildcard, ...v6Loopback]))).toEqual([303]);
+  expect(listenersFromLsof(rows([...v4Wildcard, ...v6Wildcard]))).toEqual([505]);
+  // The IPv4 row on another loopback address still proves the IPv6 wildcard v6-only: neither
+  // holds 127.0.0.1, and the refusal names nobody rather than the wrong pid.
+  expect(listenersFromLsof(rows([...otherLoopback, ...v6Wildcard]))).toEqual([]);
+  expect(listenersFromLsof(rows(["p12x", "tIPv4", "n127.0.0.1:4141", ...v4]))).toEqual([101]);
+  expect(listenersFromLsof(rows(["p9007199254740993", "tIPv4", "n127.0.0.1:4141"]))).toEqual([]);
+  expect(listenersFromLsof("")).toEqual([]);
+});
+
+// The scan's control on both platforms: a listing of this user's processes always holds the
+// caller, so a result without it is a scan that failed (ps error, truncation, a Windows owner
+// filter that misread USERDOMAIN), never an empty machine; the clearance behind it keeps the files.
+test("rowsWithSelfControl reads a listing without the calling pid as unproven, never as empty", () => {
+  const rows = [
+    { pid: 1, ucomm: "init", command: "/sbin/init" },
+    { pid: 4242, ucomm: "deno", command: "deno run copilot-api start --port 4141" },
+  ];
+  expect(rowsWithSelfControl(rows, 7)).toBe("unproven");
+  expect(rowsWithSelfControl([], 7)).toBe("unproven");
+  expect(rowsWithSelfControl([...rows, { pid: 7, ucomm: "bun", command: "bun test" }], 7)).toEqual([
+    ...rows,
+    { pid: 7, ucomm: "bun", command: "bun test" },
+  ]);
+});
+
 test("parseProcessRows splits pid and ucomm off, keeping the command line verbatim", () => {
   const rows = parseProcessRows(
     "  900 distnoted        /usr/sbin/distnoted agent\n" +
@@ -438,6 +482,8 @@ test("parseProcessRows splits pid and ucomm off, keeping the command line verbat
   expect(parseProcessRows("7 sh sh -c 'a   b'")).toEqual([
     { pid: 7, ucomm: "sh", command: "sh -c 'a   b'" },
   ]);
+  // A pid beyond the safe integers names no process: the row is dropped, not rounded.
+  expect(parseProcessRows("9007199254740993 deno deno run copilot-api start\n")).toEqual([]);
 });
 
 test("daemonPidsFromRows preserves a FAILED scan as unproven, never a confident empty list", () => {

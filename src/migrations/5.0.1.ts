@@ -1,31 +1,42 @@
-// Away from 5.0.1, two fix-ups.
+// Away from 5.0.1, two fix-ups: the deno-era daemon and files go, then the file locks' sidecars.
 //
-// The file lock (src/utils/file_lock.ts) held an OS advisory lock on a permanent `<lock>.oslock`
-// sidecar beside every marker, never unlinked by design. The lock is the marker file itself now,
-// so every sidecar is debris: swept out of the root home (the store locks, each profile home's
-// daemon.lock, the run dirs' start locks, the usage index) and the install's `.autoupdate/`, each
-// named as it goes.
-//
-// The proxy daemon ran on a deno the binary downloaded under `<rootHome>/deno/`, with the float's
-// cache beside it, its import map and lockfile in the proxy home, and a marked `.npmrc` at the
-// root. The daemon runs from the binary itself now and the float installs with bun, so all of it
-// is debris; the proxy home's record stays and the next `agent start` reinstalls the recorded
-// version. A daemon that release left running still holds its home's daemon.lock, and the new
-// classifier (which gates on the bun runtime) reads it as a foreign process: `agent stop` would
-// refuse it and the next start's own daemon would fail the lock, so it is stopped first, judged by
-// the lock alone.
+// The proxy daemon ran on a deno under `<rootHome>/deno/` with the float's deno files beside it;
+// it runs from the binary now, so all of it is debris. A daemon that release left running holds
+// its home's daemon.lock and reads as foreign to this release's classifier, so it is proved and
+// stopped first (legacy_daemon.ts). The file locks' `.oslock` sidecars are debris too, swept AFTER
+// the daemon step (index.ts registry order): the sidecar beside a daemon.lock is its proof.
 
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { poll } from "@std/async";
 import { consola } from "consola";
 import { autoupdateDir } from "../autoupdate/state.ts";
-import { clearDeadDaemonLock, daemonLockHold, daemonLockPath } from "../copilot_api/daemon_lock.ts";
+import { daemonLockPath } from "../copilot_api/daemon_lock.ts";
 import { allDaemonHomes, resolveRootHome } from "../copilot_api/paths.ts";
-import { classifyDaemonPid } from "../copilot_api/process.ts";
+import {
+  listenerLookCommand,
+  listUserProcessRows,
+  lookupProcess,
+  type ProcessLook,
+  type ProcessRow,
+  processLookCommand,
+  stopPidCommand,
+} from "../copilot_api/process.ts";
 import { assertNever } from "../utils/assert.ts";
 import { readTextOrNull } from "../utils/fs.ts";
 import * as fs from "../utils/fs_facade.ts";
 import type { Migration } from "./index.ts";
-import { type LockedDaemonOutcome, stopLockedDaemon } from "./legacy_daemon.ts";
+import {
+  argvPort,
+  type DenoStopOutcome,
+  denoLockSidecarPath,
+  isDenoRuntimeRow,
+  type LockVerdict,
+  type ProvenDaemon,
+  ProvenLock,
+  prove,
+  removeLockPair,
+  stopProvenDaemon,
+} from "./legacy_daemon.ts";
 
 const OS_LOCK_SUFFIX = ".oslock";
 
@@ -44,9 +55,26 @@ function osLockSidecarsUnder(dir: string): string[] {
   });
 }
 
+/** A daemon.lock's sidecar is the daemon step's evidence that the lock is the deno release's
+ *  (legacy_daemon.ts), so it goes only on that step's own verdict: the author gone (a leftover)
+ *  or no marker at all. A live daemon, an unjudged marker, or one this process cannot read keeps
+ *  it for the re-run the step asked for. */
+async function keepsDenoLockSidecar(path: string): Promise<boolean> {
+  if (path !== denoLockSidecarPath(dirname(path))) return false;
+  const verdict = await prove(dirname(path));
+  if (verdict instanceof ProvenLock) return verdict.isDaemon();
+  return verdict.kind !== "none";
+}
+
 /** Exported for the migration test; `roots` isolates. */
-export function removeOsLockSidecars(roots: readonly string[]): void {
+export async function removeOsLockSidecars(roots: readonly string[]): Promise<void> {
   for (const path of roots.flatMap(osLockSidecarsUnder)) {
+    if (await keepsDenoLockSidecar(path)) {
+      consola.info(
+        `  kept ${path}: its daemon.lock is not proved free (the daemon step owns both)`,
+      );
+      continue;
+    }
     fs.rm(path, { force: true });
     consola.info(`  removed ${path} (the lock is the marker file itself now)`);
   }
@@ -61,8 +89,9 @@ export const v501OsLockSidecars: Migration = {
 /** The marker the float wrote into its `.npmrc`; an unmarked file is the user's and stays. */
 const NPMRC_MARKER = "# managed by copilot-env (proxy float); do not edit";
 
-/** Exported for the migration test; `rootHome` isolates. */
-export function removeDenoLeftovers(rootHome: string): void {
+/** Reached only through retireDenoDaemon, once every daemon that may run from the files is proved
+ *  stopped or gone. */
+function removeDenoLeftovers(rootHome: string): void {
   const paths = [
     join(rootHome, "deno"),
     join(rootHome, "proxy", "deno.json"),
@@ -77,93 +106,293 @@ export function removeDenoLeftovers(rootHome: string): void {
   }
 }
 
+/** The shape of every warning here: a headline, the evidence indented under it, then the commands,
+ *  each on its own line, so the eye finds the pid and the command without reading a paragraph. */
+function scannable(headline: string, evidence: string, ...commands: string[]): string {
+  return [`  ${headline}`, `    ${evidence}`, ...commands.map((command) => `    ${command}`)].join(
+    "\n",
+  );
+}
+
+/** The migrate command the runner's own retry line names; a step does not know the versions. */
+const MIGRATE_AGAIN = "agent migrate <from> <to>   (the two versions this update printed)";
+
+/** The seams the migration test replaces: the proof (`prove` with staged reads, or a verdict that
+ *  licenses nothing; the classes have one builder), the stop, and the table scan behind the
+ *  files' clearance. */
+export interface DaemonStepSeams {
+  prove: (home: string) => Promise<LockVerdict>;
+  stop: (daemon: ProvenDaemon) => Promise<DenoStopOutcome>;
+  scan: () => Promise<ProcessRow[] | "unproven">;
+  /** The re-read of one deno row the scan could not read. */
+  relook: (pid: number) => Promise<ProcessLook>;
+}
+
+const REAL_SEAMS: DaemonStepSeams = {
+  prove,
+  stop: stopProvenDaemon,
+  scan: listUserProcessRows,
+  relook: lookupProcess,
+};
+
+/** A deno row with no command line is re-read in these steps before it is judged: Win32_Process
+ *  reports a null CommandLine for a process on its way out, which is no stray. */
+const UNREADABLE_ROW_RECHECK_MS = 1_000;
+const UNREADABLE_ROW_STEP_MS = 100;
+
 /**
- * The previous release's daemon reads "no" under the new classifier and ours "yes"; "unknown" is
- * left alone rather than taken as licence. Exported for the migration test; `homes`, `classify`,
- * and `stop` isolate.
+ * Each home's lock is proved against the live table (`prove`) and only a proof licenses a signal
+ * or a delete; every other verdict narrates and, unless it is ours or a bystander, keeps the
+ * files. Exported for the migration test.
  *
- *   explicit dry run -> the marker removal is a raw unlink outside the write seam, and a signal
- *                       has no overlay
- *   `clear` false    -> a daemon may still run, so retireDenoDaemon keeps the files it may run from
+ *   `clear` false -> a daemon may still run, so retireDenoDaemon keeps the files it may run from
  */
 export async function stopPreviousDaemons(
   homes: readonly string[],
-  classify: (pid: number) => Promise<"yes" | "no" | "unknown"> = classifyDaemonPid,
-  stop: (home: string) => Promise<LockedDaemonOutcome> = stopLockedDaemon,
-): Promise<{ clear: boolean }> {
-  const preview = fs.dryRunActive();
+  seams: Partial<DaemonStepSeams> = {},
+): Promise<{ clear: boolean; wouldStop: Set<number> }> {
+  const { prove, stop } = { ...REAL_SEAMS, ...seams };
   let clear = true;
+  const wouldStop = new Set<number>();
   for (const home of homes) {
-    const hold = daemonLockHold(home);
-    if (hold.kind === "held" && hold.pid !== null) {
-      const verdict = await classify(hold.pid);
-      if (verdict === "unknown") {
+    const lock = daemonLockPath(home);
+    const verdict = await prove(home);
+    if (verdict instanceof ProvenLock) {
+      if (verdict.isDaemon()) {
+        const outcome = await stopDenoHolder(verdict, stop);
+        if (outcome === "may-run") clear = false;
+        if (outcome === "would-stop") wouldStop.add(verdict.pid);
+      } else {
+        removeLockPair(verdict);
+        consola.info(`  removed ${lock} and its .oslock sidecar (${leftoverReason(verdict)})`);
+      }
+      continue;
+    }
+    switch (verdict.kind) {
+      case "none":
+      case "ours":
+        continue;
+      case "bystander":
+        consola.info(
+          `  left ${lock} alone: pid ${verdict.pid} is not the deno-era daemon (${verdict.command})`,
+        );
+        continue;
+      case "unreadable":
+        consola.warn(scannable("left a home as it is: its daemon.lock cannot be read", lock));
+        clear = false;
+        continue;
+      case "unjudged":
         consola.warn(
-          `  could not judge the daemon holding ${daemonLockPath(home)} (pid ${hold.pid}); left as it is: stop it yourself if it is the previous release's`,
+          verdict.pid === null
+            ? scannable(`left a home as it is: ${verdict.reason}`, lock)
+            : verdict.command === ""
+              ? scannable(
+                  `left a daemon running: this host cannot read what pid ${verdict.pid} is`,
+                  `${lock} names pid ${verdict.pid}, alive; ${verdict.reason}`,
+                  `if it is the deno-era proxy daemon, on its host:  ${stopPidCommand(verdict.pid)}`,
+                )
+              : scannable(
+                  `left a daemon running: pid ${verdict.pid} is a deno, but ${verdict.reason}`,
+                  `${lock} names pid ${verdict.pid}: ${verdict.command}`,
+                  `if it is the deno-era proxy daemon:  ${stopPidCommand(verdict.pid)}`,
+                ),
         );
         clear = false;
         continue;
-      }
-      if (verdict === "yes") continue;
-      const outcome = await stop(home);
-      switch (outcome.kind) {
-        case "would-stop":
-          consola.info(
-            `  would stop the previous release's proxy daemon (pid ${outcome.pid}) in ${home}`,
-          );
-          continue;
-        case "stopped":
-          if (outcome.stillRunning) {
-            consola.warn(
-              `  the previous release's proxy daemon (pid ${outcome.pid}) in ${home} would not stop (${outcome.verdict}); left as it is`,
-            );
-            clear = false;
-            continue;
-          }
-          consola.info(
-            `  stopped the previous release's proxy daemon (pid ${outcome.pid}) in ${home}: ${outcome.verdict}`,
-          );
-          break;
-        case "unjudged":
-          consola.warn(
-            `  could not judge the daemon holding ${daemonLockPath(home)}: ${outcome.reason}; left as it is`,
-          );
-          clear = false;
-          continue;
-        case "none":
-          // The holder went between the two looks: the sweep below judges the marker as it is now.
-          break;
-        default:
-          assertNever(outcome);
-      }
-    } else if (hold.kind === "unreadable") {
-      consola.warn(`  could not read ${daemonLockPath(home)}; left as it is`);
-      clear = false;
-      continue;
-    }
-    const lock = daemonLockPath(home);
-    if (preview) {
-      if (hold.kind === "free" && fs.exists(lock)) consola.info(`  would remove ${lock}`);
-    } else if (clearDeadDaemonLock(home)) {
-      consola.info(`  removed ${lock} (left by a daemon that is gone)`);
+      default:
+        assertNever(verdict);
     }
   }
-  return { clear };
+  return { clear, wouldStop };
 }
 
-/** The deno-era files go only once every daemon that may run from them is confirmed stopped or
- *  absent; otherwise they stay, and the warning is the record of the step left undone: the user
- *  stops the daemon and re-runs `agent migrate` (safe to re-run). Exported for the migration test. */
+function leftoverReason(lock: ProvenLock): string {
+  switch (lock.reason) {
+    case null:
+      return "";
+    case "dead":
+      return "left by a daemon that is gone";
+    case "malformed":
+      return "a marker naming no pid";
+    case "zombie":
+      return `pid ${lock.pid} is a zombie awaiting its parent: it holds no port and nothing stops it`;
+    case "recycled":
+      return `the deno release's lock; pid ${lock.pid} is now ${lock.command}`;
+    case "stranger":
+      return `the deno release's lock; pid ${lock.pid} started after it was written: ${lock.command}`;
+    default:
+      return assertNever(lock.reason);
+  }
+}
+
+/** Narrates the stop of a proven daemon: "may-run" when it may still run, "would-stop" in a dry
+ *  run (the table still shows it; the plan reads it as gone). */
+async function stopDenoHolder(
+  daemon: ProvenDaemon,
+  stop: (daemon: ProvenDaemon) => Promise<DenoStopOutcome>,
+): Promise<"stopped" | "may-run" | "would-stop"> {
+  const { pid, home } = daemon;
+  const lock = daemonLockPath(home);
+  const outcome = await stop(daemon);
+  switch (outcome.kind) {
+    case "would-stop":
+      // Staged on the overlay, as the real stop removes them: the plan lists every removal.
+      removeLockPair(daemon);
+      consola.info(
+        `  would stop the deno-era proxy daemon (pid ${pid}) in ${home} and remove ${lock} and its .oslock sidecar`,
+      );
+      return "would-stop";
+    case "still-running":
+      consola.warn(
+        outcome.identity === "same"
+          ? scannable(
+              `the deno-era proxy daemon (pid ${pid}) did not stop: ${outcome.verdict}`,
+              `pid ${pid} is still that daemon after the SIGKILL grace; ${lock} may be gone`,
+              `stop it by hand:  ${stopPidCommand(pid, true)}`,
+            )
+          : scannable(
+              `the deno-era proxy daemon (pid ${pid}) may not have stopped: ${outcome.verdict}`,
+              `pid ${pid} is alive after the SIGKILL grace, and this host can no longer read what it is`,
+              `look first:  ${processLookCommand(pid)}`,
+            ),
+      );
+      return "may-run";
+    case "port-still-busy":
+      consola.warn(
+        scannable(
+          `the deno-era proxy daemon (pid ${pid}) stopped, but port ${outcome.port} is still busy`,
+          `127.0.0.1:${outcome.port} still answers; whatever listens there is not the daemon of ${home}`,
+          `find it:  ${listenerLookCommand(outcome.port)}`,
+        ),
+      );
+      return "may-run";
+    case "stopped":
+      removeLockPair(daemon);
+      consola.info(
+        `  stopped the deno-era proxy daemon (pid ${pid}) in ${home}: ${outcome.verdict}; removed ${lock} and its .oslock sidecar`,
+      );
+      return "stopped";
+    default:
+      return assertNever(outcome);
+  }
+}
+
+/** The process table's spelling of a path, for the provenance match below. */
+function argvSpelling(path: string): string {
+  const slashed = path.replace(/\\/g, "/");
+  return process.platform === "win32" ? slashed.toLowerCase() : slashed;
+}
+
+/** What the table says of this root home's deno processes, the locks apart. */
+type StrayScan =
+  | { kind: "unproven" }
+  /** `strays` ran from this root home (argv names its proxy/deno.json, with or without a port:
+   *  the clearance is wider than the signal path's shape); `unreadable` are denos whose argv the
+   *  table would not show, which could be strays. */
+  | { kind: "rows"; strays: ProcessRow[]; unreadable: ProcessRow[] };
+
+/**
+ * The deno processes of THIS root home still alive whatever their locks say. The deno release's
+ * spawn put `<rootHome>/proxy/deno.json` (its `--config`) on every argv: that is the provenance,
+ * port or no port. A zombie's argv is gone and matches nothing.
+ *
+ *   ignore -> the pids a dry run would have stopped: the plan reads them as gone
+ */
+async function strayDenoDaemons(
+  rootHome: string,
+  seams: Pick<DaemonStepSeams, "scan" | "relook">,
+  ignore: ReadonlySet<number>,
+): Promise<StrayScan> {
+  const rows = await seams.scan();
+  if (rows === "unproven") return { kind: "unproven" };
+  const config = argvSpelling(join(rootHome, "proxy", "deno.json"));
+  const denos = rows.filter(
+    (row) => isDenoRuntimeRow(row) && row.pid !== process.pid && !ignore.has(row.pid),
+  );
+  const settled: ProcessRow[] = [];
+  for (const row of denos) settled.push(...(await rereadUnreadable(row, seams.relook)));
+  return {
+    kind: "rows",
+    strays: settled.filter((row) => argvSpelling(row.command).includes(config)),
+    unreadable: settled.filter((row) => row.command === ""),
+  };
+}
+
+/** The re-read asks one thing of a row with no command line: is the pid still there? What it
+ *  shows meanwhile is never read (the listing's owner judgment does not travel with a re-read). */
+async function rereadUnreadable(
+  row: ProcessRow,
+  relook: (pid: number) => Promise<ProcessLook>,
+): Promise<ProcessRow[]> {
+  if (row.command !== "") return [row];
+  try {
+    await poll(
+      () => relook(row.pid),
+      (seen) => seen.kind === "gone",
+      {
+        interval: UNREADABLE_ROW_STEP_MS,
+        signal: AbortSignal.timeout(UNREADABLE_ROW_RECHECK_MS),
+      },
+    );
+    return [];
+  } catch (error) {
+    if (error instanceof DOMException && ["AbortError", "TimeoutError"].includes(error.name)) {
+      return [row];
+    }
+    throw error;
+  }
+}
+
+/** The deno-era files go only once every daemon that may run from them is proved stopped or gone
+ *  AND the table shows no daemon of this root home at all; otherwise they stay and the warning is
+ *  the record of the step left undone (re-run `agent migrate`). Exported for the migration test. */
 export async function retireDenoDaemon(
   rootHome: string,
   homes: readonly string[],
-  classify: (pid: number) => Promise<"yes" | "no" | "unknown"> = classifyDaemonPid,
-  stop: (home: string) => Promise<LockedDaemonOutcome> = stopLockedDaemon,
+  seams: Partial<DaemonStepSeams> = {},
 ): Promise<void> {
-  const { clear } = await stopPreviousDaemons(homes, classify, stop);
+  const stops = await stopPreviousDaemons(homes, seams);
+  let { clear } = stops;
+  const scan = await strayDenoDaemons(rootHome, { ...REAL_SEAMS, ...seams }, stops.wouldStop);
+  if (scan.kind === "unproven") {
+    consola.warn(
+      scannable(
+        "could not scan the process table for a deno-era daemon of this root home",
+        "a daemon that dropped its lock would go unseen",
+        "re-run where the table reads",
+      ),
+    );
+    clear = false;
+  } else {
+    for (const row of scan.unreadable) {
+      consola.warn(
+        scannable(
+          `a deno runs whose command line this host cannot read: pid ${row.pid}`,
+          "it may be the deno-era proxy daemon of this root home",
+          `look first:  ${processLookCommand(row.pid)}`,
+        ),
+      );
+      clear = false;
+    }
+    for (const row of scan.strays) {
+      const port = argvPort(row.command);
+      consola.warn(
+        scannable(
+          `a deno of this root home still runs: pid ${row.pid}${port === null ? "" : ` on port ${port}`}`,
+          row.command,
+          `if it is that daemon:  ${stopPidCommand(row.pid)}`,
+        ),
+      );
+      clear = false;
+    }
+  }
   if (!clear) {
     consola.warn(
-      `  the deno-era files under ${rootHome} stay: a daemon above is still running or could not be judged. Stop it, then re-run \`agent migrate <from> <to>\` with the versions this update named (safe to re-run)`,
+      scannable(
+        "the deno-era files stay: a daemon above still runs or could not be judged",
+        `${join(rootHome, "deno")} and the float's deno files go on the next run`,
+        `after it is stopped:  ${MIGRATE_AGAIN}`,
+      ),
     );
     return;
   }

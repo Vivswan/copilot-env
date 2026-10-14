@@ -812,12 +812,10 @@ export async function moveRootDaemonHome(
   }
 }
 
-/** The root daemon's home IS the root (the layout before this step), so its lock is read there, and
- *  it is stopped by the lock alone (stopLockedDaemon): this release's classifier reads the previous
- *  release's daemon as foreign, so no pid-table judgment could own it. A migration never starts a
- *  daemon (that is the launch pipeline's), so a live one stays down until the next `agent start`;
- *  said out loud because an autoupdate inside `agent start` reaches this step right after that
- *  start spawned it. Exported for the migration test. */
+/** The root daemon's home IS the root (the layout before this step), so its lock is proved there
+ *  (stopLockedDaemon, legacy_daemon.ts). A migration never starts a daemon, so a live one stays
+ *  down until the next `agent start`; said out loud because an autoupdate inside `agent start`
+ *  reaches this step right after that start spawned it. Exported for the migration test. */
 export async function stopRootDaemon(root: string): Promise<void> {
   const outcome = await stopLockedDaemon(root);
   switch (outcome.kind) {
@@ -827,9 +825,7 @@ export async function stopRootDaemon(root: string): Promise<void> {
       consola.info(`  would stop the daemon (pid ${outcome.pid}) running at ${root} for the move`);
       return;
     case "unjudged":
-      throw new Error(
-        `a daemon may still run at ${root}: ${outcome.reason}. Run \`agent stop\` there, then re-run`,
-      );
+      throw new Error(`a daemon may still run at ${root}: ${outcome.reason}; then re-run`);
     case "stopped":
       if (outcome.stillRunning) {
         throw new Error(`the daemon (pid ${outcome.pid}) running at ${root} would not stop`);
@@ -1166,8 +1162,8 @@ async function moveProfile(
   const rename = renameOf(move);
   if (rename !== null) {
     assertMovable(rename, claudeHome, codexHomes);
-    // By the lock alone, like the root daemon's stop: the previous release's daemon reads as
-    // foreign to this release's classifier.
+    // Proved like the root daemon's stop (legacy_daemon.ts): the previous release's daemon reads
+    // as foreign to this release's classifier.
     const outcome = await stopLockedDaemon(profileHome(rename.from));
     if (outcome.kind === "unjudged" || (outcome.kind === "stopped" && outcome.stillRunning)) {
       // The profile's name is a verb, so no command addresses its daemon any more: by hand it is.

@@ -3,9 +3,16 @@
 // listener's teardown (a segfault draining a nextTick after a server-side socket's end) must not
 // take the daemon tests down with it.
 import { CopilotEnvConfig, type GlobalPatch } from "../../src/copilot_api/env_config.ts";
-import { resolveStartPort } from "../../src/copilot_api/launch.ts";
+import { busyPortRefusal, resolveStartPort } from "../../src/copilot_api/launch.ts";
+import {
+  listenerLookCommand,
+  processLookCommand,
+  stopPidCommand,
+} from "../../src/copilot_api/process.ts";
 import { parseProfileName } from "../../src/copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../../src/copilot_api/run_state.ts";
+import { commandExists } from "../../src/utils/command.ts";
+import { errMessage } from "../../src/utils/error.ts";
 import { defaultHomeDir, envSnapshot, isolateProxyHome } from "../helpers/env.ts";
 import { writeRunState } from "../helpers/fixtures.ts";
 import { closeServer, freePort, listenEphemeral } from "../helpers/net.ts";
@@ -71,15 +78,35 @@ test("resolveStartPort: a port outside the configured range is a clear error, wh
   }
 });
 
+/** Whether this host can name a port's listener at all: Windows always (Get-NetTCPConnection),
+ *  POSIX with lsof on PATH. The hermetic container has ps and no lsof. Decided from the tool, not
+ *  from the look under test, so a look that misses this process's own socket fails the row. */
+const LISTENER_LOOK_AVAILABLE = process.platform === "win32" || commandExists("lsof");
+
+/** The refusal's lines for a port this test process holds: with the listener look available, the
+ *  pid line and its stop command; without it, the look's own command. */
+function listenerLines(port: number): string[] {
+  if (LISTENER_LOOK_AVAILABLE) {
+    return [
+      ": its listener is not this install's proxy daemon\n",
+      `\n  pid ${process.pid}: `,
+      `\n  stop it:  ${stopPidCommand(process.pid)}\n`,
+    ];
+  }
+  return [": its listener could not be read\n", `\n  find it:  ${listenerLookCommand(port)}\n`];
+}
+
 // (pinned or configured default, busy or free, strict-port) -> the port used or the refusal. A wrong
-// row moves a start off its pinned port, or auto-increments where the operator forbade it.
+// row moves a start off its pinned port, or auto-increments where the operator forbade it. The
+// refusal names the listener (this test process holds the port) with the command that stops it,
+// or says the listener could not be read: a line each, read without a paragraph.
 test("resolveStartPort: a pin is used or refused as-is; a busy default moves unless strict-port forbids it", async () => {
   const rows: Array<{
     name: string;
     pinned: boolean;
     busy: boolean;
     strict: boolean;
-    outcome: "same" | "moved" | ((port: number) => string);
+    outcome: "same" | "moved" | ((port: number) => Promise<string[]>);
   }> = [
     { name: "pinned free port", pinned: true, busy: false, strict: false, outcome: "same" },
     {
@@ -87,16 +114,22 @@ test("resolveStartPort: a pin is used or refused as-is; a busy default moves unl
       pinned: true,
       busy: true,
       strict: false,
-      outcome: (busy) =>
-        `requested port ${busy} is busy (held by another process). Free it or pick another --port.`,
+      outcome: async (busy) => [
+        `requested port ${busy} is busy`,
+        ...listenerLines(busy),
+        "\n  or pick another:  agent start --port <n>",
+      ],
     },
     {
       name: "busy default under strict-port",
       pinned: false,
       busy: true,
       strict: true,
-      outcome: (busy) =>
-        `port ${busy} is busy and auto-increment is disabled (\`daemon.strict-port\`); free it, pick another \`--port\`, or set \`agent config set daemon.strict-port false\`.`,
+      outcome: async (busy) => [
+        `port ${busy} is busy and daemon.strict-port forbids a move`,
+        ...listenerLines(busy),
+        "\n  or allow the move:  agent config set daemon.strict-port false",
+      ],
     },
     {
       name: "busy default without strict-port",
@@ -124,7 +157,15 @@ test("resolveStartPort: a pin is used or refused as-is; a busy default moves unl
         new CopilotEnvConfig(),
       );
       if (typeof row.outcome === "function") {
-        await expect(resolved).rejects.toThrow(row.outcome(port));
+        const message = await resolved.then(
+          () => "",
+          (error: unknown) => errMessage(error),
+        );
+        for (const line of await row.outcome(port))
+          expect({ row: row.name, message }).toEqual({
+            row: row.name,
+            message: expect.stringContaining(line),
+          });
         return;
       }
       const chosen = await resolved;
@@ -138,6 +179,82 @@ test("resolveStartPort: a pin is used or refused as-is; a busy default moves unl
     if (row.busy) await withBusyPort(run);
     else await run(await freePort());
   }
+});
+
+// (the listener's verdict) -> the command the refusal gives for it. A wrong row tells the user to
+// kill a process this host could not identify; an unknown verdict earns a look, never a kill.
+test("busyPortRefusal: each listener's command follows its own verdict; unknown gets a look, not a kill", async () => {
+  const rows: Array<{
+    verdict: "yes" | "no" | "unknown";
+    headline: string;
+    command: string;
+  }> = [
+    {
+      verdict: "unknown",
+      headline: "requested port 4141 is busy: its listener could not be identified",
+      command: `look first:  ${processLookCommand(process.pid)}`,
+    },
+    {
+      verdict: "no",
+      headline: "requested port 4141 is busy: its listener is not this install's proxy daemon",
+      command: `stop it:  ${stopPidCommand(process.pid)}`,
+    },
+    {
+      verdict: "yes",
+      headline: "requested port 4141 is busy: held by this install's proxy daemon",
+      command: `stop it:  ${stopPidCommand(process.pid)}`,
+    },
+  ];
+  tmpHome();
+  for (const row of rows) {
+    const message = await busyPortRefusal(
+      4141,
+      "requested port 4141 is busy",
+      ["or pick another:", "agent start --port <n>"],
+      {
+        holders: () => Promise.resolve([process.pid]),
+        classify: () => Promise.resolve(row.verdict),
+      },
+    );
+    const lines = message.split("\n");
+    expect({
+      verdict: row.verdict,
+      lines: [lines[0], lines[1]?.slice(0, 7), lines[2], lines[3]],
+    }).toEqual({
+      verdict: row.verdict,
+      lines: [
+        row.headline,
+        `  pid ${process.pid}`.slice(0, 7),
+        `  ${row.command}`,
+        "  or pick another:  agent start --port <n>",
+      ],
+    });
+  }
+});
+
+// Two listeners of one port with different verdicts (this install's daemon beside a stranger)
+// once read as "not this install's daemon" for both. The headline says one of each; each pid's
+// command still follows its own verdict.
+test("busyPortRefusal: mixed verdicts get the mixed headline and one command per listener", async () => {
+  tmpHome();
+  const other = process.ppid;
+  const message = await busyPortRefusal(
+    4141,
+    "requested port 4141 is busy",
+    ["or pick another:", "agent start --port <n>"],
+    {
+      holders: () => Promise.resolve([process.pid, other]),
+      classify: (pid) => Promise.resolve(pid === process.pid ? "yes" : "no"),
+    },
+  );
+  const lines = message.split("\n");
+  expect([lines[0], lines[1]?.slice(0, 6), lines[2]?.slice(0, 6), lines[3], lines[4]]).toEqual([
+    "requested port 4141 is busy: one of its listeners is this install's proxy daemon, one is not",
+    "  pid ",
+    "  pid ",
+    `  stop it:  ${stopPidCommand(process.pid)}`,
+    `  stop it:  ${stopPidCommand(other)}`,
+  ]);
 });
 
 test("resolveStartPort: a named profile's reservation is honored, even after the range narrowed past it", async () => {

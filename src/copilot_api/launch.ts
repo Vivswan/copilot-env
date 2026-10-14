@@ -10,7 +10,7 @@ import {
   type ProxyFloatDeps,
   proxyFloatVerifyStatus,
 } from "../proxy_float.ts";
-import { colorEnabled, paintFor } from "../utils/ansi.ts";
+import { bold, colorEnabled, cyan, paintFor } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import { withFileLock } from "../utils/file_lock.ts";
@@ -26,7 +26,7 @@ import type { ConfigValue, ProxyConfigPath } from "./config_registry.ts";
 import { Credential } from "./credential.ts";
 import { directOverlay, landDirectPair, renderDirectPair } from "./direct_pair.ts";
 import { CopilotEnvConfig, configSetCommand, projectedProxyConfig } from "./env_config.ts";
-import { type AuthProvider, assertProfileSlot } from "./env_state.ts";
+import { type AuthProvider, allProfileNames, assertProfileSlot } from "./env_state.ts";
 import {
   daemonClientHeaders,
   type selectDirectIdentityAndHost,
@@ -45,14 +45,20 @@ import {
 } from "./port.ts";
 import {
   type CopilotApiEntry,
+  classifyDaemonPid,
   type DaemonCredential,
   LAUNCH_SETTLE_MS,
   launchDaemon,
+  listenerLookCommand,
+  listeningPids,
+  lookupProcess,
   printLogTail,
+  processLookCommand,
   type RunnableEntry,
   resolveCopilotApiEntry,
+  stopPidCommand,
 } from "./process.ts";
-import { agentAuthCommand, type Profile } from "./profile.ts";
+import { agentAuthCommand, agentStartCommand, agentStopCommand, type Profile } from "./profile.ts";
 import { CopilotEnvRunState } from "./run_state.ts";
 import { installedProxyVersion, PROXY_PACKAGE_NAME, proxyVersionFloorStatus } from "./version.ts";
 
@@ -183,6 +189,80 @@ function judgeProxyFloor(): RunnableEntry {
 
 // --- port resolution --------------------------------------------------------------
 
+/** Which of this install's daemons `pid` is, by the run states: null is the default daemon,
+ *  undefined a daemon no slot tracks. */
+function trackedDaemonProfile(pid: number): Profile | undefined {
+  if (new CopilotEnvRunState().read().pid === pid) return null;
+  return allProfileNames().find((name) => CopilotEnvRunState.forProfile(name).read().pid === pid);
+}
+
+/** The looks the refusal reads; a test replaces them to stage a holder with a chosen verdict. */
+export interface PortHolderLooks {
+  holders: (port: number) => Promise<number[] | "unreadable">;
+  classify: (pid: number) => Promise<"yes" | "no" | "unknown">;
+}
+
+const REAL_PORT_HOLDER_LOOKS: PortHolderLooks = {
+  holders: listeningPids,
+  classify: classifyDaemonPid,
+};
+
+/**
+ * The refusal for a port something else holds: the headline, each listener as one indented line
+ * of evidence, then one command per listener from that listener's own verdict (ours: its stop
+ * command; not ours: the shell's kill; unknown: a look, never a kill) and `alternative`'s own.
+ * Only the evidence and the commands are painted. Exported for test/copilot_api/start_port.e2e.test.ts.
+ */
+export async function busyPortRefusal(
+  port: number,
+  headline: string,
+  alternative: [label: string, command: string],
+  looks: PortHolderLooks = REAL_PORT_HOLDER_LOOKS,
+): Promise<string> {
+  const lines = [headline];
+  const holders = await looks.holders(port);
+  const commands: string[] = [];
+  if (holders === "unreadable" || holders.length === 0) {
+    lines[0] += ": its listener could not be read";
+    lines.push(
+      `  ${bold(`127.0.0.1:${port}`)} answers, but no process this user may read listens there`,
+    );
+    commands.push(`find it:  ${cyan(listenerLookCommand(port))}`);
+  } else {
+    const verdicts = await Promise.all(holders.map((pid) => looks.classify(pid)));
+    lines[0] += verdicts.includes("unknown")
+      ? ": its listener could not be identified"
+      : verdicts.every((verdict) => verdict === "yes")
+        ? ": held by this install's proxy daemon"
+        : verdicts.includes("yes")
+          ? ": one of its listeners is this install's proxy daemon, one is not"
+          : ": its listener is not this install's proxy daemon";
+    for (const [i, pid] of holders.entries()) {
+      const look = await lookupProcess(pid);
+      const command = look.kind === "row" ? look.row.command : "(command line unreadable)";
+      lines.push(`  ${bold(`pid ${pid}: ${command}`)}`);
+      commands.push(holderCommand(pid, verdicts[i] as "yes" | "no" | "unknown"));
+    }
+  }
+  commands.push(`${alternative[0]}  ${cyan(alternative[1])}`);
+  return [...lines, ...commands.map((command) => `  ${command}`)].join("\n");
+}
+
+function holderCommand(pid: number, verdict: "yes" | "no" | "unknown"): string {
+  switch (verdict) {
+    case "yes": {
+      const profile = trackedDaemonProfile(pid);
+      return `stop it:  ${cyan(profile === undefined ? stopPidCommand(pid) : agentStopCommand(profile))}`;
+    }
+    case "no":
+      return `stop it:  ${cyan(stopPidCommand(pid))}`;
+    case "unknown":
+      return `look first:  ${cyan(processLookCommand(pid))}`;
+    default:
+      return assertNever(verdict);
+  }
+}
+
 /**
  * A pinned `--port` must be free: never silently move off the port the user asked for. The soft base
  * is PERSISTED only when `reserve` (the live launch path; the dry run peeks without recording).
@@ -207,7 +287,10 @@ export async function resolveStartPort(
         );
       case "busy":
         throw new Error(
-          `requested port ${pinned} is busy (held by another process). Free it or pick another --port.`,
+          await busyPortRefusal(pinned, `requested port ${pinned} is busy`, [
+            "or pick another:",
+            `${agentStartCommand(profile)} --port <n>`,
+          ]),
         );
       case "free":
         return pinned;
@@ -246,8 +329,10 @@ export async function resolveStartPort(
   }
   if (policy.strictPortEligible && config.strictPortEnabled()) {
     throw new Error(
-      `port ${def} is busy and auto-increment is disabled (\`daemon.strict-port\`); free it, pick another ` +
-        `\`--port\`, or set \`${configSetCommand("daemon.strict-port", "false")}\`.`,
+      await busyPortRefusal(def, `port ${def} is busy and daemon.strict-port forbids a move`, [
+        "or allow the move:",
+        configSetCommand("daemon.strict-port", "false"),
+      ]),
     );
   }
   if (announce) consola.warn(`Port ${def} is busy (held by another process/user).`);

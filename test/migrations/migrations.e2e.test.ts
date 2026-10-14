@@ -64,14 +64,9 @@ import {
   v409IdentityCache,
   v409ProfileVerbTree,
 } from "../../src/migrations/4.0.9.ts";
-import {
-  removeDenoLeftovers,
-  removeOsLockSidecars,
-  retireDenoDaemon,
-  stopPreviousDaemons,
-} from "../../src/migrations/5.0.1.ts";
+import { removeOsLockSidecars } from "../../src/migrations/5.0.1.ts";
 import { dueMigrations, type Migration, runMigrations } from "../../src/migrations/index.ts";
-import type { LockedDaemonOutcome } from "../../src/migrations/legacy_daemon.ts";
+import { denoLockSidecarPath } from "../../src/migrations/legacy_daemon.ts";
 import { MARKER, MARKER_END } from "../../src/shell/integration.ts";
 import { must } from "../../src/utils/assert.ts";
 import { renderDryRun } from "../../src/utils/dry_run_report.ts";
@@ -81,12 +76,12 @@ import { pidAlive } from "../../src/utils/pid.ts";
 import { deferWriteReports, flushWriteReports } from "../../src/utils/report_write.ts";
 import { agentAuthGetArgs, agentLauncherCommand, proxyTokenCommand } from "../../src/utils/root.ts";
 import type { SemverString } from "../../src/utils/semver.ts";
-import { killAndAwaitExit, until } from "../helpers/daemon.ts";
+import { type DenoEraDaemon, denoEraDaemon, until } from "../helpers/daemon.ts";
 import { dryRunChanges, fingerprintTree } from "../helpers/dry_run.ts";
 import { envSnapshot, isolateAgentHomes, isolateProxyHome } from "../helpers/env.ts";
 import { writeRunState } from "../helpers/fixtures.ts";
 import { captureChannels } from "../helpers/output.ts";
-import { bunRunArgs, runCli, spawnChild } from "../helpers/run.ts";
+import { runCli } from "../helpers/run.ts";
 import { afterEach, expect, tempDir, test } from "../helpers/testing.ts";
 
 // A synthetic registry: the real migrations' side effects never run here.
@@ -1830,7 +1825,7 @@ test("4.0.9 profile verb tree: a verb-named profile becomes the first free <name
   }
 }, 120_000);
 
-test("5.0.1 sweeps every .oslock sidecar under the root home and the install's .autoupdate, nested dirs included, and nothing else", () => {
+test("5.0.1 sweeps every .oslock sidecar under the root home and the install's .autoupdate, nested dirs included, and nothing else", async () => {
   // The marker file is the lock now (src/utils/file_lock.ts), so a sidecar a 5.0.0 run left is
   // debris wherever it sits: beside a store lock at the root, a profile home's daemon.lock, a
   // run dir's start lock, the autoupdate throttle. The marker itself and every neighbour stay.
@@ -1848,137 +1843,48 @@ test("5.0.1 sweeps every .oslock sidecar under the root home and the install's .
     join(home, "notes.txt"),
     join(autoupdateHome, "state.json"),
   ];
+  // A daemon.lock a live NON-deno pid holds (this process, here) behind a deno sidecar is the
+  // deno release's lock with its pid recycled: a leftover to the proof, so the sidecar goes too.
+  const held = join(home, "profiles", "held");
+  mkdirSync(held, { recursive: true });
+  expect(acquireDaemonLockForLife(held, { waitMs: 0 })).toBe(true);
+  writeFileSync(denoLockSidecarPath(held), "");
+  debris.push(denoLockSidecarPath(held));
   for (const path of [...debris, ...kept]) {
+    if (path === denoLockSidecarPath(held)) continue;
     mkdirSync(join(path, ".."), { recursive: true });
     writeFileSync(path, path.endsWith(".oslock") ? "" : "kept");
   }
-  const said = warningsDuring(() => removeOsLockSidecars([home, autoupdateHome]), "info");
-  expect(debris.map((path) => existsSync(path))).toEqual([false, false, false, false]);
+  // The profile's marker names a dead pid: its sidecar goes on the proof's own verdict, whatever
+  // deno a sibling test file is running on this machine at the same time.
+  writeFileSync(join(home, "profiles", "work", "daemon.lock"), "2147483646\n0\n");
+  const said = (await captureChannels(() => removeOsLockSidecars([home, autoupdateHome]))).all;
+  releaseFileLock(daemonLockPath(held));
+  expect(debris.map((path) => existsSync(path))).toEqual([false, false, false, false, false]);
   expect(kept.map((path) => existsSync(path))).toEqual([true, true, true, true]);
-  for (const path of debris)
-    expect(
-      said.some((line) => line.includes(path)),
-      path,
-    ).toBe(true);
-  // A second run has nothing to do and says nothing: the step is idempotent.
-  expect(warningsDuring(() => removeOsLockSidecars([home, autoupdateHome]), "info")).toEqual([]);
+  for (const path of debris) expect(said).toContain(path);
+  expect((await captureChannels(() => removeOsLockSidecars([home, autoupdateHome]))).all).toBe("");
 });
 
-test("5.0.1 deno leftovers: the sidecar dir, the float's deno files, and OUR .npmrc go; the user's .npmrc and the record stay", () => {
-  // The marker is what tells the float's .npmrc from one the user wrote at the same path: an
-  // unmarked file is never ours to delete, however the home came to hold it.
-  const home = tempDir("copilot-migrate-deno-");
-  const debris = [
-    join(home, "deno", "2.9.7", "deno"),
-    join(home, "deno", "cache", "npm", "registry.npmjs.org", "x"),
-    join(home, "proxy", "deno.json"),
-    join(home, "proxy", "deno.lock"),
-  ];
-  const kept = [
-    join(home, "proxy", "resolved-version.json"),
-    join(home, "proxy", "package.json"),
-    join(home, "state.json"),
-  ];
-  for (const path of [...debris, ...kept]) {
-    mkdirSync(join(path, ".."), { recursive: true });
-    writeFileSync(path, "x");
-  }
-  const npmrc = join(home, ".npmrc");
-  writeFileSync(npmrc, "registry=https://example.test\n");
-  expect(warningsDuring(() => removeDenoLeftovers(home), "info").join("\n")).not.toContain(npmrc);
-  expect(readFileSync(npmrc, "utf8")).toBe("registry=https://example.test\n");
-  expect(debris.map((path) => existsSync(path))).toEqual([false, false, false, false]);
-  expect(existsSync(join(home, "deno"))).toBe(false);
-  expect(kept.map((path) => existsSync(path))).toEqual([true, true, true]);
-
-  writeFileSync(
-    npmrc,
-    "# managed by copilot-env (proxy float); do not edit\ntrust-policy=no-downgrade\n",
-  );
-  expect(warningsDuring(() => removeDenoLeftovers(home), "info").join("\n")).toContain(npmrc);
-  expect(existsSync(npmrc)).toBe(false);
-  // A second run has nothing to do and says nothing: the step is idempotent.
-  expect(warningsDuring(() => removeDenoLeftovers(home), "info")).toEqual([]);
-});
-
-// The release before this one left its deno daemon running across `agent update`, holding its
-// home's daemon.lock; the new classifier gates on the bun runtime and would call that pid foreign,
-// so `agent stop` would refuse it and the next start's daemon would fail the lock. The step judges
-// by the lock alone: a live holder the classifier disowns is terminated and its marker swept, a dead
-// holder's marker is swept, and a holder the classifier owns (this release's daemon) is left alone.
-test("5.0.1: the previous release's lock holder is stopped and swept; a dead holder is swept; ours stays", async () => {
-  const root = isolateProxyHome("copilot-migrate-daemon-");
-  dir = root;
-  const homes = ["stranded", "dead", "ours"].map((name) => join(root, "profiles", name));
-  for (const home of homes) mkdirSync(home, { recursive: true });
-  const script = join(root, "previous-daemon.ts");
-  writeFileSync(script, "setInterval(() => {}, 60_000);\n");
-  // A plain bun child: alive, and nothing like this release's daemon on its argv.
-  const child = spawnChild(process.execPath, {
-    args: [...bunRunArgs(), script],
-    stdout: "ignore",
-    stderr: "ignore",
-  });
-  const marker = (home: string, pid: number): void =>
-    writeFileSync(daemonLockPath(home), `${pid}\n${Date.now()}\n`);
-  // Ours is a lock this process genuinely holds: a marker merely naming our pid reads as a leftover.
-  expect(acquireDaemonLockForLife(homes[2] as string, { waitMs: 0 })).toBe(true);
-  try {
-    marker(homes[0] as string, child.pid);
-    marker(homes[1] as string, 2_147_483_646);
-    const classify = (pid: number): Promise<"yes" | "no" | "unknown"> =>
-      Promise.resolve(pid === process.pid ? "yes" : "no");
-
-    const said = await (async () => {
-      const captured = captureConsola("info");
-      try {
-        await stopPreviousDaemons(homes, classify);
-      } finally {
-        captured.restore();
-      }
-      return captured.lines.join("\n");
-    })();
-    await until(() => !pidAlive(child.pid));
-    expect(said).toContain(`(pid ${child.pid})`);
-    expect(homes.map((home) => existsSync(daemonLockPath(home)))).toEqual([false, false, true]);
-    expect(pidAlive(process.pid)).toBe(true);
-
-    // Idempotent: nothing left to stop or sweep but ours, which stays.
-    await stopPreviousDaemons(homes, classify);
-    expect(existsSync(daemonLockPath(homes[2] as string))).toBe(true);
-  } finally {
-    releaseFileLock(daemonLockPath(homes[2] as string));
-    await killAndAwaitExit(child.pid);
-  }
-}, 30_000);
-
-/** The previous release's default daemon as 4.0.9 meets it: a plain bun child (nothing of this
- *  release's daemon on its argv, so the classifier reads it as foreign) holding the ROOT home's
- *  daemon.lock, with the root daemon's files beside it. */
-function legacyRootDaemon(root: string): { pid: number; teardown: () => Promise<void> } {
-  const script = join(root, "legacy-daemon.ts");
-  writeFileSync(script, "setInterval(() => {}, 60_000);\n");
-  const child = spawnChild(process.execPath, {
-    args: [...bunRunArgs(), script],
-    stdout: "ignore",
-    stderr: "ignore",
-  });
-  writeFileSync(daemonLockPath(root), `${child.pid}\n${Date.now()}\n`);
+/** The previous release's default daemon as 4.0.9 meets it: the deno-era fixture holding the ROOT
+ *  home's daemon.lock (marker and sidecar), with the root daemon's files beside it. */
+async function legacyRootDaemon(root: string): Promise<DenoEraDaemon> {
+  const daemon = await denoEraDaemon(root, root);
   writeFileSync(join(root, PROXY_CONFIG_FILENAME), "{}\n");
   const runDir = join(root, RUN_DIR_NAME, getSanitizedHostname());
   mkdirSync(runDir, { recursive: true });
-  writeFileSync(join(runDir, RUN_STATE_FILENAME), JSON.stringify({ pid: child.pid, port: 4141 }));
-  return { pid: child.pid, teardown: () => killAndAwaitExit(child.pid) };
+  writeFileSync(join(runDir, RUN_STATE_FILENAME), JSON.stringify({ pid: daemon.pid, port: 4141 }));
+  return daemon;
 }
 
 // Before 4.0.9 the default daemon ran at the root home itself and held `<root>/daemon.lock`. The
 // previous release's daemon reads as foreign to this release's classifier, so a pid-table stop
-// would refuse it and the layout move would fail: the move stops it by the lock alone, then moves
-// the root's daemon files under profiles/default.
+// would refuse it and the layout move would fail: the move proves and stops it like the 5.0.1
+// step does, then moves the root's daemon files under profiles/default.
 test("4.0.9: a live root daemon from the previous release is stopped by its lock and the move completes", async () => {
   const root = isolateProxyHome("copilot-migrate-root-daemon-");
   dir = root;
-  const daemon = legacyRootDaemon(root);
+  const daemon = await legacyRootDaemon(root);
   try {
     const said = (await captureChannels(() => stopRootDaemon(root))).all;
     await until(() => !pidAlive(daemon.pid));
@@ -1994,9 +1900,9 @@ test("4.0.9: a live root daemon from the previous release is stopped by its lock
   }
 }, 30_000);
 
-// An update that leaves both releases behind at once: the 4.0.9 layout step (hoisted first) stops
-// the root daemon by its lock and moves its files, and the 5.0.1 step, scanning the root home too,
-// sweeps the marker that daemon left and removes the deno-era files.
+// An update that leaves both releases behind at once: the 4.0.9 layout step (hoisted first) proves
+// and stops the root daemon and moves its files, and the 5.0.1 step, scanning the root home too,
+// finds nothing left of it and removes the deno-era files.
 test("the chain from 4.0.8 over a live root daemon ends with no daemon, its root lock swept, and no deno files", async () => {
   const homes = isolateAgentHomes("copilot-migrate-chain-daemon-", { mkdirs: true });
   dir = homes.dir;
@@ -2016,7 +1922,7 @@ test("the chain from 4.0.8 over a live root daemon ends with no daemon, its root
     mkdirSync(join(file, ".."), { recursive: true });
     writeFileSync(file, "{}\n");
   }
-  const daemon = legacyRootDaemon(root);
+  const daemon = await legacyRootDaemon(root);
   try {
     const narrated =
       // [from, to): the 5.0.1 steps belong to an update that leaves 5.0.1 behind.
@@ -2033,93 +1939,3 @@ test("the chain from 4.0.8 over a live root daemon ends with no daemon, its root
     await daemon.teardown();
   }
 }, 120_000);
-
-// The deno-era files are what a still-running previous daemon runs from, so they go only once
-// every daemon is confirmed stopped or absent. A holder the lock still names alive after the
-// stop, or one that could not be judged, leaves them (warned, for a re-run); a confirmed stop
-// removes them. The stop is the seam here: a live holder that survives SIGKILL is not stageable.
-test("5.0.1: the deno files stay while any daemon may still run from them, and go once every stop is confirmed", async () => {
-  const root = isolateProxyHome("copilot-migrate-deno-gate-");
-  dir = root;
-  const homes = ["a", "b"].map((name) => join(root, "profiles", name));
-  for (const home of homes) mkdirSync(home, { recursive: true });
-  const script = join(root, "previous-daemon.ts");
-  writeFileSync(script, "setInterval(() => {}, 60_000);\n");
-  const child = spawnChild(process.execPath, {
-    args: [...bunRunArgs(), script],
-    stdout: "ignore",
-    stderr: "ignore",
-  });
-  const denoFiles = [join(root, "deno", "entry"), join(root, "proxy", "deno.json")];
-  const plant = (): void => {
-    for (const file of denoFiles) {
-      mkdirSync(join(file, ".."), { recursive: true });
-      writeFileSync(file, "{}\n");
-    }
-  };
-  const foreign = (): Promise<"no"> => Promise.resolve("no");
-  try {
-    for (const home of homes) writeFileSync(daemonLockPath(home), `${child.pid}\n${Date.now()}\n`);
-    const rows: { stops: Record<string, LockedDaemonOutcome>; left: boolean }[] = [
-      {
-        stops: {
-          [homes[0] as string]: {
-            kind: "stopped",
-            pid: child.pid,
-            verdict: "killed",
-            stillRunning: true,
-          },
-          [homes[1] as string]: {
-            kind: "stopped",
-            pid: child.pid,
-            verdict: "killed",
-            stillRunning: false,
-          },
-        },
-        left: true,
-      },
-      {
-        stops: {
-          [homes[0] as string]: { kind: "unjudged", reason: "cannot be read" },
-          [homes[1] as string]: {
-            kind: "stopped",
-            pid: child.pid,
-            verdict: "killed",
-            stillRunning: false,
-          },
-        },
-        left: true,
-      },
-      {
-        stops: {
-          [homes[0] as string]: {
-            kind: "stopped",
-            pid: child.pid,
-            verdict: "died-in-grace",
-            stillRunning: false,
-          },
-          [homes[1] as string]: {
-            kind: "stopped",
-            pid: child.pid,
-            verdict: "killed",
-            stillRunning: false,
-          },
-        },
-        left: false,
-      },
-    ];
-    for (const row of rows) {
-      plant();
-      const stop = (home: string): Promise<LockedDaemonOutcome> =>
-        Promise.resolve(row.stops[home] as LockedDaemonOutcome);
-      const said = (await captureChannels(() => retireDenoDaemon(root, homes, foreign, stop))).all;
-      expect({ row: row.stops, left: denoFiles.map((f) => existsSync(f)) }).toEqual({
-        row: row.stops,
-        left: [row.left, row.left],
-      });
-      expect(said.includes(`the deno-era files under ${root} stay`)).toBe(row.left);
-    }
-  } finally {
-    await killAndAwaitExit(child.pid);
-  }
-}, 30_000);

@@ -7,6 +7,7 @@ import { pathToFileURL } from "node:url";
 import { consola } from "consola";
 import { floatedProxyEntry, proxyHome, proxyInstallDir } from "../proxy_float.ts";
 import { PROCESS_SCAN_TIMEOUT_MS, runPowershell } from "../utils/app_scan.ts";
+import { assertNever } from "../utils/assert.ts";
 import { runCaptured } from "../utils/command.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { pidAlive } from "../utils/pid.ts";
@@ -323,24 +324,265 @@ export async function classifyOwnedDaemonPid(pid: number): Promise<"yes" | "no" 
 }
 
 async function classifyDaemonPidWindows(pid: number): Promise<"yes" | "no" | "unknown"> {
-  // The SPECIFIC pid is queried so a different process (CommandLine present, judged here) is told
-  // apart from an unreadable one (CommandLine null: a restricted token); `pid` is our own integer,
-  // so inlining it is safe. CIM errors are non-terminating (an empty $p and exit 0, which would
-  // flatten into "no"), so the query is trapped to exit non-zero and read "unknown".
+  const look = await lookupProcessWindows(pid);
+  switch (look.kind) {
+    case "row":
+      return isDaemonCommandLine(look.row.command) ? "yes" : "no";
+    case "gone":
+      return "no";
+    case "unreadable":
+      return "unknown";
+    default:
+      return assertNever(look);
+  }
+}
+
+/** One pid's row, whatever its owner. A look, never a signal gate: a caller that signals judges the
+ *  row itself. "gone" is a completed look that found no such process; a look that failed to run or
+ *  to read the command line is "unreadable", never "gone". */
+export type ProcessLook =
+  | { readonly kind: "row"; readonly row: ProcessRow }
+  | { readonly kind: "gone" }
+  | { readonly kind: "unreadable" };
+
+export async function lookupProcess(pid: number): Promise<ProcessLook> {
+  if (process.platform === "win32") return lookupProcessWindows(pid);
+  const { exitCode, stdout, launchFailed } = await runCaptured(
+    "ps",
+    ["-p", String(pid), "-o", "pid=,ucomm=,args="],
+    { timeoutMs: PROCESS_SCAN_TIMEOUT_MS },
+  );
+  if (launchFailed) return { kind: "unreadable" };
+  const row = parseProcessRows(stdout).find((candidate) => candidate.pid === pid);
+  if (row !== undefined) return { kind: "row", row };
+  // `ps -p` exits 1 with nothing printed for a pid that is gone (procps and BSD alike); any other
+  // exit, 0 with no row included, is a ps that did not do the look.
+  return exitCode === 1 && stdout.trim() === "" ? { kind: "gone" } : { kind: "unreadable" };
+}
+
+async function lookupProcessWindows(pid: number): Promise<ProcessLook> {
+  // The SPECIFIC pid is queried so a different process (CommandLine present, judged by the caller)
+  // is told apart from an unreadable one (CommandLine null: a restricted token); `pid` is our own
+  // integer, so inlining it is safe. CIM errors are non-terminating (an empty $p and exit 0, which
+  // would flatten into "gone"), so the query is trapped to exit non-zero and read "unreadable".
   const script =
     "$ErrorActionPreference = 'Stop'; " +
     `try { $p = Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}' } catch { exit 1 }; ` +
-    "if (-not $p) { 'no' } " +
-    "elseif ([string]::IsNullOrEmpty($p.CommandLine)) { 'unknown' } " +
-    `else { 'cmd:' + ${base64CommandLine("$p")} }`;
+    "if (-not $p) { 'gone' } " +
+    "elseif ([string]::IsNullOrEmpty($p.CommandLine)) { 'unreadable' } " +
+    `else { 'row:' + ${base64CommandLine("$p")} + ' ' + $p.Name }`;
   const { exitCode, stdout } = await runPowershell(script);
-  if (exitCode !== 0) return "unknown";
+  if (exitCode !== 0) return { kind: "unreadable" };
   const answer = stdout.trim();
-  if (answer === "no") return "no";
-  if (answer.startsWith("cmd:")) {
-    return isDaemonCommandLine(decodeCommandLine(answer.slice(4))) ? "yes" : "no";
+  if (answer === "gone") return { kind: "gone" };
+  // The image name comes last: it may itself contain spaces.
+  const record = /^row:([A-Za-z0-9+/=]+) (.+)$/.exec(answer);
+  if (record === null) return { kind: "unreadable" };
+  return {
+    kind: "row",
+    row: { pid, ucomm: record[2] as string, command: decodeCommandLine(record[1] as string) },
+  };
+}
+
+/** When `pid` started, in epoch ms, or null when this host cannot say. Second resolution on
+ *  POSIX (`ps -o etime=` is elapsed `[[dd-]hh:]mm:ss`, read against this process's clock);
+ *  Windows reads Win32_Process.CreationDate. A read that fails is null, never a guess. */
+export async function processStartMs(pid: number): Promise<number | null> {
+  if (process.platform === "win32") return processStartMsWindows(pid);
+  const { exitCode, stdout, launchFailed } = await runCaptured(
+    "ps",
+    ["-p", String(pid), "-o", "etime="],
+    { timeoutMs: PROCESS_SCAN_TIMEOUT_MS },
+  );
+  const now = Date.now();
+  if (launchFailed || exitCode !== 0) return null;
+  const elapsed = /^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$/.exec(stdout.trim());
+  if (elapsed === null) return null;
+  const fields = [elapsed[1] ?? "0", elapsed[2] ?? "0", elapsed[3] ?? "", elapsed[4] ?? ""].map(
+    wholeNumber,
+  );
+  if (fields.some((field) => field === null)) return null;
+  const [days = 0, hours = 0, minutes = 0, seconds = 0] = fields as number[];
+  const elapsedMs = (((days * 24 + hours) * 60 + minutes) * 60 + seconds) * 1000;
+  // An elapsed time past the epoch is no reading of a process.
+  return Number.isSafeInteger(elapsedMs) && elapsedMs <= now ? now - elapsedMs : null;
+}
+
+async function processStartMsWindows(pid: number): Promise<number | null> {
+  const script =
+    "$ErrorActionPreference = 'Stop'; " +
+    `try { $p = Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}' } catch { exit 1 }; ` +
+    "if (-not $p -or -not $p.CreationDate) { exit 1 }; " +
+    "([DateTimeOffset]$p.CreationDate).ToUnixTimeMilliseconds()";
+  const { exitCode, stdout } = await runPowershell(script);
+  return exitCode === 0 ? wholeNumber(stdout.trim()) : null;
+}
+
+/** Whether `pid` is a zombie: dead, unreaped by its parent, holding no socket and writing no
+ *  file, yet alive to the signal probe. POSIX reads `ps -o stat=` (`Z` first, procps and BSD
+ *  alike); Windows has none. Null when the look could not run. */
+export async function processIsZombie(pid: number): Promise<boolean | null> {
+  if (process.platform === "win32") return false;
+  const { exitCode, stdout, launchFailed } = await runCaptured(
+    "ps",
+    ["-p", String(pid), "-o", "stat="],
+    { timeoutMs: PROCESS_SCAN_TIMEOUT_MS },
+  );
+  if (launchFailed || exitCode !== 0) return null;
+  const stat = stdout.trim();
+  return stat === "" ? null : stat.startsWith("Z");
+}
+
+/** Every process of this user as the table reports it, plus, with an EMPTY command, every process
+ *  whose owner this host could not read (it may be this user's); or "unproven" when the scan
+ *  failed (the selfPid control on POSIX, the script's exit on Windows). A look, never a signal
+ *  gate: a consumer judges an empty command as a row it cannot place. */
+export async function listUserProcessRows(): Promise<ProcessRow[] | "unproven"> {
+  const rows =
+    process.platform === "win32" ? await listUserProcessRowsWindows() : await listUserProcesses();
+  return rows === "unproven" ? rows : rowsWithSelfControl(rows, process.pid);
+}
+
+/** The scan's control on both platforms: a listing of this user's processes always holds the
+ *  calling process, so rows without `selfPid` prove the scan FAILED (ps error, truncation, an
+ *  owner filter that misread this user), which is "unproven", never an empty machine. Exported
+ *  for the control rows in test/copilot_api/daemon_spawn.e2e.test.ts. */
+export function rowsWithSelfControl(
+  rows: readonly ProcessRow[],
+  selfPid: number,
+): ProcessRow[] | "unproven" {
+  return rows.some((row) => row.pid === selfPid) ? [...rows] : "unproven";
+}
+
+async function listUserProcessRowsWindows(): Promise<ProcessRow[] | "unproven"> {
+  // Every image, the owner read per process: `mine` keeps the command line (base64, so an
+  // argument's newline cannot split a record), `other` is dropped, an owner that would not read
+  // is kept with no command line rather than omitted.
+  const script =
+    "$ErrorActionPreference = 'Stop'; try { " +
+    "Get-CimInstance Win32_Process | ForEach-Object { " +
+    "$o = Invoke-CimMethod -InputObject $_ -MethodName GetOwner -ErrorAction SilentlyContinue; " +
+    "$owner = if (-not $o -or $o.ReturnValue -ne 0) { 'unread' } " +
+    "elseif ($o.User -eq $env:USERNAME -and $o.Domain -eq $env:USERDOMAIN) { 'mine' } else { 'other' }; " +
+    "if ($owner -eq 'other') { return }; " +
+    "$c = if ($owner -eq 'mine' -and $_.CommandLine) { " +
+    base64CommandLine("$_") +
+    ' } else { "" }; "$($_.ProcessId) $c $($_.Name)" } ' +
+    "} catch { exit 1 }";
+  const { exitCode, stdout } = await runPowershell(script);
+  if (exitCode !== 0) return "unproven";
+  const rows: ProcessRow[] = [];
+  for (const line of stdout.split(/\r?\n/)) {
+    const record = /^\s*(\d+) ([A-Za-z0-9+/=]*) (.+)$/.exec(line);
+    const pid = record === null ? null : wholeNumber(record[1] as string);
+    if (record === null || pid === null) continue;
+    rows.push({ pid, ucomm: record[3] as string, command: decodeCommandLine(record[2] as string) });
   }
-  return "unknown";
+  return rows;
+}
+
+/** The pids whose listener holds the port for 127.0.0.1, or "unreadable" when the look could not
+ *  run. An empty list is a completed look that saw no such listener this user may read: another
+ *  user's socket. */
+export async function listeningPids(port: number): Promise<number[] | "unreadable"> {
+  if (process.platform === "win32") return listeningPidsWindows(port);
+  // lsof exits 1 when nothing matched, the same code as a failed launch, which runCaptured marks
+  // apart.
+  const { stdout, launchFailed } = await runCaptured(
+    "lsof",
+    ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-Fptn"],
+    { timeoutMs: PROCESS_SCAN_TIMEOUT_MS },
+  );
+  if (launchFailed) return "unreadable";
+  return listenersFromLsof(stdout);
+}
+
+type Family = "IPv4" | "IPv6";
+
+/** One LISTEN row of the port, before any judgment. */
+interface Listener {
+  pid: number;
+  family: Family;
+  address: string;
+}
+
+const LOOPBACK_V4_ADDRESSES = new Set(["127.0.0.1", "*", "0.0.0.0", "::", "[::]"]);
+
+/**
+ * The pids among `listeners` (every LISTEN row of the port, whatever its address) that hold it
+ * against a bind on 127.0.0.1: that address or a wildcard. An IPv6 wildcard holds the IPv4 port
+ * only when dual-stack, which no table says; but a dual-stack one and any IPv4 listener cannot
+ * both be bound, so any IPv4 row on the port, 127.0.0.2's included, proves every IPv6 row v6-only.
+ */
+function holdersOfLoopbackV4(listeners: readonly Listener[]): number[] {
+  const anyV4 = listeners.some((listener) => listener.family === "IPv4");
+  const pids = listeners
+    .filter((listener) => !(anyV4 && listener.family === "IPv6"))
+    .filter((listener) => LOOPBACK_V4_ADDRESSES.has(listener.address))
+    .map((listener) => listener.pid);
+  return [...new Set(pids)];
+}
+
+/** lsof's `-F ptn` record: a `p<pid>` line, then per socket a `t<family>` and an `n<address>:<port>`
+ *  line. Exported for the record-format rows in test/copilot_api/daemon_spawn.e2e.test.ts. */
+export function listenersFromLsof(stdout: string): number[] {
+  const listeners: Listener[] = [];
+  let pid: number | null = null;
+  let family: Family | null = null;
+  for (const raw of stdout.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (line.startsWith("p")) {
+      const record = /^p(\d+)$/.exec(line);
+      pid = record === null ? null : wholeNumber(record[1] as string);
+    } else if (line === "tIPv4" || line === "tIPv6") {
+      family = line.slice(1) as Family;
+    } else if (line.startsWith("n") && pid !== null && family !== null) {
+      listeners.push({ pid, family, address: line.slice(1, line.lastIndexOf(":")) });
+    }
+  }
+  return holdersOfLoopbackV4(listeners);
+}
+
+async function listeningPidsWindows(port: number): Promise<number[] | "unreadable"> {
+  // No listener is a non-terminating ObjectNotFound error, read as the empty list; any other
+  // error (access denied) exits non-zero and reads as a look that failed.
+  const script =
+    "$ErrorActionPreference = 'Stop'; try { " +
+    `Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue -ErrorVariable e ` +
+    '| ForEach-Object { "$($_.OwningProcess) $($_.LocalAddress)" }; ' +
+    "foreach ($x in $e) { if ($x.CategoryInfo.Category -ne 'ObjectNotFound') { exit 1 } } " +
+    "} catch { exit 1 }";
+  const { exitCode, stdout } = await runPowershell(script);
+  if (exitCode !== 0) return "unreadable";
+  const listeners: Listener[] = [];
+  for (const line of stdout.split(/\r?\n/)) {
+    const record = /^(\d+) (\S+)$/.exec(line.trim());
+    const pid = record === null ? null : wholeNumber(record[1] as string);
+    if (record === null || pid === null) continue;
+    const address = record[2] as string;
+    listeners.push({ pid, family: address.includes(":") ? "IPv6" : "IPv4", address });
+  }
+  return holdersOfLoopbackV4(listeners);
+}
+
+/** The shell's own way to stop a pid, for a message that hands the stop to the user. */
+export function stopPidCommand(pid: number, force = false): string {
+  if (process.platform === "win32") return `Stop-Process -Id ${pid}${force ? " -Force" : ""}`;
+  return `kill ${force ? "-9 " : ""}${pid}`;
+}
+
+/** The shell's own way to read what a pid is, for a message that will not name it. */
+export function processLookCommand(pid: number): string {
+  return process.platform === "win32"
+    ? `Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}' | Select-Object Name, CommandLine`
+    : `ps -p ${pid} -o pid=,ucomm=,args=`;
+}
+
+/** The shell's own way to see who listens on a loopback port, for the same messages. */
+export function listenerLookCommand(port: number): string {
+  return process.platform === "win32"
+    ? `Get-NetTCPConnection -LocalPort ${port} -State Listen`
+    : `lsof -nP -iTCP:${port} -sTCP:LISTEN`;
 }
 
 /** A command line crosses the PowerShell boundary base64-encoded: an argument may itself carry a
@@ -400,8 +642,8 @@ async function scanCopilotApiPidsWindows(): Promise<number[] | "unproven"> {
   const pids: number[] = [];
   for (const line of stdout.split(/\r?\n/)) {
     const record = /^\s*(\d+) ([A-Za-z0-9+/=]+)\s*$/.exec(line);
-    if (record === null) continue;
-    const pid = Number.parseInt(record[1] as string, 10);
+    const pid = record === null ? null : wholeNumber(record[1] as string);
+    if (record === null || pid === null) continue;
     if (isDaemonCommandLine(decodeCommandLine(record[2] as string))) pids.push(pid);
   }
   return pids;
@@ -409,25 +651,32 @@ async function scanCopilotApiPidsWindows(): Promise<number[] | "unproven"> {
 
 /** `ucomm` is the executable name as the process table reports it; the runtime gate reads THIS, never
  *  argv text. */
-interface ProcessRow {
+export interface ProcessRow {
   pid: number;
   ucomm: string;
   command: string;
 }
 
+/** A number read from evidence (a pid, a timestamp, an elapsed field) is a whole decimal and a
+ *  safe integer, or it is nothing: `123junk` is not 123 and a 16-digit pid names no process. */
+export function wholeNumber(text: string): number | null {
+  if (!/^\d+$/.test(text)) return null;
+  const value = Number(text);
+  return Number.isSafeInteger(value) ? value : null;
+}
+
 /** Only the leading columns are split off: the command line may itself contain runs of spaces. Lines
- *  not pid-prefixed (a header, a wrapped continuation) are dropped rather than guessed at, and an
- *  executable named with spaces splits wrong and simply never reads as a runtime. */
+ *  not pid-prefixed (a header, a wrapped continuation) or whose pid is no safe integer are dropped
+ *  rather than guessed at, and an executable named with spaces splits wrong and simply never reads
+ *  as a runtime. */
 export function parseProcessRows(stdout: string): ProcessRow[] {
   const rows: ProcessRow[] = [];
   for (const line of stdout.split(/\r?\n/)) {
     const match = /^\s*(\d+)\s+(\S+)\s+(\S.*)$/.exec(line);
     if (match === null) continue;
-    rows.push({
-      pid: Number.parseInt(match[1] as string, 10),
-      ucomm: match[2] as string,
-      command: match[3] as string,
-    });
+    const pid = wholeNumber(match[1] as string);
+    if (pid === null) continue;
+    rows.push({ pid, ucomm: match[2] as string, command: match[3] as string });
   }
   return rows;
 }

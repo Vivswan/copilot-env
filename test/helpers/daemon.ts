@@ -2,7 +2,7 @@
 // real detached fake daemon over a home, daemon-side children run the way the daemon runs (the
 // running bun as a bun CLI, a shim under `--preload`), the waits that bound themselves by the test
 // deadline, and the shared-home stop refusal.
-import { mkdirSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { abortable, delay } from "@std/async";
@@ -19,15 +19,18 @@ import {
   resolveLaunchCredential,
 } from "../../src/copilot_api/launch.ts";
 import { resolveRootHome } from "../../src/copilot_api/paths.ts";
+import { proxyPortFree } from "../../src/copilot_api/port.ts";
 import { BUN_CLI_ENV, type DaemonCredential, launchDaemon } from "../../src/copilot_api/process.ts";
 import type { Profile, ProfileName } from "../../src/copilot_api/profile.ts";
 import { PROXY_PACKAGE_NAME } from "../../src/copilot_api/version.ts";
+import { denoLockSidecarPath } from "../../src/migrations/legacy_daemon.ts";
 import { proxyHome, proxyInstallDir, renderProxyManifest } from "../../src/proxy_float.ts";
 import { releaseFileLock } from "../../src/utils/file_lock.ts";
 import { pidAlive } from "../../src/utils/pid.ts";
 import { writeRunState } from "./fixtures.ts";
+import { freePort } from "./net.ts";
 import { bunRunArgs, ROOT, type RunOptions, runSync, spawnChild } from "./run.ts";
-import { tempDir, testAbortSignal } from "./testing.ts";
+import { step, tempDir, testAbortSignal } from "./testing.ts";
 
 /** `agent start`'s two credential steps as one call, the refusal gate and the resolution it feeds,
  *  so a decision table holds refusals and resolved credentials side by side (a refusal rejects). */
@@ -249,4 +252,93 @@ export function stageRefusedStop(home: string, profile?: ProfileName): RefusedSt
       await until(() => !pidAlive(child.pid));
     },
   };
+}
+
+// --- the deno release's daemon --------------------------------------------------------
+
+/** The modes a deno-era fixture runs in; each is one gap the migration must close. */
+export interface DenoEraDaemonOptions {
+  /** The marker's own timestamp; by default now, after the process started. */
+  markerMs?: () => number;
+  /** No `--port`, nothing listened on: the shape the step must not stop. */
+  portless?: true;
+  /** On SIGTERM unlinks the lock pair and keeps running: a hung shutdown. */
+  dropsLockOnTerm?: true;
+  /** On SIGTERM closes its listener and keeps running: the pid that stays behind stands in for
+   *  a stranger the OS handed the dead daemon's pid. */
+  closesOnTerm?: true;
+  /** Ignores SIGTERM outright, lock and listener kept. */
+  ignoresTerm?: true;
+  /** `<root>/proxy/deno.json` on argv, as that release's `--config` put it (after `start` here:
+   *  bun run exits on a `--config` of its own). */
+  provenance?: true;
+  /** The marker alone, as a lock this release's file lock wrote. */
+  sidecar?: false;
+}
+
+export interface DenoEraDaemon {
+  pid: number;
+  port: number | null;
+  teardown: () => Promise<void>;
+}
+
+/** The deno release's daemon as the migration meets it: this run's bun under the name `deno`, on
+ *  that release's argv shape, holding `home`'s lock in the old form (the marker and the `.oslock`
+ *  sidecar). A copy, not a link, except on Linux: macOS reports a linked executable's own name as
+ *  ucomm, and a Windows link needs a privilege. */
+export async function denoEraDaemon(
+  root: string,
+  home: string,
+  opts: DenoEraDaemonOptions = {},
+): Promise<DenoEraDaemon> {
+  // Under its own directory: `<root>/deno` is the deno-era sidecar directory the step removes.
+  const runtime = join(root, "runtime", process.platform === "win32" ? "deno.exe" : "deno");
+  if (!existsSync(runtime)) {
+    mkdirSync(join(runtime, ".."), { recursive: true });
+    if (process.platform === "linux") symlinkSync(process.execPath, runtime);
+    else copyFileSync(process.execPath, runtime);
+  }
+  const entry = join(root, "copilot-api", "daemon.ts");
+  mkdirSync(join(entry, ".."), { recursive: true });
+  writeFileSync(
+    entry,
+    'import { createServer } from "node:net";\n' +
+      'import { rmSync } from "node:fs";\n' +
+      "const flag = (name) => { const at = process.argv.indexOf(name); return at === -1 ? null : process.argv[at + 1]; };\n" +
+      'const port = flag("--port");\n' +
+      "const server = createServer((socket) => socket.destroy());\n" +
+      'if (port !== null) server.listen(Number(port), "127.0.0.1");\n' +
+      "setInterval(() => {}, 60_000);\n" +
+      'if (process.argv.includes("--close-on-term")) process.on("SIGTERM", () => server.close());\n' +
+      'if (process.argv.includes("--ignore-term")) process.on("SIGTERM", () => {});\n' +
+      'const drop = flag("--drop-lock-on-term");\n' +
+      'if (drop !== null) process.on("SIGTERM", () => { rmSync(drop, { force: true }); rmSync(drop + ".oslock", { force: true }); });\n',
+  );
+  const port = opts.portless ? null : await freePort();
+  const config = join(root, "proxy", "deno.json");
+  if (opts.provenance) {
+    mkdirSync(join(config, ".."), { recursive: true });
+    writeFileSync(config, "{}\n");
+  }
+  const child = spawnChild(runtime, {
+    args: [
+      ...bunRunArgs(),
+      entry,
+      "start",
+      "--verbose",
+      ...(port === null ? [] : ["--port", String(port)]),
+      ...(opts.dropsLockOnTerm ? ["--drop-lock-on-term", daemonLockPath(home)] : []),
+      ...(opts.closesOnTerm ? ["--close-on-term"] : []),
+      ...(opts.ignoresTerm ? ["--ignore-term"] : []),
+      ...(opts.provenance ? ["--config", config] : []),
+    ],
+    stdout: "ignore",
+    stderr: "ignore",
+  });
+  step(`deno-era fixture ${home} listening`);
+  if (port !== null) await until(async () => !(await proxyPortFree(port)));
+  mkdirSync(home, { recursive: true });
+  writeFileSync(daemonLockPath(home), `${child.pid}\n${(opts.markerMs ?? Date.now)()}\n`);
+  if (opts.sidecar !== false) writeFileSync(denoLockSidecarPath(home), "");
+  return { pid: child.pid, port, teardown: () => killAndAwaitExit(child.pid) };
 }

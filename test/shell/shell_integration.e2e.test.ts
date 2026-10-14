@@ -667,5 +667,8 @@ for (const { driver: ps, onThisHost } of PS_DRIVERS) {
         stderr: lf(failed.stderr),
       }).toEqual({ exitCode: 0, stdout: "after failed source: []\n", stderr: "" });
     },
+    // Nine cold .NET process starts in series (two drivers, their dot-source refreshes, and the
+    // nested host per `agent` call and per refresh), seconds each on a loaded runner.
+    60_000,
   );
 }

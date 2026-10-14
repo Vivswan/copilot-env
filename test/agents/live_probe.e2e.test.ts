@@ -1,11 +1,15 @@
+import type { ChildProcess } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { realpathSync, writeFileSync } from "node:fs";
 import { delimiter, join, resolve } from "node:path";
+import { PassThrough } from "node:stream";
 import {
   CLAUDE_PROBE,
   CODEX_CATALOG_NOISE_RE,
   CODEX_PROBE,
   type ProbeDescriptor,
   type ProbeOutcome,
+  probeChildOutcome,
   probeDirectWorks,
   summarizeProbeFailure,
 } from "../../src/agents/live_probe.ts";
@@ -435,6 +439,30 @@ test("probeDirectWorks runs a catalog-free first hop whatever the catalog says: 
   expect([rejected, models, unreadable.fallbackAsks]).toEqual([false, ["haiku"], 1]);
   expect(narration).toContain("GET /models returned 503");
   expect(narration).toMatch(/did not succeed \(404 model haiku not found\)/);
+});
+
+// --- the child wait: never the close event ------------------------------------
+
+test("probeChildOutcome settles on the child's exit and stream ends when its close event never comes (bun on macOS drops it, oven-sh/bun#41024)", async () => {
+  // The cwd test below stalled to its deadline twice on the macOS runner with the child long
+  // gone: node folds exit and the two stream closes into one `close` event, and a wait on that
+  // alone has nothing to settle it when bun loses the notification. The verdict needs only the
+  // exit code and the output read so far, so those three are what the probe waits for.
+  const cases: { code: number; stderr: string; expected: ProbeOutcome }[] = [
+    { code: 0, stderr: "", expected: { ok: true } },
+    { code: 3, stderr: "error: nope\n", expected: { ok: false, detail: "error: nope" } },
+  ];
+  for (const c of cases) {
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
+    const child = Object.assign(new EventEmitter(), { stdout, stderr, killed: false, unref() {} });
+    step(`probeChildOutcome: exit ${c.code}, streams end, no close`);
+    const settled = probeChildOutcome(child as unknown as ChildProcess);
+    stderr.end(c.stderr);
+    stdout.end();
+    child.emit("exit", c.code, null);
+    expect(await settled, `exit ${c.code}`).toEqual(c.expected);
+  }
 });
 
 // --- probeDirectWorks: the child's working directory ------------------------

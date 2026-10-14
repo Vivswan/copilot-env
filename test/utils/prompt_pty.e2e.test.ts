@@ -5,6 +5,7 @@
 
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { Terminal } from "@xterm/headless";
 import { until } from "../helpers/daemon.ts";
 import {
   bunRunArgs,
@@ -16,107 +17,22 @@ import {
 } from "../helpers/run.ts";
 import { expect, step, tempDir, test } from "../helpers/testing.ts";
 
-const ESC = String.fromCharCode(27);
-const DOWN = `${ESC}[B`;
+const DOWN = `${String.fromCharCode(27)}[B`;
 const COLS = 80;
+const ROWS = 24;
 
-/**
- * The terminal's view of a byte stream: a grid as wide as the pty, the cursor moves a redraw
- * relies on, and the autowrap a real terminal does past the last column. Colors and cursor
- * visibility change nothing on the grid.
- *   CSI n A / B      -> cursor up / down n rows
- *   CSI n C / D / G  -> cursor right / left n columns, to column n
- *   CSI J, CSI K     -> erase from the cursor to the end of the screen, of the row
- */
-class Screen {
-  private readonly grid: string[][] = [];
-  private x = 0;
-  private y = 0;
-  private wrapPending = false;
-
-  constructor(private readonly cols: number) {}
-
-  rows(): string[] {
-    return this.grid.map((row) => row.join("").trimEnd());
+/** The bytes replayed through a headless terminal of the pty's size: its buffer is the screen,
+ *  scrollback included. The buffer read sits behind xterm's proposed-API flag. */
+async function screenOf(bytes: string): Promise<string[]> {
+  const terminal = new Terminal({ cols: COLS, rows: ROWS, allowProposedApi: true });
+  await new Promise<void>((written) => terminal.write(bytes, written));
+  const buffer = terminal.buffer.active;
+  const rows: string[] = [];
+  for (let i = 0; i < buffer.length; i++) {
+    rows.push(buffer.getLine(i)?.translateToString(true) ?? "");
   }
-
-  feed(bytes: string): void {
-    const csi = new RegExp(`${ESC}\\[([0-9;?]*)([A-Za-z])`, "y");
-    let i = 0;
-    while (i < bytes.length) {
-      const ch = bytes[i] as string;
-      if (ch === ESC) {
-        csi.lastIndex = i;
-        const m = csi.exec(bytes);
-        if (m === null) {
-          i += 2;
-        } else {
-          this.control(m[1] ?? "", m[2] ?? "");
-          i = csi.lastIndex;
-        }
-      } else if (ch === "\r") {
-        this.x = 0;
-        this.wrapPending = false;
-        i++;
-      } else if (ch === "\n") {
-        this.y++;
-        this.wrapPending = false;
-        i++;
-      } else {
-        this.put(ch);
-        i++;
-      }
-    }
-  }
-
-  private put(ch: string): void {
-    if (this.wrapPending) {
-      this.x = 0;
-      this.y++;
-      this.wrapPending = false;
-    }
-    const row = this.grid[this.y] ?? [];
-    this.grid[this.y] = row;
-    while (row.length < this.x) row.push(" ");
-    row[this.x] = ch;
-    if (this.x + 1 < this.cols) this.x++;
-    else this.wrapPending = true;
-  }
-
-  private control(params: string, final: string): void {
-    const erase = final === "J" || final === "K";
-    const n = Number.parseInt(params, 10) || (erase ? 0 : 1);
-    this.wrapPending = false;
-    switch (final) {
-      case "A":
-        this.y = Math.max(0, this.y - n);
-        break;
-      case "B":
-        this.y += n;
-        break;
-      case "C":
-        this.x = Math.min(this.cols - 1, this.x + n);
-        break;
-      case "D":
-        this.x = Math.max(0, this.x - n);
-        break;
-      case "G":
-        this.x = n - 1;
-        break;
-      case "J":
-        if (n === 0) {
-          this.grid[this.y]?.splice(this.x);
-          this.grid.length = Math.min(this.grid.length, this.y + 1);
-        }
-        break;
-      case "K":
-        if (n === 0) this.grid[this.y]?.splice(this.x);
-        else if (n === 2) this.grid[this.y] = [];
-        break;
-      default:
-        break;
-    }
-  }
+  terminal.dispose();
+  return rows;
 }
 
 const QUESTION = "Which way should the example go?";
@@ -151,7 +67,7 @@ test.skipIf(process.platform === "win32")(
     const seen = (): string => Buffer.concat(chunks).toString("utf8");
     const terminal = new Bun.Terminal({
       cols: COLS,
-      rows: 24,
+      rows: ROWS,
       data: (_terminal, data) => {
         chunks.push(Buffer.from(data));
       },
@@ -182,9 +98,7 @@ test.skipIf(process.platform === "win32")(
     } finally {
       terminal.close();
     }
-    const screen = new Screen(COLS);
-    screen.feed(seen());
-    const rows = screen.rows().filter((row) => row.trim() !== "");
+    const rows = (await screenOf(seen())).filter((row) => row.trim() !== "");
     const rowsNaming = (needle: string): number => rows.filter((r) => r.includes(needle)).length;
     const chosen = OPTIONS[OPTIONS.length - 1] as (typeof OPTIONS)[number];
     expect({

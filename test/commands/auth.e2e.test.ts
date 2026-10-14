@@ -6,11 +6,13 @@ import { configureClaudeConfig } from "../../src/claude/config.ts";
 import {
   type AuthArgs,
   chooseGhAccount,
+  ghCannotServeByName,
   loginWithGhCli,
   parseAcquisition,
   runAuth,
 } from "../../src/commands/auth.ts";
 import { type IdentityTableInput, identityTableLines } from "../../src/commands/identity.ts";
+import { addProfile } from "../../src/commands/profile.ts";
 import { runPrintProxyToken } from "../../src/commands/proxy_token.ts";
 import { CODEX_IDENTITY_NAME } from "../../src/copilot_api/config_registry.ts";
 import {
@@ -59,10 +61,17 @@ import { stageRefusedStop } from "../helpers/daemon.ts";
 import { envSnapshot, isolateAgentHomes, resetExitCode } from "../helpers/env.ts";
 import { stubGithubLogins, writeRunState } from "../helpers/fixtures.ts";
 import { captureChannels } from "../helpers/output.ts";
-import { afterEach, expect, removeDir, test } from "../helpers/testing.ts";
+import { runCli } from "../helpers/run.ts";
+import { afterEach, beforeEach, expect, removeDir, test } from "../helpers/testing.ts";
 
-const restoreEnv = envSnapshot(["PATH"]);
+const restoreEnv = envSnapshot(["PATH", "COLUMNS"]);
 let dir = "";
+
+// Every test renders at 80 columns unless it pins its own width, so the runner's terminal never
+// reaches an assertion; restoreEnv puts the runner's COLUMNS back after each.
+beforeEach(() => {
+  process.env.COLUMNS = "80";
+});
 
 afterEach(() => {
   restoreEnv();
@@ -94,8 +103,15 @@ function enableCatalog(): void {
   new CopilotEnvConfig().set({ "codex.model-catalog": true });
 }
 
+/** A captured report as words: the logger and printWrapped wrap a line at COLUMNS when that is
+ *  set, so an indented continuation line folds back onto its line. For assertions about the
+ *  words, never the width (the 80-column layouts have their own explicit-width tests). */
+function words(captured: string): string {
+  return captured.replace(/\n[ \t]+/g, " ");
+}
+
 async function captureStderr(fn: () => Promise<void>): Promise<string> {
-  return (await captureChannels(fn)).stderr;
+  return words((await captureChannels(fn)).stderr);
 }
 
 async function captureStdout(fn: () => Promise<void>): Promise<string> {
@@ -245,7 +261,9 @@ test("auth --check: a configured provider reports authenticated with its account
 test("auth (bare) on a recorded provider names the account, then the switch hint on its own line", async () => {
   isolate();
   state().setCredential(null, { kind: "stored", provider: "gh-token", token: "ghu_stored123" });
-  const err = await captureStderr(() => runAuth({}));
+  // The raw capture: this test is about the line boundary between two log records, and the hint
+  // leads with spaces, which the fold in captureStderr would read as a wrapped continuation.
+  const err = (await captureChannels(() => runAuth({}))).stderr;
   // The fancy reporter (a TTY) renders the backticks away and the basic one (CI) keeps them and
   // leads with `[log]`; a set COLUMNS wraps the hint. The two facts pinned read the same under all.
   const plain = err.replaceAll("`", "");
@@ -449,7 +467,7 @@ test("auth --get/--del/--check on a named profile per slot state: nonexistent hi
     }
     expect(deleted, row.name).toContain(row.delSays);
     resetExitCode();
-    const checked = await captureStdout(() => runAuth({ check: true, profile: "ghost" }));
+    const checked = words(await captureStdout(() => runAuth({ check: true, profile: "ghost" })));
     for (const needle of row.says) expect(checked, row.name).toContain(needle);
     expect(checked, row.name).toContain(checkSays);
     expect(process.exitCode, row.name).toBe(1);
@@ -1024,9 +1042,53 @@ test("ghTokenLookFromSpawn: completed exits prove, a dead spawn stays unproven",
 
 const AUTO = { kind: "auto", activeLogin: null } as const;
 const PINNED_WORK = { kind: "pinned", login: "work" } as const;
-const SOLE_WORK = { kind: "sole", login: "work" } as const;
+const WORK_MISS_DETAIL =
+  "`gh auth token --user work --hostname github.com` exited 1: no oauth token found";
+/** The refusal as the user reads it, every line: the headline, gh's own answer, the ways out with
+ *  the command first. The lines are what a user acts on, so the whole message is the contract. */
+const WORK_REFUSAL = [
+  "gh cannot serve account 'work' by name.",
+  `  ${WORK_MISS_DETAIL}`,
+  "Pick one:",
+  "  gh auth login              re-login on gh 2.40 or newer, then retry",
+  "  agent auth --gh-user auto  follow gh's active account (switches with gh)",
+].join("\n");
 
-test("loginWithGhCli: an UNPROVEN look says could-not-check; a proven miss quotes gh and keeps the advice", async () => {
+test("the refusal paints only what the reader acts on (the login, each command) and stays aligned with color off", () => {
+  const CYAN = "\x1b[36m";
+  const CLOSE = "\x1b[39m";
+  const detail =
+    "`gh auth token --user octocat --hostname github.com` exited 1: no oauth token found";
+  const painted = ghCannotServeByName("octocat", detail, "agent auth", true, 80).message;
+  expect(painted).toBe(
+    [
+      `gh cannot serve account '${CYAN}octocat${CLOSE}' by name.`,
+      `  ${detail}`,
+      "Pick one:",
+      `  ${CYAN}gh auth login${CLOSE}              re-login on gh 2.40 or newer, then retry`,
+      `  ${CYAN}agent auth --gh-user auto${CLOSE}  follow gh's active account (switches with gh)`,
+    ].join("\n"),
+  );
+  // A pipe or NO_COLOR: the same bytes minus the escapes, so the columns do not shift.
+  expect(ghCannotServeByName("octocat", detail, "agent auth", false, 80).message).toBe(
+    painted.replaceAll(CYAN, "").replaceAll(CLOSE, ""),
+  );
+  // A named profile's command is longer. At 80 columns the description wraps under its own
+  // column; left to the logger, the hanging indent would put "retry" under the command.
+  expect(ghCannotServeByName("octocat", detail, "agent profile work auth", false, 80).message).toBe(
+    [
+      "gh cannot serve account 'octocat' by name.",
+      `  ${detail}`,
+      "Pick one:",
+      "  gh auth login                           re-login on gh 2.40 or newer, then",
+      "                                          retry",
+      "  agent profile work auth --gh-user auto  follow gh's active account (switches",
+      "                                          with gh)",
+    ].join("\n"),
+  );
+});
+
+test("loginWithGhCli: an UNPROVEN look says could-not-check; a pin gh cannot serve by name refuses and never consults the plain call", async () => {
   isolate(); // clears GH_TOKEN/GITHUB_TOKEN so a runner credential never shapes the wording
   const killed: GhTokenLook = {
     kind: "unproven",
@@ -1062,30 +1124,25 @@ test("loginWithGhCli: an UNPROVEN look says could-not-check; a proven miss quote
   // A pinned account wears its own words: the miss is about THAT account (gh's active login may
   // well be fine), the look receives the pin to verify, and gh's own stderr is quoted verbatim.
   const asked: Array<string | null> = [];
-  const miss: GhTokenLook = {
-    kind: "absent",
-    detail: "`gh auth token --user work --hostname github.com` exited 1: no oauth token found",
-  };
+  const miss: GhTokenLook = { kind: "absent", detail: WORK_MISS_DETAIL };
   const pinnedMiss = (ghUser: string | null) => {
     asked.push(ghUser);
     return miss;
   };
-  const PIN_MISS =
-    "gh cannot serve account 'work' by name (`gh auth token --user work --hostname " +
-    "github.com` exited 1: no oauth token found) - run `gh auth login` for that account (a " +
-    "logged-out login and a hosts.yml written before gh 2.40 both need it), pass --gh-user <login> " +
-    "for another, or drop --gh-user and let `agent auth --provider gh-cli` settle the account " +
-    "(auto included)";
-  expect(() => loginWithGhCli(PINNED_WORK, pinnedMiss)).toThrow(PIN_MISS);
+  // An Error argument makes toThrow compare the whole message, not a substring.
+  expect(() => loginWithGhCli(PINNED_WORK, pinnedMiss)).toThrow(new Error(WORK_REFUSAL));
   expect(() => loginWithGhCli(PINNED_WORK, () => killed)).toThrow(
     "could not check gh authentication (`gh auth token` did not complete (killed)) - retry `agent auth`",
   );
   expect(asked).toEqual(["work"]);
+  expect(
+    loginWithGhCli(PINNED_WORK, () => ({ kind: "found", token: "tok", command: "gh auth token" })),
+  ).toEqual({ kind: "pinned", ghUser: "work" });
 
-  // A SOLE login (the chooser's one-saved-account selection) pins when gh serves it by name;
-  // when only the plain call answers, the slot follows the active account and the line names the
-  // cause and the recovery. A miss on both calls is the pinned wording; an unanswered look,
-  // either of them, is could-not-check (the pinned one with no second call).
+  // The one saved login on a hosts.yml gh wrote before 2.40: `--user` refuses it while the plain
+  // call would serve it. That token is whichever account gh has active, so the pin refuses rather
+  // than follow it (a later `gh auth login` would spend the other account's Copilot credit), and
+  // the plain call is never asked. The fallback this replaces shipped as #395.
   const served = (ghUser: string | null): GhTokenLook => {
     asked.push(ghUser);
     return ghUser === null
@@ -1093,42 +1150,27 @@ test("loginWithGhCli: an UNPROVEN look says could-not-check; a proven miss quote
       : miss;
   };
   asked.length = 0;
-  expect(
-    loginWithGhCli(SOLE_WORK, () => ({ kind: "found", token: "tok", command: "gh auth token" })),
-  ).toEqual({
-    ghUser: "work",
-    activeLogin: null,
-  });
-  let settled: ReturnType<typeof loginWithGhCli> | undefined;
-  const fallback = await captureStderr(() => {
-    settled = loginWithGhCli(SOLE_WORK, served);
-    return Promise.resolve();
-  });
-  expect(settled).toEqual({ ghUser: null, activeLogin: "work" });
-  expect(asked).toEqual(["work", null]);
-  // consola's fancy reporter renders backticks away and its basic reporter keeps them, so the
-  // capture is normalized before the whole line is pinned.
-  expect(fallback.replaceAll("`", "")).toContain(
-    "gh cannot serve account work by name (gh auth token --user work --hostname github.com " +
-      "exited 1: no oauth token found), so the credential follows gh's active account (auto) - " +
-      "the same account while it is the only login. To pin it, run gh auth login for work on gh " +
-      "2.40 or newer (the login rewrites hosts.yml into the layout --user reads), then re-run " +
-      "agent auth --provider gh-cli.",
-  );
-  expect(fallback).toContain("Using the gh CLI login on AUTO (currently account work;");
-  expect(() => loginWithGhCli(SOLE_WORK, pinnedMiss)).toThrow(PIN_MISS);
-  expect(() => loginWithGhCli(SOLE_WORK, (ghUser) => (ghUser === null ? killed : miss))).toThrow(
-    "could not check gh authentication (`gh auth token` did not complete (killed)) - retry `agent auth`",
-  );
-  asked.length = 0;
-  expect(() =>
-    loginWithGhCli(SOLE_WORK, (ghUser) => {
-      asked.push(ghUser);
-      return killed;
-    }),
-  ).toThrow("could not check gh authentication");
+  expect(() => loginWithGhCli(PINNED_WORK, served)).toThrow(new Error(WORK_REFUSAL));
   expect(asked).toEqual(["work"]);
+  // The way out names the command that reruns THIS acquisition: a named profile's user following
+  // the default's would re-auth the wrong slot. Width-independent (the command column never
+  // wraps); the 80-column layout is pinned above with an explicit width.
+  const forWork = thrownBy(() =>
+    loginWithGhCli(PINNED_WORK, pinnedMiss, "agent profile work auth"),
+  );
+  expect(forWork).toContain("  agent profile work auth --gh-user auto  ");
+  expect(forWork).not.toContain("agent auth --gh-user auto");
 });
+
+/** The message `run` throws, or "" when it returns. */
+function thrownBy(run: () => unknown): string {
+  try {
+    run();
+  } catch (e) {
+    return errMessage(e);
+  }
+  return "";
+}
 
 // --- the pinned look: one gh call, quoted back on a miss ------------------------------------
 
@@ -1274,7 +1316,7 @@ function ghScript(
 }
 
 onPosix(
-  "auth --provider gh-cli lands a hosts.yml login through a fake gh; a pin gh cannot serve fails with gh's refusal",
+  "auth --provider gh-cli lands a hosts.yml login through a fake gh; a pin gh cannot serve by name refuses, and only --gh-user auto follows the active account",
   async () => {
     const hadTty = process.stdin.isTTY;
     process.stdin.isTTY = false;
@@ -1287,38 +1329,210 @@ onPosix(
       expect(new Credential().resolveWithReason()).toEqual({ token: "gho_saved", reason: null });
       // The same box after `gh auth switch` to another account: the failure quotes gh's own refusal
       // and never adopts the active account's token in the pin's place.
+      const WORK_BOT_REFUSAL = [
+        "gh cannot serve account 'work-bot' by name.",
+        "  `gh auth token --user work-bot --hostname github.com` exited 1: no oauth token found " +
+          "for github.com account work-bot",
+        "Pick one:",
+        "  gh auth login              re-login on gh 2.40 or newer, then retry",
+        "  agent auth --gh-user auto  follow gh's active account (switches with gh)",
+      ].join("\n");
       isolate();
       fakeGhOnPath(ghScript({ reply: NO_TOKEN_FOR_USER.stderr, exit: 1 }, TWO_ACCOUNT_STATUS, 0));
-      let message = "";
-      try {
-        await runAuth({ provider: "gh-cli", ghUser: "work-bot" });
-      } catch (e) {
-        message = errMessage(e);
-      }
-      expect(message).toBe(
-        "gh cannot serve account 'work-bot' by name (`gh auth token --user work-bot --hostname " +
-          "github.com` exited 1: no oauth token found for github.com account work-bot) - run " +
-          "`gh auth login` for that account (a logged-out login and a hosts.yml written before " +
-          "gh 2.40 both need it), pass --gh-user <login> for another, or drop --gh-user and let " +
-          "`agent auth --provider gh-cli` settle the account (auto included)",
+      await expect(runAuth({ provider: "gh-cli", ghUser: "work-bot" })).rejects.toThrow(
+        new Error(WORK_BOT_REFUSAL),
       );
       expect(state().read().authProvider).toBeNull();
-      // The pre-2.40 single-account hosts.yml (a workspace launcher wrote it, no `users:` map):
-      // status lists the one login, `--user` refuses it, the plain call serves it. The slot lands
-      // as auto, says why, and resolves through the plain call.
+      // The pre-2.40 single-account hosts.yml (no `users:` map): status lists the one login,
+      // `--user` refuses it, the plain call would serve it. Following the active account is the
+      // user's choice, never a fallback, so nothing lands and the refusal names that choice.
       isolate();
       fakeGhOnPath(
         ghScript({ reply: NO_TOKEN_FOR_USER.stderr, exit: 1 }, HOSTS_YML_STATUS, 1, "gho_legacy"),
       );
-      const legacy = await captureStderr(() => runAuth({ provider: "gh-cli" }));
-      expect(legacy).toContain("gh cannot serve account work-bot by name");
-      expect(legacy).toContain("Using the gh CLI login on AUTO (currently account work-bot;");
+      await expect(runAuth({ provider: "gh-cli" })).rejects.toThrow(new Error(WORK_BOT_REFUSAL));
+      expect(state().read().authProvider).toBeNull();
+      // The named way out, taken: `--gh-user auto` lands the auto slot, says which account it
+      // follows right now, and resolves through the plain call.
+      const chosen = await captureStderr(() => runAuth({ provider: "gh-cli", ghUser: "auto" }));
+      expect(chosen).toContain(
+        "Using the gh CLI login on AUTO (currently account work-bot; follows gh account " +
+          "switches) as the Direct credential.",
+      );
       const landed = state().read();
       expect([landed.authProvider, landed.ghUser]).toEqual(["gh-cli", null]);
       expect(new Credential().resolveWithReason()).toEqual({ token: "gho_legacy", reason: null });
     } finally {
       process.stdin.isTTY = hadTty;
     }
+  },
+);
+
+onPosix(
+  "a fresh named profile's `add --auto --gh-user <login>` refusal names the add form it can rerun, never an auth command whose slot does not exist yet",
+  async () => {
+    const hadTty = process.stdin.isTTY;
+    // addNamedProbed signs in only in a terminal; with --gh-user nothing is asked.
+    process.stdin.isTTY = true;
+    try {
+      isolate();
+      fakeGhOnPath(
+        ghScript({ reply: NO_TOKEN_FOR_USER.stderr, exit: 1 }, HOSTS_YML_STATUS, 1, "gho_legacy"),
+      );
+      const work = parseProfileName("work");
+      let refusal = "";
+      await captureStderr(async () => {
+        try {
+          await addProfile(work, { mode: "auto", ghUser: "work-bot" });
+        } catch (e) {
+          refusal = errMessage(e);
+        }
+      });
+      expect(refusal).toContain("gh cannot serve account 'work-bot' by name.");
+      expect(refusal).toContain("  agent profile work add --auto --gh-user auto  ");
+      expect(refusal).not.toContain("work auth");
+      // Nothing landed: the slot the auth form would need still does not exist.
+      expect(state().profileSlotStatus(work).exists).toBe(false);
+      // --gh-user is the sign-in step's flag, so it cannot ride with --no-auth.
+      await expect(
+        addProfile(work, { mode: "direct", ghUser: "auto", noAuth: true }),
+      ).rejects.toThrow("--gh-user runs the sign-in step; drop --no-auth");
+    } finally {
+      process.stdin.isTTY = hadTty;
+    }
+  },
+);
+
+onPosix(
+  "a dry run checks an explicit --gh-user pin as the real run does: the same refusal before anything is planned, and a servable pin's slot planned on the overlay with nothing written",
+  async () => {
+    const hadTty = process.stdin.isTTY;
+    process.stdin.isTTY = true;
+    try {
+      // The pre-2.40 hosts.yml: `--user` refuses, the plain call would serve. Before this fix the
+      // dry run of every add form printed "Would run the credential step" and succeeded while the
+      // real run refused the pin.
+      isolate();
+      fakeGhOnPath(
+        ghScript({ reply: NO_TOKEN_FOR_USER.stderr, exit: 1 }, HOSTS_YML_STATUS, 1, "gho_legacy"),
+      );
+      const work = parseProfileName("work");
+      const refusals: Record<string, string> = {};
+      const attempt = async (label: string, run: () => Promise<void>): Promise<string> => {
+        let message = "";
+        const { stdout } = await captureChannels(async () => {
+          try {
+            await run();
+          } catch (e) {
+            message = errMessage(e);
+          }
+        });
+        refusals[label] = message;
+        return words(stdout);
+      };
+      const flaggedDry = await attempt("flagged dry", () =>
+        addProfile(work, { mode: "proxy", ghUser: "work-bot", dryRun: true }),
+      );
+      expect(refusals["flagged dry"]).toContain("gh cannot serve account 'work-bot' by name.");
+      // The mode landed on the overlay before the step refused, so the plan shows what the real
+      // run would have written before failing, and the store itself is untouched.
+      expect(flaggedDry).toContain("Before it failed, the command would have:");
+      expect(flaggedDry).toContain('profiles.work.mode  (absent) -> "proxy"');
+      expect(state().profileSlotStatus(work).exists).toBe(false);
+      await attempt("probed dry", () =>
+        addProfile(work, { mode: "auto", ghUser: "work-bot", dryRun: true }),
+      );
+      expect(refusals["probed dry"]).toContain("  agent profile work add --auto --gh-user auto  ");
+      expect(state().profileSlotStatus(work).exists).toBe(false);
+      // The real flagged run refuses with the very same message (the mode record stays, as before).
+      await attempt("flagged real", () => addProfile(work, { mode: "proxy", ghUser: "work-bot" }));
+      expect(refusals["flagged real"]).toBe(refusals["flagged dry"]);
+      // A servable pin: the dry run plans the slot's credential through the same step.
+      isolate();
+      fakeGhOnPath(ghScript({ reply: "gho_saved", exit: 0 }, HOSTS_YML_STATUS, 1));
+      const planned = await attempt("servable dry", () =>
+        addProfile(work, { mode: "proxy", ghUser: "work-bot", dryRun: true }),
+      );
+      expect(refusals["servable dry"]).toBe("");
+      expect(planned).toContain("DRY RUN: nothing was written. The command would:");
+      expect(planned).toContain('profiles.work.mode  (absent) -> "proxy"');
+      expect(planned).toContain('profiles.work.ghUser  (absent) -> "work-bot"');
+      expect(state().profileSlotStatus(work).exists).toBe(false);
+    } finally {
+      process.stdin.isTTY = hadTty;
+    }
+  },
+);
+
+onPosix(
+  "headless, a dry run and the real run agree: an explicit --gh-user needs no terminal in either, a bare sign-in refuses in both, and only a terminal's bare dry run narrates the step",
+  async () => {
+    const hadTty = process.stdin.isTTY;
+    process.stdin.isTTY = false;
+    try {
+      isolate();
+      fakeGhOnPath(ghScript({ reply: "gho_saved", exit: 0 }, HOSTS_YML_STATUS, 1));
+      const outcome = async (run: () => Promise<void>): Promise<string> => {
+        let message = "";
+        await captureChannels(async () => {
+          try {
+            await run();
+          } catch (e) {
+            message = errMessage(e);
+          }
+        });
+        return message;
+      };
+      // A flag-settled acquisition prompts for nothing, so headless it runs in both: the dry run
+      // plans, the real run lands the slot.
+      const work = parseProfileName("work");
+      const settledDry = await outcome(() =>
+        addProfile(work, { mode: "proxy", ghUser: "work-bot", dryRun: true }),
+      );
+      expect(state().profileSlotStatus(work).exists).toBe(false);
+      const settledReal = await outcome(() =>
+        addProfile(work, { mode: "proxy", ghUser: "work-bot" }),
+      );
+      expect(settledReal).toBe(settledDry);
+      expect(settledReal).toBe("");
+      expect(state().profileSlotStatus(work).slot.credential).toMatchObject({
+        kind: "gh-cli",
+        ghUser: "work-bot",
+      });
+      // A bare sign-in would prompt, so headless both runs refuse before anything lands or plans.
+      const other = parseProfileName("other");
+      for (const mode of ["proxy", "auto"] as const) {
+        const bareDry = await outcome(() => addProfile(other, { mode, dryRun: true }));
+        const bareReal = await outcome(() => addProfile(other, { mode }));
+        expect(bareReal, mode).toBe(bareDry);
+        expect(bareReal, mode).toContain("not a terminal - pass ");
+        expect(state().profileSlotStatus(other).exists, mode).toBe(false);
+      }
+      // In a terminal the bare dry run cannot prompt either: it names the step it would run.
+      process.stdin.isTTY = true;
+      const named = await captureStderr(() => addProfile(other, { mode: "proxy", dryRun: true }));
+      expect(named).toContain("Would run the credential step (agent profile other auth)");
+      const init = await captureStderr(() => addProfile(null, { mode: "proxy", dryRun: true }));
+      expect(init).toContain("Would run the credential step (agent auth)");
+    } finally {
+      process.stdin.isTTY = hadTty;
+    }
+  },
+);
+
+onPosix(
+  "agent init takes --gh-user <login|auto> like add: the default profile's dry run plans the pinned slot headless",
+  () => {
+    isolate();
+    fakeGhOnPath(ghScript({ reply: "gho_saved", exit: 0 }, HOSTS_YML_STATUS, 1));
+    const env = { ...process.env, NO_COLOR: "1" };
+    const help = runCli(["init", "--help"], { env });
+    expect(help.stdout).toContain("--gh-user <login|auto>");
+    const dry = runCli(["init", "--proxy", "--gh-user", "work-bot", "--dry-run"], { env });
+    expect([dry.exitCode, dry.stderr]).toEqual([0, expect.not.stringContaining("unknown option")]);
+    expect(dry.stdout).toContain("DRY RUN: nothing was written. The command would:");
+    expect(dry.stdout).toContain('"work-bot"');
+    expect(state().read().authProvider).toBeNull();
   },
 );
 
@@ -1483,11 +1697,12 @@ test("chooseGhAccount: pinning is the only default - sole login pins, non-TTY pi
     await expect(chooseGhAccount(() => ({ kind: "listed", accounts: [] }))).rejects.toThrow(
       "gh has no logged-in github.com account - run `gh auth login`, then retry `agent auth`",
     );
-    // One saved account: SOLE, which the slot write pins when gh serves it by name.
+    // One saved account: pinned to it. The slot write refuses when gh cannot serve it by name;
+    // it never settles on auto for the user.
     expect(
       await chooseGhAccount(() => ({ kind: "listed", accounts: [acct("solo", true)] })),
     ).toEqual({
-      kind: "sole",
+      kind: "pinned",
       login: "solo",
     });
     // Another host's login is not a github.com choice (Copilot's host).
@@ -1504,7 +1719,7 @@ test("chooseGhAccount: pinning is the only default - sole login pins, non-TTY pi
           },
         ],
       })),
-    ).toEqual({ kind: "sole", login: "solo" });
+    ).toEqual({ kind: "pinned", login: "solo" });
     // 2+ logins, non-TTY: the ACTIVE one is pinned, with a hint naming it and
     // the escape hatches (an env-token source is still a choice - it may
     // shadow a saved credential; the verify step is the gate, never the menu).
@@ -1569,11 +1784,19 @@ test("parseAcquisition: --gh-user implies gh-cli and rejects every conflicting f
     kind: "gh-cli",
     account: { kind: "pinned", login: "work-bot" },
   });
-  // A bare gh-cli provider still asks (settling to auto when there's no choice).
+  // A bare gh-cli provider still asks (a sole saved login pins itself).
   expect(parseAcquisition("gh-cli", undefined, undefined)).toEqual({
     kind: "gh-cli",
     account: { kind: "choose" },
   });
+  // `auto` is the one value that is not a login: the explicit choice to follow gh's active
+  // account. Any casing, as GitHub logins are case-blind, so no spelling of it pins a user.
+  for (const auto of ["auto", " AUTO "]) {
+    expect(parseAcquisition(undefined, undefined, auto)).toEqual({
+      kind: "gh-cli",
+      account: { kind: "auto" },
+    });
+  }
   expect(() => parseAcquisition("copilot", undefined, "x")).toThrow(
     "--gh-user only applies to `--provider gh-cli`",
   );
@@ -1583,7 +1806,7 @@ test("parseAcquisition: --gh-user implies gh-cli and rejects every conflicting f
   // (blank included) is rejected before it can reach a shell.
   for (const bad of ["   ", "%USERNAME%", "a b", "x;rm", "why'd"]) {
     expect(() => parseAcquisition(undefined, undefined, bad)).toThrow(
-      "--gh-user must be a GitHub login (1-39 letters, digits, dashes, or underscores)",
+      "--gh-user must be a GitHub login (1-39 letters, digits, dashes, or underscores) or `auto`",
     );
   }
 });

@@ -44,6 +44,9 @@ import { DRY_RUN_HELP, type Opts, valueList } from "./registration.ts";
 
 /** The `--auto` option line `add` and `init` share. */
 const AUTO_HELP = "Probe Direct vs the proxy and record the verdict.";
+/** The sign-in step's one credential flag on `add` and `init`, in one wording. */
+const GH_USER_HELP =
+  "Sign in through this gh account, or auto to follow gh's active account (gh-cli).";
 
 // Keyed exhaustively on AuthProvider so a membership change in env_state.ts fails the compile here
 // instead of drifting the help.
@@ -147,6 +150,7 @@ function addArgs(opts: Opts): AddArgs {
     dryRun: Boolean(opts.dryRun),
     noAuth: opts.auth === false,
     yes: Boolean(opts.yes),
+    ghUser: opts.ghUser as string | undefined,
   };
 }
 
@@ -221,6 +225,7 @@ export function registerProfileCommand(program: Command, rawProfile: string | nu
     .option("--auto", AUTO_HELP)
     .option("--yes", "Switch a recorded mode without asking.")
     .option("--no-auth", "Skip the sign-in; with no credential pass --direct or --proxy.")
+    .option("--gh-user <login|auto>", GH_USER_HELP)
     .option("--dry-run", DRY_RUN_HELP)
     .action(async (opts: Opts, cmd: Command) => {
       refuseStrayWords(cmd, "add", rawProfile);
@@ -452,6 +457,7 @@ export function registerInitCommand(program: Command): void {
     .option("--auto", AUTO_HELP)
     .option("--yes", "Switch a recorded mode without asking.")
     .option("--no-auth", "Skip the sign-in; with no credential pass --direct or --proxy.")
+    .option("--gh-user <login|auto>", GH_USER_HELP)
     .option("--dry-run", DRY_RUN_HELP)
     .action(async (opts: Opts) => {
       await confirmModeChange(opts, null);
@@ -470,7 +476,10 @@ function addAuthOptions(cmd: Command): Command {
       ),
     )
     .option("--set <token>", "Store this token (implies --provider gh-token).")
-    .option("--gh-user <login>", "Use this gh account (implies --provider gh-cli).")
+    .option(
+      "--gh-user <login|auto>",
+      "Use this gh account, or auto to follow gh's active account (implies --provider gh-cli).",
+    )
     .option("--get", "Print the resolved GitHub token.")
     .option("--del", "Clear the stored token.")
     .option("--check", "Exit 0 if a credential resolves, else 1.")

@@ -62,7 +62,12 @@ import * as fs from "../utils/fs_facade.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import { prompt } from "../utils/prompt.ts";
 import { formatTable, printKeyValue, printWrapped, terminalWidth } from "../utils/table.ts";
-import { acquireCredential, ensureAuthenticated } from "./auth.ts";
+import {
+  acquireCredential,
+  type CredentialAcquisition,
+  ensureAuthenticated,
+  parseAcquisition,
+} from "./auth.ts";
 import { runDryRun } from "./dry_run.ts";
 
 // Narration to stderr, so a verb whose stdout is a payload keeps it clean.
@@ -88,6 +93,8 @@ export interface AddArgs {
   noAuth?: boolean;
   /** Move a recorded mode without asking: to the flag's mode, or to the probe's verdict. */
   yes?: boolean;
+  /** `--gh-user <login|auto>`: the gh account the sign-in step pins, or auto, implying gh-cli. */
+  ghUser?: string;
 }
 
 /** `add`'s question before a recorded mode moves, in one wording: asked at the CLI boundary for a
@@ -109,7 +116,7 @@ const NO_CREDENTIAL_TO_PROBE =
 
 const AUTH_PROVIDERS_HELP = `--provider <${AUTH_PROVIDERS.join(
   "|",
-)}>  (or --set <token>, --gh-user <login>)`;
+)}>  (or --set <token>, --gh-user <login|auto>)`;
 
 /** The landing's answer when the probe's verdict differs from the recorded mode: one line says so,
  *  then the question a flag-driven switch asks, defaulting to yes: Enter follows the probe, a "no"
@@ -228,12 +235,19 @@ function printGuidance(
   logger.box(lines.join("\n"));
 }
 
-/** The credential step `add` runs on a profile that has none: `auth`'s interactive flow, which
- *  then wires both agents. `noAuth` leaves it to `auth` and says so; a dry run names it; a script
- *  with neither is refused BEFORE the mode lands, so nothing is half done. A profile with a
- *  credential is never asked again. `probing`: this add decides its mode by the probe, which
- *  needs the credential first (the refusal's advice differs). */
-function credentialStep(profile: Profile, args: AddArgs, probing: boolean): () => Promise<void> {
+/** The credential step `add` runs on a profile that has none: `auth`'s flow for `acquisition`,
+ *  which then wires both agents. `noAuth` leaves it to `auth` and says so; a script with a bare
+ *  acquisition is refused BEFORE the mode lands, dry run or not, so nothing is half done. A dry
+ *  run names the step when it would have to ask, and otherwise runs it on the caller's overlay:
+ *  an explicit --gh-user pin is checked read-only and refused exactly as the real run refuses it. A
+ *  profile with a credential is never asked again. `probing`: this add decides its mode by the
+ *  probe, which needs the credential first (the refusal's advice differs). */
+function credentialStep(
+  profile: Profile,
+  args: AddArgs,
+  probing: boolean,
+  acquisition: CredentialAcquisition,
+): () => Promise<void> {
   // Resolving, not merely stored: a gh-cli slot whose gh login is gone is as good as none.
   if (new Credential(undefined, profile).isAuthenticated()) return () => Promise.resolve();
   const authCommand = agentAuthCommand(profile);
@@ -243,14 +257,16 @@ function credentialStep(profile: Profile, args: AddArgs, probing: boolean): () =
       return Promise.resolve();
     };
   }
-  if (args.dryRun) {
+  // Only a bare acquisition would prompt: headless it is refused in the dry run as in the real
+  // one, and a flag-settled one (an explicit --gh-user) needs no terminal in either.
+  if (acquisition.kind === "choose" && !process.stdin.isTTY) throw notATerminal(profile, probing);
+  if (args.dryRun && acquisition.kind === "choose") {
     return () => {
       logger.log(`  Would run the credential step (${authCommand}); a dry run never logs in.`);
       return Promise.resolve();
     };
   }
-  if (!process.stdin.isTTY) throw notATerminal(profile, probing);
-  return () => ensureAuthenticated(profile);
+  return () => ensureAuthenticated(profile, acquisition);
 }
 
 /** A script without a credential: a probing add has nothing to probe with, a flagged one can
@@ -264,8 +280,11 @@ function notATerminal(profile: Profile, probing: boolean): Error {
   );
 }
 
-/** How a named `--auto` signs the profile in: `auth`'s interactive choice (the test seam). */
-type AcquireNamedCredential = (name: ProfileName) => Promise<ProvisionedCredential>;
+/** How a named `--auto` signs the profile in: `auth`'s flow for `acquisition` (the test seam). */
+type AcquireNamedCredential = (
+  name: ProfileName,
+  acquisition: CredentialAcquisition,
+) => Promise<ProvisionedCredential>;
 
 /** `agent profile [<name>] add` and `agent init`: the mode for BOTH agents, then the credential
  *  step when the profile has none (a profile without a credential records its mode alone; the
@@ -276,19 +295,34 @@ export async function addProfile(
   profile: Profile,
   args: AddArgs,
   adapters: readonly AgentAdapter[] = bothAgents(),
-  acquire: AcquireNamedCredential = (name) => acquireCredential({ kind: "choose" }, name),
+  acquire: AcquireNamedCredential = (name, acquisition) =>
+    acquireCredential(acquisition, name, { rerun: `agent profile ${name} add --auto` }),
 ): Promise<void> {
+  if (args.ghUser !== undefined && args.noAuth) {
+    throw new Error("--gh-user runs the sign-in step; drop --no-auth");
+  }
+  // Parsed before anything lands, so a malformed login refuses with nothing half done.
+  const acquisition = parseAcquisition(undefined, undefined, args.ghUser);
   if (profile === null) {
     const flagged: ManagedAgentMode | null =
       args.mode === "auto" || args.mode === "unflagged" ? null : args.mode;
-    return addDefault(args, flagged, credentialStep(null, args, flagged === null), adapters);
+    const step = credentialStep(null, args, flagged === null, acquisition);
+    return addDefault(args, flagged, step, adapters);
   }
-  if (args.mode === "auto") return addNamedProbed(profile, args, adapters, acquire);
-  const step = credentialStep(profile, args, false);
+  if (args.mode === "auto") return addNamedProbed(profile, args, adapters, acquire, acquisition);
+  const step = credentialStep(profile, args, false, acquisition);
   const requested = args.mode;
   const land = () => addNamed(profile, requested, adapters);
-  if (args.dryRun) await runDryRun(land);
-  else (await land())();
+  if (args.dryRun) {
+    // One overlay for the mode and the step: a fresh name has no slot anywhere else for the
+    // step to address.
+    await runDryRun(async () => {
+      await land();
+      await step();
+    });
+    return;
+  }
+  (await land())();
   await step();
 }
 
@@ -304,27 +338,6 @@ async function addDefault(
   step: () => Promise<void>,
   adapters: readonly AgentAdapter[],
 ): Promise<void> {
-  if (!new Credential().isAuthenticated()) {
-    if (flagged === null) {
-      if (args.noAuth) throw new Error(NO_CREDENTIAL_TO_PROBE);
-    } else {
-      const record = () => {
-        new CopilotEnvState().recordDefaultMode(flagged);
-        return Promise.resolve();
-      };
-      if (args.dryRun) await runDryRun(record);
-      else {
-        await record();
-        logger.success(
-          `the default profile records ${flagged}; both agents wait for its credential.`,
-        );
-      }
-    }
-    await step();
-    // Only the interactive step lands a credential; the printed or planned step leaves the wiring
-    // to the login that follows.
-    if (!new Credential().isAuthenticated()) return;
-  }
   const land = async () => {
     // Every mode, proxy included: a failed login throws, so no agent is configured without a
     // credential. The auto probe below then judges THIS credential's Direct access.
@@ -343,11 +356,44 @@ async function addDefault(
     await reconcileClaudeDesktopWiring();
     return outcome;
   };
+  // The record, the step, and the landing in one sequence, so a dry run plans all three on one
+  // overlay: a step that plans a credential there is what lets the landing follow.
+  const whole = async (): Promise<Awaited<ReturnType<typeof land>> | null> => {
+    if (!new Credential().isAuthenticated()) {
+      if (flagged === null) {
+        if (args.noAuth) throw new Error(NO_CREDENTIAL_TO_PROBE);
+      } else {
+        new CopilotEnvState().recordDefaultMode(flagged);
+        if (!args.dryRun) {
+          logger.success(
+            `the default profile records ${flagged}; both agents wait for its credential.`,
+          );
+        }
+      }
+      await step();
+      // A printed step (--no-auth) or a planned bare step lands nothing, so the wiring waits for
+      // the login that follows.
+      if (!new Credential().isAuthenticated()) return null;
+      if (args.dryRun && flagged === null) {
+        // The default's probe runs the agents' own CLIs against the store on disk, where a
+        // credential planned here does not exist, so its verdict cannot be planned honestly; a
+        // named profile bakes its token into the probe and plans the whole landing.
+        logger.log(
+          "  Would probe Direct vs the proxy as the landed credential and wire both agents; a dry " +
+            "run plans no verdict, since the probe reads the credential from the store.",
+        );
+        return null;
+      }
+    }
+    return land();
+  };
   if (args.dryRun) {
-    await runDryRun(land);
+    await runDryRun(whole);
     return;
   }
-  const { codex, claude, failedAgents } = await land();
+  const outcome = await whole();
+  if (outcome === null) return;
+  const { codex, claude, failedAgents } = outcome;
   printGuidance(codex, claude, new CopilotEnvState().read().githubToken !== null, failedAgents);
 }
 
@@ -401,37 +447,44 @@ async function addNamed(
  *  records the sign-in at once, as `agent auth` would, so a probe that then throws costs no second
  *  login; a fresh name has no slot to record into, and its credential lands with the verdict in
  *  one commit. A recorded mode the verdict differs from asks first (followProbe). Without a
- *  credential there is nothing to probe with: --no-auth is refused, and a dry run names the
- *  credential step and plans nothing. */
+ *  credential there is nothing to probe with: --no-auth is refused; a dry run names a credential
+ *  step that would have to ask, and runs one the flags settle (an explicit --gh-user) on its
+ *  overlay, probe and landing included. */
 async function addNamedProbed(
   name: ProfileName,
   args: AddArgs,
   adapters: readonly AgentAdapter[],
   acquire: AcquireNamedCredential,
+  acquisition: CredentialAcquisition,
 ): Promise<void> {
   const { exists, slot } = new CopilotEnvState().profileSlotStatus(name);
-  let resolved = resolveProvisioned(slot.credential);
-  if (resolved === null) {
+  const stored = resolveProvisioned(slot.credential);
+  if (stored === null) {
     if (args.noAuth) throw new Error(NO_CREDENTIAL_TO_PROBE);
-    if (args.dryRun) {
+    if (acquisition.kind === "choose" && !process.stdin.isTTY) throw notATerminal(name, true);
+    if (args.dryRun && acquisition.kind === "choose") {
       logger.log(
         `  Would run the credential step (${agentAuthCommand(name)}); a dry run never logs in.`,
       );
       return;
     }
-    if (!process.stdin.isTTY) throw notATerminal(name, true);
-    logger.log(
-      `  ${profileLabel(name)} is not authenticated yet - let's log in to GitHub Copilot.`,
-    );
-    const acquired = await acquire(name);
-    if (exists) new Credential(undefined, name).record(acquired);
-    resolved = resolveProvisioned(acquired);
-    if (resolved === null) {
-      throw new Error(`${profileLabel(name)}'s new credential does not resolve; retry the login`);
-    }
   }
-  const { credential, token } = resolved;
   const land = async (): Promise<Narration> => {
+    let resolved = stored;
+    if (resolved === null) {
+      if (!args.dryRun) {
+        logger.log(
+          `  ${profileLabel(name)} is not authenticated yet - let's log in to GitHub Copilot.`,
+        );
+      }
+      const acquired = await acquire(name, acquisition);
+      if (exists) new Credential(undefined, name).record(acquired);
+      resolved = resolveProvisioned(acquired);
+      if (resolved === null) {
+        throw new Error(`${profileLabel(name)}'s new credential does not resolve; retry the login`);
+      }
+    }
+    const { credential, token } = resolved;
     // The probe runs as THIS profile: its own pair, selected ONCE and shared by both agents' probes
     // and the landing (the pair the probe validated is the pair that lands), and its token baked
     // into the throwaway config the agent CLI runs against (a fresh name has no slot a resolver

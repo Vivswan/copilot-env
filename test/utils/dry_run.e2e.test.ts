@@ -170,7 +170,9 @@ test("`agent init --direct --dry-run` prints each changed key old -> new for bot
 test("`agent profile <name> add --dry-run` plans the mode alone; the credential landing redacts the token and plans both files; `del --dry-run` names every file and slot key it would take", async () => {
   const { claudeHome } = scratch();
   const store = new CopilotApiPaths().stateStoreFile;
-  const add = await dryRun(() => addProfile(WORK, { mode: "direct", dryRun: true }));
+  // Headless, a bare sign-in refuses in a dry run as in the real one, so the mode-alone plan is
+  // the --no-auth form, as a script would run it.
+  const add = await dryRun(() => addProfile(WORK, { mode: "direct", dryRun: true, noAuth: true }));
   expect(add).toContain('profiles.work.mode  (absent) -> "direct"');
   expect(add).not.toContain("githubToken");
   expect(new CopilotEnvState().profileNames()).toEqual([]);

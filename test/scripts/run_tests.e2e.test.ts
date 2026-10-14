@@ -386,3 +386,70 @@ test("a file whose bun process dies of a runtime crash runs once more, whichever
   );
   expect(seen.map((s) => s.actual)).toEqual(seen.map((s) => s.expected));
 }, 120_000);
+
+// External fact nothing here enforces: Bun on macOS can drop a child's exit event (oven-sh/bun#41024),
+// and the pair the launcher sets routes every child exit through Bun's waiter thread instead. The
+// platform is faked in the launcher process alone (a preload), so the on and off rows run on every
+// runner; the fixture `bun test` child reports what reached its env.
+test("the launcher's macOS children carry Bun's waiter-thread pair, children elsewhere do not, and a value the parent set is kept", () => {
+  const dir = tempDir("run-tests-waiter-");
+  const file = join(dir, "env.test.ts");
+  const out = join(dir, "env.json");
+  const platformPreload = join(dir, "platform.ts");
+  writeFileSync(
+    file,
+    [
+      'import { writeFileSync } from "node:fs";',
+      'import { test } from "bun:test";',
+      'test("env", () => {',
+      `  writeFileSync(${CHILD_VALUES}.out, JSON.stringify({`,
+      "    gc: process.env.BUN_GARBAGE_COLLECTOR_LEVEL ?? null,",
+      "    waiter: process.env.BUN_FEATURE_FLAG_FORCE_WAITER_THREAD ?? null,",
+      "  }));",
+      "});",
+      "",
+    ].join("\n"),
+  );
+  writeFileSync(
+    platformPreload,
+    `Object.defineProperty(process, "platform", { value: ${CHILD_VALUES}.platform });\n`,
+  );
+  const unset = {
+    BUN_GARBAGE_COLLECTOR_LEVEL: undefined,
+    BUN_FEATURE_FLAG_FORCE_WAITER_THREAD: undefined,
+  };
+  const rows = [
+    { platform: "darwin", parent: unset, child: { gc: "0", waiter: "1" } },
+    { platform: "linux", parent: unset, child: { gc: null, waiter: null } },
+    {
+      platform: "darwin",
+      parent: { BUN_GARBAGE_COLLECTOR_LEVEL: "1", BUN_FEATURE_FLAG_FORCE_WAITER_THREAD: "own" },
+      child: { gc: "1", waiter: "own" },
+    },
+  ];
+  const seen = rows.map((row) => {
+    writeFileSync(out, "");
+    const res = runSync(
+      process.execPath,
+      [...bunRunArgs("--preload", platformPreload), LAUNCHER, file],
+      {
+        env: {
+          ...process.env,
+          ...OUTSIDE_CI,
+          ...row.parent,
+          ...childValuesEnv({ platform: row.platform, out }),
+        },
+        timeoutMs: 60_000,
+      },
+    );
+    return {
+      platform: row.platform,
+      exitCode: res.exitCode,
+      judged: filesRan(res.stdout),
+      child: JSON.parse(readFileSync(out, "utf8") || "null"),
+    };
+  });
+  expect(seen).toEqual(
+    rows.map((row) => ({ platform: row.platform, exitCode: 0, judged: 1, child: row.child })),
+  );
+}, 90_000);

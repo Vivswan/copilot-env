@@ -27,6 +27,17 @@ const JOBS_ENV = "COPILOT_ENV_TEST_JOBS";
  *  child also receives it set to the HOME it runs under: test/helpers/home_guard.ts refuses a
  *  test file whose HOME this variable does not name. */
 const TEST_HOME_ENV = "COPILOT_ENV_TEST_HOME";
+/** Bun on macOS learns a child's exit from a one-shot kqueue NOTE_EXIT, and a loop tick re-entered
+ *  from a poll callback drops that dispatch for good (oven-sh/bun#41024; the design note in Bun's
+ *  src/spawn/process.rs): exitCode, the `exit` event, and Bun.spawn's `exited` then never settle.
+ *  Under this pair Bun reaps through its waiter thread (sigwait on SIGCHLD plus waitpid, handed
+ *  over as a task); the flag is read only inside the GC-level block (Bun's
+ *  src/jsc/VirtualMachine.rs), level 0 leaves the collector at its default, and Bun's own
+ *  spawn_waiter_thread.test.ts forces the thread the same way. */
+const MACOS_WAITER_THREAD_ENV = {
+  BUN_GARBAGE_COLLECTOR_LEVEL: "0",
+  BUN_FEATURE_FLAG_FORCE_WAITER_THREAD: "1",
+};
 // Windows runners are the slow leg.
 const PER_TEST_TIMEOUT_MS = process.platform === "win32" ? 120_000 : 60_000;
 /** The whole file, wall clock: bun's --timeout covers test bodies only, so a file that never
@@ -177,6 +188,7 @@ function fileBudgetMs(): number {
  */
 function childEnv(home: string): Record<string, string | undefined> {
   const env: Record<string, string | undefined> = {
+    ...(process.platform === "darwin" ? MACOS_WAITER_THREAD_ENV : {}),
     ...process.env,
     NODE_ENV: "development",
     HOME: home,

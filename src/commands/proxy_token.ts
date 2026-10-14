@@ -10,7 +10,6 @@
 //   child stdin   -> ignored on the managed branch: nothing in `agent start` reads it (with no stored
 //                    credential the child refuses and names `agent auth`; nothing prompts)
 import { spawnSync } from "node:child_process";
-import { createInterface } from "node:readline";
 import { CopilotApiConfig } from "../copilot_api/config.ts";
 import { proxyStatus, recordHeartbeat } from "../copilot_api/daemon.ts";
 import { CopilotEnvConfig, configSetCommand } from "../copilot_api/env_config.ts";
@@ -25,8 +24,9 @@ import { withPowershellChildEnv } from "../utils/command.ts";
 import { promptRefusedInDryRun } from "../utils/dry_run.ts";
 import { errMessage } from "../utils/error.ts";
 import { dryRunActive } from "../utils/fs_facade.ts";
+import { prompt } from "../utils/prompt.ts";
 import { agentLauncherCommand } from "../utils/root.ts";
-import { printWrappedToStderr, terminalWidth, wrapMessage } from "../utils/table.ts";
+import { printWrappedToStderr } from "../utils/table.ts";
 import { runDryRun } from "./dry_run.ts";
 import { runStart } from "./start.ts";
 
@@ -53,8 +53,8 @@ export interface ProxyTokenDeps {
   /** In a dry run, the start's own preview (`agent start --dry-run`, in process): the same port
    *  resolution and refusals the child would make. */
   launchProxy(profile: Profile, output: LaunchOutput): void | Promise<void>;
-  /** Prompts on stderr; EOF resolves "". */
-  readAnswer(query: string): Promise<string>;
+  /** Asks on stderr; yes, or a closed stdin, means start. */
+  confirmStart(question: string): Promise<boolean>;
   recordHeartbeat(profile: Profile): void;
   /** runPrintProxyToken in production. `agent profile launch` injects a keyless variant that runs the
    *  Codex catalog refresh instead: launch needs reachability, not the credential. */
@@ -95,26 +95,6 @@ export function launchProxy(profile: Profile, output: LaunchOutput): void | Prom
   }
 }
 
-/**
- * The line and close events rather than rl.question(): on a stdin already at EOF, question's
- * callback never runs, while close fires.
- *   EOF  -> "", which means START (the apiKeyHelper case)
- *
- * @public test/commands/proxy_token.e2e.test.ts imports it from a generated child script, which knip
- * cannot follow.
- */
-export function readStartAnswer(query: string): Promise<string> {
-  process.stderr.write(wrapMessage(query, terminalWidth(process.stderr)));
-  return new Promise((resolve) => {
-    const rl = createInterface({ input: process.stdin, output: process.stderr, terminal: false });
-    rl.once("line", (line) => {
-      resolve(line);
-      rl.close();
-    });
-    rl.once("close", () => resolve(""));
-  });
-}
-
 /** The key line is the ENTIRE stdout contract; like `agent auth --get`, it writes no agent file. */
 export function runPrintProxyToken(profile: Profile): void {
   const key = CopilotApiConfig.forProfile(profile).ensureApiKey();
@@ -122,11 +102,6 @@ export function runPrintProxyToken(profile: Profile): void {
   // contract (the proxy-mode agents' auth.command / apiKeyHelper consume it). A dry run minted a
   // key its recorded store write never lands, so it prints none: the plan is the stdout.
   if (!dryRunActive()) process.stdout.write(`${key}\n`);
-}
-
-function answerMeansStart(answer: string): boolean {
-  const a = answer.trim().toLowerCase();
-  return a === "" || a === "y" || a === "yes";
 }
 
 /**
@@ -173,9 +148,7 @@ export async function resolveProxyToken(
             `\`${configSetCommand("daemon.auto-start", "true")}\` starts it for every launcher`,
         );
       }
-      if (
-        answerMeansStart(await deps.readAnswer("copilot proxy not running. Start it now? [Y/n] "))
-      ) {
+      if (await deps.confirmStart("copilot proxy not running. Start it now?")) {
         await launch("visible");
       } else {
         deps.notify(
@@ -210,7 +183,12 @@ export function proxyTokenDeps(
     proxyUp: async (profile) => (await proxyStatus(profile)).up,
     autoStartEnabled: () => new CopilotEnvConfig().autoStartEnabled(),
     launchProxy,
-    readAnswer: readStartAnswer,
+    confirmStart: async (question) =>
+      (await prompt(
+        question,
+        { type: "confirm", initial: true, cancel: "undefined" },
+        "default",
+      )) === true,
     recordHeartbeat,
     printProxyToken,
     notify: (line) => {

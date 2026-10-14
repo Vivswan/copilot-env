@@ -1,8 +1,6 @@
 // The credential domain is the `Credential` class (src/copilot_api/credential.ts); this is the
 // command and interactive layer. The agent Direct configs shell into `agent auth --get` at fetch
 // time, so this command is also their resolver.
-import { createInterface } from "node:readline";
-import { Writable } from "node:stream";
 import { wireBothAgents } from "../agents/profile_wiring.ts";
 import {
   accountSourceLabel,
@@ -50,8 +48,8 @@ import { assertNever } from "../utils/assert.ts";
 import { PLANNED_SECRET } from "../utils/dry_run.ts";
 import { dryRunActive } from "../utils/fs_facade.ts";
 import { createStderrLogger } from "../utils/logger.ts";
-import { prompt } from "../utils/prompt.ts";
-import { formatTable, printWrapped, terminalWidth, wrapMessage } from "../utils/table.ts";
+import { prompt, promptSecret } from "../utils/prompt.ts";
+import { formatTable, printWrapped, terminalWidth } from "../utils/table.ts";
 import { runDryRun } from "./dry_run.ts";
 import {
   chooseIdentity,
@@ -324,40 +322,6 @@ async function loginWithCopilot(): Promise<string> {
   return token;
 }
 
-/** consola's text prompt echoes input and has no masked variant, and its confirm takes two lines, so
- *  readline serves both: `secret` mutes the echo. The query goes to stderr, keeping `--get`'s stdout
- *  contract untouched. */
-function readAnswer(rawQuery: string, secret: boolean): Promise<string> {
-  const query = wrapMessage(rawQuery, terminalWidth(process.stderr));
-  return new Promise((resolve, reject) => {
-    const muted = new Writable({
-      write(_chunk, _encoding, callback) {
-        callback();
-      },
-    });
-    const rl = createInterface({
-      input: process.stdin,
-      output: secret ? muted : process.stderr,
-      terminal: true,
-    });
-    if (secret) process.stderr.write(query);
-    rl.question(secret ? "" : query, (answer) => {
-      if (secret) process.stderr.write("\n");
-      rl.close();
-      resolve(answer);
-    });
-    rl.on("SIGINT", () => {
-      rl.close();
-      reject(new Error("cancelled"));
-    });
-  });
-}
-
-async function confirmLine(question: string): Promise<boolean> {
-  const answer = (await readAnswer(`? ${question} [Y/n] `, false)).trim().toLowerCase();
-  return answer === "" || answer === "y" || answer === "yes";
-}
-
 /** `$VAR as login`, or when GitHub could not name the account, a glimpse of the token (its ends) so the
  *  user can still tell which one it is, plus why. `subject` is the var or the pasted-token label. */
 function tokenLabel(subject: string, token: string, look: GithubLoginLook): string {
@@ -373,7 +337,9 @@ async function promptForGhToken(): Promise<string> {
         ghTokenEnvVarsList(),
     );
   }
-  return await readAnswer("Paste your Copilot-enabled GitHub token: ", true);
+  const token = await promptSecret("Paste your Copilot-enabled GitHub token");
+  if (token === undefined) throw new Error("cancelled");
+  return token;
 }
 
 // The account is a LABEL, never a gate: a look that missed says why and the token is used anyway.
@@ -424,7 +390,12 @@ async function chooseEnvToken(): Promise<GhEnvToken & { look: GithubLoginLook }>
     tokenLabel(`$${candidate.name}`, candidate.token, candidate.look);
   const only = looked.length === 1 ? looked[0] : undefined;
   if (only !== undefined) {
-    if (!(await confirmLine(`Use ${row(only)}?`))) throw new Error("cancelled");
+    const use = await prompt(`Use ${row(only)}?`, {
+      type: "confirm",
+      initial: true,
+      cancel: "undefined",
+    });
+    if (use !== true) throw new Error("cancelled");
     return only;
   }
   const value = await prompt("Which token should GitHub Copilot use?", {

@@ -18,7 +18,7 @@ import { afterEach, expect, removeDir, tempDir, test } from "../helpers/testing.
 
 const WORK = parseProfileName("work");
 
-const PROMPT = "copilot proxy not running. Start it now? [Y/n] ";
+const PROMPT = "copilot proxy not running. Start it now?";
 
 const restoreEnv = envSnapshot();
 let dir = "";
@@ -40,8 +40,8 @@ interface Recorded {
 interface FakeOptions {
   up?: boolean;
   autoStart?: boolean;
-  /** The interactive answer readAnswer resolves ("" = the EOF/default shape). */
-  answer?: string;
+  /** The answer confirmStart resolves (true is the yes/closed-stdin shape). */
+  answer?: boolean;
   launchBringsUp?: boolean;
 }
 
@@ -55,9 +55,9 @@ function fakeDeps(opts: FakeOptions): { deps: ProxyTokenDeps; rec: Recorded } {
       rec.launches.push({ profile, output });
       if (opts.launchBringsUp ?? true) up = true;
     },
-    readAnswer: (query) => {
-      rec.prompts.push(query);
-      return Promise.resolve(opts.answer ?? "");
+    confirmStart: (question) => {
+      rec.prompts.push(question);
+      return Promise.resolve(opts.answer ?? true);
     },
     recordHeartbeat: (profile) => {
       rec.heartbeats.push(profile);
@@ -138,34 +138,30 @@ test("resolveProxyToken: each (up, auto-start, --yes, answer, profile) row yield
       exit: 1,
       rec: none,
     },
-    ...["", "y", "Y", "yes", "YES", "Yes", " y "].map(
-      (answer): MatrixRow => ({
-        name: `down + unmanaged + interactive ${JSON.stringify(answer)}: START, visibly`,
-        opts: { autoStart: false, answer },
-        assumeYes: false,
-        profile: null,
-        exit: 0,
-        rec: {
-          ...none,
-          prompts: [PROMPT],
-          launches: [{ profile: null, output: "visible" }],
-          printed: [null],
-        },
-      }),
-    ),
-    ...["n", "N", "no", "x", "nope"].map(
-      (answer): MatrixRow => ({
-        name: `down + unmanaged + interactive ${JSON.stringify(answer)}: declines, no launch`,
-        opts: { autoStart: false, answer },
-        assumeYes: false,
-        profile: null,
-        exit: 1,
-        rec: { ...none, prompts: [PROMPT], notes: [DECLINED(null)] },
-      }),
-    ),
+    {
+      name: "down + unmanaged + interactive yes: START, visibly",
+      opts: { autoStart: false, answer: true },
+      assumeYes: false,
+      profile: null,
+      exit: 0,
+      rec: {
+        ...none,
+        prompts: [PROMPT],
+        launches: [{ profile: null, output: "visible" }],
+        printed: [null],
+      },
+    },
+    {
+      name: "down + unmanaged + interactive no: declines, no launch",
+      opts: { autoStart: false, answer: false },
+      assumeYes: false,
+      profile: null,
+      exit: 1,
+      rec: { ...none, prompts: [PROMPT], notes: [DECLINED(null)] },
+    },
     {
       name: "a named profile, declined: the hint points at the PROFILE's daemon",
-      opts: { autoStart: false, answer: "n" },
+      opts: { autoStart: false, answer: false },
       assumeYes: false,
       profile: WORK,
       exit: 1,
@@ -267,7 +263,7 @@ test("spawned proxy-token: stdout is exactly the key line or nothing; prompts an
       input: "n\n",
       up: false,
       exit: 1,
-      stderr: ["copilot proxy not running. Start it now? [Y/n]", "Continuing without the proxy"],
+      stderr: ["copilot proxy not running. Start it now?", "Continuing without the proxy"],
     },
     { name: "happy (--yes, up)", args: ["--yes"], up: true, exit: 0, stderr: [] },
   ];
@@ -302,27 +298,29 @@ test("spawned proxy-token: stdout is exactly the key line or nothing; prompts an
   }
 }, 60_000);
 
-test("readStartAnswer: the prompt goes to stderr, EOF reads as the empty (default) answer", () => {
-  // The real stdin reader, driven as a child so EOF and stream placement are the
-  // genuine article: closed stdin must resolve "" (= START, like the shells' `read -r`),
-  // and the query must land on stderr -- stdout carries only the probe's own JSON.
+// What would drift silently: the prompt library waits for a keypress and never reads stdin's end,
+// so only a child with a real closed stdin shows that the wrapper answers EOF with the default
+// (= START, like the shells' `read -r`) and that a piped line still declines. stdout carries only
+// the probe's own JSON, so the frame's stream is pinned too.
+test("confirmStart: a closed stdin answers start, a piped No declines, and the question lands on stderr", () => {
   dir = tempDir("copilot-proxy-token-");
-  const probe = join(dir, "read_answer_probe.ts");
+  const probe = join(dir, "confirm_start_probe.ts");
   writeFileSync(
     probe,
     [
-      `import { readStartAnswer } from ${importSpecifier(
+      `import { proxyTokenDeps } from ${importSpecifier(
         join(ROOT, "src", "commands", "proxy_token.ts"),
       )};`,
-      'console.log(JSON.stringify(await readStartAnswer("ANSWER? ")));',
+      'console.log(JSON.stringify(await proxyTokenDeps().confirmStart("ANSWER?")));',
     ].join("\n"),
   );
   const eof = runScript(probe, [], { env: isolatedEnv(dir) });
-  expect(eof.exitCode).toBe(0);
-  expect(eof.stdout).toBe('""\n');
-  expect(eof.stderr).toContain("ANSWER? ");
-
+  expect({ exit: eof.exitCode, stdout: eof.stdout, asked: eof.stderr.includes("ANSWER?") }).toEqual(
+    { exit: 0, stdout: "true\n", asked: true },
+  );
   const answered = runScript(probe, [], { env: isolatedEnv(dir), input: "No\n" });
-  expect(answered.exitCode).toBe(0);
-  expect(answered.stdout).toBe('"No"\n');
+  expect({ exit: answered.exitCode, stdout: answered.stdout }).toEqual({
+    exit: 0,
+    stdout: "false\n",
+  });
 });

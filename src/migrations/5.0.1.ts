@@ -13,7 +13,7 @@
 // version. A daemon that release left running still holds its home's daemon.lock, and the new
 // classifier (which gates on the bun runtime) reads it as a foreign process: `agent stop` would
 // refuse it and the next start's own daemon would fail the lock, so it is stopped first, judged by
-// the lock alone.
+// the lock and the pid's command line (a reboot reuses pid numbers).
 
 import { join } from "node:path";
 import { consola } from "consola";
@@ -25,7 +25,11 @@ import { assertNever } from "../utils/assert.ts";
 import { readTextOrNull } from "../utils/fs.ts";
 import * as fs from "../utils/fs_facade.ts";
 import type { Migration } from "./index.ts";
-import { type LockedDaemonOutcome, stopLockedDaemon } from "./legacy_daemon.ts";
+import {
+  foreignHolderWarning,
+  type LockedDaemonOutcome,
+  stopLockedDaemon,
+} from "./legacy_daemon.ts";
 
 const OS_LOCK_SUFFIX = ".oslock";
 
@@ -128,6 +132,10 @@ export async function stopPreviousDaemons(
           consola.warn(
             `  could not judge the daemon holding ${daemonLockPath(home)}: ${outcome.reason}; left as it is`,
           );
+          clear = false;
+          continue;
+        case "foreign":
+          consola.warn(foreignHolderWarning(home, outcome));
           clear = false;
           continue;
         case "none":

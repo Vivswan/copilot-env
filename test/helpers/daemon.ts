@@ -5,7 +5,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { abortable, delay } from "@std/async";
+import { abortable, poll } from "@std/async";
 import { acquireDaemonLockForLife, daemonLockPath } from "../../src/copilot_api/daemon_lock.ts";
 import { CopilotEnvConfig } from "../../src/copilot_api/env_config.ts";
 import {
@@ -168,16 +168,19 @@ export function runWithPreload(
  * Resolves once `probe` answers true. No clock of its own: the test deadline is the one budget.
  * A pending probe or sleep rejects with the deadline's reason the moment it fires, so a `finally`
  * behind the wait runs before the runner can exit; a sync probe already true is still answered
- * after it, so an abandoned body's `finally` finishes the cleanup it can.
+ * after it, so an abandoned body's `finally` finishes the cleanup it can (test/helpers/daemon.e2e.test.ts).
+ * `poll` refuses an aborted signal before its first probe and awaits a probe in flight, so the
+ * first answer is taken here and the async branch races the deadline itself.
  */
 export async function until(probe: () => boolean | Promise<boolean>): Promise<void> {
   const signal = testAbortSignal();
   if (signal === undefined) throw new Error("until: no test deadline to bound the wait");
-  for (;;) {
+  const ask = (): boolean | Promise<boolean> => {
     const answer = probe();
-    if (typeof answer === "boolean" ? answer : await abortable(answer, signal)) return;
-    await delay(50, { signal });
-  }
+    return typeof answer === "boolean" ? answer : abortable(answer, signal);
+  };
+  if (await ask()) return;
+  await poll(ask, (done) => done, { interval: 50, signal });
 }
 
 /** Returns once the pid is gone: a daemon outliving its test would hold the temp home open into

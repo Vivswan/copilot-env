@@ -31,7 +31,8 @@ import { agentStartCommand, agentStopCommand, type Profile } from "../copilot_ap
 import { colorEnabled, paintFor } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
 import { dryRunActive } from "../utils/fs_facade.ts";
-import { createStderrLogger, prompt } from "../utils/logger.ts";
+import { createStderrLogger } from "../utils/logger.ts";
+import { prompt } from "../utils/prompt.ts";
 import { formatTable, terminalWidth, wrapLine } from "../utils/table.ts";
 
 // Narration to stderr; the table is the stdout.

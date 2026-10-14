@@ -39,7 +39,8 @@ import type { FileChange } from "../utils/dry_run.ts";
 import { renderDryRun } from "../utils/dry_run_report.ts";
 import { errMessage } from "../utils/error.ts";
 import * as fs from "../utils/fs_facade.ts";
-import { createStderrLogger, prompt } from "../utils/logger.ts";
+import { createStderrLogger } from "../utils/logger.ts";
+import { prompt } from "../utils/prompt.ts";
 import { PROXY_RESTART_HINT_ALL } from "./config.ts";
 import { runDryRun } from "./dry_run.ts";
 

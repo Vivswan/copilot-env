@@ -165,7 +165,7 @@ flowchart LR
 ```
 
 - **The daemon runs from the binary itself:** `process.execPath` spawned as a bun CLI (`BUN_BE_BUN=1` in the child's environment; without it a compiled binary would re-run its own entry). A checkout's execPath is bun already. Nothing else is downloaded.
-- **We never patch the package:** every shim wraps a runtime seam (`globalThis.fetch`, `Bun.serve`, `fs.createWriteStream`, `process.argv`) and touches none of copilot-api's files, so none of them pins the floated version. One seam has no bun form: the /responses WebSocket handshake (copilot-api's `WebSocket` from bun's built-in undici is the native class), which runs under the proxy's own identity.
+- **We never patch the package:** every shim wraps a runtime seam (`globalThis.fetch`, `Bun.serve`, `fs.createWriteStream`, `process.argv`) and touches none of copilot-api's files, so none of them pins the floated version. The /responses WebSocket handshake has no global seam (bun's built-in undici binds `WebSocket` natively), so the client-headers preload re-points the proxy chunks' `undici` import at `src/scripts/undici_identity.ts` through a load hook; the files stay untouched.
 - **`--no-install` at spawn gives no second chance,** which is why the float installs the shims' dependencies beside the proxy (and a compiled install running a `COPILOT_API_ENTRY` file installs them alone); every spawn carries the token, host, and client-header shims, since a launch without a credential is refused.
 - **The secret-carrying shims stay import-free** (`biome/no_shim_imports.grit`): a runtime import would drag CLI modules into the daemon process.
 

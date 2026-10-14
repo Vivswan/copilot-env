@@ -199,12 +199,14 @@ describe("the materialized files are the shims' import closure", () => {
   }
 
   /** The packages the files import at run time: bare specifiers of value imports and re-exports
-   *  (a type-only statement is erased), the runtime's own `node:` and `bun:` modules aside. */
+   *  (a type-only statement is erased), the modules the runtime answers itself aside. Bun resolves
+   *  those to their own name, `node:` and `bun:` modules and the third-party names it ships built
+   *  in (`undici`) alike, whatever node_modules holds. */
   function bareImports(files: Iterable<string>): string[] {
     const names = new Set<string>();
     const consider = (specifier: string): void => {
       const local = specifier.startsWith("./") || specifier.startsWith("../");
-      if (local || specifier.startsWith("node:") || specifier.startsWith("bun:")) return;
+      if (local || Bun.resolveSync(specifier, ROOT) === specifier) return;
       names.add(specifier);
     };
     for (const rel of files) {

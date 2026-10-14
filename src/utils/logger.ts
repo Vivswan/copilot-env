@@ -11,7 +11,7 @@ import {
   LogLevels,
   type LogObject,
 } from "consola";
-import { colorEnabled, FG_CLOSE, palette, sgrOpen, type Tone } from "./ansi.ts";
+import { colorEnabled, colorRefused, FG_CLOSE, palette, sgrOpen, type Tone } from "./ansi.ts";
 import { terminalWidth, wrapMessage } from "./table.ts";
 
 const NO_DATE = { date: false } as const;
@@ -21,11 +21,15 @@ export type ConsolaCreateOptions = NonNullable<Parameters<typeof createConsola>[
   fancy?: boolean;
 };
 
-/** Piped, Bun reports `process.stderr.isTTY` as undefined, which consola reads as a terminal and
- *  answers with its fancy reporter; only a true TTY gets it, so piped and CI output stay basic. */
-const FANCY = process.stderr.isTTY === true;
-const basicOffTty: ConsolaCreateOptions = { fancy: FANCY };
-consola.options.reporters = createConsola(basicOffTty).options.reporters;
+/** consola picks its reporter from CI and TEST alone, never from the stream, so a pipe
+ *  (`agent start 2>&1 | tee`, an editor's task runner) keeps the icons and badges. Where color is
+ *  refused the basic reporter takes over: a badge is a colored block, and uncolored ` ERROR ` is
+ *  only spaces around a word. */
+function reporterChoice(): ConsolaCreateOptions {
+  return colorRefused() ? { fancy: false } : {};
+}
+const REPORTER = reporterChoice();
+consola.options.reporters = createConsola(REPORTER).options.reporters;
 
 /** Every logger made here, so one scope can silence them all (withNarrationMuted); a logger made
  *  inside that scope joins it silenced. */
@@ -170,8 +174,8 @@ const LEVEL_TONES: Partial<Record<LogObject["type"], Tone>> = {
 };
 
 /** Puts the wrapping reporter in front of the instance's own, budgeting for the one consola chose
- *  (fancy in a plain TTY; basic under CI, off a TTY, or for a `fancy: false` instance). `color`
- *  is the command edge's colorEnabled(); `widthOf` is the test seam. */
+ *  (fancy by default, a pipe included; basic under CI or TEST, or for a `fancy: false` instance).
+ *  `color` is the command edge's colorEnabled(); `widthOf` is the test seam. */
 export function wrapToTerminal(
   instance: ConsolaInstance,
   color = colorEnabled(),
@@ -220,7 +224,7 @@ export function createStderrLogger(): ConsolaInstance {
   const options: ConsolaCreateOptions = {
     stdout: process.stderr,
     stderr: process.stderr,
-    fancy: FANCY,
+    ...REPORTER,
     formatOptions: NO_DATE,
   };
   return register(wrapToTerminal(createConsola(options)));

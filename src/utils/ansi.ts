@@ -1,18 +1,20 @@
 let colorDecided: boolean | null = null;
 
+/** A console that refuses color outright (NO_COLOR, TERM=dumb): the one read behind colorEnabled()
+ *  and the logger's reporter choice (src/utils/logger.ts), which drops to consola's basic reporter
+ *  there since a badge is a colored block. */
+export function colorRefused(): boolean {
+  const env = process.env;
+  return env.NO_COLOR === "1" || env.TERM === "dumb";
+}
+
 /** Whether output is painted: read from the environment on the first call, never at import, so a
  *  process without env permission (the compile script's module graph) can load this module. For
  *  renderers that pad layouts and must know whether widths include escapes. */
 export function colorEnabled(): boolean {
   if (colorDecided === null) {
     const env = process.env;
-    colorDecided = !(
-      env.NO_COLOR === "1" ||
-      env.TERM === "dumb" ||
-      env.TEST ||
-      env.CI ||
-      !process.stdout.isTTY
-    );
+    colorDecided = !(colorRefused() || env.TEST || env.CI || !process.stdout.isTTY);
   }
   return colorDecided;
 }

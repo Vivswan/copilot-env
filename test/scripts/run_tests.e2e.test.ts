@@ -219,41 +219,49 @@ test("a file that hangs before registering a test is killed with its tree at the
 // Bun's crash handler labels a panic line by the thread that died: the main thread, a Windows
 // thread by id or by name, or a bare "panic: " for a thread on macOS or Linux. The launcher
 // joins stdout and stderr chunks in arrival order, so an unterminated stdout line may sit right
-// before the panic.
-test("a file whose bun process dies of a runtime panic runs once more, whichever thread the panic line names; a test failure and a second panic are final", () => {
+// before the panic. A Windows fail-fast prints no line and exits 9 (how
+// test/copilot_api/start_port.e2e.test.ts dies on the Windows runner); the same exit off Windows
+// is a test's own doing and final.
+test("a file whose bun process dies of a runtime crash runs once more, whichever thread the panic line names, or none on a Windows fail-fast; a test failure, a second crash, and an exit 9 off Windows are final", () => {
   const dir = tempDir("run-tests-panic-");
-  const retryHeader = "died of a Bun runtime panic (exit 3), running it once more";
-  const panicLines = {
-    main: "panic(main thread): synthetic",
-    "thread-id": "panic(thread 7032): synthetic",
-    "thread-name": "panic(io thread): synthetic",
-    bare: "panic: synthetic",
-    "mid-line": "progresspanic: synthetic",
+  const retryHeader = (exit: number): string =>
+    `died of a Bun runtime crash (exit ${exit}), running it once more`;
+  const deaths = {
+    main: { line: "panic(main thread): synthetic", exit: 3, rerun: true },
+    "thread-id": { line: "panic(thread 7032): synthetic", exit: 3, rerun: true },
+    "thread-name": { line: "panic(io thread): synthetic", exit: 3, rerun: true },
+    bare: { line: "panic: synthetic", exit: 3, rerun: true },
+    "mid-line": { line: "progresspanic: synthetic", exit: 3, rerun: true },
+    "fail-fast": { line: "", exit: 9, rerun: process.platform === "win32" },
   };
   const count = (text: string, needle: string): number => text.split(needle).length - 1;
   const rows = [
-    { name: "once", panics: 1, expected: 1, exitCode: 0, runs: 2, retried: 1, header: "passed" },
+    {
+      name: "once",
+      crashes: 1,
+      expected: 1,
+      rerun: { exitCode: 0, runs: 2, retried: 1, header: (): string => "passed" },
+    },
     {
       name: "fails",
-      panics: 0,
+      crashes: 0,
       expected: 2,
-      exitCode: 1,
-      runs: 1,
-      retried: 0,
-      header: "failed (exit 1)",
+      rerun: { exitCode: 1, runs: 1, retried: 0, header: (): string => "failed (exit 1)" },
     },
     {
       name: "twice",
-      panics: 2,
+      crashes: 2,
       expected: 1,
-      exitCode: 1,
-      runs: 2,
-      retried: 1,
-      header: "failed (exit 3)",
+      rerun: {
+        exitCode: 1,
+        runs: 2,
+        retried: 1,
+        header: (exit: number): string => `failed (exit ${exit})`,
+      },
     },
   ];
   // Every case runs before the one assertion, so a red run names every shape that missed.
-  const seen = Object.entries(panicLines).flatMap(([shape, panicLine]) =>
+  const seen = Object.entries(deaths).flatMap(([shape, death]) =>
     rows.map((row) => {
       const file = join(dir, `${row.name}-${shape}.test.ts`);
       const tally = join(dir, `${row.name}-${shape}.runs`);
@@ -264,10 +272,10 @@ test("a file whose bun process dies of a runtime panic runs once more, whichever
           'import { expect, test } from "bun:test";',
           `const values = ${CHILD_VALUES};`,
           'appendFileSync(values.tally, "run\\n");',
-          'if (readFileSync(values.tally, "utf8").split("\\n").length - 1 <= values.panics) {',
+          'if (readFileSync(values.tally, "utf8").split("\\n").length - 1 <= values.crashes) {',
           // As data, never source: bun's failure excerpt reprints the source around a failed expect.
-          "  console.error(values.panicLine);",
-          "  process.exit(3);",
+          '  if (values.line !== "") console.error(values.line);',
+          "  process.exit(values.exit);",
           "}",
           `test(${JSON.stringify(row.name)}, () => { expect(1).toBe(values.expected); });`,
           "",
@@ -277,28 +285,38 @@ test("a file whose bun process dies of a runtime panic runs once more, whichever
         env: {
           ...process.env,
           ...OUTSIDE_CI,
-          ...childValuesEnv({ tally, panics: row.panics, expected: row.expected, panicLine }),
+          ...childValuesEnv({
+            tally,
+            crashes: row.crashes,
+            expected: row.expected,
+            line: death.line,
+            exit: death.exit,
+          }),
         },
         timeoutMs: 60_000,
       });
+      const want =
+        death.rerun || row.crashes === 0
+          ? { ...row.rerun, header: row.rerun.header(death.exit) }
+          : { exitCode: 1, runs: 1, retried: 0, header: `failed (exit ${death.exit})` };
       return {
         actual: {
+          shape,
           name: row.name,
-          panicLine,
           exitCode: res.exitCode,
           runs: count(readFileSync(tally, "utf8"), "run\n"),
-          retried: count(res.stdout, `${file}: ${retryHeader}`),
-          panicsPrinted: count(res.stdout, panicLine),
-          header: res.stdout.includes(`=== ${file}: ${row.header} in `),
+          retried: count(res.stdout, `${file}: ${retryHeader(death.exit)}`),
+          linesPrinted: death.line === "" ? 0 : count(res.stdout, death.line),
+          header: res.stdout.includes(`=== ${file}: ${want.header} in `),
           judged: filesRan(res.stdout),
         },
         expected: {
+          shape,
           name: row.name,
-          panicLine,
-          exitCode: row.exitCode,
-          runs: row.runs,
-          retried: row.retried,
-          panicsPrinted: row.panics,
+          exitCode: want.exitCode,
+          runs: want.runs,
+          retried: want.retried,
+          linesPrinted: death.line === "" ? 0 : Math.min(row.crashes, want.runs),
           header: true,
           judged: 1,
         },

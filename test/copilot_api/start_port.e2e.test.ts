@@ -1,7 +1,8 @@
 // resolveStartPort, the start's port decision, alone in its file: its busy-port rows hold a real
-// loopback listener while the probe connects to it, and a Bun 1.4.2 Windows crash in that
-// listener's teardown (a segfault draining a nextTick after a server-side socket's end) must not
-// take the daemon tests down with it.
+// loopback listener while the probe connects to it, and Bun's Windows crash in that listener's
+// teardown (the event loop's use-after-free in a socket close, oven-sh/bun#40376, still in 1.4.3;
+// scripts/run_tests.ts runs the file once more when it hits) must not take the daemon tests down
+// with it.
 import { CopilotEnvConfig, type GlobalPatch } from "../../src/copilot_api/env_config.ts";
 import { resolveStartPort } from "../../src/copilot_api/launch.ts";
 import { parseProfileName } from "../../src/copilot_api/profile.ts";

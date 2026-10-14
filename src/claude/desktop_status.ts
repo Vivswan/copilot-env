@@ -4,6 +4,7 @@
 import { basename, join } from "node:path";
 import type { CredentialWiring, ManagedMode } from "../agents/configure.ts";
 import { renderDirectWiring } from "../agents/profile_wiring.ts";
+import type { DesktopEffortLevel } from "../copilot_api/config_registry.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import type { ProfileMode } from "../copilot_api/env_state.ts";
 import { resolveRootHome } from "../copilot_api/paths.ts";
@@ -146,6 +147,7 @@ export function inspectClaudeDesktopWiring(
   // Desktop follows Claude's scope, resolved per target's profile: a rewire of that target would
   // bake this shape.
   const config = new CopilotEnvConfig();
+  const effort = config.claudeDesktopEffort();
   status.entries = resolution.targets.map((t) => ({
     ...t,
     verdict: entryVerdict(
@@ -153,6 +155,7 @@ export function inspectClaudeDesktopWiring(
       t,
       rootHome,
       config.staticKeyFor("claude", t.profile) ? "static" : "command",
+      effort,
     ),
   }));
   const wanted = new Set(resolution.targets.map((t) => t.profile));
@@ -175,6 +178,7 @@ function entryVerdict(
   target: DesktopTarget,
   rootHome: string,
   credential: CredentialWiring["kind"],
+  effort: DesktopEffortLevel,
 ): DesktopEntryVerdict {
   const matches = owned.filter((e) => e.profile === target.profile);
   const found = matches[0];
@@ -228,6 +232,7 @@ function entryVerdict(
     profile: target.profile,
     baseUrl: expectedBase,
     credential: recordedCredential,
+    effort,
     models: recordedModelRows(doc) ?? undefined,
     existing: doc,
   });

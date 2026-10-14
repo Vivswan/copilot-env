@@ -153,10 +153,11 @@ agent config set codex.host true    # false removes the farm again
 
 ## claude
 
-| Key               | Scope    | Default | Effect                        |
-| ----------------- | -------- | ------- | ----------------------------- |
-| `claude.desktop`  | `global` | `true`  | Also wire Claude Desktop      |
-| `claude.wire-mcp` | `global` | `true`  | Direct Claude Code web search |
+| Key                     | Scope    | Default | Effect                        |
+| ----------------------- | -------- | ------- | ----------------------------- |
+| `claude.desktop`        | `global` | `true`  | Also wire Claude Desktop      |
+| `claude.desktop-effort` | `global` | `high`  | Claude Desktop default effort |
+| `claude.wire-mcp`       | `global` | `true`  | Direct Claude Code web search |
 
 `claude.wire-mcp` is the opt-out for [web search](usage.md#web-search-for-claude-code).
 
@@ -169,8 +170,12 @@ One exception: a configuration you applied in the app yourself stays applied, si
 | Setting                                             | Why                                                                                                                                                                                                                |
 | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | the gateway entry, one per wired default or profile | provider `gateway`, credential from a helper script or the [static key](authentication.md#static-key), the model list (first row = default model, newest of the most capable family), the `copilot-env` MCP server |
+| `"defaultModelEffort": "high"`                      | the default model starts at high effort in Chat, Cowork, and Code; `agent config set claude.desktop-effort <level>` (`low`, `medium`, `high`, `xhigh`, `max`) changes it at the next wiring pass                   |
+| `"builtinBrowserEnabled": true` and the other switches the app ships off | as many capabilities as possible: the built-in browser in Cowork and Code, desktop extensions, file analysis, Auto mode in Cowork, cost display, the 1M window, import/export; all telemetry off |
 | `"deploymentMode": "3p"`                            | the app boots third-party instead of asking "Continue with Gateway" or "sign in with Claude.ai"; other keys in the file are kept                                                                                   |
 | `{"allowDevTools": true}`                           | the Developer menu, where saved entries are switched (`Developer > Configure Third-Party Inference...`)                                                                                                            |
+
+A wiring pass writes only the keys whose app default differs from what copilot-env wants. A switch the app already ships on (Cowork, Code, skill creation, plugins, scheduled tasks, keep-awake, Developer Mode) is not written, so a change you make to it in the app stands.
 
 The files these land in, what writes and removes them, and where they sit on each platform are in the [wiring write list](getting-started.md#what-a-wiring-pass-writes).
 

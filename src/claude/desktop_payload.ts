@@ -4,6 +4,7 @@
 // entries carry an explicit inferenceModels list; the proxy serves it, so proxy entries discover.
 import type { ManagedMode } from "../agents/configure.ts";
 import { codexUserAgent } from "../codex/user_agent.ts";
+import type { DesktopEffortLevel } from "../copilot_api/config_registry.ts";
 import { directClientHeaders } from "../copilot_api/integration_identity.ts";
 import type { ClaudeCatalogRow } from "../copilot_api/models.ts";
 import {
@@ -90,6 +91,8 @@ type DesktopPayloadOptions = ManagedMode & {
   profile: Profile;
   baseUrl: string;
   credential: DesktopCredential;
+  /** The `claude.desktop-effort` preference, resolved once by the caller. */
+  effort: DesktopEffortLevel;
   models?: readonly DesktopModelSpec[];
   /** The entry's current document; foreign keys survive the merge. */
   existing?: Record<string, unknown>;
@@ -126,21 +129,24 @@ export function desktopConfigPayload(opts: DesktopPayloadOptions): Record<string
   }
   doc.deploymentDisplayName = DESKTOP_DISPLAY_NAME;
   doc.managedMcpServers = managedMcpServers(opts.profile, existing.managedMcpServers);
-  // Capability switches: everything on (user decision).
+  // Every capability the app ships OFF is turned on (user decision). A switch the app already
+  // ships on is not written, so an in-app change to it stands. autoModeEnabled is on for Code only
+  // by default; true adds Cowork. chatTabEnabled and modelPrefer1mContext have no documented
+  // unset behavior, so they stay written.
   doc.chatTabEnabled = true;
-  doc.coworkTabEnabled = true;
-  doc.isClaudeCodeForDesktopEnabled = true;
   doc.isDesktopExtensionEnabled = true;
   doc.chatAdvancedFileAnalysisEnabled = true;
-  doc.skillCreationEnabled = true;
   doc.autoModeEnabled = true;
-  doc.userPluginMarketplacesEnabled = true;
-  doc.userPluginUploadsEnabled = true;
+  doc.builtinBrowserEnabled = true;
   // Show estimated cost in the UI, default to the 1M window (user decisions).
   doc.inferenceModelPricingEnabled = true;
   doc.modelPrefer1mContext = true;
-  // Claude.ai data import/export switches all on (user decision); leaf writes, so a hand-set field
-  // like bannerBehavior survives.
+  // The default model's starting effort in Chat, Cowork, and Code (the user's own pick for that
+  // model, and Claude Code's own effort settings, still win in the app).
+  doc.defaultModelEffort = opts.effort;
+  // Claude.ai data import/export switches all on (user decision; the app ships them off, and
+  // automatic3pImport has no documented unset behavior); leaf writes, so a hand-set field like
+  // bannerBehavior survives.
   const claudeAiImport = tableAt(doc, "claudeAiImport");
   claudeAiImport.enabled = true;
   claudeAiImport.automatic3pImport = true;

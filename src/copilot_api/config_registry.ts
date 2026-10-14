@@ -15,12 +15,19 @@ export type StaticKeyScope = (typeof STATIC_KEY_SCOPES)[number];
 export type StaticKeyAgent = Exclude<StaticKeyScope, "none" | "all">;
 const STATIC_KEY_DEFAULT: StaticKeyScope = "none";
 
+/** Claude Desktop's documented `defaultModelEffort` levels (2.110.0+), the only values the app
+ *  reads; the entry writer (src/claude/desktop_payload.ts) lands the resolved one. */
+const DESKTOP_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
+export type DesktopEffortLevel = (typeof DESKTOP_EFFORT_LEVELS)[number];
+const DESKTOP_EFFORT_DEFAULT: DesktopEffortLevel = "high";
+
 /** Every key's value type, keyed by its name: the CLI spelling AND the stored JSON key. A dotted
  *  name's first segment is its group (the config menu); a flat name is a profile key. Each key's
  *  meaning is its registry entry's `describe`; an absent or ill-typed stored field reads back as
  *  `undefined`, which the resolution treats as "apply the next layer". */
 export interface ConfigValueTypes {
   "claude.desktop": boolean;
+  "claude.desktop-effort": DesktopEffortLevel;
   "claude.wire-mcp": boolean;
   "codex.home": string;
   "codex.host": boolean;
@@ -316,6 +323,7 @@ function picklistDomain<const T extends string>(values: readonly T[]): ConfigDom
 
 const PASSTHROUGH_DOMAIN = picklistDomain(PASSTHROUGH_VALUES);
 const STATIC_KEY_DOMAIN = picklistDomain(STATIC_KEY_SCOPES);
+const DESKTOP_EFFORT_DOMAIN = picklistDomain(DESKTOP_EFFORT_LEVELS);
 
 function nonEmptyDomain(type: string): ConfigDomain<string> {
   return domain(
@@ -485,6 +493,9 @@ const WIRING_HINT =
   "Applies at the next wiring: `agent init`, `agent profile <name> add`, or `agent profile [<name>] sync`";
 /** A re-render of a recorded mode never probes, so only the auto-detect landing reads the key. */
 const PROBE_HINT = "Read by the next Direct probe: `agent init` with neither --direct nor --proxy";
+/** The Desktop entries are outputs of the wiring passes: no key write touches them directly. */
+const DESKTOP_HINT =
+  "Applies at the next wiring (`agent init`, `agent profile <name> add`, `agent profile [<name>] sync`); setting the key writes no Desktop files itself.";
 
 /** Ordered ALPHABETICALLY by key: that is `--help`'s order within a group, and a test pins it, so
  *  insert new keys in place. */
@@ -495,8 +506,15 @@ const CONFIG_REGISTRY_LITERAL = [
     describe: "Also wire Claude Desktop",
     ...BOOL_DOMAIN,
     defaultValue: true,
-    applyHint:
-      "Applies at the next wiring (`agent init`, `agent profile <name> add`, `agent profile [<name>] sync`); setting the key writes no Desktop files itself.",
+    applyHint: DESKTOP_HINT,
+  },
+  {
+    key: "claude.desktop-effort",
+    scope: "global",
+    describe: "Claude Desktop default effort",
+    ...DESKTOP_EFFORT_DOMAIN,
+    defaultValue: DESKTOP_EFFORT_DEFAULT,
+    applyHint: DESKTOP_HINT,
   },
   {
     key: "claude.wire-mcp",

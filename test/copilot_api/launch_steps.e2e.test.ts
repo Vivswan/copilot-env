@@ -70,8 +70,9 @@ const WORK = parseProfileName("work");
 
 // A pid no real process holds (far above any OS pid ceiling we run on).
 const DEAD_PID = 2_147_483_646;
+const KILL = process.platform === "win32" ? "taskkill /F /PID" : "kill";
 
-const restoreEnv = envSnapshot();
+const restoreEnv = envSnapshot(["COLUMNS"]);
 let dir = "";
 
 afterEach(() => {
@@ -557,6 +558,30 @@ test("planCleanup: a holder another slot ALSO tracks is refused, even with this 
       { kind: "clear-tracking", pid },
       { kind: "leave-holder", pid },
     ] satisfies CleanupAction[]);
+
+    // Executed, the leave is said in the scannable shape, laid out at 80 columns, and the holder
+    // lives on under its lock.
+    process.env.COLUMNS = "80";
+    const said = await captureAllWrites(() =>
+      cleanupUnderLock(null, new CopilotEnvRunState(), NO_ORPHANS),
+    );
+    // The kill is the host's own (taskkill on Windows), and its cell width moves the wrap with the
+    // pid's digits, so the Fix row is compared with its whitespace collapsed.
+    expect(said).toContain(
+      [
+        `Leaving the daemon.lock holder (pid=${pid}) alone.`,
+        "  this host cannot identify that pid as our daemon",
+        "  a shared home's daemon on another host, or an unreadable process table",
+        "  a lock still held fails the launch below at its lock acquisition",
+        "Fix:",
+        "",
+      ].join("\n"),
+    );
+    expect(said.replace(/\s+/g, " ")).toContain(
+      `Fix: ${KILL} ${pid} on the host whose daemon holds the lock; the pid is that host's`,
+    );
+    expect(pidAlive(pid)).toBe(true);
+    expect(daemonLockHolderPid(home)).toBe(pid);
   } finally {
     await killAndAwaitExit(pid);
   }
@@ -973,6 +998,7 @@ test("awaitReadiness: a lost bind race under a pin or strict-port, or a dead dae
     pinnedPort: number | undefined;
     strict: boolean;
     error: (logFile: string) => string;
+    hint?: string;
   }> = [
     {
       log: "error: EADDRINUSE address already in use\n",
@@ -996,30 +1022,44 @@ test("awaitReadiness: a lost bind race under a pin or strict-port, or a dead dae
       pinnedPort: undefined,
       strict: false,
       error: (logFile) => `the proxy failed to start. See ${logFile}`,
+      // The token-exchange hint in the scannable shape at 80 columns: the second description
+      // wraps under its own column, never under the command.
+      hint: [
+        "The credential was not accepted by Copilot's token exchange.",
+        "Pick one:",
+        "  agent profile set passthrough on  a gh-cli or PAT credential needs passthrough",
+        "  agent auth --provider copilot     any other credential: re-authenticate with a",
+        "                                    Copilot-capable login",
+        "",
+      ].join("\n"),
     },
   ];
+  process.env.COLUMNS = "80";
   for (const row of rows) {
     dir = removeDir(dir);
     const home = tmpHome();
     if (row.strict) new CopilotEnvConfig().set({ "daemon.strict-port": true });
     const logFile = seedLog(home, row.log);
     let relaunches = 0;
-    await expect(
-      awaitReadiness({
-        pid: DEAD_PID,
-        port: row.port,
-        logFile,
-        profile: null,
-        pinnedPort: row.pinnedPort,
-        state: new CopilotEnvRunState(),
-        relaunch: () => {
-          relaunches++;
-          return DEAD_PID;
-        },
-        config: new CopilotEnvConfig(),
-      }),
-    ).rejects.toThrow(row.error(logFile));
+    const said = await captureAllWrites(async () => {
+      await expect(
+        awaitReadiness({
+          pid: DEAD_PID,
+          port: row.port,
+          logFile,
+          profile: null,
+          pinnedPort: row.pinnedPort,
+          state: new CopilotEnvRunState(),
+          relaunch: () => {
+            relaunches++;
+            return DEAD_PID;
+          },
+          config: new CopilotEnvConfig(),
+        }),
+      ).rejects.toThrow(row.error(logFile));
+    });
     expect({ port: row.port, relaunches }).toEqual({ port: row.port, relaunches: 0 });
+    if (row.hint !== undefined) expect(said).toContain(row.hint);
   }
 });
 
@@ -1287,6 +1327,24 @@ describe("unproven tracked-pid identity scans", () => {
     ];
     const home = tmpHome();
     writeRunState({ pid: DEAD_PID, port: 4141 });
+    // The skip in the scannable shape at 80 columns: the why is evidence, the way out a command.
+    process.env.COLUMNS = "80";
+    const skip = [
+      `Skipping the tracked-pid stop (pid=${DEAD_PID}).`,
+      "  the process scan could not prove its identity",
+      "  this stop sends no signal (fail-closed)",
+      "Fix:",
+      ...(process.platform === "win32"
+        ? [
+            `  taskkill /F /PID ${DEAD_PID}  if it remains running, from a shell that can read`,
+            "                               the process table",
+          ]
+        : [
+            `  kill ${DEAD_PID}  if it remains running, from a shell that can read the process`,
+            "                   table",
+          ]),
+      "",
+    ].join("\n");
     for (const row of rows) {
       let plan: CleanupAction[] = [];
       const out = await captureAllWrites(async () => {
@@ -1294,16 +1352,10 @@ describe("unproven tracked-pid identity scans", () => {
           Promise.resolve(row.verdict),
         );
       });
-      expect({
-        verdict: row.verdict,
-        plan,
-        saysSkip: out.includes(`Skipping the tracked-pid stop (pid=${DEAD_PID})`),
-        saysWhy: out.includes("could not prove its identity"),
-      }).toEqual({
+      expect({ verdict: row.verdict, plan, saysSkip: out.includes(skip) }).toEqual({
         verdict: row.verdict,
         plan: row.plan,
         saysSkip: row.saysSkip,
-        saysWhy: row.saysSkip,
       });
     }
   });

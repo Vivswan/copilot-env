@@ -653,12 +653,21 @@ describe("floatProxy", () => {
     expect(acquireDaemonLockForLife(home, { waitMs: 0 })).toBe(true);
     try {
       const install = fakeInstall();
+      // The refusal in the scannable shape, unwrapped (a tmp path as evidence has no fixed
+      // width): the holder is evidence, the two steps are the commands.
       const said = await captureAllWrites(() =>
         floatProxy(deps(fetchLike, install.runner, WEEK_SECONDS)),
       );
       expect(installCalls(install.calls)).toHaveLength(1);
       expect(said).toContain(
-        `a daemon is running from the one in place (pid ${process.pid}, ${home})`,
+        [
+          "not swapping in the new install: a daemon runs from the one in place.",
+          `  pid ${process.pid}, ${home}`,
+          "Then:",
+          "  agent stop   stop that daemon",
+          "  agent start  start it again; the float swaps the new install in first",
+          "",
+        ].join("\n"),
       );
       expect(installedVersion()).toBe("1.10.29");
       expect(readResolvedVersionRecord(dir)?.version).toBe("1.10.29");

@@ -38,10 +38,11 @@ import {
 import { CopilotEnvRunState } from "../copilot_api/run_state.ts";
 import { PROXY_PACKAGE_NAME } from "../copilot_api/version.ts";
 import type { FetchLike, ProxyFloatDeps } from "../proxy_float.ts";
-import { colorEnabled, statusPaint } from "../utils/ansi.ts";
+import { colorEnabled, paintFor, statusPaint } from "../utils/ansi.ts";
 import { errMessage } from "../utils/error.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { createStderrLogger, withConsolaOnStderr } from "../utils/logger.ts";
+import { scannable } from "../utils/message.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
 import { formatTable, terminalWidth } from "../utils/table.ts";
 import { formatDuration } from "../utils/time.ts";
@@ -149,21 +150,26 @@ async function previewLaunch(
   // The cleanup runs before the port is validated in the real start, so its signals are said here,
   // where a refused port still leaves them in the preview.
   const plan = await planCleanup(paths.home, profile, state);
-  const pids = (role: "stop" | "leave"): string =>
+  const pids = (role: "stop" | "leave", paint = (text: string): string => text): string =>
     plan
       .filter((step) => PREVIEW_ROLE[step.kind] === role)
-      .map((step) => `pid ${step.pid}`)
+      .map((step) => `pid ${paint(String(step.pid))}`)
       .join(", ");
   if (plan.some((step) => PREVIEW_ROLE[step.kind] === "clear")) {
     state.set(daemonPolicy(profile).releasesPortOnStop ? { pid: null, port: null } : { pid: null });
   }
   const stops = pids("stop");
   if (stops !== "") consola.info(`Would stop the proxy processes in the way first (${stops}).`);
-  const left = pids("leave");
+  const left = pids("leave", paintFor(colorEnabled()).cyan);
   if (left !== "") {
     consola.warn(
-      `Would leave the daemon.lock holder alone (${left}): this host cannot identify it as our ` +
-        "daemon, and a lock still held fails the launch.",
+      scannable({
+        headline: `Would leave the daemon.lock holder alone (${left}).`,
+        evidence: [
+          "this host cannot identify it as our daemon",
+          "a lock still held fails the launch",
+        ],
+      }),
     );
   }
   const port = await resolveStartPort(action.port, false, profile, false, envConfig);

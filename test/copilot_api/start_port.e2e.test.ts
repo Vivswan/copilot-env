@@ -14,7 +14,7 @@ import { afterEach, expect, removeDir, test } from "../helpers/testing.ts";
 
 const WORK = parseProfileName("work");
 
-const restoreEnv = envSnapshot();
+const restoreEnv = envSnapshot(["COLUMNS"]);
 let dir = "";
 
 afterEach(() => {
@@ -37,8 +37,10 @@ async function withBusyPort<T>(run: (port: number) => Promise<T>): Promise<T> {
 }
 
 // (config, requested port) -> the range error naming the fix. A wrong row is a start that silently
-// picks a port outside the operator's range.
+// picks a port outside the operator's range. The out-of-range row is the scannable shape laid out
+// at 80 columns (the error reads its width at the throw).
 test("resolveStartPort: a port outside the configured range is a clear error, whichever side asks", async () => {
+  process.env.COLUMNS = "80";
   const rows: Array<{ config: GlobalPatch; requested: number | undefined; error: string }> = [
     {
       config: { "daemon.min-port": 5000, "daemon.max-port": 4000 },
@@ -50,9 +52,13 @@ test("resolveStartPort: a port outside the configured range is a clear error, wh
     {
       config: { "daemon.min-port": 4000, "daemon.max-port": 5000 },
       requested: 3999,
-      error:
-        "requested port 3999 is out of range; the proxy port must be between 4000 and 5000 " +
-        "(`agent config set daemon.min-port <n>` / `agent config set daemon.max-port <n>` change the range).",
+      error: [
+        "requested port 3999 is out of range.",
+        "  the proxy port must be between 4000 and 5000",
+        "Pick one:",
+        "  agent config set daemon.min-port <n>  lower the range's floor",
+        "  agent config set daemon.max-port <n>  raise the range's ceiling",
+      ].join("\n"),
     },
     {
       config: { "daemon.port": 1500, "daemon.min-port": 2000, "daemon.max-port": 3000 },

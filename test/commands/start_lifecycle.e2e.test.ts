@@ -29,7 +29,7 @@ import { CopilotApiPaths, resolveRootHome } from "../../src/copilot_api/paths.ts
 import { classifyDaemonPid } from "../../src/copilot_api/process.ts";
 import { parseProfileName } from "../../src/copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../../src/copilot_api/run_state.ts";
-import { installedProxyVersion } from "../../src/copilot_api/version.ts";
+import { installedProxyVersion, PROXY_PACKAGE_NAME } from "../../src/copilot_api/version.ts";
 import {
   proxyHome,
   proxyInstallDir,
@@ -78,7 +78,7 @@ function seedWork(): void {
 // A pid no real process holds (far above any OS pid ceiling we run on).
 const DEAD_PID = 2_147_483_646;
 
-const restoreEnv = envSnapshot(["COPILOT_API_ENTRY", "PATH", CI_NO_LIVE_LOOKUPS_ENV]);
+const restoreEnv = envSnapshot(["COPILOT_API_ENTRY", "PATH", CI_NO_LIVE_LOOKUPS_ENV, "COLUMNS"]);
 let dir = "";
 
 afterEach(() => {
@@ -181,7 +181,22 @@ test("start --dry-run refuses a recorded proxy below the version floor with the 
   // checkout's copy (floatedProxyEntry), which clears the floor.
   plantProxyInstall(dir, "0.0.1");
   const before = fingerprintTree(dir);
-  await expect(dryRunNarration()).rejects.toThrow(/0\.0\.1 is below the required .* floor/);
+  // The gate's error in the scannable shape, laid out at 80 columns (it reads its width at the
+  // throw): the floor is whatever copilot-env.config pins.
+  process.env.COLUMNS = "80";
+  await expect(dryRunNarration()).rejects.toThrow(
+    new RegExp(
+      [
+        `${PROXY_PACKAGE_NAME} 0\\.0\\.1 is below the required \\S+ floor\\.`,
+        "  the proxy float likely failed \\(offline\\?\\)",
+        "  or both agents are wired Direct, so the float was skipped",
+        "Pick one:",
+        "  agent start                    re-run online to float the proxy",
+        "  COPILOT_API_VERSION=<version>  set a known-good release",
+        "  agent init --proxy             rewire an agent to the proxy first",
+      ].join("\n"),
+    ),
+  );
   expect(fingerprintTree(dir)).toEqual(before);
 });
 
@@ -412,7 +427,13 @@ test("start --dry-run plans the refused holder and the tracking clear, and never
   stubIdentityProbe();
   const fixture = stageRefusedStop(home);
   try {
-    const leaveLine = `Would leave the daemon.lock holder alone (pid ${fixture.bystanderPid})`;
+    // The leave is the scannable shape: the headline keeps "Would", the two facts are evidence.
+    const leaveLine = [
+      `Would leave the daemon.lock holder alone (pid ${fixture.bystanderPid}).`,
+      "  this host cannot identify it as our daemon",
+      "  a lock still held fails the launch",
+      "",
+    ].join("\n");
     const clearRow = new RegExp(`\\bpid {2}${fixture.bystanderPid} -> \\(absent\\)`);
 
     // Tracked control: the lock's "alive" verdict plans no tracked signal -- only the

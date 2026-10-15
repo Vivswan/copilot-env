@@ -47,7 +47,7 @@ import { afterEach, expect, tempDir, test } from "../helpers/testing.ts";
 // A pid no real process holds (far above any OS pid ceiling we run on).
 const DEAD_PID = 2_147_483_646;
 
-const restoreEnv = envSnapshot();
+const restoreEnv = envSnapshot(["COLUMNS"]);
 let dir = "";
 afterEach(() => {
   restoreEnv();
@@ -298,9 +298,26 @@ test("stopTrackedProxy: stale tracking + a held lock naming a local NON-daemon p
     writeRunState({ pid: child.pid, port: 4141 });
     expect(daemonLockVerdict(home, child.pid)).toBe("alive"); // must not authorize alone
 
-    const result = await stopTrackedProxy();
+    // The refusal is said in the scannable shape, laid out at 80 columns: the facts as evidence,
+    // the one way out as a command.
+    process.env.COLUMNS = "80";
+    let result: Awaited<ReturnType<typeof stopTrackedProxy>> | undefined;
+    const said = await captureAllWrites(async () => {
+      result = await stopTrackedProxy();
+    });
 
     expect(result).toEqual({ trackedPid: child.pid, signalled: false, stopped: false });
+    expect(said).toContain(
+      [
+        `Not stopping pid ${child.pid}: this host cannot identify it as our daemon.`,
+        "  its daemon.lock is held",
+        "  a shared home's daemon on another host, or an unreadable process table",
+        "  tracking is left in place",
+        "Fix:",
+        "  agent stop  run it on the host whose daemon holds the lock",
+        "",
+      ].join("\n"),
+    );
     expect(pidAlive(child.pid)).toBe(true); // never signalled
     // Tracking intact: the daemon (somewhere) is still up, so nothing was unbound.
     expect(new CopilotEnvRunState().read().pid).toBe(child.pid);
@@ -365,7 +382,7 @@ test.skipIf(process.platform === "win32")(
       // Honest report: terminatePid's refusal warning plus the stop's own clearing line.
       expect(output).toContain(`Not escalating pid ${child.pid} to SIGKILL`);
       expect(output).toContain(
-        `The tracked proxy (pid ${child.pid}) already exited and its pid now belongs to a different process; cleared the stale tracking.`,
+        `Cleared the stale tracking: the proxy (pid ${child.pid}) exited and another process now holds its pid.`,
       );
     } finally {
       try {

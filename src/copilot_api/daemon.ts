@@ -1,8 +1,10 @@
 // Status, liveness, heartbeat, and teardown for the proxy daemon, kept out of the command files so
 // models, profile, auth, and uninstall never import another command.
 import { consola } from "consola";
+import { colorEnabled, paintFor } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
 import { dryRunActive } from "../utils/fs_facade.ts";
+import { scannable } from "../utils/message.ts";
 import { pidAlive } from "../utils/pid.ts";
 import { daemonLockVerdict } from "./daemon_lock.ts";
 import { CopilotEnvConfig } from "./env_config.ts";
@@ -10,7 +12,7 @@ import { clearPersistedInferenceActivity } from "./inference_activity.ts";
 import { CopilotApiPaths, profileHomeNames } from "./paths.ts";
 import { daemonPolicy, loopbackListening } from "./port.ts";
 import { classifyDaemonPid, isCopilotApiPid, terminatePid } from "./process.ts";
-import type { Profile } from "./profile.ts";
+import { agentStopCommand, type Profile } from "./profile.ts";
 import { CopilotEnvRunState } from "./run_state.ts";
 
 /** An "up" verdict ALWAYS carries the port it was probed on, so no consumer handles a portless up daemon. */
@@ -130,7 +132,18 @@ export async function stopTrackedProxy(
       // provably up would lie.
       if (!(await isCopilotApiPid(trackedPid))) {
         consola.warn(
-          `Not stopping pid ${trackedPid}: its daemon.lock is held, but this host cannot identify the pid as our daemon (a shared home's daemon on another host, or an unreadable process table). Stop it from its own host; tracking is left in place.`,
+          scannable({
+            headline: `Not stopping pid ${paintFor(colorEnabled()).cyan(String(trackedPid))}: this host cannot identify it as our daemon.`,
+            evidence: [
+              "its daemon.lock is held",
+              "a shared home's daemon on another host, or an unreadable process table",
+              "tracking is left in place",
+            ],
+            lead: "Fix:",
+            actions: [
+              [agentStopCommand(profile), "run it on the host whose daemon holds the lock"],
+            ],
+          }),
         );
         return { trackedPid, signalled: false, stopped: false };
       }
@@ -161,7 +174,7 @@ export async function stopTrackedProxy(
         // the tracking would aim every follow-up stop at an innocent bystander. terminatePid already
         // warned that the impostor was spared.
         consola.info(
-          `The tracked proxy (pid ${trackedPid}) already exited and its pid now belongs to a different process; cleared the stale tracking.`,
+          `Cleared the stale tracking: the proxy (pid ${paintFor(colorEnabled()).cyan(String(trackedPid))}) exited and another process now holds its pid.`,
         );
         stopped = true;
         break;

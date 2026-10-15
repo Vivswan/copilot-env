@@ -3,7 +3,9 @@
 // every target's identity at its own signal boundary.
 import { setTimeout as sleep } from "node:timers/promises";
 import { consola } from "consola";
+import { colorEnabled, paintFor } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
+import { scannable } from "../utils/message.ts";
 import { pidAlive } from "../utils/pid.ts";
 import { daemonLockHold, daemonLockHolderPid, daemonLockVerdict } from "./daemon_lock.ts";
 import { allDaemonHomes, CopilotApiPaths, profileHomeNames } from "./paths.ts";
@@ -212,13 +214,28 @@ export async function planCleanup(
   return actions;
 }
 
+/** The kill the host's own shell has: cmd.exe knows only taskkill (PowerShell aliases `kill` too),
+ *  and the daemon is detached with a hidden window, so only the forced form reaches it. */
+function killCommand(pid: number): string {
+  return process.platform === "win32" ? `taskkill /F /PID ${pid}` : `kill ${pid}`;
+}
+
 /** Emitted for a planned leave, and again when a planned holder stop finds its corroboration lapsed
  *  at the signal boundary. */
 function warnLeaveHolder(pid: number): void {
   consola.warn(
-    `   Leaving the daemon.lock holder (pid=${pid}) alone: this host cannot identify that pid as our daemon ` +
-      `(a shared home's daemon on another host, or an unreadable process table). ` +
-      `If the lock stays held, the launch below fails its lock acquisition - stop that daemon from its own host.`,
+    scannable({
+      headline: `Leaving the daemon.lock holder (pid=${paintFor(colorEnabled()).cyan(String(pid))}) alone.`,
+      evidence: [
+        "this host cannot identify that pid as our daemon",
+        "a shared home's daemon on another host, or an unreadable process table",
+        "a lock still held fails the launch below at its lock acquisition",
+      ],
+      lead: "Fix:",
+      actions: [
+        [killCommand(pid), "on the host whose daemon holds the lock; the pid is that host's"],
+      ],
+    }),
   );
 }
 
@@ -227,7 +244,17 @@ function warnLeaveHolder(pid: number): void {
  *  `agent stop` no record to target. */
 function warnUnprovenTrackedPid(pid: number): void {
   consola.warn(
-    `   Skipping the tracked-pid stop (pid=${pid}): the process scan could not prove its identity, so this stop sends no signal (fail-closed). If it remains running, stop it by pid from a shell that can read the process table.`,
+    scannable({
+      headline: `Skipping the tracked-pid stop (pid=${paintFor(colorEnabled()).cyan(String(pid))}).`,
+      evidence: [
+        "the process scan could not prove its identity",
+        "this stop sends no signal (fail-closed)",
+      ],
+      lead: "Fix:",
+      actions: [
+        [killCommand(pid), "if it remains running, from a shell that can read the process table"],
+      ],
+    }),
   );
 }
 

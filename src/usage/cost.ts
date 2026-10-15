@@ -2,7 +2,14 @@ import { consola } from "consola";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import type { ProbeFetch } from "../copilot_api/integration_identity.ts";
 import { colorEnabled, paintFor } from "../utils/ansi.ts";
-import { type Align, printTable, printWrapped, printWrappedToStderr } from "../utils/table.ts";
+import { scannable } from "../utils/message.ts";
+import {
+  type Align,
+  printTable,
+  printWrapped,
+  printWrappedToStderr,
+  terminalWidth,
+} from "../utils/table.ts";
 import { discoverClaudeSessionRoots, readClaudeSessions } from "./claude_sessions.ts";
 import { discoverCodexSessionRoots, readCodexSessions } from "./codex_sessions.ts";
 import {
@@ -53,22 +60,41 @@ import {
   usageReport,
 } from "./usage.ts";
 
-const SOURCES_INTRO =
-  "Note: three sources -- the proxy DBs (proxied traffic) plus Codex session logs and Claude transcripts " +
-  "(each agent's full traffic, Direct included). ";
-/** The combined table pairs a proxied request's two records; the per-source tables are each whole. */
-const COMBINED_NOTE =
-  SOURCES_INTRO +
-  "The table merges all three; a request both the proxy and a client log recorded " +
-  "(same model, token counts, and time) is counted once. Use --sources for per-source tables.";
-const SOURCES_NOTE =
-  SOURCES_INTRO +
-  "Each table is whole, so summing them double counts traffic that went through the proxy; " +
-  "the default view counts such a request once.";
+const SOURCE_LINES = [
+  "proxy DBs: proxied traffic",
+  "Codex session logs: Codex's full traffic, Direct included",
+  "Claude transcripts: Claude's full traffic, Direct included",
+];
 
 const UNREAD_CARD = "GitHub's rate card could not be fetched today";
 const UNREAD_LIST = "OpenRouter's price list could not be fetched today";
 const UNREAD_BOTH = "neither GitHub's rate card nor OpenRouter's price list could be fetched today";
+
+/** The footer's note on the three sources, for stdout: the combined table pairs a proxied
+ *  request's two records; the per-source tables are each whole. */
+function sourcesNote(perSource: boolean): string {
+  const width = terminalWidth();
+  if (perSource) {
+    return scannable({
+      headline: "Note: three sources, one table each.",
+      evidence: [
+        ...SOURCE_LINES,
+        "summing the tables double counts traffic that went through the proxy; the default view counts such a request once",
+      ],
+      width,
+    });
+  }
+  return scannable({
+    headline: "Note: three sources, merged into one table.",
+    evidence: [
+      ...SOURCE_LINES,
+      "a request both the proxy and a client log recorded (same model, token counts, and time) is counted once",
+    ],
+    lead: "Then:",
+    actions: [["agent cost --sources", "one table per source"]],
+    width,
+  });
+}
 
 /** A source prices the run when read today or served from its last cached copy. */
 function prices(source: SourceRead): boolean {
@@ -114,7 +140,14 @@ function unreadWarnings(sources: PriceSources): string[] {
   const { openRouter, gitHub } = sources;
   if (openRouter.kind === "none" && gitHub.kind === "none") {
     return [
-      `Prices are off: neither GitHub's rate card (${gitHub.problem}) nor OpenRouter's price list (${openRouter.problem}) could be fetched today; reporting tokens only.`,
+      scannable({
+        headline: "Prices are off: neither source could be fetched today.",
+        evidence: [
+          "reporting tokens only",
+          `GitHub's rate card: ${gitHub.problem}`,
+          `OpenRouter's price list: ${openRouter.problem}`,
+        ],
+      }),
     ];
   }
   const line = (
@@ -307,7 +340,19 @@ async function reportCost(
 
   if (dbPaths.length === 0 && codexByProvider.size === 0 && claudeReport.byModel.size === 0) {
     consola.warn(
-      "WARNING: no copilot-api usage databases, Codex session logs, or Claude transcripts found; start the proxy with 'agent start' and make some requests, then re-run 'agent cost'.",
+      scannable({
+        headline: "WARNING: no usage to report yet.",
+        evidence: [
+          "no copilot-api usage databases",
+          "no Codex session logs",
+          "no Claude transcripts",
+        ],
+        lead: "Then:",
+        actions: [
+          ["agent start", "start the proxy, then make some requests"],
+          ["agent cost", "re-run"],
+        ],
+      }),
     );
     return;
   }
@@ -421,7 +466,7 @@ async function reportCost(
     console.log("");
   }
   printBilledCheck([proxyReport, ...codexByProvider.values(), claudeReport], pricing);
-  printWrapped((args.sources ? SOURCES_NOTE : COMBINED_NOTE) + disclaimer(sources));
+  printWrapped(sourcesNote(Boolean(args.sources)) + disclaimer(sources));
   console.log("");
   if (logs.indexed) {
     printWrappedToStderr(describeIndexRun(logs.meter.stats));

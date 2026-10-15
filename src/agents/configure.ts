@@ -16,6 +16,7 @@ import { bold } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import { createStderrLogger } from "../utils/logger.ts";
+import { scannable } from "../utils/message.ts";
 import type { ManagedAgentMode, RequestedMode } from "./provider_mode.ts";
 
 const logger = createStderrLogger();
@@ -41,9 +42,12 @@ const DIRECT_WIRING: unique symbol = Symbol("DirectWiring");
 export function directNeedsCredentialError(profile: Profile): Error {
   const authCommand = agentAuthCommand(profile);
   return new Error(
-    `a Direct wiring needs a credential and none resolves for ${profileLabel(profile)}; run ` +
-      `\`${authCommand}\` first (a selection made without one would bake the fallback identity ` +
-      "and host as state)",
+    scannable({
+      headline: `a Direct wiring needs a credential and none resolves for ${profileLabel(profile)}.`,
+      evidence: ["a selection made without one would bake the fallback identity and host as state"],
+      lead: "Fix:",
+      actions: [[authCommand, "log in first, then retry"]],
+    }),
   );
 }
 
@@ -99,13 +103,15 @@ export function resolveCredentialWiring(
   if (resolved.token === null) {
     const authCommand = agentAuthCommand(profile);
     throw new Error(
-      `static-key is ${config.staticKeyScope(profile)} but no credential resolves to bake: ` +
-        `${resolved.reason}. Run \`${authCommand}\`, or \`${configSetCommand(
-          "static-key",
-          "none",
-          profile,
-        )}\` ` +
-        "to go back to the resolver command.",
+      scannable({
+        headline: `static-key is ${config.staticKeyScope(profile)} but no credential resolves to bake.`,
+        evidence: [resolved.reason],
+        lead: "Pick one:",
+        actions: [
+          [authCommand, "store a credential to bake"],
+          [configSetCommand("static-key", "none", profile), "go back to the resolver command"],
+        ],
+      }),
     );
   }
   return { kind: "static", token: resolved.token };

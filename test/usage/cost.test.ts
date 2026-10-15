@@ -49,6 +49,7 @@ import {
 } from "../../src/usage/pricing.ts";
 import { type ModelUsage, record, type UsageReport, usageReport } from "../../src/usage/usage.ts";
 import { must } from "../../src/utils/assert.ts";
+import { wrapToTerminal } from "../../src/utils/logger.ts";
 import { PROJECT_ROOT } from "../../src/utils/root.ts";
 import { localDayKey, MILLISECONDS_PER_DAY } from "../../src/utils/time.ts";
 import { captureAllWrites, captureChannels } from "../helpers/output.ts";
@@ -582,6 +583,22 @@ async function withCostHome(body: (ctx: CostHome) => Promise<void>): Promise<voi
 
 const NO_SOURCES = { sessionRoots: { codex: () => [] as string[], claude: () => [] as string[] } };
 
+// The CLI's entry point wraps the global consola to the terminal; the 80-column rows below pin
+// what the terminal shows, so this file wraps it the same way (a width-less capture is untouched).
+wrapToTerminal(consola, false);
+
+/** A message reads its width when it prints, so an 80-column layout row sets it around the run. */
+async function withColumns<T>(columns: number, fn: () => Promise<T>): Promise<T> {
+  const saved = process.env.COLUMNS;
+  process.env.COLUMNS = String(columns);
+  try {
+    return await fn();
+  } finally {
+    if (saved === undefined) delete process.env.COLUMNS;
+    else process.env.COLUMNS = saved;
+  }
+}
+
 function rootsOf(codex: string[], claude: string[]): { sessionRoots: SessionRootDiscovery } {
   return { sessionRoots: { codex: () => codex, claude: () => claude } };
 }
@@ -615,10 +632,22 @@ async function jsonRun(
 test("runCost with no sources returns early and never asks for the price list", () =>
   withCostHome(async () => {
     const net = recordingFetch(null, { fail: true });
-    const out = await captureAllWrites(() =>
-      runCost({ pricingUrl: PRICE_URL }, { fetchImpl: net.fetch, ...NO_SOURCES }),
+    const out = await withColumns(80, () =>
+      captureAllWrites(() =>
+        runCost({ pricingUrl: PRICE_URL }, { fetchImpl: net.fetch, ...NO_SOURCES }),
+      ),
     );
-    expect(out).toContain("no copilot-api usage databases");
+    expect(out).toContain(
+      [
+        "WARNING: no usage to report yet.",
+        "  no copilot-api usage databases",
+        "  no Codex session logs",
+        "  no Claude transcripts",
+        "Then:",
+        "  agent start  start the proxy, then make some requests",
+        "  agent cost   re-run",
+      ].join("\n"),
+    );
     expect(out).not.toContain("could not be fetched today");
     expect(net.urls).toEqual([]);
   }));
@@ -684,9 +713,13 @@ test("runCost discovers roots before it opens the index, so a failing discovery 
 
 const STORED_URL = "https://stored.example/with-secret-token/models";
 
-/** The one stderr line of a run that fetched neither source. */
-const PRICES_OFF_LINE =
-  "Prices are off: neither GitHub's rate card (rate card request failed) nor OpenRouter's price list (pricing request failed) could be fetched today; reporting tokens only.";
+/** The one stderr message of a run that fetched neither source: a headline and a line per source. */
+const PRICES_OFF_MESSAGE = [
+  "Prices are off: neither source could be fetched today.",
+  "  reporting tokens only",
+  "  GitHub's rate card: rate card request failed",
+  "  OpenRouter's price list: pricing request failed",
+].join("\n");
 
 /** How the price list was loaded and the stderr line that earns: the turn (10 in at $15/M +
  *  20 out at $75/M) is priced by a list fetched today or by its last cached copy, and no line ever
@@ -701,6 +734,8 @@ const PRICE_LIST_WARNINGS: {
   noIndex?: boolean;
   fetchImpl: typeof fetch;
   lines: string[];
+  /** The run prints at 80 columns: `lines` is the scannable message's layout, not its words. */
+  layout?: boolean;
   totalUsd: number;
 }[] = [
   {
@@ -749,7 +784,8 @@ const PRICE_LIST_WARNINGS: {
     seed: () => {},
     noIndex: true,
     fetchImpl: fakeFetch(null, { fail: true }),
-    lines: [PRICES_OFF_LINE],
+    lines: [PRICES_OFF_MESSAGE],
+    layout: true,
     totalUsd: 0,
   },
 ];
@@ -762,16 +798,19 @@ for (const {
   noIndex,
   fetchImpl,
   lines,
+  layout,
   totalUsd,
 } of PRICE_LIST_WARNINGS) {
   test(`runCost warns when ${name}`, () =>
     withCostHome(async ({ home, claudeRoot }) => {
       if (stored) new CopilotEnvConfig().set({ "cost.pricing-url": url });
       await seed(home);
-      const { payload, stderr } = await jsonRun(
-        { pricingUrl: stored ? undefined : url, noIndex },
-        { fetchImpl, ...rootsOf([], [claudeRoot]) },
-      );
+      const run = () =>
+        jsonRun(
+          { pricingUrl: stored ? undefined : url, noIndex },
+          { fetchImpl, ...rootsOf([], [claudeRoot]) },
+        );
+      const { payload, stderr } = layout ? await withColumns(80, run) : await run();
       for (const line of lines) expect(stderr).toContain(line);
       // Neither the host nor any path segment (a token baked into the path) reaches either channel.
       const printed = stderr + JSON.stringify(payload);
@@ -1039,7 +1078,7 @@ test("runCost prices from the cached copies when the fetches fail and names thei
     new CopilotEnvConfig().set({ "cost.github-pricing-url": bareCard });
     const bare: CostArgs = { pricingUrl: "https://pricing.example/other-models", noIndex: true };
     const offline = await jsonRun(bare, deps(down));
-    expect(offline.stderr).toContain(PRICES_OFF_LINE);
+    expect(offline.stderr).toContain(PRICES_OFF_MESSAGE);
     expect(offline.payload.claudeSessions.totalUsd).toBe(0);
     expect("githubRates" in offline.payload.runtime).toBe(false);
     expect(offline.payload.note).toContain(
@@ -1286,3 +1325,42 @@ test("ReconcileMeter sums every IndexStats field over both readers' reconciles",
     bytesRead: 14,
   });
 });
+
+// What would drift silently: the footer's note on the three sources prints as the scannable shape
+// at 80 columns in both views, its long evidence line wrapped under its own indent.
+test("the footer's note takes the scannable shape at 80 columns in the combined view and under --sources", () =>
+  withCostHome(async ({ claudeRoot }) => {
+    const deps: CostDeps = {
+      fetchImpl: fakeFetch(null, { fail: true }),
+      ...rootsOf([], [claudeRoot]),
+    };
+    const args: CostArgs = { pricingUrl: PRICE_URL, noIndex: true };
+    await withColumns(80, async () => {
+      const combined = await captureChannels(() => runCost(args, deps));
+      expect(combined.stdout).toContain(
+        [
+          "Note: three sources, merged into one table.",
+          "  proxy DBs: proxied traffic",
+          "  Codex session logs: Codex's full traffic, Direct included",
+          "  Claude transcripts: Claude's full traffic, Direct included",
+          "  a request both the proxy and a client log recorded (same model, token counts,",
+          "    and time) is counted once",
+          "Then:",
+          "  agent cost --sources  one table per source",
+          "Prices are off: ",
+        ].join("\n"),
+      );
+      const perSource = await captureChannels(() => runCost({ ...args, sources: true }, deps));
+      expect(perSource.stdout).toContain(
+        [
+          "Note: three sources, one table each.",
+          "  proxy DBs: proxied traffic",
+          "  Codex session logs: Codex's full traffic, Direct included",
+          "  Claude transcripts: Claude's full traffic, Direct included",
+          "  summing the tables double counts traffic that went through the proxy; the",
+          "    default view counts such a request once",
+          "Prices are off: ",
+        ].join("\n"),
+      );
+    });
+  }));

@@ -60,6 +60,7 @@ import { errMessage } from "../utils/error.ts";
 import { isEnoentOrNotdir } from "../utils/fs.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { createStderrLogger } from "../utils/logger.ts";
+import { scannable } from "../utils/message.ts";
 import { prompt } from "../utils/prompt.ts";
 import { formatTable, printKeyValue, printWrapped, terminalWidth } from "../utils/table.ts";
 import {
@@ -377,10 +378,16 @@ async function addDefault(
       if (args.dryRun && flagged === null) {
         // The default's probe runs the agents' own CLIs against the store on disk, where a
         // credential planned here does not exist, so its verdict cannot be planned honestly; a
-        // named profile bakes its token into the probe and plans the whole landing.
+        // named profile bakes its token into the probe and plans the whole landing. Indented like
+        // the step's narration beside it.
         logger.log(
-          "  Would probe Direct vs the proxy as the landed credential and wire both agents; a dry " +
-            "run plans no verdict, since the probe reads the credential from the store.",
+          scannable({
+            headline: "  Would probe Direct vs the proxy, then wire both agents.",
+            evidence: [
+              "  the probe runs as the landed credential",
+              "  a dry run plans no verdict: the probe reads the credential from the store",
+            ],
+          }),
         );
         return null;
       }

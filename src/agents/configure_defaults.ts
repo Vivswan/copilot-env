@@ -26,6 +26,7 @@ import { CopilotEnvState, type ProfileMode } from "../copilot_api/env_state.ts";
 import { bold } from "../utils/ansi.ts";
 import { errMessage } from "../utils/error.ts";
 import { createStderrLogger } from "../utils/logger.ts";
+import { scannable } from "../utils/message.ts";
 import {
   type AgentAdapter,
   type AgentRunAction,
@@ -86,8 +87,12 @@ export async function runAgentConfig(
   }
   if (action.mode !== "auto" && action.mode !== recorded) {
     throw new Error(
-      `the default profile records ${recorded} as the one mode for both agents; a ${action.mode} ` +
-        `write of ${adapter.id} alone would leave the two apart. Move both with \`agent init --${action.mode}\`.`,
+      scannable({
+        headline: `the default profile records ${recorded} as the one mode for both agents.`,
+        evidence: [`a ${action.mode} write of ${adapter.id} alone would leave the two apart`],
+        lead: "Fix:",
+        actions: [[`agent init --${action.mode}`, "move both agents together"]],
+      }),
     );
   }
   if (recorded === "direct") {

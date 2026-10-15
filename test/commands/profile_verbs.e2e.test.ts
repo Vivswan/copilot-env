@@ -3,7 +3,7 @@
 // Pinned here: each spelling reaches its command with the right profile and flags (the exit code,
 // the file or value the command owns), an alias is one code path with its verb live, in twin
 // homes, and the verbs are reserved names, refused at the CLI.
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { changedPaths, plannedPaths } from "../helpers/dry_run.ts";
 import { freePort } from "../helpers/net.ts";
@@ -466,3 +466,40 @@ test("set identity: an unknown named profile is refused like every other key, an
   expect(treeContents(scratch.home)).toEqual(before);
   // Five cold CLI spawns; generous headroom for loaded Windows CI runners.
 }, 180_000);
+
+// What would drift silently: a flag-less dry-run init whose pinned gh account plans the credential
+// narrates the probe it cannot plan in the scannable shape (a "Would" headline, two evidence lines).
+// (A POSIX shell script stands in for gh; the Windows .cmd dispatch is covered by the launch tests.)
+test.skipIf(process.platform === "win32")(
+  "a flag-less dry-run init with a pinned gh account plans the credential and narrates the probe it cannot plan",
+  () => {
+    const scratch = scratchHome();
+    const bin = join(scratch.home, "fake-bin");
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(
+      join(bin, "gh"),
+      [
+        "#!/bin/sh",
+        'case "$*" in',
+        '  "auth token --user work-bot --hostname github.com") echo gho_saved; exit 0;;',
+        '  *) echo "unexpected gh call: $*" >&2; exit 2;;',
+        "esac",
+        "",
+      ].join("\n"),
+      { mode: 0o755 },
+    );
+    const env = { ...scratch.env, PATH: `${bin}:/usr/bin:/bin`, COLUMNS: "80" };
+    const dry = observe(["init", "--gh-user", "work-bot", "--dry-run"], { ...scratch, env });
+    expect([dry.exitCode, dry.stderr]).toEqual([
+      0,
+      expect.stringContaining(
+        [
+          "  Would probe Direct vs the proxy, then wire both agents.",
+          "    the probe runs as the landed credential",
+          "    a dry run plans no verdict: the probe reads the credential from the store",
+        ].join("\n"),
+      ),
+    ]);
+    expect(dry.stderr).not.toContain("unexpected gh call");
+  },
+);

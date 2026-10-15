@@ -17,6 +17,7 @@ import {
   type AuthProvider,
   assertProfileSlot,
   CopilotEnvState,
+  missingProfileSlotError,
   type ProvisionedCredential,
 } from "../copilot_api/env_state.ts";
 import {
@@ -46,6 +47,7 @@ import {
 import { colorEnabled, cyan, paintFor } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
 import { PLANNED_SECRET } from "../utils/dry_run.ts";
+import { errMessage } from "../utils/error.ts";
 import { dryRunActive } from "../utils/fs_facade.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import { scannable } from "../utils/message.ts";
@@ -742,15 +744,10 @@ function profileSlotMissing(profile: ProfileName): boolean {
   return !new CopilotEnvState().profileSlotStatus(profile).exists;
 }
 
-/** A half-created profile (a daemon home without a store slot) reports itself the way
- *  missingProfileSlotError in env_state.ts does, never as "no such profile". */
+/** A half-created profile (a daemon home without a store slot) reports itself with the store's
+ *  own refusal, never as "no such profile". */
 function noSuchProfileHint(profile: ProfileName): string {
-  if (profileHomeNames().includes(profile)) {
-    return (
-      `profile '${profile}' has no store slot (half-created; its daemon home exists) - ` +
-      `re-create it with \`agent profile ${profile} add --direct|--proxy\``
-    );
-  }
+  if (profileHomeNames().includes(profile)) return errMessage(missingProfileSlotError(profile));
   return (
     `no such profile '${profile}' - create it with ` +
     `\`agent profile ${profile} add --direct|--proxy\``

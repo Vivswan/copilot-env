@@ -5,7 +5,9 @@
 // credential applies whichever host runs an agent. The settings keys sharing those maps are
 // CopilotEnvConfig's; this reader picks its own keys out and preserves the rest.
 import * as v from "valibot";
+import { colorEnabled, paintFor } from "../utils/ansi.ts";
 import { isRecord } from "../utils/json.ts";
+import { scannable } from "../utils/message.ts";
 import { type CopilotApiConfig, ensureDict } from "./config.ts";
 import {
   CODEX_IDENTITY_NAME,
@@ -354,11 +356,16 @@ function unknownProfileError(name: ProfileName): Error {
   return new Error(`no such profile '${name}' (${hint})`);
 }
 
-function missingProfileSlotError(name: ProfileName): Error {
+/** The store's own refusal of a daemon home without a slot; `auth`'s read-back hints print it too. */
+export function missingProfileSlotError(name: ProfileName): Error {
   if (profileHomeNames().includes(name)) {
     return new Error(
-      `profile '${name}' has no store slot (half-created; its daemon home exists) - ` +
-        `re-create it with \`agent profile ${name} add --direct|--proxy\``,
+      scannable({
+        headline: `profile '${paintFor(colorEnabled()).cyan(name)}' has no store slot.`,
+        evidence: ["half-created: its daemon home exists"],
+        lead: "Fix:",
+        actions: [[`agent profile ${name} add --direct|--proxy`, "re-create it"]],
+      }),
     );
   }
   return unknownProfileError(name);

@@ -80,7 +80,7 @@ import { agentLauncherCommand } from "../../src/utils/root.ts";
 import { linesNaming } from "../helpers/dry_run.ts";
 import { envSnapshot, isolateAgentHomes, resetExitCode } from "../helpers/env.ts";
 import { captureChannels } from "../helpers/output.ts";
-import { afterEach, expect, removeDir, test } from "../helpers/testing.ts";
+import { afterEach, expect, removeDir, step, test } from "../helpers/testing.ts";
 
 const restoreEnv = envSnapshot();
 const WORK = parseProfileName("work");
@@ -1926,7 +1926,9 @@ test("call sites reconcile the whole library: init, agent sync, the launcher's p
     provider: "gh-token",
     token: "ghu_test",
   });
+  step("wire the orphan work entry");
   await wireClaudeDesktopEntry(directWire(WORK));
+  step("init proxy, key on");
   const init = await captureAllWrites(() => addProfile(null, { mode: "proxy" }));
   expect(names()).toEqual(["copilot-env"]);
   expect(metaOf(library).appliedId).toBe(basename(firstEntryPath(library), ".json"));
@@ -1934,13 +1936,16 @@ test("call sites reconcile the whole library: init, agent sync, the launcher's p
   // ... and with the key off, the same command names the default's entry exactly once:
   // the reconcile owns the notice, the default write itself stays silent.
   new CopilotEnvConfig().set({ "claude.desktop": false });
+  step("init proxy, key off");
   const off = await captureAllWrites(() => addProfile(null, { mode: "proxy" }));
   expect(count(off, "left in place, unmanaged")).toBe(1);
 
   // `agent sync` with ZERO complete profiles and the key off: the sweep still
   // runs (nothing depends on a profile write happening), and keeps the default's entry.
+  step("re-wire the orphan work entry");
   await wireClaudeDesktopEntry(directWire(WORK));
   new CopilotEnvConfig().set({ "claude.desktop": false });
+  step("agent sync, zero profiles, key off");
   await captureAllWrites(async () => {
     await syncNamedProfiles();
   });
@@ -1956,6 +1961,7 @@ test("call sites reconcile the whole library: init, agent sync, the launcher's p
     throw new Error("discovery ran on the hot path");
   }) as unknown as typeof fetch;
   let synced = "";
+  step("agent sync, proxy profile, hot path");
   try {
     synced = await captureAllWrites(async () => {
       await syncNamedProfiles();
@@ -1982,8 +1988,10 @@ test("call sites reconcile the whole library: init, agent sync, the launcher's p
   // The control's upsert also runs model discovery: offline here, so no entry rows to compare.
   globalThis.fetch = (() => Promise.reject(new Error("offline"))) as unknown as typeof fetch;
   try {
+    step("quiet reconcile, direct profile");
     await captureAllWrites(() => reconcileClaudeDesktopWiring({ quiet: true }));
     expect(probes).toBe(0);
+    step("reconcile control, probes once");
     await captureAllWrites(() => reconcileClaudeDesktopWiring());
     expect(probes).toBeGreaterThan(0);
   } finally {
@@ -2000,6 +2008,7 @@ test("call sites reconcile the whole library: init, agent sync, the launcher's p
     credential: { kind: "stored", provider: "gh-token", token: "ghp_work" },
     mode: "proxy",
   });
+  step("wire the work entry for the launcher");
   await wireClaudeDesktopEntry({
     profile: WORK,
     mode: "proxy",
@@ -2007,11 +2016,13 @@ test("call sites reconcile the whole library: init, agent sync, the launcher's p
     fetchImpl: catalogFetch(CATALOG),
   });
   expect(names()).toEqual(["copilot-env: work"]);
+  step("launcher profile write, key off");
   await captureAllWrites(async () => {
     await writeProfileSettings(WORK, "proxy");
   });
   expect(names()).toEqual([]);
   new CopilotEnvConfig().del("claude.desktop");
+  step("launcher profile write, key on");
   await captureAllWrites(async () => {
     await writeProfileSettings(WORK, "proxy");
   });
@@ -2023,7 +2034,7 @@ test("call sites reconcile the whole library: init, agent sync, the launcher's p
     seen.filter((url) => url.startsWith("https://")).map((url) => new URL(url).origin),
   );
   expect([...copilotHosts]).toEqual([DEFAULT_COPILOT_API_BASE]);
-});
+}, 60_000); // eleven wiring passes, 26 announced creates and deletes: 9 to 10 s on a Windows runner
 
 test("the reconcile re-discovers the default entry only when it is missing or stale", async () => {
   const { library } = isolateWithDesktop();

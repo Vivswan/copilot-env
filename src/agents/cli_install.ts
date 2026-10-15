@@ -17,6 +17,7 @@ import {
 } from "../utils/command.ts";
 import { errMessage } from "../utils/error.ts";
 import { dryRunActive } from "../utils/fs_facade.ts";
+import { scannable } from "../utils/message.ts";
 import { pickAgedVersion, publishTimesMs, versionLessThan } from "../utils/semver.ts";
 import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
 import { MILLISECONDS_PER_DAY } from "../utils/time.ts";
@@ -467,7 +468,12 @@ function installCli(
     case "keep":
       if (look.kind !== "found") {
         consola.warn(
-          `${cli.name} ${plan.from} is installed by npm, but '${cli.command}' is not on PATH; leaving it as it is. Open a new shell and rerun 'agent shell --clis'.`,
+          scannable({
+            headline: `${cli.name} ${plan.from} is installed by npm, but '${cli.command}' is not on PATH.`,
+            evidence: ["leaving it as it is"],
+            lead: "Fix:",
+            actions: [["agent shell --clis", "rerun it from a new shell"]],
+          }),
         );
         return;
       }

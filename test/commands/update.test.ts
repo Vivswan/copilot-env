@@ -1,4 +1,8 @@
-import { parseUpdateAction, recheckVerdict } from "../../src/commands/update.ts";
+import {
+  parseUpdateAction,
+  recheckVerdict,
+  updatePreviewMessage,
+} from "../../src/commands/update.ts";
 import { CopilotEnvState } from "../../src/copilot_api/env_state.ts";
 import {
   parseReleasesJson,
@@ -73,6 +77,27 @@ test("parseUpdateAction maps each flag set to one arm or one rejection", () => {
     const why = JSON.stringify(args);
     if ("throws" in result) expect(() => parseUpdateAction(args), why).toThrow(result.throws);
     else expect(parseUpdateAction(args), why).toEqual(result);
+  }
+});
+
+test("updatePreviewMessage lists the steps one per line and names the migration preview", () => {
+  const rows: Array<[boolean, string]> = [
+    [true, "  verify its checksum and build provenance"],
+    [false, "  verify its checksum"],
+  ];
+  for (const [provenance, verify] of rows) {
+    expect(updatePreviewMessage("v1.0.0", "v1.2.3", provenance), String(provenance)).toBe(
+      [
+        "Would download the v1.2.3 release for this platform.",
+        verify,
+        "  let the new binary lay down its runtime files",
+        "  flip current to it",
+        "  refresh the launcher shims",
+        "  run the migrations v1.0.0 -> v1.2.3",
+        "Then:",
+        "  agent migrate 1.0.0 1.2.3 --dry-run  preview the migrations",
+      ].join("\n"),
+    );
   }
 });
 

@@ -8,10 +8,12 @@ import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { CopilotEnvState } from "../copilot_api/env_state.ts";
 import { OwnershipLedger } from "../copilot_api/ownership.ts";
 import { CopilotApiPaths } from "../copilot_api/paths.ts";
+import { colorEnabled, paintFor } from "../utils/ansi.ts";
 import { errMessage } from "../utils/error.ts";
 import { isEnoent } from "../utils/fs.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { createStderrLogger } from "../utils/logger.ts";
+import { scannable } from "../utils/message.ts";
 import { parseToml, stringify } from "../utils/toml.ts";
 import {
   catalogBookkeepingAllowed,
@@ -70,8 +72,10 @@ export function syncCodexCatalogReference(): void {
     // recorded FIRST, and nothing is added when that cannot happen.
     if (!catalogBookkeepingAllowed() || !recordCatalogOwnership(configPath)) {
       logger.warn(
-        `codex model catalog reference not set in ${configPath}: ownership could not be ` +
-          "recorded; the next wiring or direct launch retries",
+        scannable({
+          headline: `codex model catalog reference not set in ${paintFor(colorEnabled()).cyan(configPath)}.`,
+          evidence: ["ownership could not be recorded", "the next wiring or direct launch retries"],
+        }),
       );
       return;
     }

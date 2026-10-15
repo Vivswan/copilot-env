@@ -5,6 +5,7 @@ import {
   type ConfigView,
   configTable,
   configTableOutput,
+  refuseProfileKey,
   runConfig,
 } from "../../src/commands/config.ts";
 import {
@@ -66,6 +67,53 @@ function createWorkProfile(): void {
 }
 
 const CONFIG: ConfigView = { kind: "config" };
+
+test("a profile key under `agent config` is refused with its three profile verbs as a table, at 80 columns", () => {
+  process.env.COLUMNS = "80";
+  expect(() => refuseProfileKey("identity")).toThrow(
+    [
+      "'identity' is a profile preference, not a machine key.",
+      "  it follows the credential",
+      "  a named profile's verb is `agent profile <name> ...`",
+      "Pick one:",
+      "  agent profile get identity          read it",
+      "  agent profile set identity <value>  set it",
+      "  agent profile unset identity        unset it",
+    ].join("\n"),
+  );
+});
+
+test("a projected key's set names the restart as steps: every daemon for the machine's map, the profile's own for its section", () => {
+  tmpHome();
+  createWorkProfile();
+  const set = (view: ConfigView): string =>
+    captureChannelsSync(() =>
+      runConfig({
+        kind: "set",
+        key: "proxy.small-model",
+        value: "gpt-5-mini",
+        view,
+        dryRun: false,
+      }),
+    ).all;
+  expect(set(CONFIG)).toContain(
+    [
+      "Applies on the next proxy start.",
+      "Then:",
+      "  agent stop --all            stop every daemon",
+      "  agent start                 start the default's again",
+      "  agent profile <name> start  start a profile's again",
+    ].join("\n"),
+  );
+  expect(set({ kind: "profile", profile: WORK })).toContain(
+    [
+      "Applies on the next proxy start.",
+      "Then:",
+      "  agent profile work stop   stop the running daemon",
+      "  agent profile work start  start it again",
+    ].join("\n"),
+  );
+});
 
 /** The face the CLI routes a key to: a named profile, or a profile key, is `agent profile`'s;
  *  a machine key or a shared default with no name is `agent config`'s. */

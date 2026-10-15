@@ -1,5 +1,6 @@
 import { syncDefaultWebSearch } from "../claude/config.ts";
 import {
+  claudeJsonPath,
   inspectMcpRegistration,
   type McpRegistrationStatus,
   removeClaudeMcpRegistration,
@@ -8,7 +9,9 @@ import { resolveClaudeHome } from "../claude/paths.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { type Profile, parseProfileFlag } from "../copilot_api/profile.ts";
 import { runMcpServer } from "../mcp/server.ts";
+import { colorEnabled, paintFor } from "../utils/ansi.ts";
 import { createStderrLogger } from "../utils/logger.ts";
+import { scannable } from "../utils/message.ts";
 import { keyValueLine } from "../utils/table.ts";
 import { runDryRun } from "./dry_run.ts";
 
@@ -109,13 +112,23 @@ async function runRemove(dryRun: boolean): Promise<void> {
   }
   if (landRemoval()) {
     logger.log(
-      "Removed the copilot-env MCP registration (and the managed WebSearch deny where " +
-        "copilot-env manages settings.json); stored `claude.wire-mcp false` so direct rewires stay opted out.",
+      scannable({
+        headline: "Removed the copilot-env MCP registration.",
+        evidence: [
+          "the managed WebSearch deny went with it where copilot-env manages settings.json",
+          "stored `claude.wire-mcp false`, so direct rewires stay opted out",
+        ],
+      }),
     );
   } else {
+    const { cyan } = paintFor(colorEnabled());
     logger.warn(
-      "Stored `claude.wire-mcp false`, but the 'copilot-env' entry in Claude's .claude.json was not " +
-        "removed (not ours, or the file could not be written) - remove it by hand if needed.",
+      scannable({
+        headline: `the '${cyan("copilot-env")}' entry in ${cyan(claudeJsonPath())} was not removed.`,
+        evidence: ["stored `claude.wire-mcp false`", "not ours, or the file could not be written"],
+        lead: "Fix:",
+        actions: [["remove the entry by hand", "if it is not wanted"]],
+      }),
     );
   }
 }

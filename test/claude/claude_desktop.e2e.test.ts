@@ -77,7 +77,7 @@ import type { Profile } from "../../src/copilot_api/profile.ts";
 import { parseProfileName } from "../../src/copilot_api/profile.ts";
 import { must } from "../../src/utils/assert.ts";
 import { agentLauncherCommand } from "../../src/utils/root.ts";
-import { linesNaming } from "../helpers/dry_run.ts";
+import { dryRunChanges, linesNaming } from "../helpers/dry_run.ts";
 import { envSnapshot, isolateAgentHomes, resetExitCode } from "../helpers/env.ts";
 import { captureChannels } from "../helpers/output.ts";
 import { afterEach, expect, removeDir, step, test } from "../helpers/testing.ts";
@@ -618,6 +618,18 @@ test("a blocked removal (malformed _meta.json) keeps the helper scripts", async 
   const helper = desktopHelperPath(resolveRootHome(), "direct", null);
   expect(existsSync(helper)).toBe(true);
   writeFileSync(join(library, "_meta.json"), "{ mangled");
+  // The preview names the consequence the live run has no row for: the headline, then one fact
+  // per line.
+  const previewed = await captureAllWrites(async () => {
+    await dryRunChanges(() => Promise.resolve(removeAllClaudeDesktopWiring()));
+  });
+  expect(previewed).toContain(
+    [
+      "Would leave Claude Desktop's config library alone.",
+      "  its _meta.json could not be read or parsed",
+      "  its copilot-env entries will point at credential-helper scripts that go with the copilot-api home",
+    ].join("\n"),
+  );
   removeAllClaudeDesktopWiring();
   // The surviving (unprocessable) entry may still reference the script.
   expect(existsSync(helper)).toBe(true);
@@ -2224,10 +2236,13 @@ test("the Desktop reconcile never lands a Direct default's missing pair: it name
   writeFileSync(metaPath, `${JSON.stringify({ entries: [] })}\n`);
   new CopilotEnvState().recordDefaultMode("direct"); // no pair stored: a credential landed since
   const warned = await captureAllWrites(() => reconcileClaudeDesktopWiring());
-  expect(warned).toContain("Direct pair is not stored");
-  // consola keeps or strips the backticks by reporter, so the match allows both.
-  expect(warned).toMatch(
-    /`?agent profile sync --claude`? lands the pair together with both agents' files/,
+  expect(warned).toContain(
+    [
+      "default's Direct pair is not stored.",
+      "  its Desktop entry is left as it is",
+      "Fix:",
+      "  agent profile sync --claude  lands the pair together with both agents' files and the entry",
+    ].join("\n"),
   );
   expect(new CopilotEnvState().readProfileDirectPair(null)).toEqual({});
   expect(readFileSync(metaPath, "utf8")).toBe(`${JSON.stringify({ entries: [] })}\n`);
@@ -2239,7 +2254,13 @@ test("the Desktop reconcile never lands a Direct default's missing pair: it name
     mode: "direct",
   });
   const named = await captureAllWrites(() => reconcileClaudeDesktopWiring());
-  expect(named).toMatch(/profile 'work'.*Direct pair is not stored/);
-  expect(named).toMatch(/`?agent sync`? lands the pair/);
+  expect(named).toContain(
+    [
+      "profile 'work''s Direct pair is not stored.",
+      "  its Desktop entry is left as it is",
+      "Fix:",
+      "  agent sync  lands the pair together with both agents' files and the entry",
+    ].join("\n"),
+  );
   expect(readdirSync(library)).toEqual(["_meta.json"]);
 });

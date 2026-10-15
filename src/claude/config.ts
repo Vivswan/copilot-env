@@ -48,7 +48,13 @@ import {
   parseLoopbackProxyUrl,
   proxyLoopbackOrigin,
 } from "../copilot_api/port.ts";
-import { type Profile, type ProfileName, profileLabel } from "../copilot_api/profile.ts";
+import {
+  agentAuthCommand,
+  type Profile,
+  type ProfileName,
+  profileLabel,
+} from "../copilot_api/profile.ts";
+import { colorEnabled, paintFor } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import { isEnoentOrNotdir, WIN } from "../utils/fs.ts";
@@ -56,6 +62,7 @@ import type { TextReadResult } from "../utils/fs_facade.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { isRecord, parseJsonRecord, readStringField } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
+import { scannable } from "../utils/message.ts";
 import { escapeRegExp } from "../utils/regexp.ts";
 import {
   agentAuthGetArgs,
@@ -67,7 +74,11 @@ import { type ManagedEnvValue, quotePosix } from "../utils/shell_quote.ts";
 import { printKeyValue } from "../utils/table.ts";
 import { removeClaudeDesktopEntry, syncClaudeDesktopWiring } from "./desktop.ts";
 import { winQuote } from "./helper_body.ts";
-import { prepareClaudeMcpRemoval, registerClaudeMcpServer } from "./mcp_registration.ts";
+import {
+  claudeJsonPath,
+  prepareClaudeMcpRemoval,
+  registerClaudeMcpServer,
+} from "./mcp_registration.ts";
 import { resolveClaudeHome, settingsPathFor } from "./paths.ts";
 
 const logger = createStderrLogger();
@@ -516,9 +527,16 @@ function prepareWebSearchPair(
           return;
         }
         logger.warn(
-          "copilot-env MCP registration failed; removing the managed WebSearch deny so the " +
-            "builtin stays reachable (it will 400 on Copilot Direct) - fix ~/.claude.json, " +
-            "then rewire with `agent init --direct`",
+          scannable({
+            headline: "copilot-env MCP registration failed.",
+            evidence: [
+              "the managed WebSearch deny is removed",
+              "the builtin WebSearch stays reachable",
+              "it will 400 on Copilot Direct",
+            ],
+            lead: "Fix:",
+            actions: [["agent init --direct", `rewire once ${claudeJsonPath()} is fixed`]],
+          }),
         );
         landed = stripManagedWebSearchDeny(doc, settingsPath);
       },
@@ -566,8 +584,12 @@ export function configureClaudeConfig(claudeHome: string, request: ClaudeWriteRe
     new Credential(undefined, profile).read().kind === "none"
   ) {
     throw new Error(
-      `${profileLabel(profile)} has no credential of its own (a named profile never falls back ` +
-        `to the default credential) - run \`agent profile ${profile} auth\` first.`,
+      scannable({
+        headline: `${profileLabel(profile)} has no credential of its own.`,
+        evidence: ["a named profile never falls back to the default credential"],
+        lead: "Fix:",
+        actions: [[agentAuthCommand(profile), "store the profile's credential first"]],
+      }),
     );
   }
 
@@ -580,8 +602,15 @@ export function configureClaudeConfig(claudeHome: string, request: ClaudeWriteRe
     const current = inspectClaudeWiring(JSON.stringify(doc), 0, profile);
     if (current.providerMode === "other") {
       throw new Error(
-        `${settingsPath} is wired to something copilot-env does not manage; refusing to ` +
-          `overwrite it (pick a different profile name or remove the file first)`,
+        scannable({
+          headline: `${paintFor(colorEnabled()).cyan(settingsPath)} is wired to something copilot-env does not manage.`,
+          evidence: ["refusing to overwrite it"],
+          lead: "Pick one:",
+          actions: [
+            ["agent profile <other-name> add", "a different profile name, so a different file"],
+            ["remove the file first", "then rerun this command"],
+          ],
+        }),
       );
     }
   }

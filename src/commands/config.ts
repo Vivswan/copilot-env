@@ -46,6 +46,7 @@ import {
 import { colorEnabled, paintFor } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
+import { scannable } from "../utils/message.ts";
 import { terminalWidth, wrapMessage } from "../utils/table.ts";
 import { runDryRun } from "./dry_run.ts";
 
@@ -87,9 +88,15 @@ function refuseStateKey(key: string): void {
   const owner = STATE_KEY_OWNERS.find(([keys]) => keys.includes(leaf))?.[1];
   if (owner === undefined) return;
   throw new Error(
-    `'${key}' is state written by ${owner}; a preference verb sets preferences only ` +
-      "(`agent config get` lists the machine's keys and the shared defaults, `agent profile " +
-      "[<name>] get` a profile's)",
+    scannable({
+      headline: `'${paintFor(colorEnabled()).cyan(key)}' is state written by ${owner}.`,
+      evidence: ["a preference verb sets preferences only"],
+      lead: "Pick one:",
+      actions: [
+        ["agent config get", "lists the machine's keys and the shared defaults"],
+        ["agent profile [<name>] get", "lists a profile's"],
+      ],
+    }),
   );
 }
 
@@ -105,10 +112,19 @@ export function refuseProfileKey(key: string): void {
   const def = configKeyDef(key);
   if (def === undefined || def.scope !== "profile") return;
   throw new Error(
-    `'${def.key}' is a profile preference (it follows the credential), not a machine key: \`${configGetCommand(
-      def.key,
-    )}\`, \`${configSetCommand(def.key, "<value>")}\`, or \`${configDelCommand(def.key)}\` (a ` +
-      "named profile's: `agent profile <name> ...`)",
+    scannable({
+      headline: `'${paintFor(colorEnabled()).cyan(def.key)}' is a profile preference, not a machine key.`,
+      evidence: [
+        "it follows the credential",
+        "a named profile's verb is `agent profile <name> ...`",
+      ],
+      lead: "Pick one:",
+      actions: [
+        [configGetCommand(def.key), "read it"],
+        [configSetCommand(def.key, "<value>"), "set it"],
+        [configDelCommand(def.key), "unset it"],
+      ],
+    }),
   );
 }
 
@@ -137,15 +153,28 @@ export function resolveSetPair(
 /** The daemon that reads a projected or launch-time key is the profile's own, so the restart the
  *  hint names is that daemon's. Hints stay shell-neutral (no `&&`) for Windows PowerShell 5.1. */
 function proxyRestartHint(profile: Profile): string {
-  return `Applies on the next proxy start; restart it: \`${agentStopCommand(profile)}\`, then \`${agentStartCommand(
-    profile,
-  )}\`.`;
+  return scannable({
+    headline: "Applies on the next proxy start.",
+    lead: "Then:",
+    actions: [
+      [agentStopCommand(profile), "stop the running daemon"],
+      [agentStartCommand(profile), "start it again"],
+    ],
+  });
 }
 
 /** Shared with `agent settings --import`, whose bundle may touch every profile's knobs. */
-export const PROXY_RESTART_HINT_ALL =
-  "Applies on the next proxy start; restart the running daemons: `agent stop --all`, then " +
-  "`agent start` (`agent profile <name> start` for a profile's daemon).";
+export function proxyRestartHintAll(): string {
+  return scannable({
+    headline: "Applies on the next proxy start.",
+    lead: "Then:",
+    actions: [
+      ["agent stop --all", "stop every daemon"],
+      ["agent start", "start the default's again"],
+      ["agent profile <name> start", "start a profile's again"],
+    ],
+  });
+}
 
 /** A global-map write (a global key, or a profile-default key's shared value) reaches every daemon
  *  that reads it at launch; a profile section's write reaches that profile's daemon alone. A key's
@@ -153,9 +182,7 @@ export const PROXY_RESTART_HINT_ALL =
 function noteHowItApplies(def: ConfigKeyDef, target: SettingTarget): void {
   if (def.applyHint !== undefined) consola.info(def.applyHint);
   if (!isProxyProjected(def) && def.restartToApply !== true) return;
-  consola.info(
-    target.kind === "global" ? PROXY_RESTART_HINT_ALL : proxyRestartHint(target.profile),
-  );
+  consola.info(target.kind === "global" ? proxyRestartHintAll() : proxyRestartHint(target.profile));
 }
 
 /** `platform` is the POSIX-only key guard's test seam. Synchronous unless it is a dry run (the

@@ -895,7 +895,14 @@ skipWin(
     expect(fs.readFileSync(join(hostHome, "config.toml"), "utf8")).toBe(
       'model_provider = "openai"\n',
     );
-    expect(narrated).toContain(`Leaving ${hostHome} alone`);
+    expect(narrated).toContain(
+      [
+        `Leaving ${hostHome} alone.`,
+        "  copilot-env cannot prove it built it",
+        "  it sits at the per-host CODEX_HOME farm path",
+        "  no activation record, no managed config.toml",
+      ].join("\n"),
+    );
     expect(narrated).not.toContain("farm removed");
     // The config write landed at the default home, not in the foreign dir.
     expect(fs.readFileSync(join(sharedRoot, "config.toml"), "utf8")).toContain(

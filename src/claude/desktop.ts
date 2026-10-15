@@ -25,6 +25,7 @@ import { errMessage } from "../utils/error.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { isRecord, parseJsonRecord } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
+import { scannable } from "../utils/message.ts";
 import {
   desktopHelperPath,
   desktopHelperScriptWiring,
@@ -441,9 +442,13 @@ export function removeAllClaudeDesktopWiring(
     // has no row to carry it.
     if (fs.dryRunActive()) {
       logger.warn(
-        "Would leave Claude Desktop's config library alone (its _meta.json could not be read or " +
-          "parsed); its copilot-env entries will point at credential-helper scripts that go with " +
-          "the copilot-api home.",
+        scannable({
+          headline: "Would leave Claude Desktop's config library alone.",
+          evidence: [
+            "its _meta.json could not be read or parsed",
+            "its copilot-env entries will point at credential-helper scripts that go with the copilot-api home",
+          ],
+        }),
       );
     }
     return;

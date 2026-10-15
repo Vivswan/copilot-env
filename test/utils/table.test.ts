@@ -206,6 +206,53 @@ test("a hard-wrap column splits a path at its own edge, spaces kept, where a wor
   ]);
 });
 
+test("stacked, a column marked wrap false is one line however wide: the command splits nowhere, its meaning wraps beneath it", () => {
+  const command = `agent settings --import /tmp/copilot-env-suite-${"X".repeat(60)}/all.json --force`;
+  const lines = formatTable(
+    [
+      [command, "import the whole store, every profile's section and the machine's keys included"],
+      ["agent profile [<name>] settings --export", "export one profile's bundle"],
+    ],
+    { wrap: [false, true], width: 80 },
+  );
+  expect(lines).toEqual([
+    `  ${command}`,
+    "    import the whole store, every profile's section and the machine's keys",
+    "      included",
+    "",
+    "  agent profile [<name>] settings --export",
+    "    export one profile's bundle",
+  ]);
+  expect(stringWidth(lines[0] ?? "")).toBeGreaterThan(80);
+  expect(Math.max(...lines.slice(1).map((l) => stringWidth(l)))).toBeLessThanOrEqual(80);
+});
+
+test("stacked, a header-labeled cell of a wrap false column still wraps: the label makes it prose, not a command", () => {
+  // The floors (21 + 22 + 16 + gaps) exceed 40, so the table stacks; the labeled host cell is 54 wide.
+  const lines = formatTable(
+    [
+      [
+        "copilot-developer-cli",
+        "accepted (37 models) *",
+        "GitHub Copilot CLI; accepts fine-grained PATs",
+      ],
+    ],
+    {
+      header: ["identity", "api.githubcopilot.com (in use)", "note"],
+      wrap: [false, false, true],
+      indent: "",
+      width: 40,
+    },
+  );
+  expect(lines).toEqual([
+    "identity: copilot-developer-cli",
+    "  api.githubcopilot.com (in use):",
+    "    accepted (37 models) *",
+    "  note: GitHub Copilot CLI; accepts",
+    "    fine-grained PATs",
+  ]);
+});
+
 test("terminalWidth takes a TTY's own size over COLUMNS, and COLUMNS only for a pipe", () => {
   const saved = process.env.COLUMNS;
   const stub = (key: "isTTY" | "columns", value: boolean | number): void => {

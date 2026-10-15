@@ -1,9 +1,11 @@
 import { randomBytes } from "node:crypto";
+import { colorEnabled, paintFor } from "../utils/ansi.ts";
 import { BOUNDED_LOCK_POLICY, withRequiredFileLockSync } from "../utils/file_lock.ts";
 import { isEnoentOrNotdir } from "../utils/fs.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { dottedKey, isRecord, stableStringify } from "../utils/json.ts";
 import { taggedLogger } from "../utils/logger.ts";
+import { scannable } from "../utils/message.ts";
 import { CopilotApiPaths } from "./paths.ts";
 import type { Profile } from "./profile.ts";
 
@@ -171,8 +173,19 @@ export class CopilotApiConfig {
       // A corrupt-but-readable file is NOT a reset candidate: a hand-edited store holds salvageable
       // content. The reset stays an explicit user act: fix or delete the file.
       throw new Error(
-        `${this.path} is not valid JSON (${read.error}); refusing to overwrite it ` +
-          `(a rewrite would discard whatever it still holds - fix or delete the file to reset it).`,
+        scannable({
+          headline: `${paintFor(colorEnabled()).cyan(this.path)} is not valid JSON.`,
+          evidence: [
+            read.error,
+            "refusing to overwrite it",
+            "a rewrite would discard whatever it still holds",
+          ],
+          lead: "Pick one:",
+          actions: [
+            ["fix the file", "keeps what it still holds"],
+            ["delete the file", "resets the store"],
+          ],
+        }),
       );
     }
     return read.data;

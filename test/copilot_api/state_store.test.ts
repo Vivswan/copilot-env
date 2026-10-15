@@ -88,6 +88,32 @@ test("a map emptied by its writer leaves the file; a missing or non-object map r
   expect(new CopilotEnvState().read().codexCatalogLastAttemptMs).toBe(0);
 });
 
+test("the state-key refusal at 80 columns: the owner, the rule, then the two listing verbs", () => {
+  // A thrown message reads its width at the throw.
+  process.env.COLUMNS = "80";
+  try {
+    expect(() =>
+      runConfig({
+        kind: "set",
+        key: "githubToken",
+        value: "x",
+        view: { kind: "config" },
+        dryRun: false,
+      }),
+    ).toThrow(
+      [
+        "'githubToken' is state written by `agent auth`, `agent profile`, and the wiring commands (the profile's slot).",
+        "  a preference verb sets preferences only",
+        "Pick one:",
+        "  agent config get            lists the machine's keys and the shared defaults",
+        "  agent profile [<name>] get  lists a profile's",
+      ].join("\n"),
+    );
+  } finally {
+    delete process.env.COLUMNS;
+  }
+});
+
 test("`agent config` writes settings only: a state key, bare or as a path into the file, is refused with its owner", () => {
   const cases: [string, RegExp][] = [
     ["githubToken", /`agent auth`, `agent profile`/],

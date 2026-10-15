@@ -7,6 +7,7 @@ import * as path from "node:path";
 import type { CodexHomePrefs } from "../copilot_api/config_registry.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { CopilotEnvRunState } from "../copilot_api/run_state.ts";
+import { colorEnabled, paintFor } from "../utils/ansi.ts";
 import { resolveCommand } from "../utils/command.ts";
 import { errMessage } from "../utils/error.ts";
 import { isDir, isEnoentOrNotdir, isFile } from "../utils/fs.ts";
@@ -14,6 +15,7 @@ import * as fs from "../utils/fs_facade.ts";
 import { codexFarmHostsDir, getSanitizedHostname } from "../utils/hostname.ts";
 import { isRecord } from "../utils/json.ts";
 import { createStderrLogger, narrationMuted } from "../utils/logger.ts";
+import { scannable } from "../utils/message.ts";
 import { reportWrite } from "../utils/report_write.ts";
 import type { ManagedEnvValue } from "../utils/shell_quote.ts";
 import { CODEX_PROVIDER_ID, codexConfigPath, defaultCodexHome, plainCodexHome } from "./paths.ts";
@@ -677,8 +679,14 @@ export async function withCodexHostFarm(
       break;
     case "leave":
       logger.warn(
-        `Leaving ${farm.hostHome} alone: it sits at the per-host CODEX_HOME farm path but ` +
-          "copilot-env cannot prove it built it (no activation record, no managed config.toml).",
+        scannable({
+          headline: `Leaving ${paintFor(colorEnabled()).cyan(farm.hostHome)} alone.`,
+          evidence: [
+            "copilot-env cannot prove it built it",
+            "it sits at the per-host CODEX_HOME farm path",
+            "no activation record, no managed config.toml",
+          ],
+        }),
       );
       break;
     case "none":

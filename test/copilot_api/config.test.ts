@@ -299,6 +299,34 @@ test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
   },
 );
 
+test("the corrupt-store refusal at 80 columns: the file, the parser's verdict, the two ways out", () => {
+  dir = tempDir("copilot-config-");
+  const path = join(dir, "config.json");
+  writeFileSync(path, "42");
+  // A thrown message reads its width at the throw.
+  process.env.COLUMNS = "80";
+  try {
+    expect(() =>
+      new CopilotApiConfig(path).update((d) => {
+        d.smallModel = "gpt-6";
+      }),
+    ).toThrow(
+      [
+        `${path} is not valid JSON.`,
+        "  the JSON root is not an object",
+        "  refusing to overwrite it",
+        "  a rewrite would discard whatever it still holds",
+        "Pick one:",
+        "  fix the file     keeps what it still holds",
+        "  delete the file  resets the store",
+      ].join("\n"),
+    );
+  } finally {
+    delete process.env.COLUMNS;
+  }
+  expect(readFileSync(path, "utf8")).toBe("42");
+});
+
 test("update REFUSES a store that is present but not valid JSON, preserving its bytes", () => {
   // A parse failure is refused like a read error: every store lands whole bytes by rename, so junk
   // in one is outside corruption whose salvageable content a reset would discard. A parsed

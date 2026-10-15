@@ -76,6 +76,26 @@ test("runShell reports the launchers key on a wire and never writes it", () => {
 
 /** What the fake `npm view <pkg> version` answers: the version every run targets. */
 const FAKE_LATEST = "2.0.0";
+/** Hand-written npm failure shapes: the `error` object `npm ls -g --json` prints to stdout, and
+ *  the stderr of a failed listing, with the blank lines npm leaves between its groups; its last
+ *  line names the debug log. */
+const NPM_LS_ERROR = {
+  code: "ENOTDIR",
+  summary: "not a directory, scandir C:\\npm\\prefix\\node_modules",
+  detail: "",
+};
+const NPM_LS_LOG_LINE =
+  "npm error A complete log of this run can be found in: C:\\npm\\cache\\_logs\\2026-01-01T00_00_00_000Z-debug-0.log";
+const NPM_LS_STDERR = [
+  "npm error code ENOTDIR",
+  "",
+  "npm error syscall scandir",
+  "npm error path C:\\npm",
+  "",
+  NPM_LS_LOG_LINE,
+];
+const LS_FAILED_SKIP =
+  "Could not read npm's global package list (npm ls -g failed); skipping the CLI installs.";
 
 interface CliInstallFixture {
   dir: string;
@@ -93,8 +113,12 @@ interface CliInstallFixture {
 function stageCliInstallFixture(opts: {
   /** `npm prefix -g` exits 1 instead of printing the prefix. */
   prefixFails?: boolean;
-  /** `npm ls -g` prints only npm's `error` object and exits 1 instead of the tree. */
-  lsFails?: boolean;
+  /** The shim's interpreter is missing: it still resolves (`command -v` checks the executable bit
+   *  alone), and every npm spawn fails with ENOENT. */
+  npmUnspawnable?: boolean;
+  /** `npm ls -g` exits 1 instead of printing the tree: with npm's `error` object on stdout and
+   *  nothing on stderr, or with error lines on stderr and nothing on stdout. */
+  lsFails?: "json" | "stderr";
   /** Packages whose `npm install -g` exits 1 instead of laying down the shim. */
   failInstalls?: readonly string[];
   /** Commands pre-placed on PATH, so installCli reads them as already installed. */
@@ -135,26 +159,26 @@ function stageCliInstallFixture(opts: {
   // `error` object when the list itself failed.
   const installedEntries = Object.entries(opts.npmInstalled ?? {});
   const lsTree = JSON.stringify(
-    opts.lsFails
-      ? { error: { code: "ENOTDIR", summary: "", detail: "" } }
-      : installedEntries.length === 0
-        ? {}
-        : {
-            dependencies: Object.fromEntries(
-              installedEntries.map(([name, version]) => [
-                name,
-                version === null ? {} : { version },
-              ]),
-            ),
-          },
+    installedEntries.length === 0
+      ? {}
+      : {
+          dependencies: Object.fromEntries(
+            installedEntries.map(([name, version]) => [name, version === null ? {} : { version }]),
+          ),
+        },
   );
+  const lsFailArms = {
+    json: `printf '%s\\n' '${JSON.stringify({ error: NPM_LS_ERROR })}'; exit 1`,
+    stderr: `printf '%s\\n' ${NPM_LS_STDERR.map((line) => `'${line}'`).join(" ")} >&2; exit 1`,
+  };
+  const lsArm = opts.lsFails ? lsFailArms[opts.lsFails] : `echo '${lsTree}'; exit 0`;
   writeFileSync(
     join(pathBin, "npm"),
     [
-      "#!/bin/sh",
+      opts.npmUnspawnable ? "#!/nonexistent/sh" : "#!/bin/sh",
       'case "$1" in',
       opts.prefixFails ? "  prefix) exit 1 ;;" : `  prefix) echo "${prefix}"; exit 0 ;;`,
-      `  ls) echo '${lsTree}'; exit ${opts.lsFails ? 1 : 0} ;;`,
+      `  ls) ${lsArm} ;;`,
       `  view) echo '${JSON.stringify([FAKE_LATEST])}'; exit 0 ;;`,
       '  install) case "$3" in',
       ...installArms,
@@ -272,15 +296,42 @@ const CLI_INSTALL_ROWS: readonly CliInstallRow[] = [
     installed: [SECOND.command],
     absent: [FIRST.command, THIRD.command],
   },
+  // With npm's list unreadable the run cannot rule out a newer install whose bin dir is off
+  // PATH, so it installs nothing.
   {
-    name: "a failed npm package list installs nothing",
-    opts: { lsFails: true },
-    // Nothing on PATH would once have meant "install"; with npm's list unreadable the run
-    // cannot rule out a newer install whose bin dir is off PATH, so it installs nothing.
+    name: "an npm that cannot be spawned warns with the spawn error and installs nothing",
+    opts: { npmUnspawnable: true },
+    lines: [`${LS_FAILED_SKIP}\n  spawn: `, "ENOENT"],
+    never: ["Installing", "\n  exit status"],
+    installed: [],
+    absent: AGENT_CLIS.map((cli) => cli.command),
+  },
+  {
+    name: "a failed npm package list warns with its exit status and npm's stdout error object",
+    opts: { lsFails: "json" },
     lines: [
-      "Could not read npm's global package list (npm ls -g failed); skipping the CLI installs.",
+      `${LS_FAILED_SKIP}\n  exit status: 1\n  npm error ${NPM_LS_ERROR.code}: ${NPM_LS_ERROR.summary}`,
     ],
-    never: ["Installing"],
+    never: ["Installing", "\n  stderr:"],
+    installed: [],
+    absent: AGENT_CLIS.map((cli) => cli.command),
+  },
+  {
+    name: "a failed npm package list that wrote only to stderr warns with its exit status and every line that says something",
+    opts: { lsFails: "stderr" },
+    // npm leaves blank lines between its stderr groups; the tail counts only the lines that say
+    // something, so the code line at the top survives.
+    lines: [
+      [
+        LS_FAILED_SKIP,
+        "  exit status: 1",
+        "  stderr: npm error code ENOTDIR",
+        "  stderr: npm error syscall scandir",
+        "  stderr: npm error path C:\\npm",
+        `  stderr: ${NPM_LS_LOG_LINE}`,
+      ].join("\n"),
+    ],
+    never: ["Installing", "\n  npm error "],
     installed: [],
     absent: AGENT_CLIS.map((cli) => cli.command),
   },

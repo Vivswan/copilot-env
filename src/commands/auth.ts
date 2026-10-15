@@ -266,7 +266,14 @@ export async function chooseGhAccount(
   };
   if (logins.length === 0) {
     throw new Error(
-      "gh has no logged-in github.com account - run `gh auth login`, then retry `agent auth`",
+      scannable({
+        headline: "gh has no logged-in github.com account.",
+        lead: "Fix:",
+        actions: [
+          ["gh auth login", "log in"],
+          [retry, "then run it again"],
+        ],
+      }),
     );
   }
   if (logins.length === 1 && allLogins.length === 1) {
@@ -282,7 +289,8 @@ export async function chooseGhAccount(
     if (active !== null && logins.includes(active)) {
       logger.info(
         scannable({
-          headline: `gh has ${allLogins.length} logged-in accounts; pinning the active one (${active}).`,
+          headline: `gh has ${allLogins.length} logged-in accounts; pinning the active one.`,
+          evidence: [`active account: ${active}`],
           lead: "Pick one:",
           actions: [
             [`${retry} --gh-user <login>`, "pin another account"],
@@ -347,8 +355,15 @@ async function loginWithCopilot(): Promise<string> {
   const token = await githubDeviceFlowLogin({
     announce: (code) => {
       logger.info(
-        `  Open ${cyan(code.verificationUri)} and enter the code ${cyan(code.userCode)} ` +
-          `(valid ${Math.round(code.expiresInS / 60)} minutes); waiting for GitHub ...`,
+        scannable({
+          headline: "Waiting for GitHub.",
+          evidence: [`the code is valid ${Math.round(code.expiresInS / 60)} minutes`],
+          lead: "Then:",
+          actions: [
+            [code.verificationUri, "open it in a browser"],
+            [code.userCode, "enter this code"],
+          ],
+        }),
       );
     },
   });
@@ -369,8 +384,14 @@ function tokenLabel(subject: string, token: string, look: GithubLoginLook): stri
 async function promptForGhToken(): Promise<string> {
   if (!process.stdin.isTTY) {
     throw new Error(
-      "no GitHub token given: pass `--set <token>`, or use `--provider gh-env` to copy one of " +
-        ghTokenEnvVarsList(),
+      scannable({
+        headline: "no GitHub token given.",
+        lead: "Pick one:",
+        actions: [
+          ["--set <token>", "pass the token"],
+          ["--provider gh-env", `copy one of ${ghTokenEnvVarsList()}`],
+        ],
+      }),
     );
   }
   const token = await promptSecret("Paste your Copilot-enabled GitHub token");
@@ -398,20 +419,30 @@ function providedToken(raw: string): string {
 }
 
 function noEnvTokenError(): Error {
-  return new Error(`no GitHub token in the environment: set one of ${ghTokenEnvVarsList()}`);
+  return new Error(
+    scannable({
+      headline: "no GitHub token in the environment.",
+      lead: "Fix:",
+      actions: [[ghTokenEnvVarsList(), "set one of these"]],
+    }),
+  );
 }
 
 /** A terminal sees the var and its account before the token is used; headless cannot ask, so it takes
- *  the most specific var and says so. */
-async function chooseEnvToken(): Promise<GhEnvToken & { look: GithubLoginLook }> {
+ *  the most specific var and says so. `rerun` is the command that ran this acquisition. */
+async function chooseEnvToken(rerun: string): Promise<GhEnvToken & { look: GithubLoginLook }> {
   const found = ghTokensInEnv();
   const first = found[0];
   if (first === undefined) throw noEnvTokenError();
   if (!process.stdin.isTTY) {
     if (found.length > 1) {
       logger.info(
-        `  ${found.length} of ${ghTokenEnvVarsLabel(", ")} are set; taking $${first.name} ` +
-          "(the most specific). Run this in a terminal to pick another.",
+        scannable({
+          headline: `Taking $${first.name} (the most specific).`,
+          evidence: [`${found.length} of ${ghTokenEnvVarsLabel(", ")} are set`],
+          lead: "Then:",
+          actions: [[`${rerun} --provider gh-env`, "pick another in a terminal"]],
+        }),
       );
     }
     return { ...first, look: await githubLoginLook(first.token) };
@@ -444,8 +475,8 @@ async function chooseEnvToken(): Promise<GhEnvToken & { look: GithubLoginLook }>
   return chosen;
 }
 
-async function loginWithGhEnv(): Promise<string> {
-  const chosen = await chooseEnvToken();
+async function loginWithGhEnv(rerun: string): Promise<string> {
+  const chosen = await chooseEnvToken(rerun);
   logger.success(`  Using ${tokenLabel(`$${chosen.name}`, chosen.token, chosen.look)}.`);
   return chosen.token;
 }
@@ -460,14 +491,15 @@ export function loginWithGhCli(
   rerun: string = agentAuthCommand(null),
 ): GhCliSlot {
   const slot = settleGhCliAccount(account, look, rerun);
-  logger.success(
-    slot.kind === "pinned"
-      ? `  Using the gh CLI login (account ${slot.ghUser}) as the Direct credential.`
-      : slot.activeLogin !== null
-        ? `  Using the gh CLI login on AUTO (currently account ${slot.activeLogin}; follows gh ` +
-          "account switches) as the Direct credential."
-        : "  Using the gh CLI login on AUTO (follows gh account switches) as the Direct credential.",
-  );
+  if (slot.kind === "pinned") {
+    logger.success(`  Using the gh CLI login (account ${slot.ghUser}) as the Direct credential.`);
+  } else {
+    const evidence = slot.activeLogin === null ? [] : [`currently account ${slot.activeLogin}`];
+    evidence.push("follows gh account switches");
+    logger.success(
+      scannable({ headline: "Using the gh CLI login on AUTO as the Direct credential.", evidence }),
+    );
+  }
   return slot;
 }
 
@@ -481,7 +513,7 @@ function settleGhCliAccount(
   switch (account.kind) {
     case "auto": {
       const gh = look(null);
-      if (gh.kind !== "found") throw ghCliMiss(gh);
+      if (gh.kind !== "found") throw ghCliMiss(gh, rerun);
       return { kind: "auto", ghUser: null, activeLogin: account.activeLogin };
     }
     case "pinned":
@@ -506,7 +538,7 @@ function pinGhCliAccount(
     case "found":
       return { kind: "pinned", ghUser: login };
     case "unproven":
-      throw ghCliMiss(pinned);
+      throw ghCliMiss(pinned, rerun);
     case "absent":
       throw ghCannotServeByName(login, pinned.detail, rerun);
     default:
@@ -527,8 +559,8 @@ export function ghCannotServeByName(
 ): Error {
   return new Error(
     scannable({
-      headline: `gh cannot serve account '${paintFor(color).cyan(login)}' by name.`,
-      evidence: [detail],
+      headline: "gh cannot serve the pinned account by name.",
+      evidence: [`account: ${paintFor(color).cyan(login)}`, detail],
       lead: "Pick one:",
       actions: [
         ["gh auth login", "re-login on gh 2.40 or newer, then retry"],
@@ -541,14 +573,29 @@ export function ghCannotServeByName(
 }
 
 /** An UNPROVEN look wears its own words: "not authenticated" and the `gh auth login` advice are
- *  wrong when gh was never asked. */
-function ghCliMiss(gh: Exclude<GhTokenLook, { kind: "found" }>): Error {
+ *  wrong when gh was never asked. `rerun` is the command that ran this acquisition. */
+function ghCliMiss(gh: Exclude<GhTokenLook, { kind: "found" }>, rerun: string): Error {
   switch (gh.kind) {
     case "unproven":
-      return new Error(`could not check gh authentication (${gh.detail}) - retry \`agent auth\``);
+      return new Error(
+        scannable({
+          headline: "could not check gh authentication.",
+          evidence: [gh.detail],
+          lead: "Fix:",
+          actions: [[rerun, "retry"]],
+        }),
+      );
     case "absent":
       return new Error(
-        `gh is not authenticated (${gh.detail}) - run \`gh auth login\`, then retry \`agent auth\``,
+        scannable({
+          headline: "gh is not authenticated.",
+          evidence: [gh.detail],
+          lead: "Fix:",
+          actions: [
+            ["gh auth login", "log in"],
+            [rerun, "then retry"],
+          ],
+        }),
       );
     default:
       return assertNever(gh);
@@ -604,19 +651,34 @@ async function plannedAcquisition(
   switch (acquisition.kind) {
     case "choose":
       throw new Error(
-        `a dry run never prompts: pass --provider <${PROVIDER_CHOICES}> (or --set <token>) to ` +
-          `plan the credential landing for ${slot}`,
+        scannable({
+          headline: "a dry run never prompts.",
+          evidence: [`no provider to plan ${slot} from`],
+          lead: "Pick one:",
+          actions: [
+            [`--provider <${PROVIDER_CHOICES}>`, "plan that provider's landing"],
+            ["--set <token>", "plan a gh-token landing"],
+          ],
+        }),
       );
     case "gh-token": {
       if (acquisition.token === null) {
         throw new Error(
-          `a dry run never prompts: pass --set <token> to plan the landing for ${slot}`,
+          scannable({
+            headline: "a dry run never prompts.",
+            evidence: [`no token to plan ${slot} with`],
+            lead: "Fix:",
+            actions: [["--set <token>", "the token to land"]],
+          }),
         );
       }
       // The login's own reading, refusal included, before any plan row is landed.
       const token = providedToken(acquisition.token);
       logger.log(
-        `  Would store the provided token in ${slot} (its GitHub account is looked up when the landing is real).`,
+        scannable({
+          headline: "Would store the given token.",
+          evidence: [`in ${slot}`, "its GitHub account is looked up when the landing is real"],
+        }),
       );
       return { kind: "stored", provider: "gh-token", token };
     }
@@ -626,11 +688,9 @@ async function plannedAcquisition(
       const found = ghTokensInEnv();
       const first = found[0];
       if (first === undefined) throw noEnvTokenError();
-      logger.log(
-        `  Would take the token from $${first.name}${
-          found.length > 1 ? ` (the most specific of ${found.length} set)` : ""
-        } and land it in ${slot}; its GitHub account is looked up when the landing is real.`,
-      );
+      const evidence = found.length > 1 ? [`the most specific of ${found.length} set`] : [];
+      evidence.push(`in ${slot}`, "its GitHub account is looked up when the landing is real");
+      logger.log(scannable({ headline: `Would land the token from $${first.name}.`, evidence }));
       return { kind: "stored", provider: "gh-env", token: first.token };
     }
     case "copilot":
@@ -690,7 +750,7 @@ export async function acquireCredential(
     return { kind: "stored", provider: "gh-token", token: await loginWithGhToken(resolved.token) };
   }
   if (resolved.kind === "gh-env") {
-    return { kind: "stored", provider: "gh-env", token: await loginWithGhEnv() };
+    return { kind: "stored", provider: "gh-env", token: await loginWithGhEnv(rerun) };
   }
   if (resolved.kind === "copilot") {
     return { kind: "stored", provider: "copilot", token: await loginWithCopilot() };
@@ -723,9 +783,14 @@ async function authenticate(
     if (slot.kind === "complete") {
       if (isPlannedCredential(credential)) {
         logger.log(
-          `  Would wire ${profileLabel(profile)}'s ${slot.mode} mode into both agents for the ` +
-            "landed token" +
-            (slot.mode === "direct" ? " (the Direct identity selected with it)." : "."),
+          scannable({
+            headline: "Would wire both agents for the landed token.",
+            evidence: [
+              `${profileLabel(profile)} in ${slot.mode} mode${
+                slot.mode === "direct" ? ", the Direct identity selected with it" : ""
+              }`,
+            ],
+          }),
         );
       } else {
         await wireBothAgents(profile, slot.mode, false, "probe");
@@ -748,10 +813,11 @@ function profileSlotMissing(profile: ProfileName): boolean {
  *  own refusal, never as "no such profile". */
 function noSuchProfileHint(profile: ProfileName): string {
   if (profileHomeNames().includes(profile)) return errMessage(missingProfileSlotError(profile));
-  return (
-    `no such profile '${profile}' - create it with ` +
-    `\`agent profile ${profile} add --direct|--proxy\``
-  );
+  return scannable({
+    headline: `no such profile '${profile}'.`,
+    lead: "Fix:",
+    actions: [[`agent profile ${profile} add --direct|--proxy`, "create it"]],
+  });
 }
 
 function resolveOrReport(profile: Profile): string | null {
@@ -785,9 +851,9 @@ async function runDel(profile: Profile): Promise<() => void> {
   // revoked.
   const stop = cleared ? await stopTrackedProxy(DAEMON_SIGKILL_GRACE_MS, profile) : null;
   // The default's wording is an output contract; a named profile's names its slot and its daemon.
-  const who = profile === null ? "" : ` ${profileLabel(profile)}`;
+  const forSlot = profile === null ? [] : [`for ${profileLabel(profile)}`];
   const its = profile === null ? "the" : "its";
-  const again = `\`${agentAuthCommand(profile)}\``;
+  const again = agentAuthCommand(profile);
   return () => {
     if (stop !== null) {
       const { signalled, stopped } = stop;
@@ -795,22 +861,39 @@ async function runDel(profile: Profile): Promise<() => void> {
       // still-running daemon, never the plain success.
       if (!stopped) {
         logger.warn(
-          `De-authenticated${who}, but ${its} proxy is still running and may keep serving the ` +
-            `old credential -- stop it with \`${agentStopCommand(profile)}\`.`,
-        );
-      } else if (signalled) {
-        logger.success(
-          `De-authenticated${who} and stopped ${its} proxy. Run ${again} to log in again.`,
+          scannable({
+            headline: "De-authenticated.",
+            evidence: [
+              ...forSlot,
+              `${its} proxy is still running`,
+              "it may keep serving the old credential",
+            ],
+            lead: "Fix:",
+            actions: [[agentStopCommand(profile), "stop it"]],
+          }),
         );
       } else {
-        logger.success(`De-authenticated${who}. Run ${again} to log in again.`);
+        const evidence = [...forSlot];
+        if (signalled) evidence.push(`stopped ${its} proxy`);
+        logger.success(
+          scannable({
+            headline: "De-authenticated.",
+            evidence,
+            lead: "Then:",
+            actions: [[again, "log in again"]],
+          }),
+        );
       }
     } else if (profile !== null && profileSlotMissing(profile)) {
-      logger.info(`Nothing to clear - ${noSuchProfileHint(profile)}.`);
+      logger.info(`Nothing to clear.\n${noSuchProfileHint(profile)}`);
     } else {
       logger.info(
-        `Nothing to clear${profile === null ? "" : ` for ${profileLabel(profile)}`} - not ` +
-          `authenticated. Run ${again} to log in.`,
+        scannable({
+          headline: "Nothing to clear.",
+          evidence: [...forSlot, "not authenticated"],
+          lead: "Then:",
+          actions: [[again, "log in"]],
+        }),
       );
     }
     // Whatever the store held, a baked copy may still sit in the agent configs.
@@ -826,11 +909,22 @@ async function runCheck(profile: Profile): Promise<void> {
   const { provider, resolves } = credential.status();
   const authCommand = agentAuthCommand(profile);
   const label = profile === null ? "" : ` (${profileLabel(profile)})`;
+  const forSlot = profile === null ? [] : [`for ${profileLabel(profile)}`];
+  // The status goes to stdout, so the table fits stdout's width, not stderr's.
+  const width = terminalWidth();
   if (provider === null) {
     if (profile !== null && profileSlotMissing(profile)) {
       printWrapped(noSuchProfileHint(profile));
     } else {
-      printWrapped(`not authenticated${label} - run \`${authCommand}\``);
+      printWrapped(
+        scannable({
+          headline: "not authenticated.",
+          evidence: forSlot,
+          lead: "Fix:",
+          actions: [[authCommand, "log in"]],
+          width,
+        }),
+      );
     }
     process.exitCode = 1;
     return;
@@ -842,7 +936,13 @@ async function runCheck(profile: Profile): Promise<void> {
   } else {
     // e.g. gh-cli selected but `gh` is no longer authenticated (as the pinned account).
     printWrapped(
-      `provider '${source}' selected but no credential resolves${label} - run \`${authCommand}\``,
+      scannable({
+        headline: "no credential resolves.",
+        evidence: [...forSlot, `provider '${source}' is selected`],
+        lead: "Fix:",
+        actions: [[authCommand, "log in again"]],
+        width,
+      }),
     );
     process.exitCode = 1;
   }
@@ -861,8 +961,12 @@ export async function ensureAuthenticated(
   if (dryRunActive() && acquisition.kind === "choose") {
     const authCommand = agentAuthCommand(profile);
     throw new Error(
-      `${profileLabel(profile)} is not authenticated, and a dry run never logs in; run ` +
-        `\`${authCommand}\` first, then re-run with --dry-run`,
+      scannable({
+        headline: "a dry run never logs in.",
+        evidence: [`${profileLabel(profile)} is not authenticated`],
+        lead: "Fix:",
+        actions: [[authCommand, "log in first, then re-run with --dry-run"]],
+      }),
     );
   }
   if (!dryRunActive()) {
@@ -976,12 +1080,19 @@ export async function runAuth(args: AuthArgs): Promise<void> {
         return;
       }
       if (!process.stdin.isTTY) {
+        const { profile } = action;
         throw new Error(
-          `not a terminal - pass the identity: \`${configSetCommand(
-            "identity",
-            "<id|auto>",
-            action.profile,
-          )}\` (see \`agent profile identity\`)`,
+          scannable({
+            headline: "no terminal to choose the identity in.",
+            lead: "Pick one:",
+            actions: [
+              [configSetCommand("identity", "<id|auto>", profile), "pin an id, or auto"],
+              [
+                profile === null ? "agent profile identity" : `agent profile ${profile} identity`,
+                "show the current identity",
+              ],
+            ],
+          }),
         );
       }
       const token = resolveOrReport(action.profile);
@@ -1020,13 +1131,15 @@ async function runAuthenticate(
       return () => {
         const auth = agentAuthCommand(profile);
         logger.success(
-          `Already authenticated (${source}${
-            profile === null ? "" : `, ${profileLabel(profile)}`
-          }).`,
-        );
-        logger.log(
-          `  Switch with \`${auth} --provider <${PROVIDER_CHOICES}>\`, or clear it with ` +
-            `\`${auth} --del\`.`,
+          scannable({
+            headline: "Already authenticated.",
+            evidence: profile === null ? [source] : [`for ${profileLabel(profile)}`, source],
+            lead: "Pick one:",
+            actions: [
+              [`${auth} --provider <${PROVIDER_CHOICES}>`, "switch the provider"],
+              [`${auth} --del`, "clear it"],
+            ],
+          }),
         );
         noteStaticKeyStale(profile);
       };
@@ -1040,18 +1153,32 @@ async function runAuthenticate(
   return () => {
     if (profile === null) {
       logger.success(
-        `Authenticated (${provider}). Run \`agent init\` to configure Codex and Claude.`,
+        scannable({
+          headline: `Authenticated (${provider}).`,
+          lead: "Then:",
+          actions: [["agent init", "configure Codex and Claude"]],
+        }),
       );
     } else if (mode !== null) {
       logger.success(
-        `Authenticated ${profileLabel(profile)} (${provider}); both agents are wired for its ` +
-          `${mode} mode.`,
+        scannable({
+          headline: `Authenticated (${provider}).`,
+          evidence: [`for ${profileLabel(profile)}`, `both agents are wired for its ${mode} mode`],
+          lead: "Then:",
+          actions: [
+            [`cl --profile ${profile}`, "launch Claude"],
+            [`cx --profile ${profile}`, "launch Codex"],
+          ],
+        }),
       );
-      logger.log(`  Launch it:  cl --profile ${profile}  /  cx --profile ${profile}`);
     } else {
       logger.success(
-        `Authenticated ${profileLabel(profile)} (${provider}). Wire it into both agents with ` +
-          `\`agent profile ${profile} add --direct|--proxy\`.`,
+        scannable({
+          headline: `Authenticated (${provider}).`,
+          evidence: [`for ${profileLabel(profile)}`],
+          lead: "Then:",
+          actions: [[`agent profile ${profile} add --direct|--proxy`, "wire it into both agents"]],
+        }),
       );
     }
     if (mode === null) noteStaticKeyStale(profile);
@@ -1066,6 +1193,11 @@ function noteStaticKeyStale(profile: Profile): void {
     scope === "all" ? "Claude's and Codex's" : scope === "claude" ? "Claude's" : "Codex's";
   const rewire = profile === null ? "agent init" : `agent profile ${profile} add --direct|--proxy`;
   logger.info(
-    `static-key is ${scope}: ${whose} baked value stays as it is until \`${rewire}\` rewrites it.`,
+    scannable({
+      headline: `static-key is ${scope}.`,
+      evidence: [`${whose} baked value stays as it is`],
+      lead: "Fix:",
+      actions: [[rewire, "rewrites it"]],
+    }),
   );
 }

@@ -167,7 +167,7 @@ test("a named credential slot per state: a write needs the committed profile (no
       name: "home-only half profile",
       arrange: () => mkdirSync(profileHome(WORK), { recursive: true }),
       before: null,
-      write: { throws: /half-created.*agent profile work add/ },
+      write: { throws: /half-created[\s\S]*agent profile work add/ },
       known: false,
     },
     {

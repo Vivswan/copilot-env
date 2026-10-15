@@ -455,16 +455,12 @@ test("auth --get/--del/--check on a named profile per slot state: nonexistent hi
         } catch (e) {
           storeMessage = errMessage(e);
         }
-        expect(storeMessage).toContain(
-          "profile 'ghost' has no store slot (half-created; its daemon home exists)",
-        );
+        expect(storeMessage).toContain("profile 'ghost' has no store slot.");
         expect(storeMessage).toContain(addCommand);
-        return storeMessage;
+        // Folded like the captured --check output, whose lines the comparison also folds.
+        return words(storeMessage);
       },
-      says: [
-        "profile 'ghost' has no store slot (half-created; its daemon home exists)",
-        addCommand,
-      ],
+      says: ["profile 'ghost' has no store slot.", addCommand],
       never: "no such profile",
       delSays: "Nothing to clear - ",
     },

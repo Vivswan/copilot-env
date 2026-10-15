@@ -209,17 +209,20 @@ test("a Direct landing with no resolvable credential is refused before any write
   const emptyBin = join(dir, "empty-bin");
   mkdirSync(emptyBin, { recursive: true });
   process.env.PATH = emptyBin;
+  // The refusal's headline, then its one command in the Fix table.
+  const refusal =
+    /needs a credential and none resolves[\s\S]*\n {2}agent auth {2}log in first, then retry/;
   const direct = await configureDefaultAgents({ codex: "direct", claude: "direct" }, bothAgents());
-  expect(direct.failures.map((f) => f.includes("run `agent auth` first"))).toEqual([true, true]);
+  expect(direct.failures.map((f) => refusal.test(f))).toEqual([true, true]);
   // `auto` is refused the same way: a proxy landing on that credential would serve nothing.
   await expect(
     configureDefaultAgents({ codex: "auto", claude: "auto" }, bothAgents()),
-  ).rejects.toThrow("run `agent auth` first");
+  ).rejects.toThrow(refusal);
   // The re-render gap takes the same refusal: a Direct record whose slot holds no pair.
   state.recordDefaultMode("direct");
   await expect(
     runAgentConfig(claudeAdapter(), { kind: "configure", mode: "auto" }),
-  ).rejects.toThrow("run `agent auth` first");
+  ).rejects.toThrow(refusal);
   expect({
     codexFile: existsSync(join(homes.codexHome, "config.toml")),
     claudeFile: existsSync(join(homes.claudeHome, "settings.json")),

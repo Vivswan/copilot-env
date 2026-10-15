@@ -4,23 +4,40 @@
 // only, so the never field is what catches a widened object. Drop either guard and its
 // ts-expect-error below becomes an unused directive (TS2578): both fail closed at typecheck time.
 
+import { join } from "node:path";
 import {
   type AgentAdapter,
   type DirectWiring,
+  directNeedsCredentialError,
   directWiring,
   type ManagedAgentId,
   type ManagedWrite,
+  resolveCredentialWiring,
   resolveDefaultMode,
   writeDefaultAgent,
 } from "../../src/agents/configure.ts";
 import { runAgentConfig } from "../../src/agents/configure_defaults.ts";
 import type { RequestedMode } from "../../src/agents/provider_mode.ts";
+import { CopilotEnvConfig } from "../../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../../src/copilot_api/env_state.ts";
-import { expect, test } from "../helpers/testing.ts";
+import { errMessage } from "../../src/utils/error.ts";
+import { expect, removeDir, tempDir, test } from "../helpers/testing.ts";
 
 // Every literal carries the required credential, so the pair is the ONE thing each directive rejects.
 const COMMAND = { kind: "command" } as const;
 const HOST = "https://api.githubcopilot.com";
+
+/** A thrown refusal reads its width at the throw, so the 80-column layout rows set it around the call. */
+async function withColumns<T>(columns: number, fn: () => Promise<T>): Promise<T> {
+  const saved = process.env.COLUMNS;
+  process.env.COLUMNS = String(columns);
+  try {
+    return await fn();
+  } finally {
+    if (saved === undefined) delete process.env.COLUMNS;
+    else process.env.COLUMNS = saved;
+  }
+}
 
 test("a ManagedWrite carries a Direct pair only as the branded DirectWiring, never on the proxy arm", () => {
   // Literal path: the discriminant selects the proxy arm and the pair is rejected there.
@@ -205,12 +222,18 @@ test("a single-agent write re-renders the recorded mode, never moves it, and ref
   const state = new CopilotEnvState();
   state.recordDefaultMode("proxy");
   const { adapter, recorded } = fakeAdapter(() => Promise.resolve(null), true);
-  await expect(
-    runAgentConfig(adapter, { kind: "configure", mode: "direct" }, { ghToken: "ghp_x" }),
-  ).rejects.toThrow(
-    "the default profile records proxy as the one mode for both agents; a direct write of claude alone would leave the two " +
-      "apart. Move both with `agent init --direct`.",
-  );
+  await withColumns(80, async () => {
+    await expect(
+      runAgentConfig(adapter, { kind: "configure", mode: "direct" }, { ghToken: "ghp_x" }),
+    ).rejects.toThrow(
+      [
+        "the default profile records proxy as the one mode for both agents.",
+        "  a direct write of claude alone would leave the two apart",
+        "Fix:",
+        "  agent init --direct  move both agents together",
+      ].join("\n"),
+    );
+  });
   expect(recorded.writes).toEqual([]);
   expect(state.readProfileSlot(null).mode).toBe("proxy");
   // No flag renders the recorded mode without a probe (this adapter would pick Direct as a
@@ -318,5 +341,46 @@ test("a Direct re-render on a slot holding no pair lands BOTH agents and commits
     codex: [directWrite],
     pair: { integrationId: PAT_ID, host: HOST },
     recorded: "direct",
+  });
+});
+
+// What would drift silently: the two credential refusals of a Direct write print as the scannable
+// shape (headline, evidence, a lead, the command table) at 80 columns, not as one paragraph.
+test("a Direct wiring without a credential and a static-key with nothing to bake refuse in the scannable shape at 80 columns", async () => {
+  await withColumns(80, async () => {
+    expect(directNeedsCredentialError(null).message).toBe(
+      [
+        "a Direct wiring needs a credential and none resolves for default.",
+        "  a selection made without one would bake the fallback identity and host as state",
+        "Fix:",
+        "  agent auth  log in first, then retry",
+      ].join("\n"),
+    );
+    // A home of its own: the file's shared sandbox may hold a credential by now, and the refusal
+    // needs none to resolve.
+    const dir = tempDir("configure-static-key-");
+    const savedHome = process.env.COPILOT_API_HOME;
+    process.env.COPILOT_API_HOME = join(dir, "copilot-api");
+    try {
+      new CopilotEnvConfig().setProfile(null, { "static-key": "all" });
+      let message = "";
+      try {
+        resolveCredentialWiring("claude", "direct", null);
+      } catch (e) {
+        message = errMessage(e);
+      }
+      expect(message).toBe(
+        [
+          "static-key is all but no credential resolves to bake.",
+          "  no GitHub credential configured - run `agent auth` to log in",
+          "Pick one:",
+          "  agent auth                         store a credential to bake",
+          "  agent profile set static-key none  go back to the resolver command",
+        ].join("\n"),
+      );
+    } finally {
+      process.env.COPILOT_API_HOME = savedHome;
+      removeDir(dir);
+    }
   });
 });

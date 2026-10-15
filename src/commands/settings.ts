@@ -35,13 +35,15 @@ import {
   profileKey,
   profileLabel,
 } from "../copilot_api/profile.ts";
+import { colorEnabled, paintFor } from "../utils/ansi.ts";
 import type { FileChange } from "../utils/dry_run.ts";
 import { renderDryRun } from "../utils/dry_run_report.ts";
 import { errMessage } from "../utils/error.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { createStderrLogger } from "../utils/logger.ts";
+import { scannable } from "../utils/message.ts";
 import { prompt } from "../utils/prompt.ts";
-import { PROXY_RESTART_HINT_ALL } from "./config.ts";
+import { proxyRestartHintAll } from "./config.ts";
 import { runDryRun } from "./dry_run.ts";
 
 // Narration to stderr so `--export`'s stdout stays a clean machine-readable bundle.
@@ -69,6 +71,8 @@ interface SettingsDeps extends ImportDeps {
 type SettingsAction =
   | { kind: "export"; target: string | boolean; withCredentials: boolean; dryRun: boolean }
   | { kind: "import"; file: string; force: boolean; noBackup: boolean; dryRun: boolean };
+
+type ImportAction = Extract<SettingsAction, { kind: "import" }>;
 
 const EXACTLY_ONE = "pass exactly one of --export [file], --import <file>";
 
@@ -125,7 +129,7 @@ export function importRestartHints(
       isProfileMapKey(def.key) &&
       (carries(config, def.key) || carries(preImportPrefs, def.key)),
   );
-  return projectedChanges ? [PROXY_RESTART_HINT_ALL] : [];
+  return projectedChanges ? [proxyRestartHintAll()] : [];
 }
 
 /** The bundle a scope exports: the whole store (buildExportBundle) or one profile's projection. */
@@ -188,12 +192,12 @@ async function confirmImport(changes: readonly FileChange[], file: string): Prom
  *  back to a store-shaped document over the current store. `plan` is the reach the planner is
  *  told (a named profile's import never lands the default's wiring). */
 interface BundleScope {
-  widen(bundle: SettingsBundle, file: string): SettingsBundle;
+  widen(bundle: SettingsBundle, action: ImportAction): SettingsBundle;
   plan: ImportScope;
 }
 
 async function runImport(
-  action: Extract<SettingsAction, { kind: "import" }>,
+  action: ImportAction,
   deps: SettingsDeps,
   scope: BundleScope,
 ): Promise<void> {
@@ -210,7 +214,7 @@ async function runImport(
   } catch {
     throw new Error(`${file} is not valid JSON`);
   }
-  const bundle = scope.widen(parseSettingsBundle(parsed), file);
+  const bundle = scope.widen(parseSettingsBundle(parsed), action);
 
   // One plan drives both the confirmation and the apply, so the prompt shows exactly what the
   // import changes: the apply's own change set, read off the overlay before anything lands.
@@ -312,8 +316,8 @@ export async function runProfileSettings(
       return profileBundle(buildExportBundle(options), profile);
     },
     {
-      widen: (bundle, file) => {
-        assertProfileBundle(bundle, profile, file);
+      widen: (bundle, action) => {
+        assertProfileBundle(bundle, profile, action);
         return widenToStore(bundle, profile);
       },
       plan: { defaultWiring: profile === null },
@@ -382,7 +386,14 @@ function profileBundle(whole: SettingsBundle, profile: Profile): SettingsBundle 
 
 /** A profile's import takes a bundle of that profile alone: anything else in it would land on
  *  another profile or the machine, which is `agent settings --import`'s scope. */
-function assertProfileBundle(bundle: SettingsBundle, profile: Profile, file: string): void {
+function assertProfileBundle(bundle: SettingsBundle, profile: Profile, action: ImportAction): void {
+  const { file } = action;
+  const wholeStoreImport = [
+    rollbackCommand(file),
+    ...(action.force ? ["--force"] : []),
+    ...(action.noBackup ? ["--no-backup"] : []),
+    ...(action.dryRun ? ["--dry-run"] : []),
+  ].join(" ");
   const key = profileKey(profile);
   const stray: string[] = [];
   const foreignSections = Object.keys(bundle.config.profiles).filter((k) => k !== key);
@@ -404,10 +415,15 @@ function assertProfileBundle(bundle: SettingsBundle, profile: Profile, file: str
   }
   if (stray.length > 0) {
     throw new Error(
-      `${file} is not a bundle of ${profileLabel(profile)} alone: it carries ${stray.join(
-        "; ",
-      )}. The whole store imports with \`agent settings --import\`; one profile's bundle comes from ` +
-        "`agent profile [<name>] settings --export`.",
+      scannable({
+        headline: `${paintFor(colorEnabled()).cyan(file)} is not a bundle of ${profileLabel(profile)} alone.`,
+        evidence: stray.map((part) => `it carries ${part}`),
+        lead: "Pick one:",
+        actions: [
+          [wholeStoreImport, "import the whole store"],
+          ["agent profile [<name>] settings --export", "export one profile's bundle"],
+        ],
+      }),
     );
   }
   // Every genuine named-profile export carries the profile's slot under `profiles` (its `add`

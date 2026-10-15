@@ -3,8 +3,10 @@
 // here: each spelling reaches its command on the right profile (the exit code, and the one value
 // or file the command owns), the default-profile aliases (start, stop, models) are one code path
 // with their verbs live, in twin homes, and a profile's settings bundle is that profile alone.
+
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { rollbackCommand } from "../../src/agents/transfer.ts";
 import { desktopEntryName, META_FILENAME } from "../../src/claude/desktop_library.ts";
 import { freePort } from "../helpers/net.ts";
 import {
@@ -274,10 +276,35 @@ test("profile settings is one profile's bundle: a named profile's slot and secti
   // The whole store is not one profile's bundle.
   const wholeFile = join(twin.home, "all.json");
   writeFileSync(wholeFile, whole);
-  const refused = observe(["profile", "work", "settings", "--import", wholeFile, "--force"], twin);
+  // The logger that prints the error wraps any line wider than the terminal at its word boundaries,
+  // and a Windows temp path is wider than the line on its own, so the headline and the command (a
+  // temp path inside) are matched with whitespace folded on both sides.
+  const refused = observe(["profile", "work", "settings", "--import", wholeFile, "--force"], {
+    ...twin,
+    env: { ...twin.env, COLUMNS: "80" },
+  });
   expect(refused.exitCode).toBe(1);
-  expect(refused.stderr).toContain("not a bundle of profile 'work' alone");
-  expect(refused.stderr).toContain("agent settings --import");
+  const fold = (text: string): string => text.replace(/\s+/g, "");
+  const folded = fold(refused.stderr);
+  expect(folded).toContain(fold(`${wholeFile} is not a bundle of profile 'work' alone.`));
+  expect(folded).toContain(fold(`${rollbackCommand(wholeFile)} --force import the whole store`));
+  // A preview's refusal keeps the preview: its recovery carries --dry-run too.
+  const previewed = observe(
+    ["profile", "work", "settings", "--import", wholeFile, "--force", "--dry-run"],
+    twin,
+  );
+  expect(previewed.exitCode).toBe(1);
+  expect(fold(previewed.stderr)).toContain(
+    fold(`${rollbackCommand(wholeFile)} --force --dry-run import the whole store`),
+  );
+  expect(refused.stderr).toContain(
+    [
+      "    import the whole store",
+      "",
+      "  agent profile [<name>] settings --export",
+      "    export one profile's bundle",
+    ].join("\n"),
+  );
   // A daemon home with no store slot is not a profile an export can carry: refused with its
   // repair, so no bundle exists that its own import would refuse.
   mkdirSync(join(twin.home, "profiles", "ghost"), { recursive: true });

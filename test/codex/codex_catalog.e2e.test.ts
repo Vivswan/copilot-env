@@ -843,13 +843,12 @@ test("past the refresh deadline the catalog is still written, but neither the ac
   expect(new CopilotEnvState().read().codexCatalogAccepted).toBeNull();
   expect(reference()).toBeUndefined();
   expect(new OwnershipLedger().owns("codexCatalog", configPath)).toBe(false);
-  // The logger wraps to the terminal width (mid-path included), so both sides drop whitespace.
-  const unwrapped = (text: string) => text.replace(/\s+/g, "");
-  expect(unwrapped(said)).toContain(
-    unwrapped(
-      `catalog reference not set in ${configPath}: ownership could not be recorded; ` +
-        "the next wiring or direct launch retries",
-    ),
+  expect(said).toContain(
+    [
+      `codex model catalog reference not set in ${configPath}.`,
+      "  ownership could not be recorded",
+      "  the next wiring or direct launch retries",
+    ].join("\n"),
   );
   // Control: inside the deadline the same run records the acceptance, the reference, and the claim.
   new CopilotEnvState().set({ codexCatalogLastAttemptMs: Date.now() - MILLISECONDS_PER_DAY - 1 });

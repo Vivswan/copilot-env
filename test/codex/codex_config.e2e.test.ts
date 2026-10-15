@@ -788,6 +788,27 @@ test("model_catalog_json on the write: set and claimed only with the opt-in on, 
   }
 });
 
+test("the rejected catalog's warning names both ways out, each a command", () => {
+  isolate();
+  const codexHome = join(dir, ".codex");
+  const catalogFile = new CopilotApiPaths().codexModelCatalogFile;
+  enableCatalog();
+  writeFileSync(catalogFile, '{"models":[{"slug":"gpt-5.5"}]}\n');
+  installedCodex(false);
+  const { stderr } = captureChannelsSync(() =>
+    configureCodexConfig(codexHome, { mode: "direct", direct: null, credential: COMMAND }),
+  );
+  expect(stderr).toContain(
+    [
+      `the installed codex rejects ${catalogFile}.`,
+      "  left out of the config",
+      "Pick one:",
+      "  agent profile sync --codex                  regenerate the catalog",
+      "  agent config set codex.model-catalog false  disable the catalog",
+    ].join("\n"),
+  );
+});
+
 test("a write to an unknown home never enters the ledger", () => {
   isolate();
   const catalogFile = new CopilotApiPaths().codexModelCatalogFile;

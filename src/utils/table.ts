@@ -12,9 +12,11 @@ export interface TableOptions {
   header?: string[];
   footer?: string[][];
   aligns?: Align[];
-  /** `true` marks a free-text column that wraps at word boundaries on a narrow terminal; `"hard"`
-   *  marks one (paths, ids) whose cells split at the column edge with every character kept.
-   *  Every other column keeps its widest cell and only its header may wrap. */
+  /** How a column meets a narrow terminal. `true`: free text, wrapped at word boundaries. `"hard"`:
+   *  paths and ids, split at the column edge with every character kept, and wrapped at word
+   *  boundaries once the table stacks. `false`: a command, never split when it stands alone; a
+   *  header-labeled cell wraps. An unset entry keeps its widest cell in columns and wraps once the
+   *  table stacks. A header may always wrap. */
   wrap?: Array<boolean | "hard">;
   indent?: string;
   /** Visible columns to fit; null never wraps. Defaults to the terminal's. */
@@ -169,7 +171,9 @@ export function formatTable(body: TableRow[], options: TableOptions = {}): strin
   });
   const widths =
     width === null || total <= width ? natural : fitWidths(natural, floors, total - width);
-  if (widths === null) return formatStacked(body, footer, header, indent, rowIndent, width, tint);
+  if (widths === null) {
+    return formatStacked(body, footer, header, indent, rowIndent, width, wrap, tint);
+  }
 
   const fmt = (row: string[]): string[] => {
     const cells = widths.map((w, i) => {
@@ -240,10 +244,16 @@ function formatStacked(
   indent: string,
   rowIndent: string,
   width: number | null,
+  wrap: Array<boolean | "hard">,
   tint: Tint,
 ): string[] {
   const label = (i: number, cell: string): string =>
     header?.[i] === undefined ? cell : `${tint.head(header[i])}: ${cell}`;
+  // An unlabeled cell of a column marked `false` is one line, wider than the terminal when it must
+  // be, since a split command cannot be copied; a header label makes the cell prose, so it wraps.
+  const whole = (i: number): boolean => header?.[i] === undefined && wrap[i] === false;
+  const cellLines = (i: number, text: string, cellIndent: string, hang: string): string[] =>
+    whole(i) ? [`${cellIndent}${text}`] : wrapLine(text, width, cellIndent, hang);
   const lines: string[] = [];
   let previous: "none" | "heading" | "record" = "none";
   for (const row of [...body, ...footer]) {
@@ -254,11 +264,11 @@ function formatStacked(
       continue;
     }
     const [first = "", ...rest] = tint.keyed(row);
-    lines.push(...wrapLine(label(0, first), width, rowIndent, `${rowIndent}${GAP}`));
+    lines.push(...cellLines(0, label(0, first), rowIndent, `${rowIndent}${GAP}`));
     rest.forEach((cell, j) => {
       if (cell === "") return;
       lines.push(
-        ...wrapLine(label(j + 1, cell), width, `${rowIndent}${GAP}`, `${rowIndent}${GAP}${GAP}`),
+        ...cellLines(j + 1, label(j + 1, cell), `${rowIndent}${GAP}`, `${rowIndent}${GAP}${GAP}`),
       );
     });
     previous = "record";

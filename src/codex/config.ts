@@ -28,11 +28,13 @@ import { OwnershipLedger } from "../copilot_api/ownership.ts";
 import { CopilotApiPaths } from "../copilot_api/paths.ts";
 import { copilotApiResolvePort, openaiBaseUrl } from "../copilot_api/port.ts";
 import type { Profile, ProfileName } from "../copilot_api/profile.ts";
+import { colorEnabled, paintFor } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { isRecord } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
+import { scannable } from "../utils/message.ts";
 import { agentAuthGetArgs, agentLauncherCommand, proxyTokenCommand } from "../utils/root.ts";
 import { printKeyValue, printWrapped } from "../utils/table.ts";
 import { isTomlTable, parseToml } from "../utils/toml.ts";
@@ -311,9 +313,15 @@ export function configureCodexConfig(codexHome: string, request: CodexWriteReque
         : "disabled";
     if (verdict === "rejected") {
       logger.warn(
-        `  ! the installed codex rejects ${catalogFile}; leaving it out of the config ` +
-          "(regenerate with `agent profile sync --codex`, or disable with " +
-          `\`${configSetCommand("codex.model-catalog", "false")}\`)`,
+        scannable({
+          headline: `the installed codex rejects ${paintFor(colorEnabled()).cyan(catalogFile)}.`,
+          evidence: ["left out of the config"],
+          lead: "Pick one:",
+          actions: [
+            ["agent profile sync --codex", "regenerate the catalog"],
+            [configSetCommand("codex.model-catalog", "false"), "disable the catalog"],
+          ],
+        }),
       );
     }
     if (verdict === "accepted" || verdict === "unverifiable") {

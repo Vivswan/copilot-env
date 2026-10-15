@@ -27,7 +27,7 @@ import {
 } from "../../src/claude/config.ts";
 import { cmdHelperBody } from "../../src/claude/helper_body.ts";
 import { claudeJsonPath } from "../../src/claude/mcp_registration.ts";
-import { resolveClaudeHome } from "../../src/claude/paths.ts";
+import { resolveClaudeHome, settingsPathFor } from "../../src/claude/paths.ts";
 import { runMcp } from "../../src/commands/mcp.ts";
 import { CopilotEnvConfig } from "../../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../../src/copilot_api/env_state.ts";
@@ -44,7 +44,7 @@ import { deferWriteReports, flushWriteReports } from "../../src/utils/report_wri
 import { linesNaming } from "../helpers/dry_run.ts";
 import { envSnapshot, isolateAgentHomes } from "../helpers/env.ts";
 import { writeClaudeSettings } from "../helpers/fixtures.ts";
-import { captureChannels } from "../helpers/output.ts";
+import { captureChannels, captureChannelsSync } from "../helpers/output.ts";
 import { afterEach, expect, removeDir, test } from "../helpers/testing.ts";
 
 /** A recorded Direct default whose slot holds its pair, so a single-agent write is a re-render
@@ -726,9 +726,21 @@ test("registration failure skips a fresh deny and strips a PRIOR managed one - n
       mcpServers: { "copilot-env": { type: "stdio", command: "npx", args: ["other"] } },
     })}\n`,
   );
-  configureClaudeConfig(home, { mode: "direct", direct: null, credential: COMMAND });
+  const { stderr } = captureChannelsSync(() =>
+    configureClaudeConfig(home, { mode: "direct", direct: null, credential: COMMAND }),
+  );
   expect(denyOf(readSettings(home))).toBeUndefined();
   expect(new OwnershipLedger().ownedPaths("webSearchDeny")).toEqual([]);
+  expect(stderr).toContain(
+    [
+      "copilot-env MCP registration failed.",
+      "  the managed WebSearch deny is removed",
+      "  the builtin WebSearch stays reachable",
+      "  it will 400 on Copilot Direct",
+      "Fix:",
+      `  agent init --direct  rewire once ${claudeJsonPath()} is fixed`,
+    ].join("\n"),
+  );
 
   // The foreign entry gone, the same write registers and denies.
   rmSync(claudeJsonPath());
@@ -740,6 +752,58 @@ test("registration failure skips a fresh deny and strips a PRIOR managed one - n
   configureClaudeConfig(home, { mode: "direct", direct: null, credential: COMMAND });
   expect(denyOf(readSettings(home))).toBeUndefined();
   expect(new OwnershipLedger().ownedPaths("webSearchDeny")).toEqual([]);
+});
+
+test("a named profile's refusals at 80 columns: no credential of its own, and a settings file wired elsewhere", () => {
+  const home = tmpHome();
+  // A thrown message reads its width at the throw, so the layout is pinned under COLUMNS=80.
+  const refusal = (write: () => void): string => {
+    process.env.COLUMNS = "80";
+    try {
+      write();
+    } catch (e) {
+      return e instanceof Error ? e.message : String(e);
+    } finally {
+      delete process.env.COLUMNS;
+    }
+    throw new Error("the write did not throw");
+  };
+  expect(
+    refusal(() =>
+      configureClaudeConfig(home, {
+        mode: "direct",
+        direct: null,
+        credential: COMMAND,
+        profile: WORK,
+      }),
+    ),
+  ).toBe(
+    [
+      "profile 'work' has no credential of its own.",
+      "  a named profile never falls back to the default credential",
+      "Fix:",
+      "  agent profile work auth  store the profile's credential first",
+    ].join("\n"),
+  );
+  const path = settingsPathFor(home, WORK);
+  mkdirSync(home, { recursive: true });
+  writeFileSync(
+    path,
+    `${JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://other.example" } })}\n`,
+  );
+  expect(
+    refusal(() =>
+      configureClaudeConfig(home, { mode: "proxy", profile: WORK, credential: COMMAND }),
+    ),
+  ).toBe(
+    [
+      `${path} is wired to something copilot-env does not manage.`,
+      "  refusing to overwrite it",
+      "Pick one:",
+      "  agent profile <other-name> add  a different profile name, so a different file",
+      "  remove the file first           then rerun this command",
+    ].join("\n"),
+  );
 });
 
 test("wire-mcp false: a direct write wires nothing and clears prior managed artifacts", () => {
@@ -1052,14 +1116,44 @@ test("runMcp --remove takes back the pair and stores a durable wire-mcp opt-out"
   directDefault();
   expect(denyOf(readSettings(home))).toEqual([WEBSEARCH_DENY_RULE]);
 
-  await runMcp({ remove: true });
+  const removed = await captureChannels(() => runMcp({ remove: true }));
   expect(denyOf(readSettings(home))).toBeUndefined();
   expect(readClaudeJson().mcpServers).toBeUndefined();
   expect(new CopilotEnvConfig().read().global["claude.wire-mcp"]).toBe(false);
+  // The report: the fact, then what went with it. consola keeps or strips the backticks by
+  // reporter, so the stored-key line allows both.
+  expect(removed.all).toContain(
+    [
+      "Removed the copilot-env MCP registration.",
+      "  the managed WebSearch deny went with it where copilot-env manages settings.json",
+      "",
+    ].join("\n"),
+  );
+  expect(removed.all).toMatch(
+    / {2}stored `?claude\.wire-mcp false`?, so direct rewires stay opted out/,
+  );
 
   // A later direct write respects the stored opt-out.
   configureClaudeConfig(home, { mode: "direct", direct: null, credential: COMMAND });
   expect(denyOf(readSettings(home))).toBeUndefined();
+
+  // A foreign entry under our name is not ours to remove: the opt-out is stored, the entry named.
+  writeFileSync(
+    claudeJsonPath(),
+    `${JSON.stringify({
+      mcpServers: { "copilot-env": { type: "stdio", command: "npx", args: ["other"] } },
+    })}\n`,
+  );
+  const kept = await captureChannels(() => runMcp({ remove: true }));
+  expect(kept.all).toContain(`the 'copilot-env' entry in ${claudeJsonPath()} was not removed.\n`);
+  expect(kept.all).toMatch(/ {2}stored `?claude\.wire-mcp false`?\n/);
+  expect(kept.all).toContain(
+    [
+      "  not ours, or the file could not be written",
+      "Fix:",
+      "  remove the entry by hand  if it is not wanted",
+    ].join("\n"),
+  );
 });
 
 test("a malformed permissions value (non-object) is never replaced", () => {

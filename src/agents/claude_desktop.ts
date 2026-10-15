@@ -23,6 +23,7 @@ import { CopilotApiPaths } from "../copilot_api/paths.ts";
 import { type ProfileName, profileLabel } from "../copilot_api/profile.ts";
 import { errMessage } from "../utils/error.ts";
 import { createStderrLogger, narrationMuted } from "../utils/logger.ts";
+import { scannable } from "../utils/message.ts";
 import { type ManagedWrite, resolveCredentialWiring, resolvedDirectToken } from "./configure.ts";
 import { renderDirectWiring } from "./profile_wiring.ts";
 
@@ -183,8 +184,12 @@ async function syncTarget({ profile, mode }: DesktopTarget): Promise<void> {
     if (mode === "direct" && rendered === null) {
       const repair = profile === null ? "agent profile sync --claude" : "agent sync";
       logger.warn(
-        `  ${profileLabel(profile)}'s Direct pair is not stored; its Desktop entry is left as it ` +
-          `is. \`${repair}\` lands the pair together with both agents' files and the entry.`,
+        scannable({
+          headline: `${profileLabel(profile)}'s Direct pair is not stored.`,
+          evidence: ["its Desktop entry is left as it is"],
+          lead: "Fix:",
+          actions: [[repair, "lands the pair together with both agents' files and the entry"]],
+        }),
       );
       return;
     }

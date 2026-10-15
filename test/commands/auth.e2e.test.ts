@@ -7,11 +7,13 @@ import {
   type AuthArgs,
   acquireCredential,
   chooseGhAccount,
+  ensureAuthenticated,
   ghCannotServeByName,
   loginWithGhCli,
   parseAcquisition,
   runAuth,
 } from "../../src/commands/auth.ts";
+import { runDryRun } from "../../src/commands/dry_run.ts";
 import { type IdentityTableInput, identityTableLines } from "../../src/commands/identity.ts";
 import { addProfile } from "../../src/commands/profile.ts";
 import { runPrintProxyToken } from "../../src/commands/proxy_token.ts";
@@ -67,6 +69,10 @@ import { afterEach, expect, removeDir, test } from "../helpers/testing.ts";
 
 const restoreEnv = envSnapshot(["PATH", "COLUMNS"]);
 let dir = "";
+const WORK = parseProfileName("work");
+/** The longest profile name and gh login the grammars allow: the widest labels a message carries. */
+const LONGEST = parseProfileName("p".repeat(32));
+const LOGIN = "l".repeat(39);
 
 afterEach(() => {
   restoreEnv();
@@ -182,9 +188,22 @@ test("auth --del: a REFUSED stop warns the proxy is still running -- never the p
   state().setCredential(null, { kind: "stored", provider: "gh-token", token: "ghu_refused" });
   const fx = stageRefusedStop(new CopilotApiPaths().home);
   try {
-    const err = await captureStderr(() => runAuth({ del: true }));
-    expect(err).toContain("but the proxy is still running");
-    expect(err).not.toContain("De-authenticated. Run");
+    // The raw capture: the warn is a block (headline, evidence, the stop command), and the fold
+    // in captureStderr would read its indented lines as one.
+    const err = await withColumns(
+      80,
+      async () => (await captureChannels(() => runAuth({ del: true }))).stderr,
+    );
+    expect(err).toContain(
+      [
+        "De-authenticated.",
+        "  the proxy is still running",
+        "  it may keep serving the old credential",
+        "Fix:",
+        "  agent stop  stop it",
+      ].join("\n"),
+    );
+    expect(err).not.toContain("Then:");
   } finally {
     await fx.teardown();
   }
@@ -266,23 +285,426 @@ test("auth --check: a configured provider reports authenticated with its account
   expect(process.exitCode).toBe(0);
 });
 
-test("auth (bare) on a recorded provider names the account, then the switch hint on its own line", async () => {
+test("auth (bare) on a recorded provider names the account, then the two ways out as a table", async () => {
   isolate();
   state().setCredential(null, { kind: "stored", provider: "gh-token", token: "ghu_stored123" });
-  // The raw capture: this test is about the line boundary between two log records, and the hint
-  // leads with spaces, which the fold in captureStderr would read as a wrapped continuation.
-  const err = (await captureChannels(() => runAuth({}))).stderr;
-  // The fancy reporter (a TTY) renders the backticks away and the basic one (CI) keeps them and
-  // leads with `[log]`; a set COLUMNS wraps the hint. The two facts pinned read the same under all.
-  const plain = err.replaceAll("`", "");
-  const lines = plain.split("\n").filter((line) => line.trim() !== "");
-  expect(lines[0]).toContain("Already authenticated (gh-token as octocat).");
-  expect(lines[0]).not.toContain("Switch with");
-  expect(lines[1]?.replace(/^\[log\]/, "").trimStart()).toMatch(/^Switch with /);
-  expect(plain.replace(/\s+/g, " ")).toContain(
-    "Switch with agent auth --provider <copilot|gh-cli|gh-token|gh-env>, or clear it with " +
-      "agent auth --del.",
+  // The raw capture: the table's indented rows are the layout under test, and the fold in
+  // captureStderr would read them as wrapped continuations.
+  const err = await withColumns(80, async () => (await captureChannels(() => runAuth({}))).stderr);
+  expect(err).toContain(
+    [
+      "Already authenticated.",
+      "  gh-token as octocat",
+      "Pick one:",
+      "  agent auth --provider <copilot|gh-cli|gh-token|gh-env>  switch the provider",
+      "  agent auth --del                                        clear it",
+    ].join("\n"),
   );
+});
+
+/** The shape every multi-part auth message prints in, at 80 columns: a headline, indented
+ *  evidence, a lead, and the commands as a table. `run` returns the text where the message
+ *  lands: a thrown Error's message, or the raw stderr or stdout (the fold in captureStderr would
+ *  read the indented lines as one). */
+test("every auth message with more than one part prints as a headline, evidence, lead, and command table", async () => {
+  const thrown = async (fn: () => Promise<unknown>): Promise<string> => {
+    try {
+      await fn();
+    } catch (e) {
+      return errMessage(e);
+    }
+    throw new Error("expected a refusal");
+  };
+  const stderr = async (fn: () => Promise<unknown>): Promise<string> =>
+    (await captureChannels(async () => void (await fn()))).stderr;
+  const stdout = async (fn: () => Promise<unknown>): Promise<string> =>
+    (await captureChannels(async () => void (await fn()))).stdout;
+  const stored = () =>
+    state().setCredential(null, { kind: "stored", provider: "gh-token", token: "ghu_stored123" });
+  const rows: { name: string; run: () => Promise<string>; lines: string[] }[] = [
+    {
+      name: "--del with a stored token and no daemon",
+      run: () => {
+        stored();
+        return stderr(() => runAuth({ del: true }));
+      },
+      lines: ["De-authenticated.", "Then:", "  agent auth  log in again"],
+    },
+    {
+      name: "--del with nothing stored",
+      run: () => stderr(() => runAuth({ del: true })),
+      lines: ["Nothing to clear.", "  not authenticated", "Then:", "  agent auth  log in"],
+    },
+    {
+      name: "--check with nothing stored",
+      run: () => stdout(() => runAuth({ check: true })),
+      lines: ["not authenticated.", "Fix:", "  agent auth  log in"],
+    },
+    {
+      name: "--set lands the default credential",
+      run: () => stderr(() => runAuth({ set: "ghu_x" })),
+      lines: ["Authenticated (gh-token).", "Then:", "  agent init  configure Codex and Claude"],
+    },
+    {
+      name: "a named --set with a recorded mode names the launchers",
+      run: async () => {
+        await captureChannels(() => addProfile(WORK, { mode: "proxy", noAuth: true }));
+        return stderr(() => runAuth({ set: "ghu_x", profile: "work" }));
+      },
+      lines: [
+        "Authenticated (gh-token).",
+        "  for profile 'work'",
+        "  both agents are wired for its proxy mode",
+        "Then:",
+        "  cl --profile work  launch Claude",
+        "  cx --profile work  launch Codex",
+      ],
+    },
+    {
+      name: "a bare identity choice without a terminal",
+      run: () => {
+        stored();
+        return thrown(() => runAuth({ identity: true }));
+      },
+      lines: [
+        "no terminal to choose the identity in.",
+        "Pick one:",
+        "  agent profile set identity <id|auto>  pin an id, or auto",
+        "  agent profile identity                show the current identity",
+      ],
+    },
+    {
+      name: "gh-token without a terminal or a --set",
+      run: () => thrown(() => runAuth({ provider: "gh-token" })),
+      lines: [
+        "no GitHub token given.",
+        "Pick one:",
+        "  --set <token>      pass the token",
+        "  --provider gh-env  copy one of COPILOT_GITHUB_TOKEN / GH_TOKEN / GITHUB_TOKEN",
+      ],
+    },
+    {
+      name: "gh-env with nothing set",
+      run: () => thrown(() => runAuth({ provider: "gh-env" })),
+      lines: [
+        "no GitHub token in the environment.",
+        "Fix:",
+        "  COPILOT_GITHUB_TOKEN / GH_TOKEN / GITHUB_TOKEN  set one of these",
+      ],
+    },
+    {
+      name: "gh-env with two set and no terminal takes the most specific",
+      run: () => {
+        process.env.GH_TOKEN = "ghu_env_value";
+        process.env.GITHUB_TOKEN = "ghu_x";
+        return stderr(() => runAuth({ provider: "gh-env" }));
+      },
+      lines: [
+        "Taking $GH_TOKEN (the most specific).",
+        "  2 of $COPILOT_GITHUB_TOKEN, $GH_TOKEN, $GITHUB_TOKEN are set",
+        "Then:",
+        "  agent auth --provider gh-env  pick another in a terminal",
+      ],
+    },
+    {
+      name: "a bare --dry-run has no provider to plan from",
+      run: () => thrown(() => runAuth({ dryRun: true })),
+      lines: [
+        "a dry run never prompts.",
+        "  no provider to plan the default profile's credential slot from",
+        "Pick one:",
+        "  --provider <copilot|gh-cli|gh-token|gh-env>  plan that provider's landing",
+        "  --set <token>                                plan a gh-token landing",
+      ],
+    },
+    {
+      name: "gh-token --dry-run without a --set",
+      run: () => thrown(() => runAuth({ provider: "gh-token", dryRun: true })),
+      lines: [
+        "a dry run never prompts.",
+        "  no token to plan the default profile's credential slot with",
+        "Fix:",
+        "  --set <token>  the token to land",
+      ],
+    },
+    {
+      name: "--set --dry-run plans the store write",
+      run: () => stderr(() => runAuth({ set: "ghu_x", dryRun: true })),
+      lines: [
+        "Would store the given token.",
+        "  in the default profile's credential slot",
+        "  its GitHub account is looked up when the landing is real",
+      ],
+    },
+    {
+      name: "gh-env --dry-run with two set plans the most specific",
+      run: () => {
+        process.env.GH_TOKEN = "ghu_env_value";
+        process.env.GITHUB_TOKEN = "ghu_x";
+        return stderr(() => runAuth({ provider: "gh-env", dryRun: true }));
+      },
+      lines: [
+        "Would land the token from $GH_TOKEN.",
+        "  the most specific of 2 set",
+        "  in the default profile's credential slot",
+        "  its GitHub account is looked up when the landing is real",
+      ],
+    },
+    {
+      name: "a named --dry-run names the wiring it cannot plan",
+      run: async () => {
+        await captureChannels(() => addProfile(WORK, { mode: "proxy", noAuth: true }));
+        return stderr(() => runAuth({ provider: "copilot", profile: "work", dryRun: true }));
+      },
+      lines: ["Would wire both agents for the landed token.", "  profile 'work' in proxy mode"],
+    },
+    {
+      name: "a wiring command's dry run on no credential",
+      run: () => thrown(() => runDryRun(() => ensureAuthenticated())),
+      lines: [
+        "a dry run never logs in.",
+        "  default is not authenticated",
+        "Fix:",
+        "  agent auth  log in first, then re-run with --dry-run",
+      ],
+    },
+    {
+      name: "a named --del with the longest profile name, its daemon never started",
+      run: async () => {
+        await captureChannels(() => addProfile(LONGEST, { mode: "proxy", noAuth: true }));
+        state().setCredential(LONGEST, {
+          kind: "stored",
+          provider: "gh-token",
+          token: "ghu_stored123",
+        });
+        return stderr(() => runAuth({ del: true, profile: LONGEST }));
+      },
+      lines: [
+        "De-authenticated.",
+        `  for profile '${LONGEST}'`,
+        "Then:",
+        `  agent profile ${LONGEST} auth  log in again`,
+      ],
+    },
+    {
+      name: "a named bare auth with the longest profile name on a recorded provider",
+      run: async () => {
+        await captureChannels(() => addProfile(LONGEST, { mode: "proxy", noAuth: true }));
+        state().setCredential(LONGEST, {
+          kind: "stored",
+          provider: "gh-token",
+          token: "ghu_stored123",
+        });
+        return stderr(() => runAuth({ profile: LONGEST }));
+      },
+      lines: [
+        "Already authenticated.",
+        `  for profile '${LONGEST}'`,
+        "  gh-token as octocat",
+        // A command too wide for its column stacks: the table's own fallback, command then meaning.
+        "Pick one:",
+        `  agent profile ${LONGEST} auth --provider`,
+        "    <copilot|gh-cli|gh-token|gh-env>",
+        "    switch the provider",
+        "",
+        `  agent profile ${LONGEST} auth --del`,
+        "    clear it",
+      ],
+    },
+    {
+      name: "headless gh pins the active account, the longest login",
+      run: () =>
+        stderr(() =>
+          chooseGhAccount(
+            AUTH_GH_CLI,
+            () => ({ kind: "listed", accounts: [acct(LOGIN, true), acct("b", false)] }),
+            "headless",
+          ),
+        ),
+      lines: [
+        "gh has 2 logged-in accounts; pinning the active one.",
+        `  active account: ${LOGIN}`,
+        "Pick one:",
+        "  agent auth --provider gh-cli --gh-user <login>  pin another account",
+        "  agent auth --provider gh-cli                    choose in a terminal (auto",
+        "                                                  included)",
+      ],
+    },
+    {
+      name: "gh cannot serve the longest login by name",
+      run: () => {
+        const detail = "`gh auth token` exited 1: no oauth token found";
+        return Promise.resolve(errMessage(ghCannotServeByName(LOGIN, detail, "agent auth")));
+      },
+      lines: [
+        "gh cannot serve the pinned account by name.",
+        `  account: ${LOGIN}`,
+        "  `gh auth token` exited 1: no oauth token found",
+        "Pick one:",
+        "  gh auth login              re-login on gh 2.40 or newer, then retry",
+        "  agent auth --gh-user auto  follow gh's active account (switches with gh)",
+      ],
+    },
+    {
+      name: "--check on the longest profile name with nothing stored",
+      run: async () => {
+        await captureChannels(() => addProfile(LONGEST, { mode: "proxy", noAuth: true }));
+        return stdout(() => runAuth({ check: true, profile: LONGEST }));
+      },
+      lines: [
+        "not authenticated.",
+        `  for profile '${LONGEST}'`,
+        "Fix:",
+        `  agent profile ${LONGEST} auth  log in`,
+      ],
+    },
+    {
+      name: "a named --del with nothing stored on the longest profile name",
+      run: async () => {
+        await captureChannels(() => addProfile(LONGEST, { mode: "proxy", noAuth: true }));
+        return stderr(() => runAuth({ del: true, profile: LONGEST }));
+      },
+      lines: [
+        "Nothing to clear.",
+        `  for profile '${LONGEST}'`,
+        "  not authenticated",
+        "Then:",
+        `  agent profile ${LONGEST} auth  log in`,
+      ],
+    },
+    {
+      name: "a named --set with the longest profile name names the launchers",
+      run: async () => {
+        await captureChannels(() => addProfile(LONGEST, { mode: "proxy", noAuth: true }));
+        return stderr(() => runAuth({ set: "ghu_x", profile: LONGEST }));
+      },
+      lines: [
+        "Authenticated (gh-token).",
+        `  for profile '${LONGEST}'`,
+        "  both agents are wired for its proxy mode",
+        "Then:",
+        `  cl --profile ${LONGEST}  launch Claude`,
+        `  cx --profile ${LONGEST}  launch Codex`,
+      ],
+    },
+    {
+      name: "a named --dry-run with the longest profile name names the wiring",
+      run: async () => {
+        await captureChannels(() => addProfile(LONGEST, { mode: "proxy", noAuth: true }));
+        return stderr(() => runAuth({ provider: "copilot", profile: LONGEST, dryRun: true }));
+      },
+      lines: [
+        "Would wire both agents for the landed token.",
+        `  profile '${LONGEST}' in proxy mode`,
+      ],
+    },
+    {
+      name: "a wiring command's dry run on the longest unauthenticated profile",
+      run: async () => {
+        await captureChannels(() => addProfile(LONGEST, { mode: "proxy", noAuth: true }));
+        return thrown(() => runDryRun(() => ensureAuthenticated(LONGEST)));
+      },
+      lines: [
+        "a dry run never logs in.",
+        `  profile '${LONGEST}' is not authenticated`,
+        "Fix:",
+        `  agent profile ${LONGEST} auth  log in first, then re-run`,
+        "                                                       with --dry-run",
+      ],
+    },
+    {
+      name: "--del on a half-created profile with the longest name: the store's refusal follows the headline",
+      run: () => {
+        mkdirSync(profileHome(LONGEST), { recursive: true });
+        return stderr(() => runAuth({ del: true, profile: LONGEST }));
+      },
+      lines: [
+        "Nothing to clear.",
+        `profile '${LONGEST}' has no store slot.`,
+        "  half-created: its daemon home exists",
+        "Fix:",
+        // The command is too wide for its column at 80: the table stacks the meaning under it.
+        `  agent profile ${LONGEST} add --direct|--proxy`,
+        "    re-create it",
+      ],
+    },
+    {
+      name: "--del on a nonexistent profile with the longest name",
+      run: () => stderr(() => runAuth({ del: true, profile: LONGEST })),
+      lines: [
+        "Nothing to clear.",
+        `no such profile '${LONGEST}'.`,
+        "Fix:",
+        `  agent profile ${LONGEST} add --direct|--proxy  create it`,
+      ],
+    },
+    {
+      name: "--check on a half-created profile with the longest name",
+      run: () => {
+        mkdirSync(profileHome(LONGEST), { recursive: true });
+        return stdout(() => runAuth({ check: true, profile: LONGEST }));
+      },
+      lines: [
+        `profile '${LONGEST}' has no store slot.`,
+        "  half-created: its daemon home exists",
+        "Fix:",
+        // The command is too wide for its column at 80: the table stacks the meaning under it.
+        `  agent profile ${LONGEST} add --direct|--proxy`,
+        "    re-create it",
+      ],
+    },
+    {
+      name: "a baked static-key stays until the rewire",
+      run: () => {
+        stored();
+        new CopilotEnvConfig().setProfile(null, { "static-key": "claude" });
+        return stderr(() => runAuth({}));
+      },
+      lines: [
+        "static-key is claude.",
+        "  Claude's baked value stays as it is",
+        "Fix:",
+        "  agent init  rewrites it",
+      ],
+    },
+  ];
+  if (process.platform !== "win32") {
+    rows.push({
+      name: "--check with a gh-cli pin and no gh on PATH",
+      run: () => {
+        state().setCredential(null, { kind: "gh-cli", ghUser: "octocat" });
+        const emptyBin = join(dir, "empty-bin");
+        mkdirSync(emptyBin, { recursive: true });
+        process.env.PATH = emptyBin;
+        return stdout(() => runAuth({ check: true }));
+      },
+      lines: [
+        "no credential resolves.",
+        "  provider 'gh-cli as octocat' is selected",
+        "Fix:",
+        "  agent auth  log in again",
+      ],
+    });
+  }
+  const hadTty = process.stdin.isTTY;
+  process.stdin.isTTY = false;
+  try {
+    for (const row of rows) {
+      dir = removeDir(dir);
+      isolate();
+      delete process.env.COPILOT_GITHUB_TOKEN;
+      delete process.env.GH_TOKEN;
+      delete process.env.GITHUB_TOKEN;
+      const text = await withColumns(80, row.run);
+      expect(text, row.name).toContain(row.lines.join("\n"));
+      // A wrapped headline's tail is indented like evidence, so no headline may wrap: the basic
+      // (CI) reporter's widest first-line lead is `[success] `, ten columns.
+      expect(row.lines[0]?.length, row.name).toBeLessThanOrEqual(70);
+      resetExitCode();
+    }
+  } finally {
+    process.stdin.isTTY = hadTty;
+  }
 });
 
 test("auth (bare) keys idempotency on the RECORDED provider: recorded, nothing runs; none, the flow runs even when gh works", async () => {
@@ -423,8 +845,8 @@ test("auth --get/--del/--check on a named profile per slot state: nonexistent hi
   const rows: {
     name: string;
     /** Stages the slot and returns the needle --check's hint must carry (for the half-created
-     *  slot, the store's WHOLE message: --check prints the raw hint through console.log, no
-     *  consola rendering, so byte-level drift fails there). */
+     *  slot, the store's WHOLE message folded like the captured output, so a rewording on either
+     *  side fails here). */
     arrange: () => string;
     /** Needles every verb's output carries. */
     says: string[];
@@ -436,10 +858,10 @@ test("auth --get/--del/--check on a named profile per slot state: nonexistent hi
       // Recommending a re-auth would hit the no-store-slot gate, so the hint reuses the store's
       // no-such-profile phrasing.
       name: "nonexistent",
-      arrange: () => "no such profile 'ghost' - create it with ",
-      says: ["no such profile 'ghost' - create it with ", addCommand],
+      arrange: () => "no such profile 'ghost'.",
+      says: ["no such profile 'ghost'.", addCommand],
       never: "ghost auth",
-      delSays: "Nothing to clear - ",
+      delSays: "Nothing to clear.\nno such profile 'ghost'.",
     },
     {
       // A daemon home without a store slot (an interrupted add): the store's own write gate words
@@ -462,7 +884,7 @@ test("auth --get/--del/--check on a named profile per slot state: nonexistent hi
       },
       says: ["profile 'ghost' has no store slot.", addCommand],
       never: "no such profile",
-      delSays: "Nothing to clear - ",
+      delSays: "Nothing to clear.\nprofile 'ghost' has no store slot.",
     },
     {
       // A partial slot (de-authed, mode kept) re-auths in place, so the hint stays
@@ -474,11 +896,11 @@ test("auth --get/--del/--check on a named profile per slot state: nonexistent hi
           mode: "direct",
         });
         state().clearCredential(ghost);
-        return "run `agent profile ghost auth`";
+        return "Fix: agent profile ghost auth  log in";
       },
       says: ["agent profile ghost auth"],
       never: "ghost add",
-      delSays: "Nothing to clear for profile 'ghost'",
+      delSays: "Nothing to clear. for profile 'ghost'",
     },
   ];
   for (const row of rows) {
@@ -1075,7 +1497,8 @@ const WORK_MISS_DETAIL =
 /** The refusal as the user reads it, every line: the headline, gh's own answer, the ways out with
  *  the command first. The lines are what a user acts on, so the whole message is the contract. */
 const WORK_REFUSAL = [
-  "gh cannot serve account 'work' by name.",
+  "gh cannot serve the pinned account by name.",
+  "  account: work",
   `  ${WORK_MISS_DETAIL}`,
   "Pick one:",
   "  gh auth login              re-login on gh 2.40 or newer, then retry",
@@ -1090,7 +1513,8 @@ test("the refusal paints only what the reader acts on (the login, each command) 
   const painted = ghCannotServeByName("octocat", detail, "agent auth", true, 80).message;
   expect(painted).toBe(
     [
-      `gh cannot serve account '${CYAN}octocat${CLOSE}' by name.`,
+      "gh cannot serve the pinned account by name.",
+      `  account: ${CYAN}octocat${CLOSE}`,
       `  ${detail}`,
       "Pick one:",
       `  ${CYAN}gh auth login${CLOSE}              re-login on gh 2.40 or newer, then retry`,
@@ -1105,7 +1529,8 @@ test("the refusal paints only what the reader acts on (the login, each command) 
   // column; left to the logger, the hanging indent would put "retry" under the command.
   expect(ghCannotServeByName("octocat", detail, "agent profile work auth", false, 80).message).toBe(
     [
-      "gh cannot serve account 'octocat' by name.",
+      "gh cannot serve the pinned account by name.",
+      "  account: octocat",
       `  ${detail}`,
       "Pick one:",
       "  gh auth login                           re-login on gh 2.40 or newer, then",
@@ -1123,7 +1548,12 @@ test("loginWithGhCli: an UNPROVEN look says could-not-check; a pin gh cannot ser
     detail: "`gh auth token` did not complete (killed)",
   };
   expect(() => loginWithGhCli(AUTO, () => killed)).toThrow(
-    "could not check gh authentication (`gh auth token` did not complete (killed)) - retry `agent auth`",
+    [
+      "could not check gh authentication.",
+      "  `gh auth token` did not complete (killed)",
+      "Fix:",
+      "  agent auth  retry",
+    ].join("\n"),
   );
   expect(() =>
     loginWithGhCli(AUTO, () => ({
@@ -1131,7 +1561,13 @@ test("loginWithGhCli: an UNPROVEN look says could-not-check; a pin gh cannot ser
       detail: "`gh auth token` exited 1: not logged in",
     })),
   ).toThrow(
-    "gh is not authenticated (`gh auth token` exited 1: not logged in) - run `gh auth login`, then retry `agent auth`",
+    [
+      "gh is not authenticated.",
+      "  `gh auth token` exited 1: not logged in",
+      "Fix:",
+      "  gh auth login  log in",
+      "  agent auth     then retry",
+    ].join("\n"),
   );
   expect(() =>
     loginWithGhCli(AUTO, () => ({ kind: "found", token: "tok", command: "gh auth token" })),
@@ -1146,8 +1582,8 @@ test("loginWithGhCli: an UNPROVEN look says could-not-check; a pin gh cannot ser
     return Promise.resolve();
   });
   expect(named).toContain(
-    "Using the gh CLI login on AUTO (currently account octocat; follows gh account switches) " +
-      "as the Direct credential.",
+    "Using the gh CLI login on AUTO as the Direct credential. currently account octocat " +
+      "follows gh account switches",
   );
   // A pinned account wears its own words: the miss is about THAT account (gh's active login may
   // well be fine), the look receives the pin to verify, and gh's own stderr is quoted verbatim.
@@ -1160,7 +1596,12 @@ test("loginWithGhCli: an UNPROVEN look says could-not-check; a pin gh cannot ser
   // An Error argument makes toThrow compare the whole message, not a substring.
   expect(() => loginWithGhCli(PINNED_WORK, pinnedMiss)).toThrow(new Error(WORK_REFUSAL));
   expect(() => loginWithGhCli(PINNED_WORK, () => killed)).toThrow(
-    "could not check gh authentication (`gh auth token` did not complete (killed)) - retry `agent auth`",
+    [
+      "could not check gh authentication.",
+      "  `gh auth token` did not complete (killed)",
+      "Fix:",
+      "  agent auth  retry",
+    ].join("\n"),
   );
   expect(asked).toEqual(["work"]);
   expect(
@@ -1358,7 +1799,8 @@ onPosix(
       // The same box after `gh auth switch` to another account: the failure quotes gh's own refusal
       // and never adopts the active account's token in the pin's place.
       const WORK_BOT_REFUSAL = [
-        "gh cannot serve account 'work-bot' by name.",
+        "gh cannot serve the pinned account by name.",
+        "  account: work-bot",
         "  `gh auth token --user work-bot --hostname github.com` exited 1: no oauth token found " +
           "for github.com account work-bot",
         "Pick one:",
@@ -1384,8 +1826,8 @@ onPosix(
       // follows right now, and resolves through the plain call.
       const chosen = await captureStderr(() => runAuth({ provider: "gh-cli", ghUser: "auto" }));
       expect(chosen).toContain(
-        "Using the gh CLI login on AUTO (currently account work-bot; follows gh account " +
-          "switches) as the Direct credential.",
+        "Using the gh CLI login on AUTO as the Direct credential. currently account work-bot " +
+          "follows gh account switches",
       );
       const landed = state().read();
       expect([landed.authProvider, landed.ghUser]).toEqual(["gh-cli", null]);
@@ -1416,7 +1858,7 @@ onPosix(
           refusal = errMessage(e);
         }
       });
-      expect(refusal).toContain("gh cannot serve account 'work-bot' by name.");
+      expect(refusal).toContain("gh cannot serve the pinned account by name.\n  account: work-bot");
       expect(refusal).toContain("  agent profile work add --auto --gh-user auto  ");
       expect(refusal).not.toContain("work auth");
       // Nothing landed: the slot the auth form would need still does not exist.
@@ -1461,7 +1903,9 @@ onPosix(
       const flaggedDry = await attempt("flagged dry", () =>
         addProfile(work, { mode: "proxy", ghUser: "work-bot", dryRun: true }),
       );
-      expect(refusals["flagged dry"]).toContain("gh cannot serve account 'work-bot' by name.");
+      expect(refusals["flagged dry"]).toContain(
+        "gh cannot serve the pinned account by name.\n  account: work-bot",
+      );
       // The mode landed on the overlay before the step refused, so the plan shows what the real
       // run would have written before failing, and the store itself is untouched.
       expect(flaggedDry).toContain("Before it failed, the command would have:");
@@ -1736,7 +2180,12 @@ test("chooseGhAccount: pinning is the only default - sole login pins, non-TTY pi
     await expect(
       chooseGhAccount(AUTH_GH_CLI, () => ({ kind: "listed", accounts: [] })),
     ).rejects.toThrow(
-      "gh has no logged-in github.com account - run `gh auth login`, then retry `agent auth`",
+      [
+        "gh has no logged-in github.com account.",
+        "Fix:",
+        "  gh auth login                 log in",
+        "  agent auth --provider gh-cli  then run it again",
+      ].join("\n"),
     );
     // One saved account: pinned to it. The slot write refuses when gh cannot serve it by name;
     // it never settles on auto for the user.
@@ -1777,7 +2226,9 @@ test("chooseGhAccount: pinning is the only default - sole login pins, non-TTY pi
       })
     ).stderr;
     expect(envChoice).toEqual({ kind: "pinned", login: "ci-bot" });
-    expect(envErr).toContain("gh has 2 logged-in accounts; pinning the active one (ci-bot).\n");
+    expect(envErr).toContain(
+      "gh has 2 logged-in accounts; pinning the active one.\n  active account: ci-bot\n",
+    );
     expect(envErr).toContain(
       [
         "Pick one:",

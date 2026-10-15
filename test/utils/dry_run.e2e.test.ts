@@ -237,7 +237,7 @@ test("a named `auth --provider copilot --dry-run` names the wiring it cannot pla
     runAuth({ provider: "copilot", profile: "work", dryRun: true }),
   );
   expect(stdout).toContain('profiles.work.authProvider  (absent) -> "copilot"');
-  expect(stderr).toContain("Would wire profile 'work''s proxy mode into both agents");
+  expect(stderr).toContain("Would wire both agents for the landed token");
   expect(new CopilotEnvState().readCredential(WORK).kind).toBe("none");
 });
 
@@ -273,7 +273,7 @@ test("`auth --provider <gh-cli|gh-env> --dry-run` resolves what the real command
         look: (ghUser) => ({ kind: "absent", detail: `no saved login for ${ghUser}` }),
         chooseAccount: pinned,
       },
-      outcome: { refusal: /gh cannot serve account 'octocat' by name/ },
+      outcome: { refusal: /gh cannot serve the pinned account by name/ },
     },
     {
       name: "gh-env with nothing set",

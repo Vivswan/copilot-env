@@ -142,6 +142,25 @@ skipWin(
   },
 );
 
+skipWin(
+  "removal reports a user line under a bare marker as the file, the line, and what stayed",
+  () => {
+    const rc = join(home, ".bashrc");
+    writeFileSync(rc, `${MARKER}\nalias mine=1\n`);
+    const { code, out } = run("--remove");
+    expect(code).toBe(0);
+    expect(out).toContain(
+      [
+        `${rc} has a line under a copilot-env marker that copilot-env did not write.`,
+        "  alias mine=1",
+        "  it and everything after it were left in place",
+        "",
+      ].join("\n"),
+    );
+    expect(readFileSync(rc, "utf-8")).toContain("alias mine=1");
+  },
+);
+
 skipWin("wire then --remove restores the rc byte-for-byte, owned blanks included", () => {
   const original = "export BEFORE=1\n\nexport AFTER=1\n";
   writeFileSync(join(home, ".bashrc"), original);

@@ -259,7 +259,12 @@ const CLI_INSTALL_ROWS: readonly CliInstallRow[] = [
     name: "an npm-installed CLI whose command is off PATH, or whose version is unreadable, is never downgraded",
     opts: { npmInstalled: { [FIRST.packageName]: null, [THIRD.packageName]: "3.0.0" } },
     lines: [
-      `${THIRD.name} 3.0.0 is installed by npm, but '${THIRD.command}' is not on PATH; leaving it as it is.`,
+      [
+        `${THIRD.name} 3.0.0 is installed by npm, but '${THIRD.command}' is not on PATH.`,
+        "  leaving it as it is",
+        "Fix:",
+        "  agent shell --clis  rerun it from a new shell",
+      ].join("\n"),
       `${FIRST.name} is installed by npm, but its version could not be read; leaving it as it is.`,
       `Installing ${SECOND.name} (${SECOND.packageName}@${FAKE_LATEST}) ...`,
     ],

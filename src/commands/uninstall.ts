@@ -26,6 +26,7 @@ import { ownedShellTargets, removeShellIntegrationFrom } from "../shell/integrat
 import { errMessage } from "../utils/error.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { userHomeDir } from "../utils/home.ts";
+import { scannable } from "../utils/message.ts";
 import { prompt } from "../utils/prompt.ts";
 import {
   installStateRoot,
@@ -155,10 +156,18 @@ function uninstallSteps(ctx: UninstallContext): UninstallStep[] {
       const { ownedDenyRemains } = removeClaudeDefaultWiring(ctx.claudeHome);
       if (ownedDenyRemains) {
         consola.warn(
-          `the copilot-env WebSearch deny in ${settingsPathFor(ctx.claudeHome)} could not ` +
-            "be removed (the file could not be read, parsed, or rewritten); keeping the " +
-            "copilot-env MCP registration as its marker (it stops working once copilot-env " +
-            `is gone). Remove the deny by hand, then the copilot-env entry in ${claudeJsonPath()}.`,
+          scannable({
+            headline: "the copilot-env WebSearch deny could not be removed.",
+            evidence: [
+              `the file could not be read, parsed, or rewritten: ${settingsPathFor(ctx.claudeHome)}`,
+              "the copilot-env MCP registration stays as its marker (it stops working once copilot-env is gone)",
+            ],
+            lead: "Then:",
+            actions: [
+              ["1.", `remove the deny by hand from ${settingsPathFor(ctx.claudeHome)}`],
+              ["2.", `remove the copilot-env entry from ${claudeJsonPath()}`],
+            ],
+          }),
         );
       } else if (ctx.targets.claudeMcpRegistration !== null) {
         try {
@@ -210,8 +219,12 @@ function uninstallSteps(ctx: UninstallContext): UninstallStep[] {
       // The root is derived, so confirm it is really ours before deleting it recursively.
       if (!looksLikeInstallRoot(installRoot)) {
         consola.warn(
-          `${installRoot} does not look like a copilot-env install root; leaving it ` +
-            `in place. Remove it yourself if it is: ${manualRemoveCommand(installRoot)}`,
+          scannable({
+            headline: "Left in place: the install root does not look like a copilot-env install.",
+            evidence: [installRoot],
+            lead: "Fix:",
+            actions: [[manualRemoveCommand(installRoot), "remove it yourself, if it is one"]],
+          }),
         );
         ctx.rootRemains = true;
         process.exitCode = 1;
@@ -331,9 +344,15 @@ export async function runUninstall(
     consola.success("copilot-env is uninstalled. Restart your shell to finish.");
   }
   consola.info(
-    "Not removed: the agent CLIs themselves (claude / copilot / codex npm globals), the " +
-      "PowerShell execution policy, Codex's " +
-      "sandbox_workspace_write.network_access key, other hosts' ~/.codex/hosts/* dirs " +
-      "on a shared home, and the agents' own session history.",
+    scannable({
+      headline: "Not removed: these are yours, not copilot-env's.",
+      evidence: [
+        "the agent CLIs themselves (claude / copilot / codex npm globals)",
+        "the PowerShell execution policy",
+        "Codex's sandbox_workspace_write.network_access key",
+        "other hosts' ~/.codex/hosts/* dirs on a shared home",
+        "the agents' own session history",
+      ],
+    }),
   );
 }

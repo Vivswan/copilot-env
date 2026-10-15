@@ -47,6 +47,7 @@ import type { FileChange } from "../../src/utils/dry_run.ts";
 import { isRecord } from "../../src/utils/json.ts";
 import { deferWriteReports, flushWriteReports } from "../../src/utils/report_write.ts";
 import { INSTALL_MANIFEST_FILE, type RootMode } from "../../src/utils/root.ts";
+import { quotePosix, quotePowerShell } from "../../src/utils/shell_quote.ts";
 import { stageRefusedStop } from "../helpers/daemon.ts";
 import { dryRunChanges } from "../helpers/dry_run.ts";
 import { envSnapshot, isolateAgentHomes, resetExitCode } from "../helpers/env.ts";
@@ -286,10 +287,25 @@ test("uninstall refuses a root that does not look like a copilot-env install", a
   const stray = join(dir, "stray-root");
   mkdirSync(join(stray, "bin"), { recursive: true });
 
-  await runUninstall({ yes: true }, { kind: "compiled", root: stray });
+  const { stderr } = await captureChannels(() =>
+    runUninstall({ yes: true }, { kind: "compiled", root: stray }),
+  );
 
   expect(existsSync(stray)).toBe(true);
   expect(process.exitCode).toBe(1);
+  const remove =
+    process.platform === "win32"
+      ? `Remove-Item -Recurse -Force ${quotePowerShell(stray)}`
+      : `rm -rf ${quotePosix(stray)}`;
+  expect(stderr).toContain(
+    [
+      "Left in place: the install root does not look like a copilot-env install.",
+      `  ${stray}`,
+      "Fix:",
+      `  ${remove}  remove it yourself, if it is one`,
+      "",
+    ].join("\n"),
+  );
 });
 
 test("uninstall on a VERSIONED install deletes the whole top, not just the link", async () => {
@@ -376,11 +392,22 @@ test("uninstall keeps the MCP registration while an owned deny cannot be strippe
   const settingsPath = settingsPathFor(claudeHome);
   writeFileSync(settingsPath, "{ not json"); // the owned deny is now unverifiable
 
-  await runUninstall({ yes: true }, sandboxRoot());
+  const { stderr } = await captureChannels(() => runUninstall({ yes: true }, sandboxRoot()));
 
   // Never a denied builtin with no replacement: the file stays whole and the
   // registration (the deny's web-search replacement) stays with it.
   expect(readFileSync(settingsPath, "utf8")).toBe("{ not json");
+  expect(stderr).toContain(
+    [
+      "the copilot-env WebSearch deny could not be removed.",
+      `  the file could not be read, parsed, or rewritten: ${settingsPath}`,
+      "  the copilot-env MCP registration stays as its marker (it stops working once copilot-env is gone)",
+      "Then:",
+      `  1.  remove the deny by hand from ${settingsPath}`,
+      `  2.  remove the copilot-env entry from ${claudeJsonPath()}`,
+      "",
+    ].join("\n"),
+  );
   expect(
     (JSON.parse(readFileSync(claudeJsonPath(), "utf8")) as Record<string, unknown>).mcpServers,
   ).toBeDefined();
@@ -389,7 +416,18 @@ test("uninstall keeps the MCP registration while an owned deny cannot be strippe
 test("uninstall is idempotent: a second run finds nothing and exits 0", async () => {
   tmpHomes();
   const root = sandboxRoot();
-  await runUninstall({ yes: true }, root);
+  const { all } = await captureChannels(() => runUninstall({ yes: true }, root));
+  expect(all).toContain(
+    [
+      "Not removed: these are yours, not copilot-env's.",
+      "  the agent CLIs themselves (claude / copilot / codex npm globals)",
+      "  the PowerShell execution policy",
+      "  Codex's sandbox_workspace_write.network_access key",
+      "  other hosts' ~/.codex/hosts/* dirs on a shared home",
+      "  the agents' own session history",
+      "",
+    ].join("\n"),
+  );
   await runUninstall({ yes: true }, root);
   expect(process.exitCode ?? 0).toBe(0);
 });

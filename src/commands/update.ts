@@ -10,8 +10,9 @@ import { AutoupdateState, effectiveUpdateCooldownDays } from "../autoupdate/stat
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { type Release, resolveTarget } from "../install/resolve-release.ts";
 import { assertNever } from "../utils/assert.ts";
+import { scannable } from "../utils/message.ts";
 import { isProtectedRoot } from "../utils/root.ts";
-import { isUpToDate } from "../utils/semver.ts";
+import { isUpToDate, stripV } from "../utils/semver.ts";
 import { assertNonNegativeDays } from "../utils/time.ts";
 import { packageVersion } from "../utils/version.ts";
 import { runDryRun } from "./dry_run.ts";
@@ -115,6 +116,24 @@ function runAutoStatus(config: CopilotEnvConfig): void {
   );
 }
 
+/** The dry run's message: the steps, then the migrations' own preview as the command to run. */
+export function updatePreviewMessage(current: string, tag: string, provenance: boolean): string {
+  return scannable({
+    headline: `Would download the ${tag} release for this platform.`,
+    evidence: [
+      `verify its checksum${provenance ? " and build provenance" : ""}`,
+      "let the new binary lay down its runtime files",
+      "flip current to it",
+      "refresh the launcher shims",
+      `run the migrations ${current} -> ${tag}`,
+    ],
+    lead: "Then:",
+    actions: [
+      [`agent migrate ${stripV(current)} ${stripV(tag)} --dry-run`, "preview the migrations"],
+    ],
+  });
+}
+
 async function runManualUpdate(
   args:
     | { check: true; cooldown: number | null; force: false }
@@ -160,16 +179,7 @@ async function runManualUpdate(
   if (args.dryRun) {
     // No lock: the preview takes nothing another update could wait on.
     await runDryRun(() => {
-      consola.info(
-        `Would download the ${target.tag} release for this platform, verify its checksum${
-          args.provenance.kind === "verify" ? " and build provenance" : ""
-        }, let the new binary lay down its runtime files, flip \`current\`, refresh the launcher ` +
-          `shims, and run the migrations ${current} -> ${target.tag} ` +
-          `(preview them: agent migrate ${current.replace(/^v/, "")} ${target.tag.replace(
-            /^v/,
-            "",
-          )} --dry-run).`,
-      );
+      consola.info(updatePreviewMessage(current, target.tag, args.provenance.kind === "verify"));
       previewUpdate(target);
       return Promise.resolve();
     });

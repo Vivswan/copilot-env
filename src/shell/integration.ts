@@ -9,6 +9,7 @@ import {
 import { isEnoent } from "../utils/fs.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { userHomeDir } from "../utils/home.ts";
+import { scannable } from "../utils/message.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
 import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
 
@@ -205,8 +206,10 @@ export function upsertBlock(
 function warnLeftBehind(file: string, lines: readonly string[]): void {
   for (const line of lines) {
     consola.warn(
-      `Unrecognized line under a copilot-env marker in ${file} -- ` +
-        `not written by copilot-env, so it (and everything after it) was left in place: ${line}`,
+      scannable({
+        headline: `${file} has a line under a copilot-env marker that copilot-env did not write.`,
+        evidence: [line, "it and everything after it were left in place"],
+      }),
     );
   }
 }
@@ -501,8 +504,17 @@ function relaxWindowsExecutionPolicy(_target: { source: "system" }): void {
     if (isEnoent(result.error)) continue;
     if (result.error || result.status !== 0) {
       consola.warn(
-        `Could not relax the ${exe} execution policy; the profile may not load agents.ps1. ` +
-          `Run: ${exe} -Command "Set-ExecutionPolicy -Scope CurrentUser RemoteSigned"`,
+        scannable({
+          headline: `Could not relax the ${exe} execution policy.`,
+          evidence: ["the profile may not load agents.ps1"],
+          lead: "Fix:",
+          actions: [
+            [
+              `${exe} -Command "Set-ExecutionPolicy -Scope CurrentUser RemoteSigned"`,
+              "relax it yourself",
+            ],
+          ],
+        }),
       );
     }
   }

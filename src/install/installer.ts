@@ -23,6 +23,7 @@ import { runShellIntegration } from "../shell/integration.ts";
 import { errMessage } from "../utils/error.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { userHomeDir } from "../utils/home.ts";
+import { scannable } from "../utils/message.ts";
 import {
   ASSET_ROOT,
   CURRENT_LINK,
@@ -35,6 +36,7 @@ import {
   VERSIONS_DIR,
 } from "../utils/root.ts";
 import { stripV } from "../utils/semver.ts";
+import { quotePowerShell } from "../utils/shell_quote.ts";
 import { printWrapped } from "../utils/table.ts";
 import {
   INSTALLED_BINARY_POSIX,
@@ -156,10 +158,21 @@ export function pointCurrentAt(top: string, versionName: string): void {
           fs.symlink(previous, link, "junction");
         } catch {
           // Double fault: the layout is now LINKLESS. Say so, instead of reporting only the
-          // creation failure as if nothing else changed.
+          // creation failure as if nothing else changed. The `agent` shim dispatches through the
+          // missing link, so the installer, aimed at this root, is the way back.
           throw new Error(
-            `could not create ${link} (and could not restore its previous target); ` +
-              `re-run the update or installer to re-point it: ${errMessage(error)}`,
+            scannable({
+              headline:
+                "could not create the current link, and could not restore its previous target.",
+              evidence: [link, errMessage(error)],
+              lead: "Fix:",
+              actions: [
+                [
+                  `$env:COPILOT_ENV_DIR = ${quotePowerShell(top)}; irm https://github.com/Vivswan/copilot-env/releases/latest/download/install.ps1 | iex`,
+                  "re-run the installer in PowerShell to re-point it",
+                ],
+              ],
+            }),
           );
         }
       }

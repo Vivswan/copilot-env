@@ -16,13 +16,19 @@
 
 import "./utils/dotenv.ts";
 import { spawnSync } from "node:child_process";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { createConsola } from "consola";
 import * as v from "valibot";
 import { proxyUnusedEverywhere } from "./agents/wiring.ts";
 import { daemonLockHold } from "./copilot_api/daemon_lock.ts";
 import { CopilotEnvConfig, configSetCommand } from "./copilot_api/env_config.ts";
-import { allDaemonHomes, resolveRootHome } from "./copilot_api/paths.ts";
+import { allDaemonHomes, DEFAULT_PROFILE_DIR, resolveRootHome } from "./copilot_api/paths.ts";
+import {
+  agentStartCommand,
+  agentStopCommand,
+  type Profile,
+  parseProfileName,
+} from "./copilot_api/profile.ts";
 import { DAEMON_SHIM_DEPENDENCIES } from "./copilot_api/shims.ts";
 import {
   installedProxyPackage,
@@ -36,6 +42,7 @@ import { errMessage } from "./utils/error.ts";
 import { readTextOrNull } from "./utils/fs.ts";
 import * as fs from "./utils/fs_facade.ts";
 import { type ConsolaCreateOptions, wrapToTerminal } from "./utils/logger.ts";
+import { scannable } from "./utils/message.ts";
 import { type ProjectConfig, readProjectConfig } from "./utils/project_config.ts";
 import { pickAgedVersion, toSemverString, versionLessThan } from "./utils/semver.ts";
 import { SECONDS_PER_DAY } from "./utils/time.ts";
@@ -596,7 +603,18 @@ function installIntoProxyHome(
     const running = runningDaemon(rootHome);
     if (running !== null) {
       logger.warn(
-        `not swapping in the new install: a daemon is running from the one in place (${running}); stop it (\`agent stop\`) and start again`,
+        scannable({
+          headline: "not swapping in the new install: a daemon runs from the one in place.",
+          evidence: [running.holder],
+          lead: "Then:",
+          actions: [
+            [agentStopCommand(running.profile), "stop that daemon"],
+            [
+              agentStartCommand(running.profile),
+              "start it again; the float swaps the new install in first",
+            ],
+          ],
+        }),
       );
       return false;
     }
@@ -622,11 +640,14 @@ function installIntoProxyHome(
  *  stops daemons and once more after, so a start that replaces the daemon lands the update in that
  *  start). Judged by THIS root home's daemon locks, the liveness signal every stop path reads; a
  *  lock this process cannot read counts as running, since the swap is the irreversible step. */
-function runningDaemon(rootHome: string): string | null {
+function runningDaemon(rootHome: string): { holder: string; profile: Profile } | null {
   for (const home of allDaemonHomes(rootHome)) {
     const hold = daemonLockHold(home);
-    if (hold.kind === "held") return `pid ${hold.pid ?? "unknown"}, ${home}`;
-    if (hold.kind === "unreadable") return `an unreadable daemon.lock in ${home}`;
+    const name = basename(home);
+    const profile = name === DEFAULT_PROFILE_DIR ? null : parseProfileName(name);
+    if (hold.kind === "held") return { holder: `pid ${hold.pid ?? "unknown"}, ${home}`, profile };
+    if (hold.kind === "unreadable")
+      return { holder: `an unreadable daemon.lock in ${home}`, profile };
   }
   return null;
 }

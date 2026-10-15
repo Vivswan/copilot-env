@@ -16,6 +16,7 @@ import { errMessage } from "../utils/error.ts";
 import { withFileLock } from "../utils/file_lock.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { isRecord } from "../utils/json.ts";
+import { scannable } from "../utils/message.ts";
 import { pidAlive } from "../utils/pid.ts";
 import { type ProjectConfig, readProjectConfig } from "../utils/project_config.ts";
 import { rootMode } from "../utils/root.ts";
@@ -172,10 +173,19 @@ function judgeProxyFloor(): RunnableEntry {
   const floorStatus = proxyVersionFloorStatus(version, config);
   if (!floorStatus.ok && floorStatus.reason === "belowFloor") {
     throw new Error(
-      `${PROXY_PACKAGE_NAME} ${floorStatus.version} is below the required ${floorStatus.floor} floor - the proxy ` +
-        `float likely failed (offline?) or was skipped because both ` +
-        `agents are wired Direct. Re-run 'agent start' online, set COPILOT_API_VERSION to a ` +
-        `known-good release, or rewire an agent to the proxy ('agent init --proxy') first.`,
+      scannable({
+        headline: `${PROXY_PACKAGE_NAME} ${floorStatus.version} is below the required ${floorStatus.floor} floor.`,
+        evidence: [
+          "the proxy float likely failed (offline?)",
+          "or both agents are wired Direct, so the float was skipped",
+        ],
+        lead: "Pick one:",
+        actions: [
+          ["agent start", "re-run online to float the proxy"],
+          ["COPILOT_API_VERSION=<version>", "set a known-good release"],
+          ["agent init --proxy", "rewire an agent to the proxy first"],
+        ],
+      }),
     );
   }
   return entry;
@@ -199,11 +209,15 @@ export async function resolveStartPort(
     switch (await checkProxyPort(pinned)) {
       case "out-of-range":
         throw new Error(
-          `requested port ${pinned} is out of range; the proxy port must be between ${min} and ${max} ` +
-            `(\`${configSetCommand("daemon.min-port", "<n>")}\` / \`${configSetCommand(
-              "daemon.max-port",
-              "<n>",
-            )}\` change the range).`,
+          scannable({
+            headline: `requested port ${paintFor(colorEnabled()).cyan(String(pinned))} is out of range.`,
+            evidence: [`the proxy port must be between ${min} and ${max}`],
+            lead: "Pick one:",
+            actions: [
+              [configSetCommand("daemon.min-port", "<n>"), "lower the range's floor"],
+              [configSetCommand("daemon.max-port", "<n>"), "raise the range's ceiling"],
+            ],
+          }),
         );
       case "busy":
         throw new Error(
@@ -435,16 +449,20 @@ export function spawnConfiguredDaemon(opts: {
  *  credential needs the passthrough; anything else needs a Copilot-capable login. */
 function copilotTokenFailureHint(log: string, profile: Profile): string | null {
   if (!/Failed to get Copilot token/i.test(log)) return null;
-  const authCommand = agentAuthCommand(profile);
-  return (
-    "The credential was not accepted by Copilot's token exchange. For a gh-cli or PAT credential, " +
-    `enable passthrough (\`${configSetCommand(
-      "passthrough",
-      "on",
-      profile,
-    )}\`); otherwise re-authenticate with a ` +
-    `Copilot-capable login (\`${authCommand} --provider copilot\`).`
-  );
+  return scannable({
+    headline: "The credential was not accepted by Copilot's token exchange.",
+    lead: "Pick one:",
+    actions: [
+      [
+        configSetCommand("passthrough", "on", profile),
+        "a gh-cli or PAT credential needs passthrough",
+      ],
+      [
+        `${agentAuthCommand(profile)} --provider copilot`,
+        "any other credential: re-authenticate with a Copilot-capable login",
+      ],
+    ],
+  });
 }
 
 /**

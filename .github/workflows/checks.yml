@@ -83,16 +83,14 @@ jobs:
         if: runner.os == 'Linux'
         run: bun run lint:sh
 
+      # Its own step: pwsh runs on past a failed line, and lint:ps skips green without the module.
+      - name: Install PSScriptAnalyzer
+        if: runner.os == 'Windows'
+        run: bun .github/scripts/install-psscriptanalyzer.ts
+
       - name: PowerShell lint (PSScriptAnalyzer)
         if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) {
-            Register-PSRepository -Default
-          }
-          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
-          Install-Module PSScriptAnalyzer -Force -Scope CurrentUser -SkipPublisherCheck
-          bun run lint:ps
+        run: bun run lint:ps
 
   # Not redundant with the matrix: the container is where the throwaway HOME comes from, so this
   # is the only run proving the suite is hermetic. Never path-gated: it IS the suite.

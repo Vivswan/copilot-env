@@ -17,6 +17,7 @@ import {
 } from "../utils/command.ts";
 import { errMessage } from "../utils/error.ts";
 import { dryRunActive } from "../utils/fs_facade.ts";
+import { isRecord, parseJsonRecord, readStringField } from "../utils/json.ts";
 import { scannable } from "../utils/message.ts";
 import { pickAgedVersion, publishTimesMs, versionLessThan } from "../utils/semver.ts";
 import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
@@ -262,6 +263,7 @@ function resolveNpm(): string {
 /** `npm view` asks the registry and `npm ls -g` walks the global tree, seconds on a healthy machine,
  *  so 30 s is a hang rather than a slow answer. */
 const NPM_READ_TIMEOUT_MS = 30_000;
+const NPM_STDERR_TAIL_LINES = 5;
 
 function spawnNpm(args: string[], capture: boolean): SpawnSyncReturns<string> {
   const npm = resolveNpm();
@@ -279,7 +281,7 @@ function spawnNpm(args: string[], capture: boolean): SpawnSyncReturns<string> {
     // nosemgrep: javascript.lang.security.audit.spawn-shell-true.spawn-shell-true -- Windows-only, for .cmd shims; the spec quotes args
     return spawnSync(s.file, s.args, {
       encoding: "utf8",
-      stdio: ["ignore", "pipe", "inherit"],
+      stdio: ["ignore", "pipe", "pipe"],
       shell: s.shell,
       env,
       timeout: NPM_READ_TIMEOUT_MS,
@@ -298,36 +300,78 @@ function spawnNpm(args: string[], capture: boolean): SpawnSyncReturns<string> {
   return result;
 }
 
+/** The last lines npm wrote to stderr, where it names its error code and its debug log. */
+function npmStderrTail(result: SpawnSyncReturns<string>): string[] {
+  const lines = (result.stderr ?? "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "");
+  return lines.slice(-NPM_STDERR_TAIL_LINES);
+}
+
 function runNpm(args: string[], capture = false): string {
   const result = spawnNpm(args, capture);
   if (result.error) throw result.error;
-  if (result.status !== 0) throw new Error(`npm ${args.join(" ")} failed`);
+  if (result.status !== 0) {
+    const tail = npmStderrTail(result).join("\n");
+    throw new Error(`npm ${args.join(" ")} failed${tail ? `:\n${tail}` : ""}`);
+  }
   return capture ? result.stdout.trim() : "";
+}
+
+/** `npm <command> --json` reports its own failure as `{"error":{"code","summary","detail"}}` on
+ *  stdout, not stderr. */
+function npmJsonError(stdout: string): string | null {
+  const doc = parseJsonRecord(stdout);
+  if (doc === null || !isRecord(doc.error)) return null;
+
+  const code = readStringField(doc.error, "code");
+  const summary = readStringField(doc.error, "summary");
+  const parts = [code, summary].filter((part): part is string => part !== null && part !== "");
+  return parts.length === 0 ? null : parts.join(": ");
+}
+
+/** One line per fact the failed command left behind; a spawn error of ETIMEDOUT is the read bound. */
+function npmFailureFacts(result: SpawnSyncReturns<string>): string[] {
+  const facts: string[] = [];
+  if (result.error) facts.push(`spawn: ${errMessage(result.error)}`);
+  // bun leaves `status` undefined, not node's null, when the spawn itself failed.
+  if (typeof result.status === "number") facts.push(`exit status: ${result.status}`);
+  if (typeof result.signal === "string") facts.push(`signal: ${result.signal}`);
+
+  const npmError = npmJsonError(result.stdout ?? "");
+  if (npmError !== null) facts.push(`npm error ${npmError}`);
+  for (const line of npmStderrTail(result)) facts.push(`stderr: ${line}`);
+  return facts;
 }
 
 /** Null when the look FAILED; a package listed without a version (unreadable package.json) maps to
  *  null; an empty tree has no `dependencies` key at all. The exit status is not consulted on
  *  purpose: `npm ls` exits non-zero for an unrelated extraneous or invalid global while still
  *  printing the full tree. */
-function npmGlobalVersions(): Record<string, string | null> | null {
-  const result = spawnNpm(["ls", "-g", "--depth=0", "--json"], true);
+function parseNpmGlobals(result: SpawnSyncReturns<string>): Record<string, string | null> | null {
   if (result.error) return null;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(result.stdout);
-  } catch {
-    return null;
-  }
-  if (parsed === null || typeof parsed !== "object") return null;
-  const dependencies = (parsed as { dependencies?: unknown }).dependencies;
-  if (dependencies === undefined) return "error" in parsed ? null : {};
-  if (dependencies === null || typeof dependencies !== "object") return null;
+  const tree = parseJsonRecord(result.stdout ?? "");
+  if (tree === null) return null;
+  if (tree.dependencies === undefined) return "error" in tree ? null : {};
+  if (!isRecord(tree.dependencies)) return null;
+
   const versions: Record<string, string | null> = {};
-  for (const [name, entry] of Object.entries(dependencies as Record<string, unknown>)) {
-    const version = (entry as { version?: unknown } | null)?.version;
-    versions[name] = typeof version === "string" ? version : null;
+  for (const [name, entry] of Object.entries(tree.dependencies)) {
+    versions[name] = isRecord(entry) ? readStringField(entry, "version") : null;
   }
   return versions;
+}
+
+type NpmGlobals =
+  | { listed: true; versions: Record<string, string | null> }
+  | { listed: false; facts: string[] };
+
+function npmGlobalVersions(): NpmGlobals {
+  const result = spawnNpm(["ls", "-g", "--depth=0", "--json"], true);
+  const versions = parseNpmGlobals(result);
+  if (versions !== null) return { listed: true, versions };
+  return { listed: false, facts: npmFailureFacts(result) };
 }
 
 /** Platform-parameterized so it is testable on POSIX CI. On win32 the prefix IS the bin dir, and
@@ -539,12 +583,16 @@ export function installAgentClis(setup: CliSetup): void {
       }
 
       syncNpmGlobalBinToPath();
-      const npmGlobals = npmGlobalVersions();
-      if (npmGlobals === null) {
+      const globals = npmGlobalVersions();
+      if (!globals.listed) {
         // Without npm's view of what is installed, an install could overwrite a newer package whose
         // bin dir is merely off PATH.
         consola.warn(
-          "Could not read npm's global package list (npm ls -g failed); skipping the CLI installs.",
+          scannable({
+            headline:
+              "Could not read npm's global package list (npm ls -g failed); skipping the CLI installs.",
+            evidence: globals.facts,
+          }),
         );
         return;
       }
@@ -552,7 +600,7 @@ export function installAgentClis(setup: CliSetup): void {
       // follows.
       for (const cli of AGENT_CLIS) {
         try {
-          installCli(cli, setup, npmGlobals);
+          installCli(cli, setup, globals.versions);
         } catch (e) {
           consola.warn(`Could not install ${cli.name} (${errMessage(e)}); continuing.`);
         }

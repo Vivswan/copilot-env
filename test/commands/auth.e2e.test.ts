@@ -5,6 +5,7 @@ import { directWiring } from "../../src/agents/configure.ts";
 import { configureClaudeConfig } from "../../src/claude/config.ts";
 import {
   type AuthArgs,
+  acquireCredential,
   chooseGhAccount,
   ghCannotServeByName,
   loginWithGhCli,
@@ -110,6 +111,19 @@ async function captureStderr(fn: () => Promise<void>): Promise<string> {
 
 async function captureStdout(fn: () => Promise<void>): Promise<string> {
   return (await captureChannels(fn)).stdout;
+}
+
+/** A message that reads its width at the throw (terminalWidth over stderr) sees `columns` for the
+ *  call: the launcher pipes stderr, so COLUMNS is what it reads. */
+async function withColumns<T>(columns: number, fn: () => Promise<T>): Promise<T> {
+  const saved = process.env.COLUMNS;
+  process.env.COLUMNS = String(columns);
+  try {
+    return await fn();
+  } finally {
+    if (saved === undefined) delete process.env.COLUMNS;
+    else process.env.COLUMNS = saved;
+  }
 }
 
 const PROVIDER_CONFLICT =
@@ -282,7 +296,31 @@ test("auth (bare) keys idempotency on the RECORDED provider: recorded, nothing r
   // short-circuit.
   dir = removeDir(dir);
   isolate();
-  await expect(runAuth({})).rejects.toThrow("not a terminal");
+  // At 80 columns the provider row's description wraps under its own column, never under the
+  // command; the message is the user's whole way out, so every line is the contract.
+  await withColumns(80, async () => {
+    await expect(runAuth({})).rejects.toThrow(
+      [
+        "not a terminal - store a credential first.",
+        "Pick one:",
+        "  agent auth --provider gh-env                          copy a token from",
+        "                                                        $COPILOT_GITHUB_TOKEN /",
+        "                                                        $GH_TOKEN /",
+        "                                                        $GITHUB_TOKEN (headless)",
+        "  agent auth --provider copilot|gh-cli|gh-token|gh-env  store a credential by",
+        "                                                        provider",
+        "  agent auth --set <token>                              store a GitHub token",
+      ].join("\n"),
+    );
+  });
+  // A named profile's refusal names ITS auth command: `agent auth` would store into the default slot.
+  const work = await acquireCredential({ kind: "choose" }, parseProfileName("work")).then(
+    () => "",
+    (e: Error) => e.message,
+  );
+  expect(work).toContain("agent profile work auth --provider gh-env");
+  expect(work).toContain("agent profile work auth --provider copilot|gh-cli|gh-token|gh-env");
+  expect(work).toContain("agent profile work auth --set <token>");
 });
 
 test("headless gh-token never reads the env: that is gh-env's job", async () => {
@@ -1544,6 +1582,11 @@ const TWO_ACCOUNT_STATUS = `github.com
   - Active account: false
 `;
 
+/** The retry command acquireCredential composes for the default slot's `auth`, and the gap that
+ *  sets a bare retry cell level with the ` --gh-user <login>` one beside it. */
+const AUTH_GH_CLI = "agent auth --provider gh-cli";
+const PAD = " ".repeat(" --gh-user <login>".length + 2);
+
 function acct(login: string, active: boolean, source = "keyring"): GhAccount {
   return { host: "github.com", login, active, source };
 }
@@ -1685,23 +1728,34 @@ test("chooseGhAccount: pinning is the only default - sole login pins, non-TTY pi
   try {
     // Nothing pinnable is an ERROR naming the escape hatches - recording auto
     // would let a later `gh auth login` spend an unchosen account's credit.
-    await expect(chooseGhAccount(() => ({ kind: "unproven" }))).rejects.toThrow(
-      "could not list gh accounts (`gh auth status` did not run to completion) - retry `agent auth`, or pass --gh-user <login>",
+    await expect(chooseGhAccount(AUTH_GH_CLI, () => ({ kind: "unproven" }))).rejects.toThrow(
+      [
+        "could not list gh accounts.",
+        "  `gh auth status` did not run to completion",
+        "Pick one:",
+        `  ${AUTH_GH_CLI}${PAD}run it again`,
+        `  ${AUTH_GH_CLI} --gh-user <login>  pin an account by name, no listing needed`,
+      ].join("\n"),
     );
-    await expect(chooseGhAccount(() => ({ kind: "listed", accounts: [] }))).rejects.toThrow(
+    await expect(
+      chooseGhAccount(AUTH_GH_CLI, () => ({ kind: "listed", accounts: [] })),
+    ).rejects.toThrow(
       "gh has no logged-in github.com account - run `gh auth login`, then retry `agent auth`",
     );
     // One saved account: pinned to it. The slot write refuses when gh cannot serve it by name;
     // it never settles on auto for the user.
     expect(
-      await chooseGhAccount(() => ({ kind: "listed", accounts: [acct("solo", true)] })),
+      await chooseGhAccount(AUTH_GH_CLI, () => ({
+        kind: "listed",
+        accounts: [acct("solo", true)],
+      })),
     ).toEqual({
       kind: "pinned",
       login: "solo",
     });
     // Another host's login is not a github.com choice (Copilot's host).
     expect(
-      await chooseGhAccount(() => ({
+      await chooseGhAccount(AUTH_GH_CLI, () => ({
         kind: "listed",
         accounts: [
           acct("solo", true),
@@ -1718,19 +1772,28 @@ test("chooseGhAccount: pinning is the only default - sole login pins, non-TTY pi
     // the escape hatches (an env-token source is still a choice - it may
     // shadow a saved credential; the verify step is the gate, never the menu).
     let envChoice: Awaited<ReturnType<typeof chooseGhAccount>> | undefined;
-    const envErr = await captureStderr(async () => {
-      envChoice = await chooseGhAccount(() => ({
-        kind: "listed",
-        accounts: [acct("solo", false), acct("ci-bot", true, "GH_TOKEN")],
-      }));
-    });
+    const envErr = (
+      await captureChannels(async () => {
+        envChoice = await chooseGhAccount(AUTH_GH_CLI, () => ({
+          kind: "listed",
+          accounts: [acct("solo", false), acct("ci-bot", true, "GH_TOKEN")],
+        }));
+      })
+    ).stderr;
     expect(envChoice).toEqual({ kind: "pinned", login: "ci-bot" });
-    expect(envErr).toContain("pinning the active one (ci-bot)");
-    expect(envErr).toContain("--gh-user");
+    expect(envErr).toContain("gh has 2 logged-in accounts; pinning the active one (ci-bot).\n");
+    expect(envErr).toContain(
+      [
+        "Pick one:",
+        `  ${AUTH_GH_CLI} --gh-user <login>  pin another account`,
+        `  ${AUTH_GH_CLI}${PAD}choose in a terminal (auto included)`,
+        "",
+      ].join("\n"),
+    );
     // The env-token overlap of a saved login must not shrink the choice set.
     let overlapChoice: Awaited<ReturnType<typeof chooseGhAccount>> | undefined;
     await captureStderr(async () => {
-      overlapChoice = await chooseGhAccount(() => ({
+      overlapChoice = await chooseGhAccount(AUTH_GH_CLI, () => ({
         kind: "listed",
         accounts: [
           acct("octocat", true, "GH_TOKEN"),
@@ -1742,27 +1805,97 @@ test("chooseGhAccount: pinning is the only default - sole login pins, non-TTY pi
     expect(overlapChoice).toEqual({ kind: "pinned", login: "octocat" });
     // 2+ logins and NO determinable active account: an error, never a guess.
     await expect(
-      chooseGhAccount(() => ({ kind: "listed", accounts: [acct("a", false), acct("b", false)] })),
+      chooseGhAccount(AUTH_GH_CLI, () => ({
+        kind: "listed",
+        accounts: [acct("a", false), acct("b", false)],
+      })),
     ).rejects.toThrow(
-      "gh has 2 logged-in accounts and no pinnable active one - pass --gh-user <login> " +
-        "(pinnable: a, b), or run `agent auth --provider gh-cli` in a terminal",
+      [
+        "gh has 2 logged-in accounts and no pinnable active one.",
+        "  pinnable: a, b",
+        "Pick one:",
+        `  ${AUTH_GH_CLI} --gh-user <login>  pin one of them`,
+        `  ${AUTH_GH_CLI}${PAD}choose in a terminal`,
+      ].join("\n"),
     );
     // A BROKEN entry still counts as an account: {healthy bystander, broken
     // active} is a multi-account machine, so the bystander is never pinned
     // silently - without a TTY that is the same honest error.
     await expect(
-      chooseGhAccount(() => ({
+      chooseGhAccount(AUTH_GH_CLI, () => ({
         kind: "listed",
         accounts: [acct("healthy", false), { ...acct("hurt", true), broken: true as const }],
       })),
     ).rejects.toThrow(
-      "gh has 2 logged-in accounts and no pinnable active one - pass --gh-user <login> " +
-        "(pinnable: healthy), or run `agent auth --provider gh-cli` in a terminal",
+      [
+        "gh has 2 logged-in accounts and no pinnable active one.",
+        "  pinnable: healthy",
+        "Pick one:",
+        `  ${AUTH_GH_CLI} --gh-user <login>  pin one of them`,
+        `  ${AUTH_GH_CLI}${PAD}choose in a terminal`,
+      ].join("\n"),
+    );
+    // A dry run has one way out: the flag, since a preview never prompts.
+    await expect(
+      chooseGhAccount(
+        AUTH_GH_CLI,
+        () => ({ kind: "listed", accounts: [acct("a", false), acct("b", false)] }),
+        "dry-run",
+      ),
+    ).rejects.toThrow(
+      [
+        "gh has 2 logged-in accounts and no pinnable active one.",
+        "  pinnable: a, b",
+        "Fix:",
+        "  --gh-user <login>  add it to plan that landing (a dry run never prompts)",
+      ].join("\n"),
+    );
+    // Every way out is the acquisition's own retry command or extends it: for a named profile
+    // that is its own `auth`, never the default slot's `agent auth`, which would leave the profile
+    // as it was.
+    const WORK = "agent profile work auth --provider gh-cli";
+    await expect(chooseGhAccount(WORK, () => ({ kind: "unproven" }))).rejects.toThrow(
+      [
+        "Pick one:",
+        `  ${WORK}${PAD}run it again`,
+        `  ${WORK} --gh-user <login>  pin an account by name, no listing needed`,
+      ].join("\n"),
+    );
+    const workPin = (
+      await captureChannels(async () => {
+        await chooseGhAccount(WORK, () => ({
+          kind: "listed",
+          accounts: [acct("solo", false), acct("ci-bot", true)],
+        }));
+      })
+    ).stderr;
+    expect(workPin).toContain(
+      [
+        "Pick one:",
+        `  ${WORK} --gh-user <login>  pin another account`,
+        `  ${WORK}${PAD}choose in a terminal (auto included)`,
+        "",
+      ].join("\n"),
+    );
+    await expect(
+      chooseGhAccount(WORK, () => ({
+        kind: "listed",
+        accounts: [acct("a", false), acct("b", false)],
+      })),
+    ).rejects.toThrow(
+      [
+        "Pick one:",
+        `  ${WORK} --gh-user <login>  pin one of them`,
+        `  ${WORK}${PAD}choose in a terminal`,
+      ].join("\n"),
     );
     // A sole ENV-ONLY login still pins without a TTY (nothing to ask): its
     // verification failure names the recovery.
     expect(
-      await chooseGhAccount(() => ({ kind: "listed", accounts: [acct("solo", true, "GH_TOKEN")] })),
+      await chooseGhAccount(AUTH_GH_CLI, () => ({
+        kind: "listed",
+        accounts: [acct("solo", true, "GH_TOKEN")],
+      })),
     ).toEqual({ kind: "pinned", login: "solo" });
   } finally {
     process.stdin.isTTY = hadTty;

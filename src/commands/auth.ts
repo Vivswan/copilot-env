@@ -48,8 +48,9 @@ import { assertNever } from "../utils/assert.ts";
 import { PLANNED_SECRET } from "../utils/dry_run.ts";
 import { dryRunActive } from "../utils/fs_facade.ts";
 import { createStderrLogger } from "../utils/logger.ts";
+import { scannable } from "../utils/message.ts";
 import { prompt, promptSecret } from "../utils/prompt.ts";
-import { formatTable, printWrapped, terminalWidth } from "../utils/table.ts";
+import { printWrapped, terminalWidth } from "../utils/table.ts";
 import { runDryRun } from "./dry_run.ts";
 import {
   chooseIdentity,
@@ -181,11 +182,20 @@ const PROVIDER_PICKER_DETAIL: Record<AuthProvider, string> = {
   "gh-env": `copy a token from ${ghTokenEnvVarsLabel(" / ")} (headless)`,
 };
 
-async function chooseProvider(): Promise<AuthProvider> {
+/** `authCommand` is the slot's own `auth` (agentAuthCommand), the one command whose flags the
+ *  ways out name: a fresh profile's `add --auto` carries neither --provider nor --set. */
+async function chooseProvider(authCommand: string): Promise<AuthProvider> {
   if (!process.stdin.isTTY) {
     throw new Error(
-      `not a terminal - store a credential first with \`agent auth --provider ${PROVIDER_CHOICES}\` ` +
-        "(e.g. `agent auth --provider gh-env`) or `agent auth --set <token>`",
+      scannable({
+        headline: "not a terminal - store a credential first.",
+        lead: "Pick one:",
+        actions: [
+          [`${authCommand} --provider gh-env`, PROVIDER_PICKER_DETAIL["gh-env"]],
+          [`${authCommand} --provider ${PROVIDER_CHOICES}`, "store a credential by provider"],
+          [`${authCommand} --set <token>`, "store a GitHub token"],
+        ],
+      }),
     );
   }
   const value = await prompt("How should GitHub Copilot authenticate?", {
@@ -206,9 +216,13 @@ type GhAccountChooserMode = "interactive" | "headless" | "dry-run";
 /**
  * Pinning is the only default: a later `gh auth login` must never switch whose Copilot credit gets
  * spent. When nothing can be pinned honestly this throws naming the escape hatches; auto is only
- * ever the picker's explicit last option. `look` is a test seam.
+ * ever the picker's explicit last option. `retry` is the command that runs this acquisition again
+ * as it was asked (the owner composes it: a bare `auth` on a stored credential is idempotent and
+ * asks nothing); every way out is it or extends it, so a named profile's refusal never sends the
+ * reader to the default slot. `look` is a test seam.
  */
 export async function chooseGhAccount(
+  retry: string,
   look: () => GhAccountsLook = ghAccountsLook,
   mode: GhAccountChooserMode = process.stdin.isTTY ? "interactive" : "headless",
 ): Promise<GhAccountSelection> {
@@ -216,8 +230,15 @@ export async function chooseGhAccount(
   const listing = look();
   if (listing.kind === "unproven") {
     throw new Error(
-      "could not list gh accounts (`gh auth status` did not run to completion) - " +
-        "retry `agent auth`, or pass --gh-user <login>",
+      scannable({
+        headline: "could not list gh accounts.",
+        evidence: ["`gh auth status` did not run to completion"],
+        lead: "Pick one:",
+        actions: [
+          [retry, "run it again"],
+          [`${retry} --gh-user <login>`, "pin an account by name, no listing needed"],
+        ],
+      }),
     );
   }
   const { accounts } = listing;
@@ -258,17 +279,30 @@ export async function chooseGhAccount(
     // fallback.
     if (active !== null && logins.includes(active)) {
       logger.info(
-        `gh has ${allLogins.length} logged-in accounts; pinning the active one (${active}). ` +
-          "Pass --gh-user <login> to pin another, or run interactively to choose (auto included).",
+        scannable({
+          headline: `gh has ${allLogins.length} logged-in accounts; pinning the active one (${active}).`,
+          lead: "Pick one:",
+          actions: [
+            [`${retry} --gh-user <login>`, "pin another account"],
+            [retry, "choose in a terminal (auto included)"],
+          ],
+        }),
       );
       return { kind: "pinned", login: active };
     }
+    const dryRun = mode === "dry-run";
     throw new Error(
-      `gh has ${allLogins.length} logged-in accounts and no pinnable active one - pass ` +
-        `--gh-user <login> (pinnable: ${logins.join(", ")})` +
-        (mode === "dry-run"
-          ? " to plan that landing (a dry run never prompts)"
-          : ", or run `agent auth --provider gh-cli` in a terminal"),
+      scannable({
+        headline: `gh has ${allLogins.length} logged-in accounts and no pinnable active one.`,
+        evidence: [`pinnable: ${logins.join(", ")}`],
+        lead: dryRun ? "Fix:" : "Pick one:",
+        actions: dryRun
+          ? [["--gh-user <login>", "add it to plan that landing (a dry run never prompts)"]]
+          : [
+              [`${retry} --gh-user <login>`, "pin one of them"],
+              [retry, "choose in a terminal"],
+            ],
+      }),
     );
   }
   // The active account leads (the default selection); auto is LAST and explicit.
@@ -479,10 +513,9 @@ function pinGhCliAccount(
 }
 
 /** Color carries meaning: the login and each command the reader can run are cyan, nothing else.
- *  The table wraps a long description under its own column; left to the logger, the hanging
- *  indent would put the tail under the command. `rerun` is the command that ran this acquisition
- *  (a fresh profile's `add` has no slot for `auth` to address yet). `color` and `width` are the
- *  command edge's; exported with them for the wording test. */
+ *  `rerun` is the command that ran this acquisition (a fresh profile's `add` has no slot for
+ *  `auth` to address yet). `color` and `width` are the command edge's; exported with them for the
+ *  wording test. */
 export function ghCannotServeByName(
   login: string,
   detail: string,
@@ -490,20 +523,18 @@ export function ghCannotServeByName(
   color = colorEnabled(),
   width: number | null = terminalWidth(process.stderr),
 ): Error {
-  const ways = formatTable(
-    [
-      ["gh auth login", "re-login on gh 2.40 or newer, then retry"],
-      [`${rerun} --gh-user ${GH_USER_AUTO}`, "follow gh's active account (switches with gh)"],
-    ],
-    { width, wrap: [false, true], color },
-  );
   return new Error(
-    [
-      `gh cannot serve account '${paintFor(color).cyan(login)}' by name.`,
-      `  ${detail}`,
-      "Pick one:",
-      ...ways,
-    ].join("\n"),
+    scannable({
+      headline: `gh cannot serve account '${paintFor(color).cyan(login)}' by name.`,
+      evidence: [detail],
+      lead: "Pick one:",
+      actions: [
+        ["gh auth login", "re-login on gh 2.40 or newer, then retry"],
+        [`${rerun} --gh-user ${GH_USER_AUTO}`, "follow gh's active account (switches with gh)"],
+      ],
+      color,
+      width,
+    }),
   );
 }
 
@@ -637,17 +668,22 @@ export async function acquireCredential(
   } = {},
 ): Promise<ProvisionedCredential> {
   const rerun = options.rerun ?? agentAuthCommand(profile);
+  // What runs this acquisition again as asked: `auth` must name the provider once more, since a
+  // bare `auth` on a stored credential is idempotent; `add --auto` picks it and takes no --provider.
+  const retry = options.rerun ?? `${rerun} --provider gh-cli`;
   if (dryRunActive()) {
     return plannedAcquisition(
       acquisition,
       profile,
       rerun,
       options.look ?? ghAuthTokenLook,
-      options.chooseAccount ?? (() => chooseGhAccount(undefined, "dry-run")),
+      options.chooseAccount ?? (() => chooseGhAccount(retry, undefined, "dry-run")),
     );
   }
   const resolved =
-    acquisition.kind === "choose" ? acquisitionForProvider(await chooseProvider()) : acquisition;
+    acquisition.kind === "choose"
+      ? acquisitionForProvider(await chooseProvider(agentAuthCommand(profile)))
+      : acquisition;
   if (resolved.kind === "gh-token") {
     return { kind: "stored", provider: "gh-token", token: await loginWithGhToken(resolved.token) };
   }
@@ -658,7 +694,10 @@ export async function acquireCredential(
     return { kind: "stored", provider: "copilot", token: await loginWithCopilot() };
   }
   const look = options.look ?? ghAuthTokenLook;
-  const account = await selectGhAccount(resolved.account, options.chooseAccount ?? chooseGhAccount);
+  const account = await selectGhAccount(
+    resolved.account,
+    options.chooseAccount ?? (() => chooseGhAccount(retry)),
+  );
   return { kind: "gh-cli", ghUser: loginWithGhCli(account, look, rerun).ghUser };
 }
 

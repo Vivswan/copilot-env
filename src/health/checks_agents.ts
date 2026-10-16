@@ -198,10 +198,12 @@ function directAuthVerdict(
       ? { status: "ok", authLine }
       : { status: "warn", authLine, fix: wiringOk ? ghFix : directFix };
   }
+  // A scoped report (`agent health --scope codex`) has no auth row of its own, so a missing
+  // credential names its login here even when the rewire is also due.
   return {
     status: "warn",
-    authLine: `auth: no credential resolves via \`${getCommand}\` - run \`${authFix}\``,
-    fix: wiringOk ? authFix : directFix,
+    authLine: `auth: no credential resolves via \`${getCommand}\``,
+    fix: wiringOk ? authFix : `${authFix}, then ${directFix}`,
   };
 }
 

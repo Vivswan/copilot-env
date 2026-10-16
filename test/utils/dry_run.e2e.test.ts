@@ -222,7 +222,7 @@ test("`agent auth --dry-run` runs no login and makes no network call: it plans t
   });
   expect(calls).toBe(0);
   expect(stderr).toContain(
-    "Would run GitHub's device flow and land the token in the default profile's credential slot.",
+    "Would run GitHub's device flow and land the token.\n  in the default profile's credential slot",
   );
   expect(stdout).toContain(`create ${new CopilotApiPaths().stateStoreFile}`);
   expect(stdout).toContain("profiles.default.githubToken  (absent) -> <redacted>");

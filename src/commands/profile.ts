@@ -48,13 +48,14 @@ import { copilotApiResolvePort } from "../copilot_api/port.ts";
 import { DAEMON_SIGKILL_GRACE_MS } from "../copilot_api/process.ts";
 import {
   agentAuthCommand,
+  agentStartCommand,
   agentStopCommand,
   DEFAULT_PROFILE_NAME,
   type Profile,
   type ProfileName,
   profileLabel,
 } from "../copilot_api/profile.ts";
-import { bold, colorEnabled, gray, statusPaint } from "../utils/ansi.ts";
+import { bold, colorEnabled, gray, paintFor, statusPaint } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import { isEnoentOrNotdir } from "../utils/fs.ts";
@@ -67,6 +68,7 @@ import {
   acquireCredential,
   type CredentialAcquisition,
   ensureAuthenticated,
+  loggingInLine,
   parseAcquisition,
 } from "./auth.ts";
 import { runDryRun } from "./dry_run.ts";
@@ -263,11 +265,20 @@ function credentialStep(
   if (acquisition.kind === "choose" && !process.stdin.isTTY) throw notATerminal(profile, probing);
   if (args.dryRun && acquisition.kind === "choose") {
     return () => {
-      logger.log(`  Would run the credential step (${authCommand}); a dry run never logs in.`);
+      logger.log(plannedCredentialStep(profile));
       return Promise.resolve();
     };
   }
   return () => ensureAuthenticated(profile, acquisition);
+}
+
+/** A dry run's word for the sign-in it would have to ask for, indented like the add's other step
+ *  narrations. */
+function plannedCredentialStep(profile: Profile): string {
+  return scannable({
+    headline: "  Would run the credential step.",
+    evidence: [`  the step: ${agentAuthCommand(profile)}`, "  a dry run never logs in"],
+  });
 }
 
 /** A script without a credential: a probing add has nothing to probe with, a flagged one can
@@ -385,7 +396,7 @@ async function addDefault(
             headline: "  Would probe Direct vs the proxy, then wire both agents.",
             evidence: [
               "  the probe runs as the landed credential",
-              "  a dry run plans no verdict: the probe reads the credential from the store",
+              "  no verdict planned: the probe reads the store, not the plan",
             ],
           }),
         );
@@ -437,12 +448,12 @@ async function addNamed(
   await stopIfLeavingProxy(name, slot.mode, mode);
   if (resolved === null) {
     state.recordProfileMode(name, mode);
+    const switched = switchedFrom(slot.mode, mode);
     return () => {
       logger.success(
-        `${profileLabel(name)} records ${mode}${switchedFrom(
-          slot.mode,
-          mode,
-        )}; both agents wait for its credential.`,
+        `${profileLabel(name)} records ${mode}${
+          switched === null ? "" : ` (${switched})`
+        }; both agents wait for its credential.`,
       );
     };
   }
@@ -470,20 +481,14 @@ async function addNamedProbed(
     if (args.noAuth) throw new Error(NO_CREDENTIAL_TO_PROBE);
     if (acquisition.kind === "choose" && !process.stdin.isTTY) throw notATerminal(name, true);
     if (args.dryRun && acquisition.kind === "choose") {
-      logger.log(
-        `  Would run the credential step (${agentAuthCommand(name)}); a dry run never logs in.`,
-      );
+      logger.log(plannedCredentialStep(name));
       return;
     }
   }
   const land = async (): Promise<Narration> => {
     let resolved = stored;
     if (resolved === null) {
-      if (!args.dryRun) {
-        logger.log(
-          `  ${profileLabel(name)} is not authenticated yet - let's log in to GitHub Copilot.`,
-        );
-      }
+      if (!args.dryRun) logger.log(loggingInLine(name));
       const acquired = await acquire(name, acquisition);
       if (exists) new Credential(undefined, name).record(acquired);
       resolved = resolveProvisioned(acquired);
@@ -516,8 +521,9 @@ async function addNamedProbed(
   else (await land())();
 }
 
-function switchedFrom(previous: ProfileMode | null, mode: ProfileMode): string {
-  return previous !== null && previous !== mode ? ` (switched from ${previous})` : "";
+/** "switched from <mode>" when the add moved the profile off a recorded mode, else null. */
+function switchedFrom(previous: ProfileMode | null, mode: ProfileMode): string | null {
+  return previous !== null && previous !== mode ? `switched from ${previous}` : null;
 }
 
 /** Switching away from proxy strands the profile's daemon: nothing will route to it anymore (a dry
@@ -556,14 +562,30 @@ async function landNamed(
     );
   }
   await wireProfileAgents(name, mode, false, validated === null ? "probe" : "stored", adapters);
+  const switched = switchedFrom(previous, mode);
+  const evidence: string[] = [];
+  const actions: [string, string][] = [
+    [`cl --profile ${name}`, "launch Claude"],
+    [`cx --profile ${name}`, "launch Codex"],
+  ];
+  if (mode === "proxy") {
+    evidence.push("its proxy daemon starts on demand");
+    actions.push(
+      [agentStartCommand(name), "start its proxy daemon by hand"],
+      [agentStopCommand(name), "stop it"],
+    );
+  }
   return () => {
-    logger.success(`${profileLabel(name)} is ready${switchedFrom(previous, mode)}.`);
-    logger.log(`  Launch it:  cl --profile ${name}  /  cx --profile ${name}`);
-    if (mode === "proxy") {
-      logger.log(
-        `  Its proxy daemon starts on demand; manage it with \`agent profile ${name} start\` / \`stop\`.`,
-      );
-    }
+    logger.success(
+      scannable({
+        headline: `profile '${paintFor(colorEnabled()).cyan(name)}' is ready.`,
+        evidence: switched === null ? [] : [switched],
+      }),
+    );
+    // Its own line at log level, as before: a quieter run (CONSOLA_LEVEL=2) still sees it.
+    logger.log(
+      scannable({ headline: "Launch it with either agent.", evidence, lead: "Then:", actions }),
+    );
   };
 }
 

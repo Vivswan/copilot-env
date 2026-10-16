@@ -757,7 +757,11 @@ export function checkAuth(f: AuthFacts): CheckResult {
         ? pin === null
           ? "`agent auth` to switch provider"
           : "`agent auth` to switch"
-        : "re-provision the profile";
+        : `\`${authFix}\` to re-provision the profile`;
+    const ghLoginFix =
+      pin === null
+        ? `\`gh auth login\`, or ${orElse}`
+        : `\`gh auth login\` for that account, or ${orElse}`;
     return {
       ...base,
       status: "warn",
@@ -769,14 +773,14 @@ export function checkAuth(f: AuthFacts): CheckResult {
           ? unproven
             ? ghCouldNotCheck(f.ghDetail, accountClause)
             : pin === null
-              ? `\`gh\` is unauthenticated (${accountClause}) - run \`gh auth login\`, or ${orElse}`
-              : `\`gh\` is not authenticated as account '${pin}' - run \`gh auth login\` for that account, or ${orElse}`
+              ? `\`gh\` is unauthenticated (${accountClause})`
+              : `\`gh\` is not authenticated as account '${pin}'`
           : name === null
-            ? "the stored token is missing - run `agent auth` to re-provision"
-            : `the slot's stored token is missing - run \`${authFix}\` to re-provision`,
+            ? "the stored token is missing"
+            : "the slot's stored token is missing",
         ...tail,
       ].join("\n"),
-      fix: authFix,
+      fix: provider === "gh-cli" && !unproven ? ghLoginFix : authFix,
     };
   }
   const how =

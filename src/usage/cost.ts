@@ -76,19 +76,20 @@ function sourcesNote(perSource: boolean): string {
   const width = terminalWidth();
   if (perSource) {
     return scannable({
-      headline: "Note: three sources, one table each.",
+      headline: "Three sources, one table each.",
       evidence: [
         ...SOURCE_LINES,
-        "summing the tables double counts traffic that went through the proxy; the default view counts such a request once",
+        "summed tables: proxied traffic counted twice",
+        "the default view: such a request counted once",
       ],
       width,
     });
   }
   return scannable({
-    headline: "Note: three sources, merged into one table.",
+    headline: "Three sources, merged into one table.",
     evidence: [
       ...SOURCE_LINES,
-      "a request both the proxy and a client log recorded (same model, token counts, and time) is counted once",
+      "a request in both the proxy and a client log (same model, token counts, and time): counted once",
     ],
     lead: "Then:",
     actions: [["agent cost --sources", "one table per source"]],
@@ -134,7 +135,7 @@ function disclaimer(sources: PriceSources): string {
   return `\nDisclaimer: these numbers are approximate -- gathered from local logs and ${clause}; actual billing may differ.`;
 }
 
-/** One stderr line per source that could not be fetched today: why, and what priced the run
+/** One stderr message per source that could not be fetched today: why, and what priced the run
  *  instead (its cached copy, the other source, or nothing). */
 function unreadWarnings(sources: PriceSources): string[] {
   const { openRouter, gitHub } = sources;
@@ -150,21 +151,22 @@ function unreadWarnings(sources: PriceSources): string[] {
       }),
     ];
   }
-  const line = (
+  const message = (
     unread: string,
     source: SourceRead,
     cachedName: string,
     other: string,
   ): string | null => {
     if (source.kind === "read") return null;
-    if (source.kind === "cached") {
-      return `${unread} (${source.problem}); using the cached ${cachedName} from ${isoDay(source.fetchedAtMs)}.`;
-    }
-    return `${unread} (${source.problem}); priced at ${other} alone.`;
+    const pricedBy =
+      source.kind === "cached"
+        ? `using the cached ${cachedName} from ${isoDay(source.fetchedAtMs)}`
+        : `priced at ${other} alone`;
+    return scannable({ headline: `${unread}.`, evidence: [source.problem, pricedBy] });
   };
   return [
-    line(UNREAD_LIST, openRouter, "price list", "GitHub's rate card"),
-    line(UNREAD_CARD, gitHub, "rate card", "OpenRouter's list"),
+    message(UNREAD_LIST, openRouter, "price list", "GitHub's rate card"),
+    message(UNREAD_CARD, gitHub, "rate card", "OpenRouter's list"),
   ].filter((part): part is string => part !== null);
 }
 
@@ -341,7 +343,7 @@ async function reportCost(
   if (dbPaths.length === 0 && codexByProvider.size === 0 && claudeReport.byModel.size === 0) {
     consola.warn(
       scannable({
-        headline: "WARNING: no usage to report yet.",
+        headline: "no usage to report yet.",
         evidence: [
           "no copilot-api usage databases",
           "no Codex session logs",
@@ -372,7 +374,10 @@ async function reportCost(
   ] as const) {
     if (source.kind === "read" && source.cacheWriteError !== undefined) {
       consola.warn(
-        `WARNING: could not cache ${name} (${source.cacheWriteError}); the next run fetches it again.`,
+        scannable({
+          headline: `could not cache ${name}.`,
+          evidence: [source.cacheWriteError, "the next run fetches it again"],
+        }),
       );
     }
   }

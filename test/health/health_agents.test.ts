@@ -18,7 +18,10 @@ import type {
   CodexHostFacts,
   LiveProbeFacts,
 } from "../../src/health/facts.ts";
+import { renderReport } from "../../src/health/report.ts";
 import type { CheckStatus } from "../../src/health/types.ts";
+import { withColumns } from "../helpers/columns.ts";
+import { captureChannels } from "../helpers/output.ts";
 import { expect, test } from "../helpers/testing.ts";
 
 // --- codex wiring -----------------------------------------------------------
@@ -195,7 +198,7 @@ test("codex: not configured is ok; each broken part warns with a precise message
     provider?: CodexFacts["provider"];
     status: CheckStatus;
     detail: string[];
-    notDetail?: string;
+    notDetail?: string[];
     fix?: string;
   }> = [
     {
@@ -256,13 +259,14 @@ test("codex: not configured is ok; each broken part warns with a precise message
     },
     {
       // Non-gh-cli provider with no stored token: gh is NOT a fallback, so the warn points at
-      // `agent auth`, never the gh-specific message (the provider-blind false-OK).
+      // `agent auth` in the fix row alone, never the gh-specific message (the provider-blind
+      // false-OK) and never a second copy of the command in the line.
       name: "copilot provider, no stored token",
       directAuth: { kind: "found", command: "/bin/gh", ghCommand: "gh auth token" },
       provider: "copilot",
       status: "warn",
-      detail: ["no credential resolves"],
-      notDetail: "gh auth:",
+      detail: ["auth: no credential resolves via `agent auth --get`"],
+      notDetail: ["gh auth:", " - run "],
       fix: "agent auth",
     },
   ];
@@ -277,8 +281,39 @@ test("codex: not configured is ok; each broken part warns with a precise message
       fix: row.fix,
     });
     for (const needle of row.detail) expect(r.detail, row.name).toContain(needle);
-    if (row.notDetail !== undefined) expect(r.detail, row.name).not.toContain(row.notDetail);
+    for (const needle of row.notDetail ?? []) expect(r.detail, row.name).not.toContain(needle);
   }
+
+  // A Codex-scoped report has no auth row of its own, so when the credential is missing AND the
+  // wiring is broken this check's fix must still name the login, in the profile's own form, before
+  // the rewire that needs it.
+  const broken = { ...direct, providerWired: false, provider: "copilot" } as const;
+  expect(checkCodex(broken, null).fix).toBe("agent auth, then agent init --direct");
+  expect(checkCodex(broken, parseProfileName("work")).fix).toBe(
+    "agent profile work auth, then agent profile work add",
+  );
+});
+
+// What would drift silently: the printed shape of the Direct auth line at 80 columns, the command
+// kept out of the bullet and on the fix row alone.
+test("renderReport prints the Direct no-credential verdict at 80 columns: the auth bullet states the failed read, the fix row names the login and the rewire", async () => {
+  const codex = checkCodex(
+    { ...CODEX_DIRECT, providerWired: false, provider: "copilot", directUsesToken: false },
+    null,
+  );
+  const { stdout } = await withColumns(80, () =>
+    captureChannels(() => renderReport("codex", [codex], new Map(), false)),
+  );
+  expect(stdout).toContain(
+    [
+      "  ! Codex wiring",
+      "      \u2022 provider: direct",
+      `      \u2022 config.toml: ${join("/c", "config.toml")}`,
+      "      \u2022 model_provider copilot-env (direct) \u2192 https://api.githubcopilot.com",
+      "      \u2022 auth: no credential resolves via `agent auth --get`",
+      "      \u2192 fix: agent auth, then agent init --direct",
+    ].join("\n"),
+  );
 });
 
 // Both agents wired Direct on a gh-cli slot, gh found and authenticated; the direct-auth tests

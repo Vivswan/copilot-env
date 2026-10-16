@@ -2,6 +2,7 @@
 // indented evidence, a lead, a command table), pinned per part so a caller can trust the layout
 // without printing it.
 import { scannable } from "../../src/utils/message.ts";
+import { wrapMessage } from "../../src/utils/table.ts";
 import { expect, test } from "../helpers/testing.ts";
 
 const CYAN = "\x1b[36m";
@@ -75,6 +76,36 @@ test("at 80 columns a long description wraps under its own column, never under t
       "  agent profile work auth --gh-user auto  follow gh's active account (switches",
       "                                          with gh)",
     ].join("\n"),
+  );
+});
+
+test("a stacked command wider than the width stays one line through the printer's wrap at that width, and nothing else is marked for it", () => {
+  const command = `agent settings --import '/tmp/copilot-env-${"x".repeat(64)}/all.json' --force`;
+  const text = scannable({
+    headline: "all.json is not a bundle of profile 'work' alone.",
+    evidence: ["it carries the default credential"],
+    lead: "Pick one:",
+    actions: [
+      [command, "import the whole store"],
+      ["agent profile [<name>] settings --export", "export one profile's bundle"],
+    ],
+    color: false,
+    width: 80,
+  });
+  const lines = [
+    "all.json is not a bundle of profile 'work' alone.",
+    "  it carries the default credential",
+    "Pick one:",
+    `  ${command}`,
+    "    import the whole store",
+    "",
+    "  agent profile [<name>] settings --export",
+    "    export one profile's bundle",
+  ];
+  expect(wrapMessage(text, 80).split("\n")).toEqual(lines);
+  // The fitting lines are the text itself: only the command carries the printer's mark.
+  expect(text.split("\n").filter((line) => lines.includes(line))).toEqual(
+    lines.filter((line) => line !== `  ${command}`),
   );
 });
 

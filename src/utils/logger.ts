@@ -114,9 +114,10 @@ export class WrappingReporter implements ConsolaReporter {
   }
 
   /** A box frames every line, so its frame comes off every line; any other message loses only
-   *  its first line's decoration. */
+   *  its first line's decoration. Off a TTY (width null) nothing wraps, and wrapMessage still
+   *  strips a message's keepWhole marks. */
   private wrapArgs(logObj: LogObject, text: string, width: number | null): string {
-    if (width === null) return text;
+    if (width === null) return wrapMessage(text, null);
     if (logObj.type === "box") {
       return wrapMessage(text, width - (this.fancy ? BOX_FRAME : BASIC_BOX_LEAD));
     }

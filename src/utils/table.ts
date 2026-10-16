@@ -73,14 +73,25 @@ function splitHard(word: string, firstRoom: number, restRoom: number): string[] 
  *  escape byte comes from fromCharCode: a control character in a regex literal is a lint error. */
 const LEADING = new RegExp(`^((?:${String.fromCharCode(27)}\\[[0-9;]*m)*)(\\s*)`);
 
+/** The unit separator, in front of a line its layout left wider than the width on purpose (a
+ *  lone command), so wrapMessage prints that line as it came; wrapMessage strips it. */
+const WHOLE_MARK = "\u001f";
+
+/** `line` marked for wrapMessage to print as it came, however wide. */
+export function keepWhole(line: string): string {
+  return `${WHOLE_MARK}${line}`;
+}
+
 /** Every line of a message wrapped to `width` under its own indent with a hanging continuation
  *  one GAP deeper; `lead` is what the printer puts in front of the first line (a logger's icon).
- *  A line that fits is returned as it came, so table rows pass through untouched. */
+ *  A line that fits, or that keepWhole marked, is returned as it came, so table rows pass
+ *  through untouched; a null width wraps nothing and still strips the marks. */
 export function wrapMessage(text: string, width: number | null, lead = 0): string {
-  if (width === null) return text;
   return text
     .split("\n")
     .flatMap((line, i) => {
+      if (line.startsWith(WHOLE_MARK)) return [line.slice(WHOLE_MARK.length)];
+      if (width === null) return [line];
       const room = i === 0 ? width - lead : width;
       if (stringWidth(line) <= room) return [line];
       const [prefix = "", paint = "", indent = ""] = LEADING.exec(line) ?? [];

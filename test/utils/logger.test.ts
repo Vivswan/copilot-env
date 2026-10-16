@@ -8,6 +8,7 @@ import {
   withNarrationMuted,
   wrapToTerminal,
 } from "../../src/utils/logger.ts";
+import { scannable } from "../../src/utils/message.ts";
 import { captureChannels } from "../helpers/output.ts";
 import { expect, test } from "../helpers/testing.ts";
 
@@ -16,11 +17,14 @@ const LEGEND =
 
 /** A consola instance whose only reporter is the wrapper around a capturing sink, at a fixed
  *  width. */
-function capture(width: number): { log: ReturnType<typeof createConsola>; seen: LogObject[] } {
+function capture(
+  width: number,
+  color = false,
+): { log: ReturnType<typeof createConsola>; seen: LogObject[] } {
   const seen: LogObject[] = [];
   const log = createConsola({ level: 5 });
   log.options.reporters = [
-    new WrappingReporter([{ log: (obj) => seen.push(obj) }], true, () => width, false),
+    new WrappingReporter([{ log: (obj) => seen.push(obj) }], true, () => width, color),
   ];
   return { log, seen };
 }
@@ -45,6 +49,53 @@ test("the wrapping reporter leaves room for the icon on the first line and hangs
       .split("\n")
       .map((l) => stripVTControlCharacters(l)),
   ).toEqual(["   Launch one:  cl --profile <name>  /  cx --profile", "     <name>  /  co"]);
+});
+
+// The specimen: `agent profile work settings --import <a temp path>/all.json --force` at 80
+// columns printed its recovery command across two lines, and a copy of it ran with the wrong
+// arguments.
+test("a scannable's command wider than the terminal reaches the sink on one line while its headline and evidence wrap, and a plain line that wide still wraps", () => {
+  const command = `agent settings --import '/tmp/copilot-env-${"x".repeat(64)}/all.json' --force`;
+  const parts = {
+    headline:
+      "all.json is not a bundle of profile 'work' alone: it carries more than that profile's section.",
+    evidence: [
+      "it carries the default credential, the default wiring modes, and the preferences of every other profile",
+    ],
+    lead: "Pick one:" as const,
+    actions: [
+      [command, "import the whole store"],
+      ["agent profile [<name>] settings --export", "export one profile's bundle"],
+    ] as [string, string][],
+    width: 80,
+  };
+  const printed = [
+    "all.json is not a bundle of profile 'work' alone: it carries more than",
+    "  that profile's section.",
+    "  it carries the default credential, the default wiring modes, and the",
+    "    preferences of every other profile",
+    "Pick one:",
+    `  ${command}`,
+    "    import the whole store",
+    "",
+    "  agent profile [<name>] settings --export",
+    "    export one profile's bundle",
+  ];
+  for (const color of [false, true]) {
+    const { log, seen } = capture(80, color);
+    log.error(scannable({ ...parts, color }));
+    const raw = String(seen[0]?.args[0]);
+    // Nothing but the text and, with color, its escapes: no mark reaches the sink.
+    const visible = color ? stripVTControlCharacters(raw) : raw;
+    expect(/[^\n\x20-\x7e]/.test(visible)).toBe(false);
+    expect(visible.split("\n")).toEqual(printed);
+  }
+
+  const { log, seen } = capture(80);
+  log.error(`${command}\nnext`);
+  const plain = String(seen[0]?.args[0]).split("\n");
+  expect(plain.length).toBeGreaterThan(2);
+  expect(Math.max(...plain.map((l) => stringWidth(l)))).toBeLessThanOrEqual(80);
 });
 
 /** consola's own fancy reporter writing to a sink, so the decorated lines are measured. */

@@ -1,8 +1,9 @@
 // The one shape every multi-part CLI message prints in, so a reader scans it instead of reading a
 // paragraph: a headline that states the fact, one indented line per piece of evidence, a lead
 // that says what kind of action follows, then the actions as a command-and-meaning table.
+import stringWidth from "string-width";
 import { colorEnabled } from "./ansi.ts";
-import { formatTable, terminalWidth } from "./table.ts";
+import { formatTable, keepWhole, terminalWidth } from "./table.ts";
 
 /** "Pick one:" when the reader chooses, "Fix:" when there is one way, "Then:" for next steps. */
 type Lead = "Pick one:" | "Fix:" | "Then:";
@@ -25,7 +26,9 @@ export interface ScannableParts {
 
 /** The message's lines joined with newlines: for a logger line or an Error's message alike. Color
  *  carries meaning, so only each action's command is painted (cyan, by the table); the headline
- *  and the evidence stay as the caller wrote them. */
+ *  and the evidence stay as the caller wrote them. The one line formatTable leaves wider than
+ *  `width` is a command it refused to split: marked keepWhole, so the printer's wrap leaves it
+ *  too. */
 export function scannable(parts: ScannableParts): string {
   const {
     headline,
@@ -35,7 +38,9 @@ export function scannable(parts: ScannableParts): string {
     color = colorEnabled(),
     width = terminalWidth(process.stderr),
   } = parts;
-  const table = formatTable(actions, { width, wrap: [false, true], color });
+  const table = formatTable(actions, { width, wrap: [false, true], color }).map((line) =>
+    width !== null && stringWidth(line) > width ? keepWhole(line) : line,
+  );
   const leadLine = lead === undefined || table.length === 0 ? [] : [lead];
   return [headline, ...evidence.map((line) => `  ${line}`), ...leadLine, ...table].join("\n");
 }

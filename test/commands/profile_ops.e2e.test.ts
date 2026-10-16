@@ -276,34 +276,32 @@ test("profile settings is one profile's bundle: a named profile's slot and secti
   // The whole store is not one profile's bundle.
   const wholeFile = join(twin.home, "all.json");
   writeFileSync(wholeFile, whole);
-  // The logger that prints the error wraps any line wider than the terminal at its word boundaries,
-  // and a Windows temp path is wider than the line on its own, so the headline and the command (a
-  // temp path inside) are matched with whitespace folded on both sides.
   const refused = observe(["profile", "work", "settings", "--import", wholeFile, "--force"], {
     ...twin,
     env: { ...twin.env, COLUMNS: "80" },
   });
   expect(refused.exitCode).toBe(1);
-  const fold = (text: string): string => text.replace(/\s+/g, "");
-  const folded = fold(refused.stderr);
-  expect(folded).toContain(fold(`${wholeFile} is not a bundle of profile 'work' alone.`));
-  expect(folded).toContain(fold(`${rollbackCommand(wholeFile)} --force import the whole store`));
-  // A preview's refusal keeps the preview: its recovery carries --dry-run too.
-  const previewed = observe(
-    ["profile", "work", "settings", "--import", wholeFile, "--force", "--dry-run"],
-    twin,
-  );
-  expect(previewed.exitCode).toBe(1);
-  expect(fold(previewed.stderr)).toContain(
-    fold(`${rollbackCommand(wholeFile)} --force --dry-run import the whole store`),
-  );
+  // At 80 columns the table stacks, and the recovery command is one line however long the path.
   expect(refused.stderr).toContain(
     [
+      "Pick one:",
+      `  ${rollbackCommand(wholeFile)} --force`,
       "    import the whole store",
       "",
       "  agent profile [<name>] settings --export",
       "    export one profile's bundle",
     ].join("\n"),
+  );
+  // A preview's refusal keeps the preview: its recovery carries --dry-run too. Down a pipe with no
+  // COLUMNS nothing wraps, so the headline and the row print whole.
+  const previewed = observe(
+    ["profile", "work", "settings", "--import", wholeFile, "--force", "--dry-run"],
+    twin,
+  );
+  expect(previewed.exitCode).toBe(1);
+  expect(previewed.stderr).toContain(`${wholeFile} is not a bundle of profile 'work' alone.`);
+  expect(previewed.stderr).toContain(
+    `\n  ${rollbackCommand(wholeFile)} --force --dry-run  import the whole store\n`,
   );
   // A daemon home with no store slot is not a profile an export can carry: refused with its
   // repair, so no bundle exists that its own import would refuse.

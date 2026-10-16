@@ -12,6 +12,7 @@ import {
   terminatePid,
 } from "../copilot_api/process.ts";
 import * as fs from "../utils/fs_facade.ts";
+import { killCommand } from "../utils/kill_command.ts";
 import { pidAlive } from "../utils/pid.ts";
 import { sleepSync } from "../utils/time.ts";
 
@@ -62,7 +63,7 @@ export async function stopLockedDaemon(home: string): Promise<LockedDaemonOutcom
 }
 
 /** The warning for a `foreign` outcome: the holder is named with what it runs, and the two ways out
- *  (`kill` is a PowerShell alias too). The lock stays: a re-run sweeps it once the pid is free. */
+ *  with the host's own kill. The lock stays: a re-run sweeps it once the pid is free. */
 export function foreignHolderWarning(
   home: string,
   outcome: { pid: number; command: string },
@@ -70,7 +71,7 @@ export function foreignHolderWarning(
   return [
     `  ${daemonLockPath(home)} names pid ${outcome.pid}, which is not the previous release's proxy daemon (a reboot reused the pid); left as it is`,
     `    pid ${outcome.pid} runs: ${outcome.command}`,
-    `    yours and stale: kill ${outcome.pid}, then re-run the migration`,
+    `    yours and stale: ${killCommand(outcome.pid)}, then re-run the migration`,
     "    not yours: nothing to do; the lock is swept once the pid is free",
   ].join("\n");
 }

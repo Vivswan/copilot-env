@@ -176,8 +176,8 @@ function judgeProxyFloor(): RunnableEntry {
       scannable({
         headline: `${PROXY_PACKAGE_NAME} ${floorStatus.version} is below the required ${floorStatus.floor} floor.`,
         evidence: [
-          "the proxy float likely failed (offline?)",
-          "or both agents are wired Direct, so the float was skipped",
+          "a likely failed proxy float (offline?)",
+          "or both agents wired Direct, the float skipped",
         ],
         lead: "Pick one:",
         actions: [
@@ -211,7 +211,7 @@ export async function resolveStartPort(
         throw new Error(
           scannable({
             headline: `requested port ${paintFor(colorEnabled()).cyan(String(pinned))} is out of range.`,
-            evidence: [`the proxy port must be between ${min} and ${max}`],
+            evidence: [`proxy port range ${min}-${max}`],
             lead: "Pick one:",
             actions: [
               [configSetCommand("daemon.min-port", "<n>"), "lower the range's floor"],

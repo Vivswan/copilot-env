@@ -135,9 +135,9 @@ export async function stopTrackedProxy(
           scannable({
             headline: `Not stopping pid ${paintFor(colorEnabled()).cyan(String(trackedPid))}: this host cannot identify it as our daemon.`,
             evidence: [
-              "its daemon.lock is held",
+              "daemon.lock held",
               "a shared home's daemon on another host, or an unreadable process table",
-              "tracking is left in place",
+              "tracking left in place",
             ],
             lead: "Fix:",
             actions: [

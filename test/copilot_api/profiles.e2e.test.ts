@@ -395,7 +395,7 @@ test("a foreign settings-<name>.json is never taken over", () => {
   );
   expect(() =>
     configureClaudeConfig(home, { credential: COMMAND, mode: "proxy", profile: WORK }),
-  ).toThrow(/refusing to overwrite/);
+  ).toThrow(/overwrite refused/);
   // A custom base URL ALONE (no apiKeyHelper) is also foreign wiring.
   writeFileSync(
     settingsPathFor(home, ALT),
@@ -403,7 +403,7 @@ test("a foreign settings-<name>.json is never taken over", () => {
   );
   expect(() =>
     configureClaudeConfig(home, { credential: COMMAND, mode: "proxy", profile: ALT }),
-  ).toThrow(/refusing to overwrite/);
+  ).toThrow(/overwrite refused/);
 });
 
 // --- Codex profile artifacts ------------------------------------------------------

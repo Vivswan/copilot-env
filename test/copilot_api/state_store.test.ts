@@ -103,7 +103,7 @@ test("the state-key refusal at 80 columns: the owner, the rule, then the two lis
     ).toThrow(
       [
         "'githubToken' is state written by `agent auth`, `agent profile`, and the wiring commands (the profile's slot).",
-        "  a preference verb sets preferences only",
+        "  preference verbs: preferences only",
         "Pick one:",
         "  agent config get            lists the machine's keys and the shared defaults",
         "  agent profile [<name>] get  lists a profile's",
@@ -129,7 +129,7 @@ test("`agent config` writes settings only: a state key, bare or as a path into t
     ).toThrow(owner);
     expect(() =>
       runConfig({ kind: "unset", key: key, view: { kind: "config" }, dryRun: false }),
-    ).toThrow(/sets preferences only/);
+    ).toThrow(/preference verbs: preferences only/);
   }
   // Control: a settings key still lands, and an unknown key still gets the unknown-key error.
   runConfig({

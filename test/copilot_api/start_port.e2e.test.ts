@@ -54,7 +54,7 @@ test("resolveStartPort: a port outside the configured range is a clear error, wh
       requested: 3999,
       error: [
         "requested port 3999 is out of range.",
-        "  the proxy port must be between 4000 and 5000",
+        "  proxy port range 4000-5000",
         "Pick one:",
         "  agent config set daemon.min-port <n>  lower the range's floor",
         "  agent config set daemon.max-port <n>  raise the range's ceiling",

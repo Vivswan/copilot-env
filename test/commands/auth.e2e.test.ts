@@ -1,45 +1,18 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { stringify } from "smol-toml";
-import { directWiring } from "../../src/agents/configure.ts";
-import { configureClaudeConfig } from "../../src/claude/config.ts";
 import {
   type AuthArgs,
   acquireCredential,
   chooseGhAccount,
   ensureAuthenticated,
   ghCannotServeByName,
-  loginWithGhCli,
-  parseAcquisition,
   runAuth,
 } from "../../src/commands/auth.ts";
 import { runDryRun } from "../../src/commands/dry_run.ts";
-import { type IdentityTableInput, identityTableLines } from "../../src/commands/identity.ts";
 import { addProfile } from "../../src/commands/profile.ts";
-import { runPrintProxyToken } from "../../src/commands/proxy_token.ts";
 import { CODEX_IDENTITY_NAME } from "../../src/copilot_api/config_registry.ts";
-import {
-  accountSourceLabel,
-  Credential,
-  credentialSourceLabel,
-  type GhAccountsLook,
-  type GhTokenLook,
-  ghAccountsLookFromSpawn,
-  ghAuthTokenLookVia,
-  ghTokenLookFromSpawn,
-  liveCredentialSourceLabel,
-  runGhSpecAsync,
-} from "../../src/copilot_api/credential.ts";
 import { CopilotEnvConfig } from "../../src/copilot_api/env_config.ts";
 import { assertProfileSlot, CopilotEnvState } from "../../src/copilot_api/env_state.ts";
-import {
-  activeGhLogin,
-  type GhAccount,
-  type GhSpawnSpec,
-  ghAuthStatusSpawnSpec,
-  ghAuthTokenSpawnSpec,
-  parseGhAuthStatusAccounts,
-} from "../../src/copilot_api/gh_cli.ts";
 import {
   COPILOT_OAUTH_CLIENT_ID,
   COPILOT_OAUTH_SCOPE,
@@ -49,27 +22,30 @@ import {
   setGithubLoginFetch,
 } from "../../src/copilot_api/github_login.ts";
 import {
-  COPILOT_CLI_INTEGRATION_ID,
-  COPILOT_SANDBOX_INTEGRATION_ID,
-  DEFAULT_COPILOT_API_BASE,
-  INTEGRATION_ID_HEADER,
   type ProbeFetch,
   setIntegrationProbeFetch,
-  VSCODE_CHAT_INTEGRATION_ID,
 } from "../../src/copilot_api/integration_identity.ts";
 import { CopilotApiPaths, profileHome } from "../../src/copilot_api/paths.ts";
 import { parseProfileName } from "../../src/copilot_api/profile.ts";
 import { errMessage } from "../../src/utils/error.ts";
+import { withColumns } from "../helpers/columns.ts";
 import { stageRefusedStop } from "../helpers/daemon.ts";
 import { envSnapshot, isolateAgentHomes, resetExitCode } from "../helpers/env.ts";
-import { stubGithubLogins, writeRunState } from "../helpers/fixtures.ts";
+import { stubGithubLogins } from "../helpers/fixtures.ts";
 import { captureChannels } from "../helpers/output.ts";
-import { runCli } from "../helpers/run.ts";
 import { afterEach, expect, removeDir, test } from "../helpers/testing.ts";
+import {
+  AUTH_GH_CLI,
+  acct,
+  captureStderr,
+  captureStdout,
+  OCTOCAT_LOGINS,
+  WORK,
+  words,
+} from "./auth_fixtures.ts";
 
-const restoreEnv = envSnapshot(["PATH", "COLUMNS"]);
+const restoreEnv = envSnapshot(["PATH"]);
 let dir = "";
-const WORK = parseProfileName("work");
 /** The longest profile name and gh login the grammars allow: the widest labels a message carries. */
 const LONGEST = parseProfileName("p".repeat(32));
 const LOGIN = "l".repeat(39);
@@ -80,56 +56,11 @@ afterEach(() => {
   setGithubLoginFetch(null);
 });
 
-/** Every token this file provisions reads as octocat's; a test that cares stubs its own. */
 function isolate(): { claudeHome: string; codexHome: string } {
   const homes = isolateAgentHomes("copilot-auth-");
   dir = homes.dir;
-  stubGithubLogins({
-    ghu_inline_value: "octocat",
-    ghu_new_from_env: "octocat",
-    ghu_env_value: "octocat",
-    ghu_x: "octocat",
-    ghu_new: "octocat",
-    ghu_stored123: "octocat",
-  });
+  stubGithubLogins(OCTOCAT_LOGINS);
   return { claudeHome: homes.claudeHome, codexHome: homes.codexHome };
-}
-
-function state(): CopilotEnvState {
-  return new CopilotEnvState();
-}
-
-// The catalog is opt-in (default false); without this a wiring or launch refresh never runs.
-function enableCatalog(): void {
-  new CopilotEnvConfig().set({ "codex.model-catalog": true });
-}
-
-/** A captured report as words: the logger and printWrapped wrap a line at COLUMNS when that is
- *  set, so an indented continuation line folds back onto its line. For assertions about the
- *  words, never the width (the 80-column layouts have their own explicit-width tests). */
-function words(captured: string): string {
-  return captured.replace(/\n[ \t]+/g, " ");
-}
-
-async function captureStderr(fn: () => Promise<void>): Promise<string> {
-  return words((await captureChannels(fn)).stderr);
-}
-
-async function captureStdout(fn: () => Promise<void>): Promise<string> {
-  return (await captureChannels(fn)).stdout;
-}
-
-/** A message that reads its width at the throw (terminalWidth over stderr) sees `columns` for the
- *  call: the launcher pipes stderr, so COLUMNS is what it reads. */
-async function withColumns<T>(columns: number, fn: () => Promise<T>): Promise<T> {
-  const saved = process.env.COLUMNS;
-  process.env.COLUMNS = String(columns);
-  try {
-    return await fn();
-  } finally {
-    if (saved === undefined) delete process.env.COLUMNS;
-    else process.env.COLUMNS = saved;
-  }
 }
 
 const PROVIDER_CONFLICT =
@@ -185,7 +116,11 @@ test("auth: every conflicting or malformed flag set is refused at the parse, bef
 
 test("auth --del: a REFUSED stop warns the proxy is still running -- never the plain success", async () => {
   isolate();
-  state().setCredential(null, { kind: "stored", provider: "gh-token", token: "ghu_refused" });
+  new CopilotEnvState().setCredential(null, {
+    kind: "stored",
+    provider: "gh-token",
+    token: "ghu_refused",
+  });
   const fx = stageRefusedStop(new CopilotApiPaths().home);
   try {
     // The raw capture: the warn is a block (headline, evidence, the stop command), and the fold
@@ -220,7 +155,7 @@ test("auth --del, --provider gh-env, and --set land exactly in the store and wri
     {
       name: "--del clears the stored token and provider",
       arrange: () =>
-        state().setCredential(null, {
+        new CopilotEnvState().setCredential(null, {
           kind: "stored",
           provider: "gh-token",
           token: "ghu_stored123",
@@ -234,7 +169,11 @@ test("auth --del, --provider gh-env, and --set land exactly in the store and wri
       // run (never short-circuited by "already authenticated").
       name: "--provider gh-env stores the env token + provider over a recorded credential",
       arrange: () => {
-        state().setCredential(null, { kind: "stored", provider: "copilot", token: "ghu_old" });
+        new CopilotEnvState().setCredential(null, {
+          kind: "stored",
+          provider: "copilot",
+          token: "ghu_old",
+        });
         process.env.GH_TOKEN = "ghu_new_from_env";
       },
       args: { provider: "gh-env" },
@@ -257,7 +196,7 @@ test("auth --del, --provider gh-env, and --set land exactly in the store and wri
     const { claudeHome } = isolate();
     row.arrange();
     await runAuth(row.args);
-    const { githubToken, authProvider, ghUser, profiles } = state().read();
+    const { githubToken, authProvider, ghUser, profiles } = new CopilotEnvState().read();
     expect({ githubToken, authProvider, ghUser, profiles }, row.name).toEqual({
       githubToken: row.githubToken,
       authProvider: row.authProvider,
@@ -271,7 +210,11 @@ test("auth --del, --provider gh-env, and --set land exactly in the store and wri
 
 test("auth --check: a configured provider reports authenticated with its account, exit 0", async () => {
   isolate();
-  state().setCredential(null, { kind: "stored", provider: "gh-token", token: "ghu_stored123" });
+  new CopilotEnvState().setCredential(null, {
+    kind: "stored",
+    provider: "gh-token",
+    token: "ghu_stored123",
+  });
   const out = await captureStdout(() => runAuth({ check: true }));
   // The status line is human copy, so only the parenthesized source is pinned; exit 0 is the
   // machine contract.
@@ -279,7 +222,11 @@ test("auth --check: a configured provider reports authenticated with its account
   expect(process.exitCode).toBe(0);
   // The account is a label, never a gate: a token GitHub rejects still reports the stored
   // provider as authenticated (exit 0) and says why the account is missing.
-  state().setCredential(null, { kind: "stored", provider: "gh-token", token: "ghu_unknown" });
+  new CopilotEnvState().setCredential(null, {
+    kind: "stored",
+    provider: "gh-token",
+    token: "ghu_unknown",
+  });
   const unverified = await captureStdout(() => runAuth({ check: true }));
   expect(unverified).toContain("(gh-token; account unverified: GitHub rejected it, HTTP 401)");
   expect(process.exitCode).toBe(0);
@@ -287,7 +234,11 @@ test("auth --check: a configured provider reports authenticated with its account
 
 test("auth (bare) on a recorded provider names the account, then the two ways out as a table", async () => {
   isolate();
-  state().setCredential(null, { kind: "stored", provider: "gh-token", token: "ghu_stored123" });
+  new CopilotEnvState().setCredential(null, {
+    kind: "stored",
+    provider: "gh-token",
+    token: "ghu_stored123",
+  });
   // The raw capture: the table's indented rows are the layout under test, and the fold in
   // captureStderr would read them as wrapped continuations.
   const err = await withColumns(80, async () => (await captureChannels(() => runAuth({}))).stderr);
@@ -320,7 +271,11 @@ test("every auth message with more than one part prints as a headline, evidence,
   const stdout = async (fn: () => Promise<unknown>): Promise<string> =>
     (await captureChannels(async () => void (await fn()))).stdout;
   const stored = () =>
-    state().setCredential(null, { kind: "stored", provider: "gh-token", token: "ghu_stored123" });
+    new CopilotEnvState().setCredential(null, {
+      kind: "stored",
+      provider: "gh-token",
+      token: "ghu_stored123",
+    });
   const rows: { name: string; run: () => Promise<string>; lines: string[] }[] = [
     {
       name: "--del with a stored token and no daemon",
@@ -472,7 +427,7 @@ test("every auth message with more than one part prints as a headline, evidence,
       name: "a named --del with the longest profile name, its daemon never started",
       run: async () => {
         await captureChannels(() => addProfile(LONGEST, { mode: "proxy", noAuth: true }));
-        state().setCredential(LONGEST, {
+        new CopilotEnvState().setCredential(LONGEST, {
           kind: "stored",
           provider: "gh-token",
           token: "ghu_stored123",
@@ -490,7 +445,7 @@ test("every auth message with more than one part prints as a headline, evidence,
       name: "a named bare auth with the longest profile name on a recorded provider",
       run: async () => {
         await captureChannels(() => addProfile(LONGEST, { mode: "proxy", noAuth: true }));
-        state().setCredential(LONGEST, {
+        new CopilotEnvState().setCredential(LONGEST, {
           kind: "stored",
           provider: "gh-token",
           token: "ghu_stored123",
@@ -672,7 +627,7 @@ test("every auth message with more than one part prints as a headline, evidence,
     rows.push({
       name: "--check with a gh-cli pin and no gh on PATH",
       run: () => {
-        state().setCredential(null, { kind: "gh-cli", ghUser: "octocat" });
+        new CopilotEnvState().setCredential(null, { kind: "gh-cli", ghUser: "octocat" });
         const emptyBin = join(dir, "empty-bin");
         mkdirSync(emptyBin, { recursive: true });
         process.env.PATH = emptyBin;
@@ -709,9 +664,13 @@ test("every auth message with more than one part prints as a headline, evidence,
 
 test("auth (bare) keys idempotency on the RECORDED provider: recorded, nothing runs; none, the flow runs even when gh works", async () => {
   const { claudeHome } = isolate();
-  state().setCredential(null, { kind: "stored", provider: "copilot", token: "ghu_stored123" });
+  new CopilotEnvState().setCredential(null, {
+    kind: "stored",
+    provider: "copilot",
+    token: "ghu_stored123",
+  });
   await runAuth({});
-  expect(state().read().githubToken).toBe("ghu_stored123");
+  expect(new CopilotEnvState().read().githubToken).toBe("ghu_stored123");
   expect(existsSync(join(claudeHome, "settings.json"))).toBe(false);
   // Idempotency keys on the RECORDED choice, not on whether gh works: otherwise a machine with a gh
   // login could never reach a fresh login. The non-TTY throw proves the flow ran, not a gh
@@ -747,10 +706,10 @@ test("auth (bare) keys idempotency on the RECORDED provider: recorded, nothing r
 
 test("headless gh-token never reads the env: that is gh-env's job", async () => {
   isolate();
-  state().clearCredential(null);
+  new CopilotEnvState().clearCredential(null);
   process.env.GH_TOKEN = "ghu_env_value";
   await expect(runAuth({ provider: "gh-token" })).rejects.toThrow(/--set <token>/);
-  expect(state().read().githubToken).toBeNull();
+  expect(new CopilotEnvState().read().githubToken).toBeNull();
   delete process.env.COPILOT_GITHUB_TOKEN;
   delete process.env.GH_TOKEN;
   delete process.env.GITHUB_TOKEN;
@@ -764,10 +723,10 @@ test("a named auth on an unknown profile errors instead of creating a half profi
   await expect(runAuth({ set: "ghu_x", profile: "ghost" })).rejects.toThrow(
     /no such profile 'ghost'/,
   );
-  expect(state().read().profiles).toEqual({});
+  expect(new CopilotEnvState().read().profiles).toEqual({});
 
   const ghost = parseProfileName("ghost");
-  state().commitProfile(ghost, {
+  new CopilotEnvState().commitProfile(ghost, {
     credential: { kind: "stored", provider: "gh-token", token: "ghu_old" },
     mode: "direct",
   });
@@ -790,7 +749,7 @@ test("a named auth on an unknown profile errors instead of creating a half profi
     integrationId: null,
     host: "https://api.githubcopilot.com",
   });
-  expect(state().read().githubToken).toBeNull(); // default slot untouched
+  expect(new CopilotEnvState().read().githubToken).toBeNull(); // default slot untouched
 });
 
 test("token acquisition narrates 'Using' + the account, never 'Stored' (persistence is the caller's write)", async () => {
@@ -810,7 +769,7 @@ test("token acquisition narrates 'Using' + the account, never 'Stored' (persiste
   expect(unknown).toContain(
     "Using the provided GitHub token = ghu_un...6789, unverified (GitHub rejected it, HTTP 401).",
   );
-  expect(state().read().githubToken).toBe("ghu_unlisted_0123456789");
+  expect(new CopilotEnvState().read().githubToken).toBe("ghu_unlisted_0123456789");
 });
 
 test("githubLoginLook asks GraphQL for the viewer and reads a login, a 401, or an unreachable GitHub", async () => {
@@ -891,11 +850,11 @@ test("auth --get/--del/--check on a named profile per slot state: nonexistent hi
       // `agent profile <name> auth`.
       name: "partial",
       arrange: () => {
-        state().commitProfile(ghost, {
+        new CopilotEnvState().commitProfile(ghost, {
           credential: { kind: "stored", provider: "gh-token", token: "ghu_old" },
           mode: "direct",
         });
-        state().clearCredential(ghost);
+        new CopilotEnvState().clearCredential(ghost);
         return "Fix: agent profile ghost auth  log in";
       },
       says: ["agent profile ghost auth"],
@@ -925,1534 +884,6 @@ test("auth --get/--del/--check on a named profile per slot state: nonexistent hi
   }
 });
 
-// --- integration identities -------------------------------------------------
-
-/** A PAT the CLI identity accepts on both hosts (a 5-model generic catalog, 37 on the account
- *  host), that the sandbox accepts on the generic host only (2 models), and that the codex identity
- *  (no id header), vscode-chat, and any other id reject. A `host` literal host accepts every
- *  identity (9 models). */
-const CONFIGURED_HOST = "https://copilot.example";
-
-/** An id no candidate list carries: only a pin or a stored pair puts it in the table. */
-const FOREIGN_ID = "my-custom-id";
-const FOREIGN_MARKED_ROW = new RegExp(
-  `^${FOREIGN_ID}\\s+rejected \\(400\\) \\*\\s+rejected \\(400\\)`,
-  "m",
-);
-
-/** The stub the identities tests install (stubIdentitySurvey), kept so a test can wrap it. */
-let stubbedSurveyFetch: ProbeFetch = () => Promise.reject(new Error("no survey stub installed"));
-
-function stubIdentitySurvey(designated = "https://api.enterprise.githubcopilot.com"): void {
-  stubbedSurveyFetch = (input, init) => {
-    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-    if (url.includes("/copilot_internal/user")) {
-      return Promise.resolve(
-        new Response(JSON.stringify({ endpoints: { api: designated } }), { status: 200 }),
-      );
-    }
-    const catalog = (size: number): Response =>
-      new Response(
-        JSON.stringify({ data: Array.from({ length: size }, (_, i) => ({ id: `m${i}` })) }),
-        {
-          status: 200,
-        },
-      );
-    if (new URL(url).origin === CONFIGURED_HOST) return Promise.resolve(catalog(9));
-    const enterprise = url.startsWith("https://api.enterprise.");
-    const id = new Headers(init?.headers).get(INTEGRATION_ID_HEADER);
-    if (id === COPILOT_CLI_INTEGRATION_ID) return Promise.resolve(catalog(enterprise ? 37 : 5));
-    if (id === COPILOT_SANDBOX_INTEGRATION_ID && !enterprise) return Promise.resolve(catalog(2));
-    return Promise.resolve(
-      new Response("Personal Access Tokens are not supported for this endpoint", { status: 400 }),
-    );
-  };
-  setIntegrationProbeFetch(stubbedSurveyFetch);
-}
-
-const PAT_REJECTION = "400 Personal Access Tokens are not supported for this endpoint";
-
-const GENERIC_HOST = "https://api.githubcopilot.com";
-
-test("identity survey: one column per host, ONE mark on the slot's identity under the pin, and never a read of the agent files", async () => {
-  const { claudeHome } = isolate();
-  const credential = { kind: "stored", provider: "gh-token", token: "github_pat_x" } as const;
-  state().setCredential(null, credential);
-  stubIdentitySurvey();
-  // The table is pinned at its natural width whatever terminal runs the tests.
-  const columns = process.env.COLUMNS;
-  process.env.COLUMNS = "200";
-  try {
-    // One header set for every mode, so every (host, identity) is asked ONCE; the survey selects
-    // nothing and writes nothing.
-    const requests = new Map<string, number>();
-    const surveyFetch = (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
-      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-      const headers = new Headers(init?.headers);
-      const key = `${url} ${headers.get(INTEGRATION_ID_HEADER) ?? "-"} ${
-        headers.get("User-Agent") ?? "-"
-      }`;
-      requests.set(key, (requests.get(key) ?? 0) + 1);
-      return stubbedSurveyFetch(input, init);
-    };
-    setIntegrationProbeFetch(surveyFetch);
-    const fresh = await captureStdout(() => runAuth({ identities: true }));
-    expect([...requests.entries()].filter(([, n]) => n !== 1)).toEqual([]);
-    // The account lookup (no id, copilot-env's own User-Agent) happened exactly once.
-    expect(requests.get("https://api.github.com/copilot_internal/user - copilot-env")).toBe(1);
-    setIntegrationProbeFetch(stubbedSurveyFetch);
-    // Color is a TTY affordance: the survey a pipe or a test reads is plain text.
-    expect(fresh).not.toContain("\x1b");
-    // Four candidate rows, nothing more; vscode-chat is the last candidate.
-    expect(fresh).toMatch(
-      /^vscode-chat\s+rejected \(400\)\s+rejected \(400\)\s+copilot-api's former default$/m,
-    );
-    expect(fresh).not.toContain(FOREIGN_ID);
-    expect(fresh).toContain("identity: auto");
-    expect(fresh).toContain("host: auto (api.githubcopilot.com in use)");
-    expect(fresh).toMatch(
-      /^identity\s+api\.githubcopilot\.com \(in use\)\s+api\.enterprise\.githubcopilot\.com \(account\)\s+note$/m,
-    );
-    expect(fresh).toMatch(/^codex\s+rejected \(400\)\s+rejected \(400\)\s+the default/m);
-    // A slot never probed has nothing in use, so no `*`; `>` sits on what the next landing would
-    // pick: the first candidate the host in use accepts (the codex identity is rejected there).
-    expect(fresh).toMatch(
-      /^copilot-developer-cli\s+accepted \(5 models\) >\s+accepted \(37 models\)\s+GitHub Copilot CLI/m,
-    );
-    expect(fresh).toMatch(
-      /^copilot-developer-sandbox\s+accepted \(2 models\)\s+rejected \(400\)$/m,
-    );
-    expect(fresh.match(/ \*/g)).toBeNull();
-    expect(fresh.match(/\) >/g)).toHaveLength(1);
-    expect(fresh).toContain("; > = would be picked by the next landing (nothing stored yet)");
-    expect(fresh).toContain(
-      "Nothing stored yet for this profile: run `agent init` (or `agent start`) once; it probes " +
-        "on the host in use and stores the identity and host it lands on.",
-    );
-    expect(state().readProfileDirectPair(null)).toEqual({});
-    expect(fresh).toContain(`  codex on api.githubcopilot.com: ${PAT_REJECTION}`);
-    expect(fresh).toContain(
-      `  copilot-developer-sandbox on api.enterprise.githubcopilot.com (account): ${PAT_REJECTION}`,
-    );
-
-    // A pin without a stored pair marks nothing: the pin fixes the identity, so there is no pick to
-    // preview, and the host is still the probe's to find, so the `*` waits for the pair.
-    new CopilotEnvConfig().setProfile(null, { identity: COPILOT_CLI_INTEGRATION_ID });
-    const pinnedEmpty = await captureStdout(() => runAuth({ identities: true }));
-    expect(pinnedEmpty).toContain(`identity: pinned to ${COPILOT_CLI_INTEGRATION_ID}`);
-    expect(pinnedEmpty).not.toContain(">");
-    expect(pinnedEmpty.match(/ \*/g)).toBeNull();
-    expect(pinnedEmpty).toContain("The host is not stored yet for this profile");
-    new CopilotEnvConfig().setProfile(null, { identity: "auto" });
-
-    // A pinned landing stored only the host; with the pin cleared the slot holds that half alone.
-    // The next landing re-selects from the generic host, so no pick is previewed on the stored one.
-    state().setProfileDirectPair(null, { host: "https://api.enterprise.githubcopilot.com" });
-    const halfStored = await captureStdout(() => runAuth({ identities: true }));
-    expect(halfStored).toContain("host: auto (api.enterprise.githubcopilot.com in use)");
-    expect(halfStored).not.toContain(">");
-    expect(halfStored.match(/ \*/g)).toBeNull();
-    expect(halfStored).toContain("The identity is not stored yet for this profile");
-
-    // The stored pair is THE identity in use: one `*`, on its host, and the `>` preview is gone.
-    state().setProfileDirectPair(null, {
-      integrationId: COPILOT_CLI_INTEGRATION_ID,
-      host: GENERIC_HOST,
-    });
-    const stored = await captureStdout(() => runAuth({ identities: true }));
-    expect(stored).toMatch(
-      /^copilot-developer-cli\s+accepted \(5 models\) \*\s+accepted \(37 models\)\s/m,
-    );
-    expect(stored.match(/ \*/g)).toHaveLength(1);
-    expect(stored).not.toContain(">");
-    expect(stored).not.toContain("Nothing stored yet");
-
-    // Negative control: an agent file baking another identity changes nothing; the files are
-    // outputs, and the survey never reads them.
-    configureClaudeConfig(claudeHome, {
-      mode: "direct",
-      credential: { kind: "command" },
-      direct: directWiring(COPILOT_SANDBOX_INTEGRATION_ID, DEFAULT_COPILOT_API_BASE),
-    });
-    expect(await captureStdout(() => runAuth({ identities: true }))).toBe(stored);
-
-    // A pin overlays the stored identity: the mark moves to it, and the note names the overlay.
-    await runAuth({ identity: COPILOT_SANDBOX_INTEGRATION_ID });
-    const pinned = await captureStdout(() => runAuth({ identities: true }));
-    expect(pinned).toContain(`identity: pinned to ${COPILOT_SANDBOX_INTEGRATION_ID}`);
-    expect(pinned).toMatch(
-      /^copilot-developer-cli\s+accepted \(5 models\)\s+accepted \(37 models\)\s/m,
-    );
-    expect(pinned).toMatch(
-      /^copilot-developer-sandbox\s+accepted \(2 models\) \*\s+rejected \(400\)$/m,
-    );
-    expect(pinned).toContain(
-      "Slot: the probed identity is copilot-developer-cli; the pin overlays it at every " +
-        "re-render and daemon start.",
-    );
-
-    // A pin that is not a built-in candidate is still probed and marked, never a bare `-`.
-    new CopilotEnvConfig().setProfile(null, { identity: FOREIGN_ID });
-    const foreign = await captureStdout(() => runAuth({ identities: true }));
-    expect(foreign).toMatch(FOREIGN_MARKED_ROW);
-    expect(foreign).toContain(`  ${FOREIGN_ID} on api.githubcopilot.com: ${PAT_REJECTION}`);
-
-    // A stored identity no candidate list names (set here directly: a landing never stores a
-    // pin) stays in use once the pin clears, so its row stays and keeps the mark.
-    new CopilotEnvConfig().setProfile(null, { identity: "auto" });
-    state().setProfileDirectPair(null, { integrationId: FOREIGN_ID, host: GENERIC_HOST });
-    const storedForeign = await captureStdout(() => runAuth({ identities: true }));
-    expect(storedForeign).toContain("identity: auto");
-    expect(storedForeign).toMatch(FOREIGN_MARKED_ROW);
-    expect(storedForeign.match(/ \*/g)).toHaveLength(1);
-
-    // A credential the proxy exchanges itself (device-flow) has no identity story of its own: the
-    // credential write took the pair with it, so the slot reads as never probed again.
-    state().setCredential(null, { kind: "stored", provider: "copilot", token: "ghu_device" });
-    const exchanged = await captureStdout(() => runAuth({ identities: true }));
-    expect(exchanged.match(/ \*/g)).toBeNull();
-    expect(exchanged).toContain("Nothing stored yet for this profile");
-    expect(exchanged).not.toContain("passthrough");
-
-    // A running daemon keeps the identity and host it launched with, and the table says so.
-    writeRunState({ pid: process.pid, port: 4141 });
-    const running = await captureStdout(() => runAuth({ identities: true }));
-    expect(running).toContain(
-      "Proxy: a daemon is running and keeps the identity and host it launched with; restart it " +
-        "to apply a change: `agent stop`, then `agent start`.",
-    );
-  } finally {
-    setIntegrationProbeFetch(null);
-    if (columns === undefined) delete process.env.COLUMNS;
-    else process.env.COLUMNS = columns;
-  }
-});
-
-/** Every verdict kind on the host in use, an absent cell on the account's host, and the would-be
- *  pick, so every color the palette has lands somewhere. */
-const SURVEY_TABLE: IdentityTableInput = {
-  survey: {
-    hosts: [
-      {
-        apiBase: GENERIC_HOST,
-        role: "generic",
-        verdicts: [
-          { name: CODEX_IDENTITY_NAME, verdict: { kind: "rejected", detail: PAT_REJECTION } },
-          { name: COPILOT_CLI_INTEGRATION_ID, verdict: { kind: "accepted", models: 5 } },
-          {
-            name: VSCODE_CHAT_INTEGRATION_ID,
-            verdict: { kind: "inconclusive", detail: "503 upstream unavailable", status: 503 },
-          },
-        ],
-      },
-      {
-        apiBase: "https://api.enterprise.githubcopilot.com",
-        role: "designated",
-        verdicts: [
-          { name: CODEX_IDENTITY_NAME, verdict: { kind: "rejected", detail: PAT_REJECTION } },
-          { name: COPILOT_CLI_INTEGRATION_ID, verdict: { kind: "accepted", models: 37 } },
-        ],
-      },
-    ],
-    designatedUnknown: false,
-  },
-  pinned: null,
-  configuredHost: null,
-  stored: {},
-  hostInUse: GENERIC_HOST,
-  slot: { kind: "empty", wouldPick: COPILOT_CLI_INTEGRATION_ID },
-  daemonRunning: false,
-  profile: null,
-  color: false,
-};
-
-const ESC = "\x1b";
-
-test("identityTableLines: with color on, the palette paints the survey like agent config and strips back to the plain layout", () => {
-  const columns = process.env.COLUMNS;
-  process.env.COLUMNS = "160";
-  try {
-    const plain = identityTableLines(SURVEY_TABLE);
-    const colored = identityTableLines({ ...SURVEY_TABLE, color: true });
-    expect(plain.join("\n")).not.toContain("\x1b");
-    // Escapes never move a cell: stripped, the painted table IS the plain one, line for line.
-    const sgr = new RegExp(`${ESC}\\[[0-9;]*m`, "g");
-    expect(colored.map((line) => line.replace(sgr, ""))).toEqual(plain);
-    const painted = colored.join("\n");
-    expect(painted).toContain("\x1b[1midentity\x1b[22m");
-    expect(painted).toContain(`\x1b[36m${COPILOT_CLI_INTEGRATION_ID}\x1b[39m`);
-    expect(painted).toContain("\x1b[32maccepted (5 models)\x1b[39m \x1b[32m>\x1b[39m");
-    expect(painted).toContain("\x1b[33mrejected (400)\x1b[39m");
-    expect(painted).toContain("\x1b[2munclear (503)\x1b[22m");
-    expect(painted).toContain("\x1b[2m-\x1b[22m");
-    expect(painted).toContain("api.githubcopilot.com \x1b[2m(in use)\x1b[22m");
-    // The legend, every note, and every reason are dim end to end: one open, one close, so the
-    // host label inside a reason never nests a dim of its own.
-    const dimWhole = (line: string | undefined, indent = ""): boolean =>
-      line?.startsWith(`${indent}\x1b[2m`) === true &&
-      line.endsWith("\x1b[22m") &&
-      line.split(ESC).length === 3;
-    expect(dimWhole(colored.find((line) => line.includes("* = in use")))).toBe(true);
-    expect(dimWhole(colored.find((line) => line.includes("Nothing stored yet")))).toBe(true);
-    const reason = colored.find((line) => line.includes("codex on api.enterprise."));
-    expect(reason).toContain("(account)");
-    expect(dimWhole(reason, "  ")).toBe(true);
-  } finally {
-    if (columns === undefined) delete process.env.COLUMNS;
-    else process.env.COLUMNS = columns;
-  }
-});
-
-test("identity survey: columns are the generic host, the account's when it differs, and the host in use (the literal, else the stored host)", async () => {
-  isolate();
-  const credential = { kind: "stored", provider: "gh-token", token: "github_pat_x" } as const;
-  state().setCredential(null, credential);
-  const columns = process.env.COLUMNS;
-  process.env.COLUMNS = "200";
-  try {
-    // The account is served on the generic host: one column, marked in use.
-    stubIdentitySurvey("https://api.githubcopilot.com");
-    const one = await captureStdout(() => runAuth({ identities: true }));
-    expect(one).toMatch(/^identity\s+api\.githubcopilot\.com \(in use\)\s+note$/m);
-    expect(one).not.toContain("(account)");
-
-    // A literal adds its column and takes the in-use mark over the stored host: the stored codex
-    // identity is marked on the literal's column, where every identity is accepted.
-    state().setProfileDirectPair(null, { integrationId: null, host: GENERIC_HOST });
-    new CopilotEnvConfig().setProfile(null, { host: CONFIGURED_HOST });
-    stubIdentitySurvey();
-    const three = await captureStdout(() => runAuth({ identities: true }));
-    expect(three).toContain(`host: ${CONFIGURED_HOST}`);
-    expect(three).toMatch(
-      /^identity\s+api\.githubcopilot\.com\s+api\.enterprise\.githubcopilot\.com \(account\)\s+copilot\.example \(host, in use\)\s+note$/m,
-    );
-    expect(three).toMatch(
-      /^codex\s+rejected \(400\)\s+rejected \(400\)\s+accepted \(9 models\) \*\s+the default/m,
-    );
-    expect(three.match(/ \*/g)).toHaveLength(1);
-
-    // Under `auto` the stored host is the host in use: a column of its own when the account lookup
-    // fails (no account column to merge into), tagged as stored, and the mark sits there.
-    new CopilotEnvConfig().delProfile(null, "host");
-    state().setProfileDirectPair(null, {
-      integrationId: COPILOT_CLI_INTEGRATION_ID,
-      host: "https://api.enterprise.githubcopilot.com",
-    });
-    setIntegrationProbeFetch((input, init) => {
-      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-      if (url.includes("/copilot_internal/user")) {
-        return Promise.resolve(new Response("upstream", { status: 503 }));
-      }
-      return stubbedSurveyFetch(input, init);
-    });
-    const storedHost = await captureStdout(() => runAuth({ identities: true }));
-    expect(storedHost).toContain("host: auto (api.enterprise.githubcopilot.com in use)");
-    expect(storedHost).toMatch(
-      /^identity\s+api\.githubcopilot\.com\s+api\.enterprise\.githubcopilot\.com \(stored, in use\)\s+note$/m,
-    );
-    expect(storedHost).toMatch(
-      /^copilot-developer-cli\s+accepted \(5 models\)\s+accepted \(37 models\) \*\s/m,
-    );
-    expect(storedHost).toContain(
-      "Host: the account's designated host could not be looked up (transient); only the hosts " +
-        "above were surveyed.",
-    );
-
-    // A literal equal to the account's host is one column, in its account role.
-    stubIdentitySurvey();
-    new CopilotEnvConfig().setProfile(null, { host: "https://api.enterprise.githubcopilot.com" });
-    const merged = await captureStdout(() => runAuth({ identities: true }));
-    expect(merged).toMatch(
-      /^identity\s+api\.githubcopilot\.com\s+api\.enterprise\.githubcopilot\.com \(account, in use\)\s+note$/m,
-    );
-    expect(merged).not.toContain("host, in use");
-  } finally {
-    setIntegrationProbeFetch(null);
-    if (columns === undefined) delete process.env.COLUMNS;
-    else process.env.COLUMNS = columns;
-  }
-});
-
-test("identity survey: at 80 columns the note wraps inside its own column, never under the identity", async () => {
-  isolate();
-  state().setCredential(null, { kind: "stored", provider: "gh-token", token: "github_pat_x" });
-  // One host column (the account is served on the generic host), so the columns fit and wrap.
-  stubIdentitySurvey("https://api.githubcopilot.com");
-  const columns = process.env.COLUMNS;
-  process.env.COLUMNS = "80";
-  try {
-    const lines = (await captureStdout(() => runAuth({ identities: true }))).split("\n");
-    expect(lines.filter((line) => line.length > 80)).toEqual([]);
-    const header = lines.find((line) => line.startsWith("identity  "));
-    const noteAt = header?.indexOf("note") ?? -1;
-    expect(noteAt).toBeGreaterThan(0);
-    // The codex note breaks before its longest word; the continuation starts where the note
-    // column does, with every cell before it blank.
-    const continuation = lines.find((line) => /^\s+Copilot-Integration-Id/.test(line));
-    expect(continuation?.search(/\S/)).toBe(noteAt);
-  } finally {
-    setIntegrationProbeFetch(null);
-    if (columns === undefined) delete process.env.COLUMNS;
-    else process.env.COLUMNS = columns;
-  }
-});
-
-test("set identity <id>: refused only when EVERY host rejects; one acceptance pins and names the other verdicts; auto clears", async () => {
-  isolate();
-  state().setCredential(null, { kind: "stored", provider: "gh-token", token: "github_pat_x" });
-  stubIdentitySurvey();
-  try {
-    await expect(runAuth({ identity: VSCODE_CHAT_INTEGRATION_ID })).rejects.toThrow(
-      [
-        `every host rejects this credential under \`${VSCODE_CHAT_INTEGRATION_ID}\`; not pinned:`,
-        `  - api.githubcopilot.com: ${PAT_REJECTION}`,
-        `  - api.enterprise.githubcopilot.com (account): ${PAT_REJECTION}`,
-      ].join("\n"),
-    );
-    expect(new CopilotEnvConfig().pinnedIntegrationId(null)).toBeNull();
-
-    // Accepted on the generic host, rejected on the account's: pinned, and the warning names what
-    // carried it.
-    const narrated = await captureStderr(() =>
-      runAuth({ identity: COPILOT_SANDBOX_INTEGRATION_ID }),
-    );
-    expect(new CopilotEnvConfig().pinnedIntegrationId(null)).toBe(COPILOT_SANDBOX_INTEGRATION_ID);
-    // consola's fancy reporter strips the backticks around the id; the CI reporter keeps them.
-    expect(narrated).toMatch(
-      new RegExp(
-        `api\\.enterprise\\.githubcopilot\\.com \\(account\\): rejects \`?${COPILOT_SANDBOX_INTEGRATION_ID}\`? ` +
-          `\\(${PAT_REJECTION}\\); pinning on api\\.githubcopilot\\.com accepting it\\.`,
-      ),
-    );
-
-    await runAuth({ identity: "auto" });
-    expect(new CopilotEnvConfig().pinnedIntegrationId(null)).toBeNull();
-
-    // A transient account-host lookup leaves that host unknown and a blocked generic host (403)
-    // is inconclusive: nothing definitive stands against the pin, so it lands unverified and
-    // says so.
-    setIntegrationProbeFetch((input) => {
-      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-      return Promise.resolve(
-        url.includes("/copilot_internal/user")
-          ? new Response("upstream", { status: 503 })
-          : new Response("forbidden", { status: 403 }),
-      );
-    });
-    const unknown = await captureStderr(() =>
-      runAuth({ identity: COPILOT_SANDBOX_INTEGRATION_ID }),
-    );
-    expect(new CopilotEnvConfig().pinnedIntegrationId(null)).toBe(COPILOT_SANDBOX_INTEGRATION_ID);
-    expect(unknown).toContain(
-      "The account's designated host could not be looked up (transient); pinning unverified.",
-    );
-
-    // Under a literal every request goes there, so its rejection alone refuses the pin even though
-    // another host accepts the identity (the enterprise host rejects the sandbox id in this stub).
-    await runAuth({ identity: "auto" });
-    stubIdentitySurvey();
-    new CopilotEnvConfig().setProfile(null, { host: "https://api.enterprise.githubcopilot.com" });
-    await expect(runAuth({ identity: COPILOT_SANDBOX_INTEGRATION_ID })).rejects.toThrow(
-      "api.enterprise.githubcopilot.com (account, in use) rejects this credential under " +
-        `\`${COPILOT_SANDBOX_INTEGRATION_ID}\`; not pinned, every request goes to the ` +
-        `host in use: ${PAT_REJECTION}`,
-    );
-    expect(new CopilotEnvConfig().pinnedIntegrationId(null)).toBeNull();
-
-    // Under `auto` the same rule reads the host auto WOULD select for the pin: the generic host
-    // answers 400 for the sandbox id (kept: 400 is an identity answer), so its rejection refuses
-    // the pin even though the account's host accepts that id; the CLI id, accepted there, pins.
-    new CopilotEnvConfig().delProfile(null, "host");
-    setIntegrationProbeFetch((input, init) => {
-      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-      if (url.includes("/copilot_internal/user")) {
-        return Promise.resolve(
-          new Response(
-            JSON.stringify({ endpoints: { api: "https://api.enterprise.githubcopilot.com" } }),
-            { status: 200 },
-          ),
-        );
-      }
-      const id = new Headers(init?.headers).get(INTEGRATION_ID_HEADER);
-      const enterprise = url.startsWith("https://api.enterprise.");
-      const accepted =
-        id === COPILOT_CLI_INTEGRATION_ID || (id === COPILOT_SANDBOX_INTEGRATION_ID && enterprise);
-      return Promise.resolve(
-        accepted
-          ? new Response(JSON.stringify({ data: [{}] }), { status: 200 })
-          : new Response("Personal Access Tokens are not supported for this endpoint", {
-              status: 400,
-            }),
-      );
-    });
-    await expect(runAuth({ identity: COPILOT_SANDBOX_INTEGRATION_ID })).rejects.toThrow(
-      "api.githubcopilot.com rejects this credential under " +
-        `\`${COPILOT_SANDBOX_INTEGRATION_ID}\`; not pinned, every request goes to the host auto ` +
-        `selects for this identity: ${PAT_REJECTION}`,
-    );
-    expect(new CopilotEnvConfig().pinnedIntegrationId(null)).toBeNull();
-    await runAuth({ identity: COPILOT_CLI_INTEGRATION_ID });
-    expect(new CopilotEnvConfig().pinnedIntegrationId(null)).toBe(COPILOT_CLI_INTEGRATION_ID);
-  } finally {
-    setIntegrationProbeFetch(null);
-  }
-});
-
-test("auth --get and the proxy-token resolver return the credential without a catalog refresh or a Codex config rewrite: a due catalog and a healable Codex config stay byte-identical", async () => {
-  isolate();
-  enableCatalog();
-  // What a refresh would act on: a config with our provider and no catalog
-  // reference (the sync's add-only heal), no catalog file, and a throttle that reads as due.
-  const codexHome = join(dir, ".codex");
-  mkdirSync(codexHome, { recursive: true });
-  const configPath = join(codexHome, "config.toml");
-  writeFileSync(configPath, stringify({ model_provider: "copilot-env" }));
-  const configBytes = readFileSync(configPath, "utf8");
-  const catalogFile = new CopilotApiPaths().codexModelCatalogFile;
-  state().setCredential(null, { kind: "stored", provider: "gh-token", token: "ghu_stored123" });
-
-  expect(await captureStdout(() => runAuth({ get: true }))).toBe("ghu_stored123\n");
-  expect(process.exitCode).toBe(0);
-  expect(await captureStdout(() => Promise.resolve(runPrintProxyToken(null)))).toMatch(
-    /^[0-9a-f]{64}\n$/,
-  );
-
-  expect(readFileSync(configPath, "utf8")).toBe(configBytes);
-  expect(existsSync(catalogFile)).toBe(false);
-  // Not even the refresh's own bookkeeping ran: the attempt stamp is what a refresh writes first.
-  expect(state().read().codexCatalogLastAttemptMs).toBe(0);
-});
-
-// --- gh-cli verify gate (failed-probe honesty) --------------------------------
-
-test("resolveWithReason: one probe answers with the token or names the provider and gh's detail", () => {
-  isolate();
-  const credential = new Credential(state());
-  const noGh: GhTokenLook = { kind: "absent", detail: "`gh` is not on this process's PATH" };
-  expect(credential.resolveWithReason(() => noGh)).toEqual({
-    token: null,
-    reason: "no GitHub credential configured - run `agent auth` to log in",
-  });
-  credential.record({ kind: "gh-cli", ghUser: "octocat" });
-  expect(
-    credential.resolveWithReason(() => ({ kind: "found", token: "tok", command: "gh auth token" })),
-  ).toEqual({
-    token: "tok",
-    reason: null,
-  });
-  // gh-cli recorded but gh missing from this process's PATH (the MCP-server case): the
-  // provider is named and nothing sends the user to `agent auth`, which from a shell
-  // where gh IS on PATH would say "already authenticated".
-  const missing = credential.resolveWithReason(() => noGh).reason;
-  expect(missing).toContain("provider 'gh-cli as octocat' is selected but no credential resolves");
-  expect(missing).toContain("`gh` is not on this process's PATH");
-  expect(missing).toContain("minimal PATH");
-  expect(missing).not.toContain("agent auth");
-  const refused = credential.resolveWithReason(() => ({
-    kind: "absent",
-    detail: "`gh auth token` exited 1: no oauth token",
-  })).reason;
-  expect(refused).toContain("no oauth token");
-  expect(refused).not.toContain("minimal PATH");
-  const named = new Credential(state(), parseProfileName("p1"));
-  expect(named.resolveWithReason(() => noGh).reason).toContain(
-    "for profile 'p1' - run `agent profile p1 auth` to log in (a named profile never falls back",
-  );
-});
-
-test("ghTokenLookFromSpawn: completed exits prove, a dead spawn stays unproven", () => {
-  expect(ghTokenLookFromSpawn({ status: 0, stdout: " tok \n" })).toEqual({
-    kind: "found",
-    token: "tok",
-    command: "gh auth token",
-  });
-  // gh RAN: proven misses, the detail carrying gh's own first stderr line when there is one.
-  expect(
-    ghTokenLookFromSpawn({ status: 0, stdout: "", stderr: "credential unavailable\n" }),
-  ).toEqual({
-    kind: "absent",
-    detail: "`gh auth token` printed no token: credential unavailable",
-  });
-  expect(
-    ghTokenLookFromSpawn({ status: 1, stdout: "", stderr: "no oauth token\r\nmore\r\n" }),
-  ).toEqual({
-    kind: "absent",
-    detail: "`gh auth token` exited 1: no oauth token",
-  });
-  // The spawn never completed (timeout kill / spawn error): proven NOTHING.
-  expect(ghTokenLookFromSpawn({ status: null })).toEqual({
-    kind: "unproven",
-    detail: "`gh auth token` did not complete (the spawn was killed)",
-  });
-  expect(ghTokenLookFromSpawn({ status: 1, error: new Error("ETIMEDOUT"), stdout: "" })).toEqual({
-    kind: "unproven",
-    detail: "`gh auth token` did not complete (ETIMEDOUT)",
-  });
-});
-
-const AUTO = { kind: "auto", activeLogin: null } as const;
-const PINNED_WORK = { kind: "pinned", login: "work" } as const;
-const WORK_MISS_DETAIL =
-  "`gh auth token --user work --hostname github.com` exited 1: no oauth token found";
-/** The refusal as the user reads it, every line: the headline, gh's own answer, the ways out with
- *  the command first. The lines are what a user acts on, so the whole message is the contract. */
-const WORK_REFUSAL = [
-  "gh cannot serve the pinned account by name.",
-  "  account: work",
-  `  ${WORK_MISS_DETAIL}`,
-  "Pick one:",
-  "  gh auth login              re-login on gh 2.40 or newer, then retry",
-  "  agent auth --gh-user auto  follow gh's active account (switches with gh)",
-].join("\n");
-
-test("the refusal paints only what the reader acts on (the login, each command) and stays aligned with color off", () => {
-  const CYAN = "\x1b[36m";
-  const CLOSE = "\x1b[39m";
-  const detail =
-    "`gh auth token --user octocat --hostname github.com` exited 1: no oauth token found";
-  const painted = ghCannotServeByName("octocat", detail, "agent auth", true, 80).message;
-  expect(painted).toBe(
-    [
-      "gh cannot serve the pinned account by name.",
-      `  account: ${CYAN}octocat${CLOSE}`,
-      `  ${detail}`,
-      "Pick one:",
-      `  ${CYAN}gh auth login${CLOSE}              re-login on gh 2.40 or newer, then retry`,
-      `  ${CYAN}agent auth --gh-user auto${CLOSE}  follow gh's active account (switches with gh)`,
-    ].join("\n"),
-  );
-  // A pipe or NO_COLOR: the same bytes minus the escapes, so the columns do not shift.
-  expect(ghCannotServeByName("octocat", detail, "agent auth", false, 80).message).toBe(
-    painted.replaceAll(CYAN, "").replaceAll(CLOSE, ""),
-  );
-  // A named profile's command is longer. At 80 columns the description wraps under its own
-  // column; left to the logger, the hanging indent would put "retry" under the command.
-  expect(ghCannotServeByName("octocat", detail, "agent profile work auth", false, 80).message).toBe(
-    [
-      "gh cannot serve the pinned account by name.",
-      "  account: octocat",
-      `  ${detail}`,
-      "Pick one:",
-      "  gh auth login                           re-login on gh 2.40 or newer, then",
-      "                                          retry",
-      "  agent profile work auth --gh-user auto  follow gh's active account (switches",
-      "                                          with gh)",
-    ].join("\n"),
-  );
-});
-
-test("loginWithGhCli: an UNPROVEN look says could-not-check; a pin gh cannot serve by name refuses and never consults the plain call", async () => {
-  isolate(); // clears GH_TOKEN/GITHUB_TOKEN so a runner credential never shapes the wording
-  const killed: GhTokenLook = {
-    kind: "unproven",
-    detail: "`gh auth token` did not complete (killed)",
-  };
-  expect(() => loginWithGhCli(AUTO, () => killed)).toThrow(
-    [
-      "could not check gh authentication.",
-      "  `gh auth token` did not complete (killed)",
-      "Fix:",
-      "  agent auth  retry",
-    ].join("\n"),
-  );
-  expect(() =>
-    loginWithGhCli(AUTO, () => ({
-      kind: "absent",
-      detail: "`gh auth token` exited 1: not logged in",
-    })),
-  ).toThrow(
-    [
-      "gh is not authenticated.",
-      "  `gh auth token` exited 1: not logged in",
-      "Fix:",
-      "  gh auth login  log in",
-      "  agent auth     then retry",
-    ].join("\n"),
-  );
-  expect(() =>
-    loginWithGhCli(AUTO, () => ({ kind: "found", token: "tok", command: "gh auth token" })),
-  ).not.toThrow();
-  // The auto success line names the followed account when known (nothing hidden).
-  const named = await captureStderr(() => {
-    loginWithGhCli({ kind: "auto", activeLogin: "octocat" }, () => ({
-      kind: "found",
-      token: "tok",
-      command: "gh auth token",
-    }));
-    return Promise.resolve();
-  });
-  expect(named).toContain(
-    "Using the gh CLI login on AUTO as the Direct credential. currently account octocat " +
-      "follows gh account switches",
-  );
-  // A pinned account wears its own words: the miss is about THAT account (gh's active login may
-  // well be fine), the look receives the pin to verify, and gh's own stderr is quoted verbatim.
-  const asked: Array<string | null> = [];
-  const miss: GhTokenLook = { kind: "absent", detail: WORK_MISS_DETAIL };
-  const pinnedMiss = (ghUser: string | null) => {
-    asked.push(ghUser);
-    return miss;
-  };
-  // An Error argument makes toThrow compare the whole message, not a substring.
-  expect(() => loginWithGhCli(PINNED_WORK, pinnedMiss)).toThrow(new Error(WORK_REFUSAL));
-  expect(() => loginWithGhCli(PINNED_WORK, () => killed)).toThrow(
-    [
-      "could not check gh authentication.",
-      "  `gh auth token` did not complete (killed)",
-      "Fix:",
-      "  agent auth  retry",
-    ].join("\n"),
-  );
-  expect(asked).toEqual(["work"]);
-  expect(
-    loginWithGhCli(PINNED_WORK, () => ({ kind: "found", token: "tok", command: "gh auth token" })),
-  ).toEqual({ kind: "pinned", ghUser: "work" });
-
-  // The one saved login on a hosts.yml gh wrote before 2.40: `--user` refuses it while the plain
-  // call would serve it. That token is whichever account gh has active, so the pin refuses rather
-  // than follow it (a later `gh auth login` would spend the other account's Copilot credit), and
-  // the plain call is never asked. The fallback this replaces shipped as #395.
-  const served = (ghUser: string | null): GhTokenLook => {
-    asked.push(ghUser);
-    return ghUser === null
-      ? { kind: "found", token: "gho_active", command: "gh auth token --hostname github.com" }
-      : miss;
-  };
-  asked.length = 0;
-  expect(() => loginWithGhCli(PINNED_WORK, served)).toThrow(new Error(WORK_REFUSAL));
-  expect(asked).toEqual(["work"]);
-  // The way out names the command that reruns THIS acquisition: a named profile's user following
-  // the default's would re-auth the wrong slot. Width-independent (the command column never
-  // wraps); the 80-column layout is pinned above with an explicit width.
-  const forWork = thrownBy(() =>
-    loginWithGhCli(PINNED_WORK, pinnedMiss, "agent profile work auth"),
-  );
-  expect(forWork).toContain("  agent profile work auth --gh-user auto  ");
-  expect(forWork).not.toContain("agent auth --gh-user auto");
-});
-
-/** The message `run` throws, or "" when it returns. */
-function thrownBy(run: () => unknown): string {
-  try {
-    run();
-  } catch (e) {
-    return errMessage(e);
-  }
-  return "";
-}
-
-// --- the pinned look: one gh call, quoted back on a miss ------------------------------------
-
-/** A remote Linux box: a hosts.yml login and a missing-scope warning that makes `gh auth status`
- *  exit 1. The check marks are gh's output, fine inside a fixture literal. */
-const HOSTS_YML_STATUS = `github.com
-  \u2713 Logged in to github.com account work-bot (/home/user/.config/gh/hosts.yml)
-  - Active account: true
-  - Git operations protocol: https
-  - Token: gho_************************
-  - Token scopes: 'read:user', 'repo'
-  ! Missing required token scopes: 'read:org'
-  - To request missing scopes, run: gh auth refresh -h github.com
-`;
-
-type GhRun = (spec: GhSpawnSpec) => { status: number | null; stdout: string; stderr: string };
-
-function fakeGh(reply: { status: number | null; stdout?: string; stderr?: string }): {
-  run: GhRun;
-  calls: string[];
-} {
-  const calls: string[] = [];
-  const run: GhRun = (spec) => {
-    calls.push(spec.args.join(" "));
-    return { stdout: "", stderr: "", ...reply };
-  };
-  return { run, calls };
-}
-
-const NO_TOKEN_FOR_USER = {
-  status: 1,
-  stderr: "no oauth token found for github.com account work-bot",
-};
-const PINNED_CALL = "auth token --user work-bot --hostname github.com";
-
-test("ghAuthTokenLookVia: one gh call per look; a pin gh cannot serve is a proven miss quoting gh, never another account's token", () => {
-  isolate();
-  const rows: Array<{
-    label: string;
-    ghUser: string | null;
-    reply: { status: number | null; stdout?: string; stderr?: string };
-    look: GhTokenLook;
-    calls: string[];
-  }> = [
-    {
-      label: "a served pin names the --user call",
-      ghUser: "work-bot",
-      reply: { status: 0, stdout: "gho_pinned\n" },
-      look: { kind: "found", token: "gho_pinned", command: `gh ${PINNED_CALL}` },
-      calls: [PINNED_CALL],
-    },
-    {
-      label: "a refused pin quotes gh and asks nothing else",
-      ghUser: "work-bot",
-      reply: NO_TOKEN_FOR_USER,
-      look: {
-        kind: "absent",
-        detail: `\`gh ${PINNED_CALL}\` exited 1: no oauth token found for github.com account work-bot`,
-      },
-      calls: [PINNED_CALL],
-    },
-    {
-      label: "auto follows gh's active account through the plain call",
-      ghUser: null,
-      reply: { status: 1, stderr: "not logged in" },
-      look: {
-        kind: "absent",
-        detail: "`gh auth token --hostname github.com` exited 1: not logged in",
-      },
-      calls: ["auth token --hostname github.com"],
-    },
-  ];
-  for (const row of rows) {
-    const gh = fakeGh(row.reply);
-    expect({
-      label: row.label,
-      look: ghAuthTokenLookVia(row.ghUser, "/opt/gh/gh", gh.run),
-      calls: gh.calls,
-    }).toEqual({ label: row.label, look: row.look, calls: row.calls });
-  }
-});
-
-test.skipIf(process.platform === "win32")(
-  "runGhSpecAsync settles when gh exits, not when a descendant releases the pipes",
-  async () => {
-    // A background child inherits gh's stdout: `close` would wait for it, `exit` does not. Its
-    // pid comes back on stderr so the test ends it instead of leaving it to run out.
-    const started = Date.now();
-    const result = await runGhSpecAsync({
-      file: "sh",
-      args: ["-c", "echo tok; sleep 5 & echo $! >&2"],
-      shell: false,
-      timeout: 10_000,
-      env: { PATH: "/usr/bin:/bin" },
-    });
-    const elapsed = Date.now() - started;
-    const descendant = Number(result.stderr?.trim());
-    try {
-      expect(result.status).toBe(0);
-      expect(result.stdout).toBe("tok\n");
-      expect(elapsed).toBeLessThan(900);
-    } finally {
-      process.kill(descendant);
-    }
-  },
-);
-
-// The production path end to end through a fake `gh` on PATH: status listing -> pin -> the pinned
-// look, then the recorded slot resolves through the same code every `--get` runs.
-// (POSIX shell scripts; the Windows .cmd dispatch is covered by the launch tests.)
-const onPosix = test.skipIf(process.platform === "win32");
-
-function fakeGhOnPath(script: string): void {
-  const bin = join(dir, "fake-bin");
-  mkdirSync(bin, { recursive: true });
-  writeFileSync(join(bin, "gh"), `#!/bin/sh\n${script}`, { mode: 0o755 });
-  // The fake bin dir FIRST, with the system dirs kept: findCommand resolves through `sh`.
-  process.env.PATH = `${bin}:/usr/bin:/bin`;
-}
-
-/** A gh whose `--user work-bot` call answers `user` (exit 0 serves the token, exit 1 refuses the
- *  pin), whose plain `auth token` serves `plain` when given, and whose status prints `status`
- *  with `statusExit`. Every other call is a test failure. */
-function ghScript(
-  user: { reply: string; exit: number },
-  status: string,
-  statusExit: number,
-  plain?: string,
-): string {
-  return [
-    'case "$*" in',
-    `  "auth token --user work-bot --hostname github.com") echo "${user.reply}"${
-      user.exit === 0 ? "" : " >&2"
-    }; exit ${user.exit};;`,
-    ...(plain === undefined
-      ? []
-      : [`  "auth token --hostname github.com") echo "${plain}"; exit 0;;`]),
-    `  "auth status --hostname github.com") cat <<'STATUS'\n${status}STATUS\n    exit ${statusExit};;`,
-    '  *) echo "unexpected gh call: $*" >&2; exit 2;;',
-    "esac",
-    "",
-  ].join("\n");
-}
-
-onPosix(
-  "auth --provider gh-cli lands a hosts.yml login through a fake gh; a pin gh cannot serve by name refuses, and only --gh-user auto follows the active account",
-  async () => {
-    const hadTty = process.stdin.isTTY;
-    process.stdin.isTTY = false;
-    try {
-      isolate();
-      fakeGhOnPath(ghScript({ reply: "gho_saved", exit: 0 }, HOSTS_YML_STATUS, 1));
-      await runAuth({ provider: "gh-cli" });
-      const stored = state().read();
-      expect([stored.authProvider, stored.ghUser]).toEqual(["gh-cli", "work-bot"]);
-      expect(new Credential().resolveWithReason()).toEqual({ token: "gho_saved", reason: null });
-      // The same box after `gh auth switch` to another account: the failure quotes gh's own refusal
-      // and never adopts the active account's token in the pin's place.
-      const WORK_BOT_REFUSAL = [
-        "gh cannot serve the pinned account by name.",
-        "  account: work-bot",
-        "  `gh auth token --user work-bot --hostname github.com` exited 1: no oauth token found " +
-          "for github.com account work-bot",
-        "Pick one:",
-        "  gh auth login              re-login on gh 2.40 or newer, then retry",
-        "  agent auth --gh-user auto  follow gh's active account (switches with gh)",
-      ].join("\n");
-      isolate();
-      fakeGhOnPath(ghScript({ reply: NO_TOKEN_FOR_USER.stderr, exit: 1 }, TWO_ACCOUNT_STATUS, 0));
-      await expect(runAuth({ provider: "gh-cli", ghUser: "work-bot" })).rejects.toThrow(
-        new Error(WORK_BOT_REFUSAL),
-      );
-      expect(state().read().authProvider).toBeNull();
-      // The pre-2.40 single-account hosts.yml (no `users:` map): status lists the one login,
-      // `--user` refuses it, the plain call would serve it. Following the active account is the
-      // user's choice, never a fallback, so nothing lands and the refusal names that choice.
-      isolate();
-      fakeGhOnPath(
-        ghScript({ reply: NO_TOKEN_FOR_USER.stderr, exit: 1 }, HOSTS_YML_STATUS, 1, "gho_legacy"),
-      );
-      await expect(runAuth({ provider: "gh-cli" })).rejects.toThrow(new Error(WORK_BOT_REFUSAL));
-      expect(state().read().authProvider).toBeNull();
-      // The named way out, taken: `--gh-user auto` lands the auto slot, says which account it
-      // follows right now, and resolves through the plain call.
-      const chosen = await captureStderr(() => runAuth({ provider: "gh-cli", ghUser: "auto" }));
-      expect(chosen).toContain(
-        "Using the gh CLI login on AUTO as the Direct credential. currently account work-bot " +
-          "follows gh account switches",
-      );
-      const landed = state().read();
-      expect([landed.authProvider, landed.ghUser]).toEqual(["gh-cli", null]);
-      expect(new Credential().resolveWithReason()).toEqual({ token: "gho_legacy", reason: null });
-    } finally {
-      process.stdin.isTTY = hadTty;
-    }
-  },
-);
-
-onPosix(
-  "a fresh named profile's `add --auto --gh-user <login>` refusal names the add form it can rerun, never an auth command whose slot does not exist yet",
-  async () => {
-    const hadTty = process.stdin.isTTY;
-    // addNamedProbed signs in only in a terminal; with --gh-user nothing is asked.
-    process.stdin.isTTY = true;
-    try {
-      isolate();
-      fakeGhOnPath(
-        ghScript({ reply: NO_TOKEN_FOR_USER.stderr, exit: 1 }, HOSTS_YML_STATUS, 1, "gho_legacy"),
-      );
-      const work = parseProfileName("work");
-      let refusal = "";
-      await captureStderr(async () => {
-        try {
-          await addProfile(work, { mode: "auto", ghUser: "work-bot" });
-        } catch (e) {
-          refusal = errMessage(e);
-        }
-      });
-      expect(refusal).toContain("gh cannot serve the pinned account by name.\n  account: work-bot");
-      expect(refusal).toContain("  agent profile work add --auto --gh-user auto  ");
-      expect(refusal).not.toContain("work auth");
-      // Nothing landed: the slot the auth form would need still does not exist.
-      expect(state().profileSlotStatus(work).exists).toBe(false);
-      // --gh-user is the sign-in step's flag, so it cannot ride with --no-auth.
-      await expect(
-        addProfile(work, { mode: "direct", ghUser: "auto", noAuth: true }),
-      ).rejects.toThrow("--gh-user runs the sign-in step; drop --no-auth");
-    } finally {
-      process.stdin.isTTY = hadTty;
-    }
-  },
-);
-
-onPosix(
-  "a dry run checks an explicit --gh-user pin as the real run does: the same refusal before anything is planned, and a servable pin's slot planned on the overlay with nothing written",
-  async () => {
-    const hadTty = process.stdin.isTTY;
-    process.stdin.isTTY = true;
-    try {
-      // The pre-2.40 hosts.yml: `--user` refuses, the plain call would serve. Before this fix the
-      // dry run of every add form printed "Would run the credential step" and succeeded while the
-      // real run refused the pin.
-      isolate();
-      fakeGhOnPath(
-        ghScript({ reply: NO_TOKEN_FOR_USER.stderr, exit: 1 }, HOSTS_YML_STATUS, 1, "gho_legacy"),
-      );
-      const work = parseProfileName("work");
-      const refusals: Record<string, string> = {};
-      const attempt = async (label: string, run: () => Promise<void>): Promise<string> => {
-        let message = "";
-        const { stdout } = await captureChannels(async () => {
-          try {
-            await run();
-          } catch (e) {
-            message = errMessage(e);
-          }
-        });
-        refusals[label] = message;
-        return words(stdout);
-      };
-      const flaggedDry = await attempt("flagged dry", () =>
-        addProfile(work, { mode: "proxy", ghUser: "work-bot", dryRun: true }),
-      );
-      expect(refusals["flagged dry"]).toContain(
-        "gh cannot serve the pinned account by name.\n  account: work-bot",
-      );
-      // The mode landed on the overlay before the step refused, so the plan shows what the real
-      // run would have written before failing, and the store itself is untouched.
-      expect(flaggedDry).toContain("Before it failed, the command would have:");
-      expect(flaggedDry).toContain('profiles.work.mode  (absent) -> "proxy"');
-      expect(state().profileSlotStatus(work).exists).toBe(false);
-      await attempt("probed dry", () =>
-        addProfile(work, { mode: "auto", ghUser: "work-bot", dryRun: true }),
-      );
-      expect(refusals["probed dry"]).toContain("  agent profile work add --auto --gh-user auto  ");
-      expect(state().profileSlotStatus(work).exists).toBe(false);
-      // The real flagged run refuses with the very same message (the mode record stays, as before).
-      await attempt("flagged real", () => addProfile(work, { mode: "proxy", ghUser: "work-bot" }));
-      expect(refusals["flagged real"]).toBe(refusals["flagged dry"]);
-      // A servable pin: the dry run plans the slot's credential through the same step.
-      isolate();
-      fakeGhOnPath(ghScript({ reply: "gho_saved", exit: 0 }, HOSTS_YML_STATUS, 1));
-      const planned = await attempt("servable dry", () =>
-        addProfile(work, { mode: "proxy", ghUser: "work-bot", dryRun: true }),
-      );
-      expect(refusals["servable dry"]).toBe("");
-      expect(planned).toContain("DRY RUN: nothing was written. The command would:");
-      expect(planned).toContain('profiles.work.mode  (absent) -> "proxy"');
-      expect(planned).toContain('profiles.work.ghUser  (absent) -> "work-bot"');
-      expect(state().profileSlotStatus(work).exists).toBe(false);
-    } finally {
-      process.stdin.isTTY = hadTty;
-    }
-  },
-);
-
-onPosix(
-  "headless, a dry run and the real run agree: an explicit --gh-user needs no terminal in either, a bare sign-in refuses in both, and only a terminal's bare dry run narrates the step",
-  async () => {
-    const hadTty = process.stdin.isTTY;
-    process.stdin.isTTY = false;
-    try {
-      isolate();
-      fakeGhOnPath(ghScript({ reply: "gho_saved", exit: 0 }, HOSTS_YML_STATUS, 1));
-      const outcome = async (run: () => Promise<void>): Promise<string> => {
-        let message = "";
-        await captureChannels(async () => {
-          try {
-            await run();
-          } catch (e) {
-            message = errMessage(e);
-          }
-        });
-        return message;
-      };
-      // A flag-settled acquisition prompts for nothing, so headless it runs in both: the dry run
-      // plans, the real run lands the slot.
-      const work = parseProfileName("work");
-      const settledDry = await outcome(() =>
-        addProfile(work, { mode: "proxy", ghUser: "work-bot", dryRun: true }),
-      );
-      expect(state().profileSlotStatus(work).exists).toBe(false);
-      const settledReal = await outcome(() =>
-        addProfile(work, { mode: "proxy", ghUser: "work-bot" }),
-      );
-      expect(settledReal).toBe(settledDry);
-      expect(settledReal).toBe("");
-      expect(state().profileSlotStatus(work).slot.credential).toMatchObject({
-        kind: "gh-cli",
-        ghUser: "work-bot",
-      });
-      // A bare sign-in would prompt, so headless both runs refuse before anything lands or plans.
-      const other = parseProfileName("other");
-      for (const mode of ["proxy", "auto"] as const) {
-        const bareDry = await outcome(() => addProfile(other, { mode, dryRun: true }));
-        const bareReal = await outcome(() => addProfile(other, { mode }));
-        expect(bareReal, mode).toBe(bareDry);
-        expect(bareReal, mode).toContain("not a terminal - pass ");
-        expect(state().profileSlotStatus(other).exists, mode).toBe(false);
-      }
-      // In a terminal the bare dry run cannot prompt either: it names the step it would run.
-      process.stdin.isTTY = true;
-      const named = await captureStderr(() => addProfile(other, { mode: "proxy", dryRun: true }));
-      expect(named).toContain("Would run the credential step (agent profile other auth)");
-      const init = await captureStderr(() => addProfile(null, { mode: "proxy", dryRun: true }));
-      expect(init).toContain("Would run the credential step (agent auth)");
-    } finally {
-      process.stdin.isTTY = hadTty;
-    }
-  },
-);
-
-onPosix(
-  "agent init takes --gh-user <login|auto> like add: the default profile's dry run plans the pinned slot headless",
-  () => {
-    isolate();
-    fakeGhOnPath(ghScript({ reply: "gho_saved", exit: 0 }, HOSTS_YML_STATUS, 1));
-    const env = { ...process.env, NO_COLOR: "1" };
-    const help = runCli(["init", "--help"], { env });
-    expect(help.stdout).toContain("--gh-user <login|auto>");
-    const dry = runCli(["init", "--proxy", "--gh-user", "work-bot", "--dry-run"], { env });
-    expect([dry.exitCode, dry.stderr]).toEqual([0, expect.not.stringContaining("unknown option")]);
-    expect(dry.stdout).toContain("DRY RUN: nothing was written. The command would:");
-    expect(dry.stdout).toContain('"work-bot"');
-    expect(state().read().authProvider).toBeNull();
-  },
-);
-
-// --- gh multi-account selection (choice menu only, never an auth verdict) ------
-
-// Real `gh auth status` shape (gh >= 2.40): per-host blocks, one "Logged in to"
-// line per account, the active one flagged on its own line. The check mark is
-// gh's output, fine inside a fixture literal.
-const TWO_ACCOUNT_STATUS = `github.com
-  ✓ Logged in to github.com account octocat (keyring)
-  - Active account: true
-  - Git operations protocol: https
-  - Token: gho_************************
-  ✓ Logged in to github.com account work-bot (keyring)
-  - Active account: false
-`;
-
-/** The retry command acquireCredential composes for the default slot's `auth`, and the gap that
- *  sets a bare retry cell level with the ` --gh-user <login>` one beside it. */
-const AUTH_GH_CLI = "agent auth --provider gh-cli";
-const PAD = " ".repeat(" --gh-user <login>".length + 2);
-
-function acct(login: string, active: boolean, source = "keyring"): GhAccount {
-  return { host: "github.com", login, active, source };
-}
-
-test("parseGhAuthStatusAccounts: accounts with active attribution; broken logins and noise never match", () => {
-  expect(parseGhAuthStatusAccounts(TWO_ACCOUNT_STATUS)).toEqual([
-    acct("octocat", true),
-    acct("work-bot", false),
-  ]);
-  // A broken login is never pickable, and its block's own "Active account: true" must not mark the
-  // healthy account parsed before it, in ANY of gh's failure wordings. Each failure block sits
-  // DIRECTLY after a healthy account, so a reset regex missing that wording marks the wrong
-  // account.
-  const withBrokenActive = [
-    "github.com",
-    "  ✓ Logged in to github.com account healthy (keyring)",
-    "  - Active account: false",
-    "  ✗ Timeout trying to log in to github.com account slow (keyring)",
-    "  - Active account: true",
-    "  ✓ Logged in to github.com account steady (keyring)",
-    "  - Active account: false",
-    "  ✗ Failed to log in to github.com account broken (keyring)",
-    "  - Active account: true",
-    "enterprise.example",
-    "  ✗ Failed to log in to enterprise.example using token (GH_ENTERPRISE_TOKEN)",
-    "  - Active account: true",
-  ].join("\n");
-  expect(parseGhAuthStatusAccounts(withBrokenActive)).toEqual([
-    acct("healthy", false),
-    { host: "github.com", login: "slow", active: true, source: "keyring", broken: true },
-    acct("steady", false),
-    { host: "github.com", login: "broken", active: true, source: "keyring", broken: true },
-    {
-      host: "enterprise.example",
-      login: "",
-      active: true,
-      source: "GH_ENTERPRISE_TOKEN",
-      broken: true,
-    },
-  ]);
-  // The BROKEN active login still names what auto follows: gh's bare resolution tracks the active
-  // account even when its login is broken.
-  expect(activeGhLogin(parseGhAuthStatusAccounts(withBrokenActive))).toBe("slow");
-  expect(parseGhAuthStatusAccounts("You are not logged into any GitHub hosts.")).toEqual([]);
-  // The credential source is captured for DISPLAY only: an exported GH_TOKEN can shadow a saved
-  // keyring credential for the same login, so the source never decides pinnability.
-  const envOverlap = parseGhAuthStatusAccounts(
-    [
-      "  ✓ Logged in to github.com account ci-bot (GH_TOKEN)",
-      "  - Active account: true",
-      "  ✓ Logged in to github.com account ci-bot (keyring)",
-      "  - Active account: false",
-    ].join("\n"),
-  );
-  expect(envOverlap).toEqual([acct("ci-bot", true, "GH_TOKEN"), acct("ci-bot", false)]);
-  expect(activeGhLogin(envOverlap)).toBe("ci-bot");
-  expect(activeGhLogin([acct("solo", false)])).toBe("solo");
-  expect(activeGhLogin([acct("a", false), acct("b", false)])).toBeNull();
-  expect(activeGhLogin([])).toBeNull();
-  // No active marker + a broken sibling: ambiguous, so nothing is named (the
-  // only-login fallback needs the WHOLE list, broken included, to agree).
-  expect(
-    activeGhLogin([
-      acct("healthy", false),
-      { host: "github.com", login: "slow", active: false, source: "keyring", broken: true },
-    ]),
-  ).toBeNull();
-  // An active entry whose login is unparseable (per-host env failure) names nothing.
-  expect(
-    activeGhLogin([
-      { host: "github.com", login: "", active: true, source: "GH_TOKEN", broken: true },
-      acct("healthy", false),
-    ]),
-  ).toBeNull();
-  // No marker + an UNNAMED broken sibling: still ambiguous, still nothing named.
-  expect(
-    activeGhLogin([
-      { host: "github.com", login: "", active: false, source: "GH_TOKEN", broken: true },
-      acct("healthy", false),
-    ]),
-  ).toBeNull();
-  // A repeated host+login+source triple collapses to one menu entry.
-  expect(parseGhAuthStatusAccounts(TWO_ACCOUNT_STATUS + TWO_ACCOUNT_STATUS).length).toBe(2);
-});
-
-test("the gh spawn recipes: every token call names github.com, a pinned account adds --user", () => {
-  // Host-scoped both ways: a bare `gh auth token` follows a GH_HOST override to another host.
-  const AUTO_CALL = ["auth", "token", "--hostname", "github.com"];
-  expect(ghAuthTokenSpawnSpec("/opt/gh/gh").args).toEqual(AUTO_CALL);
-  expect(ghAuthTokenSpawnSpec("/opt/gh/gh", null).args).toEqual(AUTO_CALL);
-  // The pin was chosen from github.com's logins, so the resolve names the host:
-  // a GH_HOST override must not point --user at another host's accounts.
-  expect(ghAuthTokenSpawnSpec("/opt/gh/gh", "work-bot").args).toEqual([
-    "auth",
-    "token",
-    "--user",
-    "work-bot",
-    "--hostname",
-    "github.com",
-  ]);
-  // The status probe is scoped to the pinnable host (an unreachable enterprise
-  // host must not eat the timeout), and its machine-parsed output is stripped of
-  // forced color: NO_COLOR set, the forcing vars dropped.
-  const hadForce = process.env.CLICOLOR_FORCE;
-  process.env.CLICOLOR_FORCE = "1";
-  try {
-    const status = ghAuthStatusSpawnSpec("/opt/gh/gh");
-    expect(status.args).toEqual(["auth", "status", "--hostname", "github.com"]);
-    expect(status.env.NO_COLOR).toBe("1");
-    expect(status.env.CLICOLOR_FORCE).toBeUndefined();
-  } finally {
-    if (hadForce === undefined) delete process.env.CLICOLOR_FORCE;
-    else process.env.CLICOLOR_FORCE = hadForce;
-  }
-});
-
-test("ghAccountsLookFromSpawn: ANY completed exit parses stdout+stderr; a dead spawn is unproven", () => {
-  const logins = (look: GhAccountsLook): string[] | "unproven" =>
-    look.kind === "listed" ? look.accounts.map((a) => a.login) : look.kind;
-  expect(
-    logins(ghAccountsLookFromSpawn({ status: 0, stdout: TWO_ACCOUNT_STATUS, stderr: "" })),
-  ).toEqual(["octocat", "work-bot"]);
-  // gh exits non-zero when one account's login is broken but still lists the
-  // healthy ones, and older gh printed the status to stderr: both stay proven.
-  expect(
-    logins(ghAccountsLookFromSpawn({ status: 1, stdout: null, stderr: TWO_ACCOUNT_STATUS })),
-  ).toEqual(["octocat", "work-bot"]);
-  expect(ghAccountsLookFromSpawn({ status: null })).toEqual({ kind: "unproven" });
-  expect(ghAccountsLookFromSpawn({ status: 0, error: new Error("ETIMEDOUT") })).toEqual({
-    kind: "unproven",
-  });
-});
-
-test("chooseGhAccount: pinning is the only default - sole login pins, non-TTY pins the active, auto never settles itself", async () => {
-  // Pin stdin to non-TTY for the duration: the settle rules under test are the
-  // non-interactive ones, and an interactive dev run must not open a prompt.
-  const hadTty = process.stdin.isTTY;
-  process.stdin.isTTY = false;
-  try {
-    // Nothing pinnable is an ERROR naming the escape hatches - recording auto
-    // would let a later `gh auth login` spend an unchosen account's credit.
-    await expect(chooseGhAccount(AUTH_GH_CLI, () => ({ kind: "unproven" }))).rejects.toThrow(
-      [
-        "could not list gh accounts.",
-        "  `gh auth status` did not run to completion",
-        "Pick one:",
-        `  ${AUTH_GH_CLI}${PAD}run it again`,
-        `  ${AUTH_GH_CLI} --gh-user <login>  pin an account by name, no listing needed`,
-      ].join("\n"),
-    );
-    await expect(
-      chooseGhAccount(AUTH_GH_CLI, () => ({ kind: "listed", accounts: [] })),
-    ).rejects.toThrow(
-      [
-        "gh has no logged-in github.com account.",
-        "Fix:",
-        "  gh auth login                 log in",
-        "  agent auth --provider gh-cli  then run it again",
-      ].join("\n"),
-    );
-    // One saved account: pinned to it. The slot write refuses when gh cannot serve it by name;
-    // it never settles on auto for the user.
-    expect(
-      await chooseGhAccount(AUTH_GH_CLI, () => ({
-        kind: "listed",
-        accounts: [acct("solo", true)],
-      })),
-    ).toEqual({
-      kind: "pinned",
-      login: "solo",
-    });
-    // Another host's login is not a github.com choice (Copilot's host).
-    expect(
-      await chooseGhAccount(AUTH_GH_CLI, () => ({
-        kind: "listed",
-        accounts: [
-          acct("solo", true),
-          {
-            host: "ghe.example.com",
-            login: "enterprise",
-            active: false,
-            source: "keyring",
-          },
-        ],
-      })),
-    ).toEqual({ kind: "pinned", login: "solo" });
-    // 2+ logins, non-TTY: the ACTIVE one is pinned, with a hint naming it and
-    // the escape hatches (an env-token source is still a choice - it may
-    // shadow a saved credential; the verify step is the gate, never the menu).
-    let envChoice: Awaited<ReturnType<typeof chooseGhAccount>> | undefined;
-    const envErr = (
-      await captureChannels(async () => {
-        envChoice = await chooseGhAccount(AUTH_GH_CLI, () => ({
-          kind: "listed",
-          accounts: [acct("solo", false), acct("ci-bot", true, "GH_TOKEN")],
-        }));
-      })
-    ).stderr;
-    expect(envChoice).toEqual({ kind: "pinned", login: "ci-bot" });
-    expect(envErr).toContain(
-      "gh has 2 logged-in accounts; pinning the active one.\n  active account: ci-bot\n",
-    );
-    expect(envErr).toContain(
-      [
-        "Pick one:",
-        `  ${AUTH_GH_CLI} --gh-user <login>  pin another account`,
-        `  ${AUTH_GH_CLI}${PAD}choose in a terminal (auto included)`,
-        "",
-      ].join("\n"),
-    );
-    // The env-token overlap of a saved login must not shrink the choice set.
-    let overlapChoice: Awaited<ReturnType<typeof chooseGhAccount>> | undefined;
-    await captureStderr(async () => {
-      overlapChoice = await chooseGhAccount(AUTH_GH_CLI, () => ({
-        kind: "listed",
-        accounts: [
-          acct("octocat", true, "GH_TOKEN"),
-          acct("octocat", false),
-          acct("work-bot", false),
-        ],
-      }));
-    });
-    expect(overlapChoice).toEqual({ kind: "pinned", login: "octocat" });
-    // 2+ logins and NO determinable active account: an error, never a guess.
-    await expect(
-      chooseGhAccount(AUTH_GH_CLI, () => ({
-        kind: "listed",
-        accounts: [acct("a", false), acct("b", false)],
-      })),
-    ).rejects.toThrow(
-      [
-        "gh has 2 logged-in accounts and no pinnable active one.",
-        "  pinnable: a, b",
-        "Pick one:",
-        `  ${AUTH_GH_CLI} --gh-user <login>  pin one of them`,
-        `  ${AUTH_GH_CLI}${PAD}choose in a terminal`,
-      ].join("\n"),
-    );
-    // A BROKEN entry still counts as an account: {healthy bystander, broken
-    // active} is a multi-account machine, so the bystander is never pinned
-    // silently - without a TTY that is the same honest error.
-    await expect(
-      chooseGhAccount(AUTH_GH_CLI, () => ({
-        kind: "listed",
-        accounts: [acct("healthy", false), { ...acct("hurt", true), broken: true as const }],
-      })),
-    ).rejects.toThrow(
-      [
-        "gh has 2 logged-in accounts and no pinnable active one.",
-        "  pinnable: healthy",
-        "Pick one:",
-        `  ${AUTH_GH_CLI} --gh-user <login>  pin one of them`,
-        `  ${AUTH_GH_CLI}${PAD}choose in a terminal`,
-      ].join("\n"),
-    );
-    // A dry run has one way out: the flag, since a preview never prompts.
-    await expect(
-      chooseGhAccount(
-        AUTH_GH_CLI,
-        () => ({ kind: "listed", accounts: [acct("a", false), acct("b", false)] }),
-        "dry-run",
-      ),
-    ).rejects.toThrow(
-      [
-        "gh has 2 logged-in accounts and no pinnable active one.",
-        "  pinnable: a, b",
-        "Fix:",
-        "  --gh-user <login>  add it to plan that landing (a dry run never prompts)",
-      ].join("\n"),
-    );
-    // Every way out is the acquisition's own retry command or extends it: for a named profile
-    // that is its own `auth`, never the default slot's `agent auth`, which would leave the profile
-    // as it was.
-    const WORK = "agent profile work auth --provider gh-cli";
-    await expect(chooseGhAccount(WORK, () => ({ kind: "unproven" }))).rejects.toThrow(
-      [
-        "Pick one:",
-        `  ${WORK}${PAD}run it again`,
-        `  ${WORK} --gh-user <login>  pin an account by name, no listing needed`,
-      ].join("\n"),
-    );
-    const workPin = (
-      await captureChannels(async () => {
-        await chooseGhAccount(WORK, () => ({
-          kind: "listed",
-          accounts: [acct("solo", false), acct("ci-bot", true)],
-        }));
-      })
-    ).stderr;
-    expect(workPin).toContain(
-      [
-        "Pick one:",
-        `  ${WORK} --gh-user <login>  pin another account`,
-        `  ${WORK}${PAD}choose in a terminal (auto included)`,
-        "",
-      ].join("\n"),
-    );
-    await expect(
-      chooseGhAccount(WORK, () => ({
-        kind: "listed",
-        accounts: [acct("a", false), acct("b", false)],
-      })),
-    ).rejects.toThrow(
-      [
-        "Pick one:",
-        `  ${WORK} --gh-user <login>  pin one of them`,
-        `  ${WORK}${PAD}choose in a terminal`,
-      ].join("\n"),
-    );
-    // A sole ENV-ONLY login still pins without a TTY (nothing to ask): its
-    // verification failure names the recovery.
-    expect(
-      await chooseGhAccount(AUTH_GH_CLI, () => ({
-        kind: "listed",
-        accounts: [acct("solo", true, "GH_TOKEN")],
-      })),
-    ).toEqual({ kind: "pinned", login: "solo" });
-  } finally {
-    process.stdin.isTTY = hadTty;
-  }
-});
-
-test("parseAcquisition: --gh-user implies gh-cli and rejects every conflicting flag", () => {
-  expect(parseAcquisition(undefined, undefined, "work-bot")).toEqual({
-    kind: "gh-cli",
-    account: { kind: "pinned", login: "work-bot" },
-  });
-  expect(parseAcquisition("gh-cli", undefined, " work-bot ")).toEqual({
-    kind: "gh-cli",
-    account: { kind: "pinned", login: "work-bot" },
-  });
-  // A bare gh-cli provider still asks (a sole saved login pins itself).
-  expect(parseAcquisition("gh-cli", undefined, undefined)).toEqual({
-    kind: "gh-cli",
-    account: { kind: "choose" },
-  });
-  // `auto` is the one value that is not a login: the explicit choice to follow gh's active
-  // account. Any casing, as GitHub logins are case-blind, so no spelling of it pins a user.
-  for (const auto of ["auto", " AUTO "]) {
-    expect(parseAcquisition(undefined, undefined, auto)).toEqual({
-      kind: "gh-cli",
-      account: { kind: "auto" },
-    });
-  }
-  expect(() => parseAcquisition("copilot", undefined, "x")).toThrow(
-    "--gh-user only applies to `--provider gh-cli`",
-  );
-  expect(() => parseAcquisition(undefined, "tok", "x")).toThrow("--set implies gh-token");
-  // The shape gate: the pin becomes a `gh auth token --user` argv token that
-  // crosses cmd.exe on Windows, so anything outside a GitHub login's alphabet
-  // (blank included) is rejected before it can reach a shell.
-  for (const bad of ["   ", "%USERNAME%", "a b", "x;rm", "why'd"]) {
-    expect(() => parseAcquisition(undefined, undefined, bad)).toThrow(
-      "--gh-user must be a GitHub login (1-39 letters, digits, dashes, or underscores) or `auto`",
-    );
-  }
-});
-
-test("Credential.resolve threads the slot's account pin into the gh probe", () => {
-  isolate();
-  const asked: Array<string | null> = [];
-  const gh = (ghUser: string | null): string | null => {
-    asked.push(ghUser);
-    return "tok";
-  };
-  state().setCredential(null, { kind: "gh-cli", ghUser: null });
-  expect(new Credential().resolve(gh)).toBe("tok");
-  state().setCredential(null, { kind: "gh-cli", ghUser: "work-bot" });
-  expect(new Credential().resolve(gh)).toBe("tok");
-  expect(asked).toEqual([null, "work-bot"]);
-});
-
-test("liveCredentialSourceLabel: an auto slot SAYS auto and lists what it may use, bracket-free", () => {
-  const cred = { kind: "gh-cli", ghUser: null } as const;
-  // Auto is explicit, the followed account is named, and every account it may
-  // use is listed -- with NO nested brackets (callers add the one paren level).
-  expect(
-    liveCredentialSourceLabel(cred, () => ({
-      kind: "listed",
-      accounts: [acct("octocat", true), acct("work-bot", false)],
-    })),
-  ).toBe("gh-cli on auto: currently octocat; may use octocat, work-bot");
-  // Unproven/empty looks keep the bare auto label (never a guessed account),
-  // and a pinned slot never spawns the look at all.
-  expect(liveCredentialSourceLabel(cred, () => ({ kind: "unproven" }))).toBe("gh-cli on auto");
-  expect(
-    liveCredentialSourceLabel({ kind: "gh-cli", ghUser: "work-bot" }, () => {
-      throw new Error("a pinned slot must not probe gh");
-    }),
-  ).toBe("gh-cli as work-bot");
-});
-
-test("accountSourceLabel: a missed look's raw error text stays bracket-free, and no kind probes the other's source", async () => {
-  const stored = { kind: "stored", provider: "gh-env", token: "ghu_env_value" } as const;
-  const gh = () => {
-    throw new Error("a stored token never probes gh");
-  };
-  // The callers wrap the label in their one paren level, so an OS error's own parens would nest.
-  expect(
-    await accountSourceLabel(stored, gh, () =>
-      Promise.resolve({
-        login: null,
-        detail: "GitHub could not be reached: dns error (os error 2)",
-      }),
-    ),
-  ).toBe("gh-env; account unverified: GitHub could not be reached: dns error, os error 2");
-  // A gh-cli slot's account comes from gh, so it never costs a GitHub call (and works offline).
-  const github = () => {
-    throw new Error("a gh-cli slot must not ask GitHub");
-  };
-  expect(await accountSourceLabel({ kind: "gh-cli", ghUser: "work-bot" }, gh, github)).toBe(
-    "gh-cli as work-bot",
-  );
-});
-
-test("credentialSourceLabel: a pinned gh account is named, bracket-free", () => {
-  // The static half of the read-back label: BRACKET-FREE by contract (the
-  // surfaces wrap it in their one paren level; nested brackets are unreadable).
-  expect(credentialSourceLabel({ kind: "gh-cli", ghUser: null })).toBe("gh-cli");
-  expect(credentialSourceLabel({ kind: "gh-cli", ghUser: "work-bot" })).toBe("gh-cli as work-bot");
-  expect(credentialSourceLabel({ kind: "stored", provider: "gh-token", token: "t" })).toBe(
-    "gh-token",
-  );
-  expect(credentialSourceLabel({ kind: "none", provider: null })).toBeNull();
-});
-
 // The store reads STRICTLY: a fabricated "empty" would deny a credential that exists, since
 // profiles never fall back.
 //   unreadable store  -> the failed read is diagnosed, never "no credential" or "no such profile"
@@ -2461,30 +892,34 @@ test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
   "an unreadable credential store throws at read, never 'no credential / no such profile'",
   () => {
     isolate();
-    state().setCredential(null, { kind: "stored", provider: "gh-token", token: "ghu_keep" });
+    new CopilotEnvState().setCredential(null, {
+      kind: "stored",
+      provider: "gh-token",
+      token: "ghu_keep",
+    });
     const work = parseProfileName("work");
-    state().commitProfile(work, {
+    new CopilotEnvState().commitProfile(work, {
       credential: { kind: "stored", provider: "gh-token", token: "ghu_work" },
       mode: "proxy",
     });
     const stateFile = new CopilotApiPaths().stateStoreFile;
     chmodSync(stateFile, 0o000);
     try {
-      expect(() => state().readCredential(null)).toThrow(
+      expect(() => new CopilotEnvState().readCredential(null)).toThrow(
         "refusing to treat an unreadable store as empty",
       );
-      expect(() => state().profileSlotStatus(work)).toThrow(stateFile);
+      expect(() => new CopilotEnvState().profileSlotStatus(work)).toThrow(stateFile);
       expect(() => assertProfileSlot(work)).toThrow(stateFile);
     } finally {
       chmodSync(stateFile, 0o600);
     }
     // Control: readable again, the same reads answer the stored slots.
-    expect(state().readCredential(null)).toEqual({
+    expect(new CopilotEnvState().readCredential(null)).toEqual({
       kind: "stored",
       provider: "gh-token",
       token: "ghu_keep",
     });
-    expect(state().profileSlotStatus(work).exists).toBe(true);
+    expect(new CopilotEnvState().profileSlotStatus(work).exists).toBe(true);
   },
 );
 
@@ -2547,7 +982,10 @@ test("auth --provider copilot lands the device-flow token in the slot and leaves
   expect(announced).toContain("https://github.com/login/device");
   expect(announced).toContain("ABCD-EFGH");
   expect(announced).toContain("Using the device-flow token as octocat.");
-  expect(state().read()).toMatchObject({ githubToken: "gho_device", authProvider: "copilot" });
+  expect(new CopilotEnvState().read()).toMatchObject({
+    githubToken: "gho_device",
+    authProvider: "copilot",
+  });
   // The store is the ONLY landing: nothing under the root home or the daemon home carries the token.
   const root = new CopilotApiPaths();
   for (const home of [dir, root.home]) {

@@ -21,23 +21,12 @@ import type { RequestedMode } from "../../src/agents/provider_mode.ts";
 import { CopilotEnvConfig } from "../../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../../src/copilot_api/env_state.ts";
 import { errMessage } from "../../src/utils/error.ts";
+import { withColumns } from "../helpers/columns.ts";
 import { expect, removeDir, tempDir, test } from "../helpers/testing.ts";
 
 // Every literal carries the required credential, so the pair is the ONE thing each directive rejects.
 const COMMAND = { kind: "command" } as const;
 const HOST = "https://api.githubcopilot.com";
-
-/** A thrown refusal reads its width at the throw, so the 80-column layout rows set it around the call. */
-async function withColumns<T>(columns: number, fn: () => Promise<T>): Promise<T> {
-  const saved = process.env.COLUMNS;
-  process.env.COLUMNS = String(columns);
-  try {
-    return await fn();
-  } finally {
-    if (saved === undefined) delete process.env.COLUMNS;
-    else process.env.COLUMNS = saved;
-  }
-}
 
 test("a ManagedWrite carries a Direct pair only as the branded DirectWiring, never on the proxy arm", () => {
   // Literal path: the discriminant selects the proxy arm and the pair is rejected there.
@@ -228,7 +217,7 @@ test("a single-agent write re-renders the recorded mode, never moves it, and ref
     ).rejects.toThrow(
       [
         "the default profile records proxy as the one mode for both agents.",
-        "  a direct write of claude alone would leave the two apart",
+        "  a direct write of claude alone, leaving the two apart",
         "Fix:",
         "  agent init --direct  move both agents together",
       ].join("\n"),
@@ -351,7 +340,7 @@ test("a Direct wiring without a credential and a static-key with nothing to bake
     expect(directNeedsCredentialError(null).message).toBe(
       [
         "a Direct wiring needs a credential and none resolves for default.",
-        "  a selection made without one would bake the fallback identity and host as state",
+        "  without one, the fallback identity and host baked as state",
         "Fix:",
         "  agent auth  log in first, then retry",
       ].join("\n"),

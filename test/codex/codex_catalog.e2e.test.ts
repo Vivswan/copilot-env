@@ -846,8 +846,8 @@ test("past the refresh deadline the catalog is still written, but neither the ac
   expect(said).toContain(
     [
       `codex model catalog reference not set in ${configPath}.`,
-      "  ownership could not be recorded",
-      "  the next wiring or direct launch retries",
+      "  ownership not recorded",
+      "  retried at the next wiring or direct launch",
     ].join("\n"),
   );
   // Control: inside the deadline the same run records the acceptance, the reference, and the claim.

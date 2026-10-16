@@ -15,6 +15,7 @@ import { CopilotApiConfig } from "../../src/copilot_api/config.ts";
 import { renameWithRetry } from "../../src/utils/fs_disk.ts";
 import { readProjectConfig } from "../../src/utils/project_config.ts";
 import { versionLessThan } from "../../src/utils/semver.ts";
+import { withColumns } from "../helpers/columns.ts";
 import { afterEach, expect, tempDir, test } from "../helpers/testing.ts";
 
 let dir = "";
@@ -299,13 +300,12 @@ test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
   },
 );
 
-test("the corrupt-store refusal at 80 columns: the file, the parser's verdict, the two ways out", () => {
+test("the corrupt-store refusal at 80 columns: the file, the parser's verdict, the two ways out", async () => {
   dir = tempDir("copilot-config-");
   const path = join(dir, "config.json");
   writeFileSync(path, "42");
   // A thrown message reads its width at the throw.
-  process.env.COLUMNS = "80";
-  try {
+  await withColumns(80, () => {
     expect(() =>
       new CopilotApiConfig(path).update((d) => {
         d.smallModel = "gpt-6";
@@ -313,17 +313,15 @@ test("the corrupt-store refusal at 80 columns: the file, the parser's verdict, t
     ).toThrow(
       [
         `${path} is not valid JSON.`,
-        "  the JSON root is not an object",
-        "  refusing to overwrite it",
-        "  a rewrite would discard whatever it still holds",
+        "  JSON root not an object",
+        "  overwrite refused",
+        "  a rewrite discarding its remaining content",
         "Pick one:",
         "  fix the file     keeps what it still holds",
         "  delete the file  resets the store",
       ].join("\n"),
     );
-  } finally {
-    delete process.env.COLUMNS;
-  }
+  });
   expect(readFileSync(path, "utf8")).toBe("42");
 });
 
@@ -353,7 +351,7 @@ test("update REFUSES a store that is present but not valid JSON, preserving its 
       threw = e instanceof Error ? e.message : String(e);
     }
     expect(threw).toContain("not valid JSON");
-    expect(threw).toContain("refusing to overwrite it");
+    expect(threw).toContain("overwrite refused");
     // V8 quotes the source around the fault, unescaped; the store holds keys, so none survives.
     expect(threw).not.toContain("secret-key");
     // THE outcome: the corrupt bytes (a half-written document included)

@@ -626,8 +626,8 @@ test("a blocked removal (malformed _meta.json) keeps the helper scripts", async 
   expect(previewed).toContain(
     [
       "Would leave Claude Desktop's config library alone.",
-      "  its _meta.json could not be read or parsed",
-      "  its copilot-env entries will point at credential-helper scripts that go with the copilot-api home",
+      "  _meta.json unreadable or unparsable",
+      "  its copilot-env entries left pointing at credential-helper scripts removed with the copilot-api home",
     ].join("\n"),
   );
   removeAllClaudeDesktopWiring();
@@ -2239,7 +2239,7 @@ test("the Desktop reconcile never lands a Direct default's missing pair: it name
   expect(warned).toContain(
     [
       "default's Direct pair is not stored.",
-      "  its Desktop entry is left as it is",
+      "  Desktop entry left unchanged",
       "Fix:",
       "  agent profile sync --claude  lands the pair together with both agents' files and the entry",
     ].join("\n"),
@@ -2257,7 +2257,7 @@ test("the Desktop reconcile never lands a Direct default's missing pair: it name
   expect(named).toContain(
     [
       "profile 'work''s Direct pair is not stored.",
-      "  its Desktop entry is left as it is",
+      "  Desktop entry left unchanged",
       "Fix:",
       "  agent sync  lands the pair together with both agents' files and the entry",
     ].join("\n"),

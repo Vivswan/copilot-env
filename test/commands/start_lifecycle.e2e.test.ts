@@ -188,8 +188,8 @@ test("start --dry-run refuses a recorded proxy below the version floor with the 
     new RegExp(
       [
         `${PROXY_PACKAGE_NAME} 0\\.0\\.1 is below the required \\S+ floor\\.`,
-        "  the proxy float likely failed \\(offline\\?\\)",
-        "  or both agents are wired Direct, so the float was skipped",
+        "  a likely failed proxy float \\(offline\\?\\)",
+        "  or both agents wired Direct, the float skipped",
         "Pick one:",
         "  agent start                    re-run online to float the proxy",
         "  COPILOT_API_VERSION=<version>  set a known-good release",
@@ -430,8 +430,8 @@ test("start --dry-run plans the refused holder and the tracking clear, and never
     // The leave is the scannable shape: the headline keeps "Would", the two facts are evidence.
     const leaveLine = [
       `Would leave the daemon.lock holder alone (pid ${fixture.bystanderPid}).`,
-      "  this host cannot identify it as our daemon",
-      "  a lock still held fails the launch",
+      "  not identifiable as our daemon from this host",
+      "  the launch blocked by the held lock",
       "",
     ].join("\n");
     const clearRow = new RegExp(`\\bpid {2}${fixture.bystanderPid} -> \\(absent\\)`);

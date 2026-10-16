@@ -74,7 +74,7 @@ export function syncCodexCatalogReference(): void {
       logger.warn(
         scannable({
           headline: `codex model catalog reference not set in ${paintFor(colorEnabled()).cyan(configPath)}.`,
-          evidence: ["ownership could not be recorded", "the next wiring or direct launch retries"],
+          evidence: ["ownership not recorded", "retried at the next wiring or direct launch"],
         }),
       );
       return;

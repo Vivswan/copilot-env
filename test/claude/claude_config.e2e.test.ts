@@ -734,9 +734,9 @@ test("registration failure skips a fresh deny and strips a PRIOR managed one - n
   expect(stderr).toContain(
     [
       "copilot-env MCP registration failed.",
-      "  the managed WebSearch deny is removed",
-      "  the builtin WebSearch stays reachable",
-      "  it will 400 on Copilot Direct",
+      "  managed WebSearch deny removed",
+      "  builtin WebSearch still reachable",
+      "  a 400 on Copilot Direct",
       "Fix:",
       `  agent init --direct  rewire once ${claudeJsonPath()} is fixed`,
     ].join("\n"),
@@ -780,7 +780,7 @@ test("a named profile's refusals at 80 columns: no credential of its own, and a 
   ).toBe(
     [
       "profile 'work' has no credential of its own.",
-      "  a named profile never falls back to the default credential",
+      "  no fallback to the default credential for a named profile",
       "Fix:",
       "  agent profile work auth  store the profile's credential first",
     ].join("\n"),
@@ -798,7 +798,7 @@ test("a named profile's refusals at 80 columns: no credential of its own, and a 
   ).toBe(
     [
       `${path} is wired to something copilot-env does not manage.`,
-      "  refusing to overwrite it",
+      "  overwrite refused",
       "Pick one:",
       "  agent profile <other-name> add  a different profile name, so a different file",
       "  remove the file first           then rerun this command",
@@ -1125,13 +1125,11 @@ test("runMcp --remove takes back the pair and stores a durable wire-mcp opt-out"
   expect(removed.all).toContain(
     [
       "Removed the copilot-env MCP registration.",
-      "  the managed WebSearch deny went with it where copilot-env manages settings.json",
+      "  managed WebSearch deny removed with it from the copilot-env-managed settings.json",
       "",
     ].join("\n"),
   );
-  expect(removed.all).toMatch(
-    / {2}stored `?claude\.wire-mcp false`?, so direct rewires stay opted out/,
-  );
+  expect(removed.all).toMatch(/ {2}`?claude\.wire-mcp false`? stored, direct rewires opted out/);
 
   // A later direct write respects the stored opt-out.
   configureClaudeConfig(home, { mode: "direct", direct: null, credential: COMMAND });
@@ -1146,10 +1144,10 @@ test("runMcp --remove takes back the pair and stores a durable wire-mcp opt-out"
   );
   const kept = await captureChannels(() => runMcp({ remove: true }));
   expect(kept.all).toContain(`the 'copilot-env' entry in ${claudeJsonPath()} was not removed.\n`);
-  expect(kept.all).toMatch(/ {2}stored `?claude\.wire-mcp false`?\n/);
+  expect(kept.all).toMatch(/ {2}`?claude\.wire-mcp false`? stored\n/);
   expect(kept.all).toContain(
     [
-      "  not ours, or the file could not be written",
+      "  not ours, or the file unwritable",
       "Fix:",
       "  remove the entry by hand  if it is not wanted",
     ].join("\n"),

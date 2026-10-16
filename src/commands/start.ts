@@ -166,8 +166,8 @@ async function previewLaunch(
       scannable({
         headline: `Would leave the daemon.lock holder alone (${left}).`,
         evidence: [
-          "this host cannot identify it as our daemon",
-          "a lock still held fails the launch",
+          "not identifiable as our daemon from this host",
+          "the launch blocked by the held lock",
         ],
       }),
     );

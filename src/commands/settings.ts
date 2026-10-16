@@ -417,7 +417,7 @@ function assertProfileBundle(bundle: SettingsBundle, profile: Profile, action: I
     throw new Error(
       scannable({
         headline: `${paintFor(colorEnabled()).cyan(file)} is not a bundle of ${profileLabel(profile)} alone.`,
-        evidence: stray.map((part) => `it carries ${part}`),
+        evidence: stray.map((part) => `${part} present`),
         lead: "Pick one:",
         actions: [
           [wholeStoreImport, "import the whole store"],

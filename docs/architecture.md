@@ -57,7 +57,7 @@ flowchart TD
 - **No implicit `gh` fallback:** a `none` slot resolves to null and the caller asks (`agent profile auth`); a named profile's reason names the profile.
 - **`static-key` is the one opt-in that bakes the value** ([authentication: static key](authentication.md#static-key) owns it): `resolveCredentialWiring()` resolves it once per agent at the write, and an unresolvable static credential is a failed write, never a silent return to the command shape.
 
-Demonstrated by: [test/agents/configure.test.ts](../test/agents/configure.test.ts), [test/commands/auth.e2e.test.ts](../test/commands/auth.e2e.test.ts), [test/codex/codex_config.e2e.test.ts](../test/codex/codex_config.e2e.test.ts).
+Demonstrated by: [test/agents/configure.test.ts](../test/agents/configure.test.ts), [test/commands/auth.e2e.test.ts](../test/commands/auth.e2e.test.ts), [test/commands/auth_gh_cli.e2e.test.ts](../test/commands/auth_gh_cli.e2e.test.ts), [test/codex/codex_config.e2e.test.ts](../test/codex/codex_config.e2e.test.ts).
 
 ## Identity and host: state in the slot, rendered into the agent files
 

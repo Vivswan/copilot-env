@@ -682,8 +682,8 @@ export async function withCodexHostFarm(
         scannable({
           headline: `Leaving ${paintFor(colorEnabled()).cyan(farm.hostHome)} alone.`,
           evidence: [
-            "copilot-env cannot prove it built it",
-            "it sits at the per-host CODEX_HOME farm path",
+            "not provably built by copilot-env",
+            "at the per-host CODEX_HOME farm path",
             "no activation record, no managed config.toml",
           ],
         }),

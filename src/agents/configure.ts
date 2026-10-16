@@ -44,7 +44,7 @@ export function directNeedsCredentialError(profile: Profile): Error {
   return new Error(
     scannable({
       headline: `a Direct wiring needs a credential and none resolves for ${profileLabel(profile)}.`,
-      evidence: ["a selection made without one would bake the fallback identity and host as state"],
+      evidence: ["without one, the fallback identity and host baked as state"],
       lead: "Fix:",
       actions: [[authCommand, "log in first, then retry"]],
     }),

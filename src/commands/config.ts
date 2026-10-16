@@ -90,7 +90,7 @@ function refuseStateKey(key: string): void {
   throw new Error(
     scannable({
       headline: `'${paintFor(colorEnabled()).cyan(key)}' is state written by ${owner}.`,
-      evidence: ["a preference verb sets preferences only"],
+      evidence: ["preference verbs: preferences only"],
       lead: "Pick one:",
       actions: [
         ["agent config get", "lists the machine's keys and the shared defaults"],
@@ -114,10 +114,7 @@ export function refuseProfileKey(key: string): void {
   throw new Error(
     scannable({
       headline: `'${paintFor(colorEnabled()).cyan(def.key)}' is a profile preference, not a machine key.`,
-      evidence: [
-        "it follows the credential",
-        "a named profile's verb is `agent profile <name> ...`",
-      ],
+      evidence: ["bound to the credential", "a named profile's verb: `agent profile <name> ...`"],
       lead: "Pick one:",
       actions: [
         [configGetCommand(def.key), "read it"],

@@ -30,13 +30,11 @@ import { copilotApiResolvePort, openaiBaseUrl } from "../copilot_api/port.ts";
 import type { Profile, ProfileName } from "../copilot_api/profile.ts";
 import { colorEnabled, paintFor } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
-import { errMessage } from "../utils/error.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { isRecord } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
-import { scannable } from "../utils/message.ts";
+import { caught, printKeyValue, printWrapped, rethrown, scannable } from "../utils/message.ts";
 import { agentAuthGetArgs, agentLauncherCommand, proxyTokenCommand } from "../utils/root.ts";
-import { printKeyValue, printWrapped } from "../utils/table.ts";
 import { isTomlTable, parseToml } from "../utils/toml.ts";
 import {
   type CatalogFileVerdict,
@@ -237,7 +235,7 @@ function readConfigForRemoval(configPath: string): Record<string, unknown> | nul
   try {
     read = readCodexToml(configPath);
   } catch (e) {
-    throw new Error(`${configPath} is not readable/valid TOML: ${errMessage(e)}`);
+    throw rethrown(e, (message) => `${configPath} is not readable/valid TOML: ${message}`);
   }
   if (read.kind === "absent") return null;
   if (read.kind === "unparseable") {
@@ -369,7 +367,10 @@ export function configureCodexConfig(codexHome: string, request: CodexWriteReque
   try {
     fs.mkdir(codexHome);
   } catch (e) {
-    throw new Error(`could not create Codex config directory ${codexHome}: ${errMessage(e)}`);
+    throw rethrown(
+      e,
+      (message) => `could not create Codex config directory ${codexHome}: ${message}`,
+    );
   }
   saveCodexToml(hostConfig, doc, detail);
   // Saved after config.toml so the selector never lands ahead of the table it points at.
@@ -472,7 +473,7 @@ function checkCodexConfig(): void {
     }
     process.exitCode = providerModeExitCode(status.providerMode);
   } catch (e) {
-    logger.error(`Codex provider check failed: ${errMessage(e)}`);
+    logger.error(caught(e, (message) => `Codex provider check failed: ${message}`));
     process.exitCode = 1;
   }
 }

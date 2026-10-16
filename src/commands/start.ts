@@ -39,10 +39,9 @@ import { CopilotEnvRunState } from "../copilot_api/run_state.ts";
 import { PROXY_PACKAGE_NAME } from "../copilot_api/version.ts";
 import type { FetchLike, ProxyFloatDeps } from "../proxy_float.ts";
 import { colorEnabled, paintFor, statusPaint } from "../utils/ansi.ts";
-import { errMessage } from "../utils/error.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { createStderrLogger, withConsolaOnStderr } from "../utils/logger.ts";
-import { scannable } from "../utils/message.ts";
+import { caught, scannable } from "../utils/message.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
 import { formatTable, terminalWidth } from "../utils/table.ts";
 import { formatDuration } from "../utils/time.ts";
@@ -339,7 +338,7 @@ async function selfUpdatePreflight(preflight: PreflightRunner): Promise<void> {
     try {
       await preflight({ nowMs: Date.now() });
     } catch (e) {
-      createStderrLogger().warn(`autoupdate preflight error: ${errMessage(e)}`);
+      createStderrLogger().warn(caught(e, (message) => `autoupdate preflight error: ${message}`));
     }
   });
 }

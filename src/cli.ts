@@ -22,8 +22,8 @@ import {
 } from "./commands/profile_verbs.ts";
 import { bold, cyan, gray } from "./utils/ansi.ts";
 import { spawnedByDryRun, withDryRun } from "./utils/dry_run.ts";
-import { errMessage } from "./utils/error.ts";
 import { configureConsolaOutput } from "./utils/logger.ts";
+import { caught } from "./utils/message.ts";
 import { terminalWidth } from "./utils/table.ts";
 import { packageVersion } from "./utils/version.ts";
 
@@ -145,7 +145,7 @@ if (import.meta.main) {
     if (outcome.status === "failed") throw outcome.error;
   };
   (spawnedByDryRun() ? silent() : run()).catch((e: unknown) => {
-    consola.error(errMessage(e));
+    consola.error(caught(e, (message) => message));
     // exitCode, not process.exit, so pending stderr writes flush.
     process.exitCode = 1;
   });

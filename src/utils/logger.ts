@@ -12,6 +12,7 @@ import {
   type LogObject,
 } from "consola";
 import { colorEnabled, colorRefused, FG_CLOSE, palette, sgrOpen, type Tone } from "./ansi.ts";
+import { ScannableMessage } from "./message.ts";
 import { terminalWidth, wrapMessage } from "./table.ts";
 
 const NO_DATE = { date: false } as const;
@@ -82,10 +83,10 @@ function firstLineLead(logObj: LogObject, fancy: boolean): number {
   return (badge ? bracketed(logObj.type) : logObj.type === "log" ? 0 : ICON_LEAD) + tag;
 }
 
-/** Wraps a message's lines to the width of the stream consola will write it to (stderr below
- *  level 2, stdout otherwise) before the inner reporters decorate and print it, and paints the
- *  message by level (warn yellow, error red, success green) when `color` is on; off a TTY (width
- *  null) the text is untouched, so captured output never wraps. */
+/** Lays a message out for the width of the stream consola will write it to (stderr below level
+ *  2, stdout otherwise) before the inner reporters decorate and print it, and paints the message
+ *  by level (warn yellow, error red, success green) when `color` is on; off a TTY (width null)
+ *  the text is untouched, so captured output never wraps. */
 export class WrappingReporter implements ConsolaReporter {
   constructor(
     private readonly inner: ConsolaReporter[],
@@ -95,33 +96,48 @@ export class WrappingReporter implements ConsolaReporter {
   ) {}
 
   log(logObj: LogObject, ctx: ReporterContext): void {
-    if (!logObj.args.every((a): a is string => typeof a === "string")) {
+    const stream = (logObj.level < 2 ? ctx.options.stderr : ctx.options.stdout) ?? process.stdout;
+    const width = this.widthOf(stream as NodeJS.WriteStream);
+    const tone = this.color ? LEVEL_TONES[logObj.type] : undefined;
+    const laid = this.layOut(logObj, width, tone);
+    if (laid === null) {
       for (const reporter of this.inner) reporter.log(logObj, ctx);
       return;
     }
-    const stream = (logObj.level < 2 ? ctx.options.stderr : ctx.options.stdout) ?? process.stdout;
-    const width = this.widthOf(stream as NodeJS.WriteStream);
-    // One string as consola would make it (printf substitution included), formatted here so the
-    // wrap sees the final text; a lone string is left for consola's own pass.
-    const [only] = logObj.args;
-    const text = logObj.args.length === 1 ? (only ?? "") : format(...logObj.args);
-    const tone = this.color ? LEVEL_TONES[logObj.type] : undefined;
-    const body = tone === undefined ? text : inlinePaint(text, tone);
-    const wrapped = this.wrapArgs(logObj, body, width);
-    const painted = tone === undefined ? wrapped : perLine(wrapped, tone);
+    const painted = tone === undefined ? laid : perLine(laid, tone);
     const shaped = { ...logObj, args: [painted] };
     for (const reporter of this.inner) reporter.log(shaped, ctx);
   }
 
-  /** A box frames every line, so its frame comes off every line; any other message loses only
-   *  its first line's decoration. Off a TTY (width null) nothing wraps, and wrapMessage still
-   *  strips a message's keepWhole marks. */
-  private wrapArgs(logObj: LogObject, text: string, width: number | null): string {
-    if (width === null) return wrapMessage(text, null);
-    if (logObj.type === "box") {
-      return wrapMessage(text, width - (this.fancy ? BOX_FRAME : BASIC_BOX_LEAD));
+  /** The message fitted to what consola's decoration leaves of `width`, its body painted `tone`
+   *  before the wrap, so the wrap measures what prints and re-opens a span it splits across lines;
+   *  null for arguments consola formats itself (an object, an Error). A scannable lays itself out;
+   *  the strings consola may append to it (its "(repeated N times)" note) follow as prose. */
+  private layOut(logObj: LogObject, width: number | null, tone: Tone | undefined): string | null {
+    const paint = (text: string): string => (tone === undefined ? text : inlinePaint(text, tone));
+    const budget = this.budget(logObj, width);
+    const [only, ...rest] = logObj.args;
+    const isString = (a: unknown): a is string => typeof a === "string";
+    if (only instanceof ScannableMessage && rest.every(isString)) {
+      const fitted = only.fit(budget.width, budget.lead, paint);
+      if (rest.length === 0) return fitted;
+      return `${fitted}\n${wrapMessage(paint(format(...rest)), budget.width)}`;
     }
-    return wrapMessage(text, width, firstLineLead(logObj, this.fancy));
+    if (!logObj.args.every(isString)) return null;
+    // One string as consola would make it (printf substitution included), formatted here so the
+    // wrap sees the final text; a lone string is left for consola's own pass.
+    const text = logObj.args.length === 1 ? (only ?? "") : format(...logObj.args);
+    return wrapMessage(paint(text), budget.width, budget.lead);
+  }
+
+  /** A box frames every line, so its frame comes off every line; any other message loses only
+   *  its first line's decoration. */
+  private budget(logObj: LogObject, width: number | null): { width: number | null; lead: number } {
+    if (width === null) return { width: null, lead: 0 };
+    if (logObj.type === "box") {
+      return { width: width - (this.fancy ? BOX_FRAME : BASIC_BOX_LEAD), lead: 0 };
+    }
+    return { width, lead: firstLineLead(logObj, this.fancy) };
   }
 }
 

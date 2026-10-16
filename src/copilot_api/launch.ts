@@ -12,11 +12,16 @@ import {
 } from "../proxy_float.ts";
 import { colorEnabled, paintFor } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
-import { errMessage } from "../utils/error.ts";
 import { withFileLock } from "../utils/file_lock.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { isRecord } from "../utils/json.ts";
-import { scannable } from "../utils/message.ts";
+import {
+  caught,
+  rethrown,
+  ScannableError,
+  type ScannableMessage,
+  scannable,
+} from "../utils/message.ts";
 import { pidAlive } from "../utils/pid.ts";
 import { type ProjectConfig, readProjectConfig } from "../utils/project_config.ts";
 import { rootMode } from "../utils/root.ts";
@@ -137,7 +142,12 @@ export async function ensureProxyFloor(deps: ProxyFloatDeps = {}): Promise<Runna
     try {
       await floatProxy(deps);
     } catch (e) {
-      consola.warn(`proxy float failed (${errMessage(e)}); checking what is already available`);
+      consola.warn(
+        caught(
+          e,
+          (message) => `proxy float failed (${message}); checking what is already available`,
+        ),
+      );
     }
   }
 
@@ -168,25 +178,26 @@ function judgeProxyFloor(): RunnableEntry {
   try {
     config = readProjectConfig();
   } catch (e) {
-    throw new Error(`could not read the proxy floor from copilot-env.config: ${errMessage(e)}`);
+    throw rethrown(
+      e,
+      (message) => `could not read the proxy floor from copilot-env.config: ${message}`,
+    );
   }
   const floorStatus = proxyVersionFloorStatus(version, config);
   if (!floorStatus.ok && floorStatus.reason === "belowFloor") {
-    throw new Error(
-      scannable({
-        headline: `${PROXY_PACKAGE_NAME} ${floorStatus.version} is below the required ${floorStatus.floor} floor.`,
-        evidence: [
-          "a likely failed proxy float (offline?)",
-          "or both agents wired Direct, the float skipped",
-        ],
-        lead: "Pick one:",
-        actions: [
-          ["agent start", "re-run online to float the proxy"],
-          ["COPILOT_API_VERSION=<version>", "set a known-good release"],
-          ["agent init --proxy", "rewire an agent to the proxy first"],
-        ],
-      }),
-    );
+    throw new ScannableError({
+      headline: `${PROXY_PACKAGE_NAME} ${floorStatus.version} is below the required ${floorStatus.floor} floor.`,
+      evidence: [
+        "a likely failed proxy float (offline?)",
+        "or both agents wired Direct, the float skipped",
+      ],
+      lead: "Pick one:",
+      actions: [
+        ["agent start", "re-run online to float the proxy"],
+        ["COPILOT_API_VERSION=<version>", "set a known-good release"],
+        ["agent init --proxy", "rewire an agent to the proxy first"],
+      ],
+    });
   }
   return entry;
 }
@@ -208,17 +219,15 @@ export async function resolveStartPort(
   if (pinned !== undefined) {
     switch (await checkProxyPort(pinned)) {
       case "out-of-range":
-        throw new Error(
-          scannable({
-            headline: `requested port ${paintFor(colorEnabled()).cyan(String(pinned))} is out of range.`,
-            evidence: [`proxy port range ${min}-${max}`],
-            lead: "Pick one:",
-            actions: [
-              [configSetCommand("daemon.min-port", "<n>"), "lower the range's floor"],
-              [configSetCommand("daemon.max-port", "<n>"), "raise the range's ceiling"],
-            ],
-          }),
-        );
+        throw new ScannableError({
+          headline: `requested port ${paintFor(colorEnabled()).cyan(String(pinned))} is out of range.`,
+          evidence: [`proxy port range ${min}-${max}`],
+          lead: "Pick one:",
+          actions: [
+            [configSetCommand("daemon.min-port", "<n>"), "lower the range's floor"],
+            [configSetCommand("daemon.max-port", "<n>"), "raise the range's ceiling"],
+          ],
+        });
       case "busy":
         throw new Error(
           `requested port ${pinned} is busy (held by another process). Free it or pick another --port.`,
@@ -447,7 +456,7 @@ export function spawnConfiguredDaemon(opts: {
 
 /** The daemon logs "Failed to get Copilot token" when the exchange returns 404/403. A gh-cli or PAT
  *  credential needs the passthrough; anything else needs a Copilot-capable login. */
-function copilotTokenFailureHint(log: string, profile: Profile): string | null {
+function copilotTokenFailureHint(log: string, profile: Profile): ScannableMessage | null {
   if (!/Failed to get Copilot token/i.test(log)) return null;
   return scannable({
     headline: "The credential was not accepted by Copilot's token exchange.",
@@ -673,7 +682,11 @@ async function syncModelAliases(admin: CopilotAdminClient): Promise<void> {
     consola.success(`Synced ${Object.keys(aliases).length} model aliases from catalog.`);
   } catch (e) {
     consola.warn(
-      `Could not sync model aliases from catalog (${errMessage(e)}); check \`agent health\`.`,
+      caught(
+        e,
+        (message) =>
+          `Could not sync model aliases from catalog (${message}); check \`agent health\`.`,
+      ),
     );
   }
   await printModelAliases(admin);
@@ -684,7 +697,12 @@ async function printModelAliases(admin: CopilotAdminClient): Promise<void> {
   try {
     mappings = await admin.getModelMappings();
   } catch (e) {
-    consola.warn(`Could not read live model mappings (${errMessage(e)}); check \`agent health\`.`);
+    consola.warn(
+      caught(
+        e,
+        (message) => `Could not read live model mappings (${message}); check \`agent health\`.`,
+      ),
+    );
     return;
   }
   // One message, one consola timestamp: a stamp per row wraps and interleaves at terminal width.

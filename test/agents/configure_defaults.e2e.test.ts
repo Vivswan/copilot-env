@@ -19,6 +19,7 @@ import { CopilotEnvConfig } from "../../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../../src/copilot_api/env_state.ts";
 import { setIntegrationProbeFetch } from "../../src/copilot_api/integration_identity.ts";
 import { parseProfileName } from "../../src/copilot_api/profile.ts";
+import { ScannableError, ScannableMessage, type ScannableParts } from "../../src/utils/message.ts";
 import { proxyTokenCommand } from "../../src/utils/root.ts";
 import { agentHomeEnv, envSnapshot, isolateAgentHomes, isolateProxyHome } from "../helpers/env.ts";
 import { captureAllWrites } from "../helpers/output.ts";
@@ -196,6 +197,52 @@ test("a failed write in a both-agents landing leaves the previous record and no 
   });
 });
 
+// The collector used to join each agent's message into one string, so a thrown scannable's
+// command row split once a narrow printer wrapped the summary.
+test("a failed write that throws a scannable keeps its parts in failures under the agent's name, and the landing's refusal lists it as evidence, its command row whole at 20 columns", async () => {
+  const refusal: ScannableParts = {
+    headline: "settings.json is wired to something copilot-env does not manage.",
+    lead: "Pick one:",
+    actions: [["agent profile <other-name> add", "a different profile name, so a different file"]],
+    color: false,
+  };
+  const trace: string[] = [];
+  const adapters: AgentAdapter[] = [
+    probeAdapter("claude", true, trace),
+    {
+      ...probeAdapter("codex", true, trace),
+      configureProfile: () => Promise.reject(new ScannableError(refusal)),
+    },
+  ];
+  const out = await configureDefaultAgents(
+    { codex: "proxy", claude: "proxy", ghToken: "ghu_test" },
+    adapters,
+  );
+  const [failure] = out.failures;
+  expect(failure).toBeInstanceOf(ScannableMessage);
+  expect(String(failure).split("\n")).toEqual([
+    "codex: settings.json is wired to something copilot-env does not manage.",
+    "Pick one:",
+    "  agent profile <other-name> add  a different profile name, so a different file",
+  ]);
+  // One agent's re-render with no recorded mode lands both, and refuses with the failures beneath.
+  let landing: unknown;
+  try {
+    await runAgentConfig(
+      claudeAdapter(),
+      { kind: "configure", mode: "proxy" },
+      { ghToken: "ghu_test" },
+      adapters,
+    );
+  } catch (e) {
+    landing = e;
+  }
+  if (!(landing instanceof ScannableError)) throw new Error("the landing did not refuse as parts");
+  const narrow = landing.scannable.fit(20).split("\n");
+  expect(narrow.slice(0, 2)).toEqual(["could not wire the", "  default profile:"]);
+  expect(narrow.filter((line) => line.length > 20)).toEqual(["    agent profile <other-name> add"]);
+});
+
 // A selection made without a credential runs no request and hands back the fallback pair; stored,
 // every re-render would replay it. So a Direct landing with no resolvable credential is refused at
 // the owner (resolveDefaultMode, directWiringFor) before any write.
@@ -213,16 +260,19 @@ test("a Direct landing with no resolvable credential is refused before any write
   const refusal =
     /needs a credential and none resolves[\s\S]*\n {2}agent auth {2}log in first, then retry/;
   const direct = await configureDefaultAgents({ codex: "direct", claude: "direct" }, bothAgents());
-  expect(direct.failures.map((f) => refusal.test(f))).toEqual([true, true]);
+  expect(direct.failures.map((f) => refusal.test(String(f)))).toEqual([true, true]);
   // `auto` is refused the same way: a proxy landing on that credential would serve nothing.
   await expect(
     configureDefaultAgents({ codex: "auto", claude: "auto" }, bothAgents()),
   ).rejects.toThrow(refusal);
-  // The re-render gap takes the same refusal: a Direct record whose slot holds no pair.
+  // The re-render gap takes the same refusal, once per agent beneath the landing's own sentence:
+  // a Direct record whose slot holds no pair.
   state.recordDefaultMode("direct");
   await expect(
     runAgentConfig(claudeAdapter(), { kind: "configure", mode: "auto" }),
-  ).rejects.toThrow(refusal);
+  ).rejects.toThrow(
+    /^could not wire the default profile:\n {2}Claude: a Direct wiring needs a credential and none resolves[\s\S]*\n {4}agent auth {2}log in first, then retry\n {2}Codex: /,
+  );
   expect({
     codexFile: existsSync(join(homes.codexHome, "config.toml")),
     claudeFile: existsSync(join(homes.claudeHome, "settings.json")),

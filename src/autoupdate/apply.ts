@@ -46,8 +46,8 @@ import {
   writeTopLevelShims,
 } from "../install/installer.ts";
 import type { Release } from "../install/resolve-release.ts";
-import { errMessage } from "../utils/error.ts";
 import * as fs from "../utils/fs_facade.ts";
+import { rethrown } from "../utils/message.ts";
 import { installStateRoot, PROJECT_ROOT, readInstallManifest } from "../utils/root.ts";
 import { currentReleaseTarget, installedBinaryName, releaseAssetName } from "../utils/targets.ts";
 import { COPILOT_ENV_USER_AGENT } from "../utils/user_agent.ts";
@@ -237,8 +237,8 @@ async function attest(
   try {
     await fetchReleaseFile(verified.source, ATTESTATION_NAME, bundlePath);
   } catch (e) {
-    throw new Error(
-      cannotVerifyMessage(tag, `${ATTESTATION_NAME} could not be fetched (${errMessage(e)})`),
+    throw rethrown(e, (message) =>
+      cannotVerifyMessage(tag, `${ATTESTATION_NAME} could not be fetched (${message})`),
     );
   }
   const verifier = decision.verifier ?? defaultVerifier;

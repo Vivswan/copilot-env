@@ -18,7 +18,7 @@ import {
 import { errMessage } from "../utils/error.ts";
 import { dryRunActive } from "../utils/fs_facade.ts";
 import { isRecord, parseJsonRecord, readStringField } from "../utils/json.ts";
-import { scannable } from "../utils/message.ts";
+import { caught, scannable } from "../utils/message.ts";
 import { pickAgedVersion, publishTimesMs, versionLessThan } from "../utils/semver.ts";
 import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
 import { MILLISECONDS_PER_DAY } from "../utils/time.ts";
@@ -399,7 +399,12 @@ function syncNpmGlobalBinToPath(): void {
   try {
     prefix = runNpm(["prefix", "-g"], true);
   } catch (e) {
-    consola.warn(`Could not sync npm's global bin dir to PATH (${errMessage(e)}); continuing.`);
+    consola.warn(
+      caught(
+        e,
+        (message) => `Could not sync npm's global bin dir to PATH (${message}); continuing.`,
+      ),
+    );
     return;
   }
   if (!prefix) return;
@@ -597,7 +602,9 @@ export function installAgentClis(setup: CliSetup): void {
         try {
           installCli(cli, setup, globals.versions);
         } catch (e) {
-          consola.warn(`Could not install ${cli.name} (${errMessage(e)}); continuing.`);
+          consola.warn(
+            caught(e, (message) => `Could not install ${cli.name} (${message}); continuing.`),
+          );
         }
       }
       syncNpmGlobalBinToPath();

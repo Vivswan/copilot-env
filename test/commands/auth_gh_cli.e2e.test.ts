@@ -141,7 +141,7 @@ test("the refusal paints only what the reader acts on (the login, each command) 
   const CLOSE = "\x1b[39m";
   const detail =
     "`gh auth token --user octocat --hostname github.com` exited 1: no oauth token found";
-  const painted = ghCannotServeByName("octocat", detail, "agent auth", true, 80).message;
+  const painted = ghCannotServeByName("octocat", detail, "agent auth", true).scannable.render(80);
   expect(painted).toBe(
     [
       "gh cannot serve the pinned account by name.",
@@ -153,12 +153,14 @@ test("the refusal paints only what the reader acts on (the login, each command) 
     ].join("\n"),
   );
   // A pipe or NO_COLOR: the same bytes minus the escapes, so the columns do not shift.
-  expect(ghCannotServeByName("octocat", detail, "agent auth", false, 80).message).toBe(
+  expect(ghCannotServeByName("octocat", detail, "agent auth", false).scannable.render(80)).toBe(
     painted.replaceAll(CYAN, "").replaceAll(CLOSE, ""),
   );
   // A named profile's command is longer. At 80 columns the description wraps under its own
   // column; left to the logger, the hanging indent would put "retry" under the command.
-  expect(ghCannotServeByName("octocat", detail, "agent profile work auth", false, 80).message).toBe(
+  expect(
+    ghCannotServeByName("octocat", detail, "agent profile work auth", false).scannable.render(80),
+  ).toBe(
     [
       "gh cannot serve the pinned account by name.",
       "  account: octocat",

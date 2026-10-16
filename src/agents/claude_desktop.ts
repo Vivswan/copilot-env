@@ -23,7 +23,7 @@ import { CopilotApiPaths } from "../copilot_api/paths.ts";
 import { type ProfileName, profileLabel } from "../copilot_api/profile.ts";
 import { errMessage } from "../utils/error.ts";
 import { createStderrLogger, narrationMuted } from "../utils/logger.ts";
-import { scannable } from "../utils/message.ts";
+import { caught, scannable } from "../utils/message.ts";
 import { type ManagedWrite, resolveCredentialWiring, resolvedDirectToken } from "./configure.ts";
 import { renderDirectWiring } from "./profile_wiring.ts";
 
@@ -146,7 +146,9 @@ export async function reconcileClaudeDesktopWiring(
     if (resolution.targets.length === 0) return;
     await reportClaudeDesktopReady(resolution);
   } catch (e) {
-    logger.warn(`  Could not reconcile the Claude Desktop wiring: ${errMessage(e)}`);
+    logger.warn(
+      caught(e, (message) => `  Could not reconcile the Claude Desktop wiring: ${message}`),
+    );
   }
 }
 
@@ -203,6 +205,11 @@ async function syncTarget({ profile, mode }: DesktopTarget): Promise<void> {
         : { mode: "proxy", credential };
     await syncClaudeDesktopWiring({ ...write, profile, directToken: token });
   } catch (e) {
-    logger.warn(`  Could not refresh ${profileLabel(profile)}'s Desktop entry: ${errMessage(e)}`);
+    logger.warn(
+      caught(
+        e,
+        (message) => `  Could not refresh ${profileLabel(profile)}'s Desktop entry: ${message}`,
+      ),
+    );
   }
 }

@@ -15,7 +15,7 @@ import * as fs from "../utils/fs_facade.ts";
 import { codexFarmHostsDir, getSanitizedHostname } from "../utils/hostname.ts";
 import { isRecord } from "../utils/json.ts";
 import { createStderrLogger, narrationMuted } from "../utils/logger.ts";
-import { scannable } from "../utils/message.ts";
+import { rethrown, scannable } from "../utils/message.ts";
 import { reportWrite } from "../utils/report_write.ts";
 import type { ManagedEnvValue } from "../utils/shell_quote.ts";
 import { CODEX_PROVIDER_ID, codexConfigPath, defaultCodexHome, plainCodexHome } from "./paths.ts";
@@ -659,9 +659,10 @@ export async function withCodexHostFarm(
       try {
         buildCodexSymlinkFarm(farm.hostHome);
       } catch (e: unknown) {
-        throw new Error(
-          `Failed to build the CODEX_HOME symlink farm at ${farm.hostHome}: ${errMessage(e)}`,
-          { cause: e },
+        throw rethrown(
+          e,
+          (message) =>
+            `Failed to build the CODEX_HOME symlink farm at ${farm.hostHome}: ${message}`,
         );
       }
       // A build names the home it created; a verify names only the members it recreated. A dry

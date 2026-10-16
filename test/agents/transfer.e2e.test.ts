@@ -59,6 +59,7 @@ import { resolveRootHome } from "../../src/copilot_api/paths.ts";
 import { type ProfileName, parseProfileName } from "../../src/copilot_api/profile.ts";
 import type { FileChange } from "../../src/utils/dry_run.ts";
 import { renderDryRun } from "../../src/utils/dry_run_report.ts";
+import { withColumns } from "../helpers/columns.ts";
 import { changedPaths, fingerprintTree } from "../helpers/dry_run.ts";
 import { type AgentHomes, envSnapshot, isolateAgentHomes, resetExitCode } from "../helpers/env.ts";
 import { writeRunState } from "../helpers/fixtures.ts";
@@ -968,7 +969,7 @@ test("a mode-less bundle slot landing a new credential on a Direct profile probe
   expect(new Credential(undefined, WORK).resolve()).toBe("github_pat_second");
 });
 
-test("a profile wiring failure lands in failures and the command exits non-zero", async () => {
+test("a profile wiring failure lands in failures, printed at stderr's width with its command rows whole, and the command exits non-zero", async () => {
   const machine = isolate();
   // A foreign settings-work.json makes the Claude profile writer refuse.
   mkdirSync(machine.claudeHome, { recursive: true });
@@ -986,12 +987,22 @@ test("a profile wiring failure lands in failures and the command exits non-zero"
     ),
   );
 
-  const err = await captureStderr(() => runSettings({ importFrom: file, force: true }));
+  // A 20-column stderr: the failure the import collected is laid out there, so the refusal's
+  // command rows are the only lines wider than the terminal, each one line.
+  const err = await withColumns(20, () =>
+    captureStderr(() => runSettings({ importFrom: file, force: true })),
+  );
 
   expect(process.exitCode).toBe(1);
+  expect(err.split("\n").filter((line) => line.length > 20)).toEqual([
+    "    agent profile <other-name> add",
+    "    remove the file first",
+  ]);
   // The summary covers BOTH failure kinds outcome.failures carries (a profile
-  // whose commit failed and a wiring failure), not just "wiring".
-  expect(err).toContain("but some profiles or wiring could not be applied (see above).");
+  // whose commit failed and a wiring failure), not just "wiring"; read across its wrap.
+  expect(err.replaceAll(/\s+/g, " ")).toContain(
+    "but some profiles or wiring could not be applied (see above).",
+  );
   // The slot committed atomically (credential + mode) BEFORE the wiring, so the
   // failure leaves a COMPLETE-but-unwired slot -- never a half profile -- and
   // `agent sync` re-derives the artifacts from it.
@@ -1074,7 +1085,7 @@ for (const { name, plan, failure, wiredProfiles, profiles } of FAILING_WRITERS) 
     const outcome = await applyImportPlan(plan(machine));
 
     expect(outcome.failures.length).toBe(1);
-    expect(outcome.failures[0]).toContain(failure);
+    expect(String(outcome.failures[0])).toContain(failure);
     expect(outcome.wiredProfiles).toEqual(wiredProfiles);
     expect(new CopilotEnvState().profileNames()).toEqual(profiles);
   });
@@ -1357,17 +1368,17 @@ test("import surfaces the proxy restart hint when a projected key is set OR rese
     profiles: Record<string, Record<string, unknown>> = {},
   ) => parseSettingsBundle(rawBundle({ config: configOf(global, profiles) })).config;
   const hints = importRestartHints(prefs({ "proxy.small-model": "gpt-5-mini" }), prefs({}));
-  expect(hints[0]).toContain("next proxy start");
+  expect(String(hints[0])).toContain("next proxy start");
   // Prefs are full-replace: a bundle that DROPS a stored projected key resets
   // it to default, which the daemon equally misses until a restart.
   const resetHints = importRestartHints(
     prefs({ "daemon.auto-start": true }),
     prefs({ "proxy.small-model": "gpt-5-codex" }),
   );
-  expect(resetHints[0]).toContain("next proxy start");
+  expect(String(resetHints[0])).toContain("next proxy start");
   // A projected key set for ONE profile counts the same: that profile's daemon reads it.
   expect(
-    importRestartHints(prefs({}, { work: { "proxy.small-model": "gpt-5" } }), prefs({}))[0],
+    String(importRestartHints(prefs({}, { work: { "proxy.small-model": "gpt-5" } }), prefs({}))[0]),
   ).toContain("next proxy start");
   // A prefs-only bundle with no projected keys on either side stays silent.
   expect(

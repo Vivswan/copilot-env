@@ -9,11 +9,10 @@ import { CopilotEnvState } from "../copilot_api/env_state.ts";
 import { OwnershipLedger } from "../copilot_api/ownership.ts";
 import { CopilotApiPaths } from "../copilot_api/paths.ts";
 import { colorEnabled, paintFor } from "../utils/ansi.ts";
-import { errMessage } from "../utils/error.ts";
 import { isEnoent } from "../utils/fs.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { createStderrLogger } from "../utils/logger.ts";
-import { scannable } from "../utils/message.ts";
+import { caught, scannable } from "../utils/message.ts";
 import { parseToml, stringify } from "../utils/toml.ts";
 import {
   catalogBookkeepingAllowed,
@@ -149,7 +148,7 @@ function cleanupCodexCatalogArtifacts(catalogFile: string): void {
       fs.assertNotDirectory(catalogFile);
       fs.rm(catalogFile, { force: true });
     } catch (e) {
-      logger.warn(`codex model catalog cleanup failed: ${errMessage(e)}`);
+      logger.warn(caught(e, (message) => `codex model catalog cleanup failed: ${message}`));
     }
   }
   const state = new CopilotEnvState();

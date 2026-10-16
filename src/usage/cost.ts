@@ -2,14 +2,13 @@ import { consola } from "consola";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import type { ProbeFetch } from "../copilot_api/integration_identity.ts";
 import { colorEnabled, paintFor } from "../utils/ansi.ts";
-import { scannable } from "../utils/message.ts";
 import {
-  type Align,
-  printTable,
   printWrapped,
   printWrappedToStderr,
-  terminalWidth,
-} from "../utils/table.ts";
+  type ScannableMessage,
+  scannable,
+} from "../utils/message.ts";
+import { type Align, printTable } from "../utils/table.ts";
 import { discoverClaudeSessionRoots, readClaudeSessions } from "./claude_sessions.ts";
 import { discoverCodexSessionRoots, readCodexSessions } from "./codex_sessions.ts";
 import {
@@ -72,8 +71,7 @@ const UNREAD_BOTH = "neither GitHub's rate card nor OpenRouter's price list coul
 
 /** The footer's note on the three sources, for stdout: the combined table pairs a proxied
  *  request's two records; the per-source tables are each whole. */
-function sourcesNote(perSource: boolean): string {
-  const width = terminalWidth();
+function sourcesNote(perSource: boolean): ScannableMessage {
   if (perSource) {
     return scannable({
       headline: "Three sources, one table each.",
@@ -82,7 +80,6 @@ function sourcesNote(perSource: boolean): string {
         "summed tables: proxied traffic counted twice",
         "the default view: such a request counted once",
       ],
-      width,
     });
   }
   return scannable({
@@ -93,7 +90,6 @@ function sourcesNote(perSource: boolean): string {
     ],
     lead: "Then:",
     actions: [["agent cost --sources", "one table per source"]],
-    width,
   });
 }
 
@@ -126,18 +122,18 @@ function pricingClause(sources: PriceSources, bothRead: string): string {
  *  says prices are off. */
 function disclaimer(sources: PriceSources): string {
   if (!prices(sources.openRouter) && !prices(sources.gitHub)) {
-    return `\nPrices are off: ${UNREAD_BOTH}.`;
+    return `Prices are off: ${UNREAD_BOTH}.`;
   }
   const clause = pricingClause(
     sources,
     "priced at public OpenRouter rates (GitHub's own where the two differ)",
   );
-  return `\nDisclaimer: these numbers are approximate -- gathered from local logs and ${clause}; actual billing may differ.`;
+  return `Disclaimer: these numbers are approximate -- gathered from local logs and ${clause}; actual billing may differ.`;
 }
 
 /** One stderr message per source that could not be fetched today: why, and what priced the run
  *  instead (its cached copy, the other source, or nothing). */
-function unreadWarnings(sources: PriceSources): string[] {
+function unreadWarnings(sources: PriceSources): ScannableMessage[] {
   const { openRouter, gitHub } = sources;
   if (openRouter.kind === "none" && gitHub.kind === "none") {
     return [
@@ -156,7 +152,7 @@ function unreadWarnings(sources: PriceSources): string[] {
     source: SourceRead,
     cachedName: string,
     other: string,
-  ): string | null => {
+  ): ScannableMessage | null => {
     if (source.kind === "read") return null;
     const pricedBy =
       source.kind === "cached"
@@ -167,7 +163,7 @@ function unreadWarnings(sources: PriceSources): string[] {
   return [
     message(UNREAD_LIST, openRouter, "price list", "GitHub's rate card"),
     message(UNREAD_CARD, gitHub, "rate card", "OpenRouter's list"),
-  ].filter((part): part is string => part !== null);
+  ].filter((part): part is ScannableMessage => part !== null);
 }
 
 const EMPTY_REPORT: ReadonlyUsageReport = usageReport();
@@ -471,7 +467,8 @@ async function reportCost(
     console.log("");
   }
   printBilledCheck([proxyReport, ...codexByProvider.values(), claudeReport], pricing);
-  printWrapped(sourcesNote(Boolean(args.sources)) + disclaimer(sources));
+  printWrapped(sourcesNote(Boolean(args.sources)));
+  printWrapped(disclaimer(sources));
   console.log("");
   if (logs.indexed) {
     printWrappedToStderr(describeIndexRun(logs.meter.stats));

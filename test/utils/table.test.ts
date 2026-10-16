@@ -1,14 +1,12 @@
 import stringWidth from "string-width";
 import { statusPaint } from "../../src/utils/ansi.ts";
 import {
-  keepWhole,
   keyValueLine,
   formatTable as renderTable,
   type TableOptions,
   type TableRow,
   terminalWidth,
   wrapLine,
-  wrapMessage,
 } from "../../src/utils/table.ts";
 import { expect, test } from "../helpers/testing.ts";
 
@@ -227,20 +225,6 @@ test("stacked, a column marked wrap false is one line however wide: the command 
   ]);
   expect(stringWidth(lines[0] ?? "")).toBeGreaterThan(80);
   expect(Math.max(...lines.slice(1).map((l) => stringWidth(l)))).toBeLessThanOrEqual(80);
-});
-
-// What a printer that wraps every line (the logger, printWrapped) made of the stacked command above:
-// split at a word boundary again, so a copy of it ran with the wrong arguments.
-test("wrapMessage prints a line marked keepWhole as it came, wider than the width or down a pipe, while an unmarked twin wraps", () => {
-  const command = `agent settings --import /tmp/copilot-env-suite-${"X".repeat(60)}/all.json --force`;
-  expect(wrapMessage([keepWhole(command), command].join("\n"), 80).split("\n")).toEqual([
-    command,
-    "agent settings --import",
-    `  /tmp/copilot-env-suite-${"X".repeat(55)}`,
-    `  ${"X".repeat(5)}/all.json`,
-    "  --force",
-  ]);
-  expect(wrapMessage(keepWhole(command), null)).toBe(command);
 });
 
 test("stacked, a header-labeled cell of a wrap false column still wraps: the label makes it prose, not a command", () => {

@@ -7,7 +7,7 @@
 import * as v from "valibot";
 import { colorEnabled, paintFor } from "../utils/ansi.ts";
 import { isRecord } from "../utils/json.ts";
-import { scannable } from "../utils/message.ts";
+import { ScannableError } from "../utils/message.ts";
 import { type CopilotApiConfig, ensureDict } from "./config.ts";
 import {
   CODEX_IDENTITY_NAME,
@@ -347,34 +347,33 @@ export function knownProfile(raw: string | undefined): Profile {
   return profile;
 }
 
-function unknownProfileError(name: ProfileName, evidence: string[] = []): Error {
+function unknownProfileError(name: ProfileName, evidence: string[] = []): ScannableError {
   const names = allProfileNames();
-  return new Error(
-    scannable({
-      headline: `no such profile '${paintFor(colorEnabled()).cyan(name)}'.`,
-      evidence: [
-        ...evidence,
-        names.length === 0 ? "no profiles exist" : `known profiles: ${names.join(", ")}`,
-      ],
-      lead: "Fix:",
-      actions: [[`agent profile ${name} add --direct|--proxy`, "create it"]],
-    }),
-  );
+  return new ScannableError({
+    headline: `no such profile '${paintFor(colorEnabled()).cyan(name)}'.`,
+    evidence: [
+      ...evidence,
+      names.length === 0 ? "no profiles exist" : `known profiles: ${names.join(", ")}`,
+    ],
+    lead: "Fix:",
+    actions: [[`agent profile ${name} add --direct|--proxy`, "create it"]],
+  });
 }
 
 /** The store's own refusal of a name without a slot: half-created (a daemon home exists) or
  *  unknown. `auth`'s read-back hints print it too, so one owner words both; `evidence` is the
  *  caller's own lines (a --del's "nothing to clear"), printed before the store's. */
-export function missingProfileSlotError(name: ProfileName, evidence: string[] = []): Error {
+export function missingProfileSlotError(
+  name: ProfileName,
+  evidence: string[] = [],
+): ScannableError {
   if (profileHomeNames().includes(name)) {
-    return new Error(
-      scannable({
-        headline: `profile '${paintFor(colorEnabled()).cyan(name)}' has no store slot.`,
-        evidence: [...evidence, "half-created: its daemon home exists"],
-        lead: "Fix:",
-        actions: [[`agent profile ${name} add --direct|--proxy`, "re-create it"]],
-      }),
-    );
+    return new ScannableError({
+      headline: `profile '${paintFor(colorEnabled()).cyan(name)}' has no store slot.`,
+      evidence: [...evidence, "half-created: its daemon home exists"],
+      lead: "Fix:",
+      actions: [[`agent profile ${name} add --direct|--proxy`, "re-create it"]],
+    });
   }
   return unknownProfileError(name, evidence);
 }

@@ -11,6 +11,7 @@ import * as fs from "../utils/fs_facade.ts";
 import { userHomeDir } from "../utils/home.ts";
 import { isRecord, sameStrings } from "../utils/json.ts";
 import { taggedLogger } from "../utils/logger.ts";
+import { caught } from "../utils/message.ts";
 import { agentLauncherCommand } from "../utils/root.ts";
 import { claudeConfigDirOverride } from "./paths.ts";
 
@@ -156,7 +157,7 @@ function writeClaudeJson(loaded: ClaudeJsonDoc, doc: Record<string, unknown>): b
   try {
     fs.writeText(loaded.path, text, { secretKeys: [] });
   } catch (e) {
-    logger.warn(`could not write ${loaded.path}: ${String(e)}`);
+    logger.warn(caught(e, (message) => `could not write ${loaded.path}: ${message}`));
     return false;
   }
   return true;

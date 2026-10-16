@@ -14,9 +14,8 @@ import {
 } from "../copilot_api/profile.ts";
 import { bold } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
-import { errMessage } from "../utils/error.ts";
 import { createStderrLogger } from "../utils/logger.ts";
-import { scannable } from "../utils/message.ts";
+import { caught, ScannableError } from "../utils/message.ts";
 import type { ManagedAgentMode, RequestedMode } from "./provider_mode.ts";
 
 const logger = createStderrLogger();
@@ -41,14 +40,12 @@ const DIRECT_WIRING: unique symbol = Symbol("DirectWiring");
  *  log in (configureClaudeConfig refuses a named Direct profile the same way). */
 export function directNeedsCredentialError(profile: Profile): Error {
   const authCommand = agentAuthCommand(profile);
-  return new Error(
-    scannable({
-      headline: `a Direct wiring needs a credential and none resolves for ${profileLabel(profile)}.`,
-      evidence: ["without one, the fallback identity and host baked as state"],
-      lead: "Fix:",
-      actions: [[authCommand, "log in first, then retry"]],
-    }),
-  );
+  return new ScannableError({
+    headline: `a Direct wiring needs a credential and none resolves for ${profileLabel(profile)}.`,
+    evidence: ["without one, the fallback identity and host baked as state"],
+    lead: "Fix:",
+    actions: [[authCommand, "log in first, then retry"]],
+  });
 }
 
 /** The one constructor; the module boundary is the funnel (see DirectWiring). */
@@ -102,17 +99,15 @@ export function resolveCredentialWiring(
       : new Credential(undefined, profile).resolveWithReason();
   if (resolved.token === null) {
     const authCommand = agentAuthCommand(profile);
-    throw new Error(
-      scannable({
-        headline: `static-key is ${config.staticKeyScope(profile)} but no credential resolves to bake.`,
-        evidence: [resolved.reason],
-        lead: "Pick one:",
-        actions: [
-          [authCommand, "store a credential to bake"],
-          [configSetCommand("static-key", "none", profile), "go back to the resolver command"],
-        ],
-      }),
-    );
+    throw new ScannableError({
+      headline: `static-key is ${config.staticKeyScope(profile)} but no credential resolves to bake.`,
+      evidence: [resolved.reason],
+      lead: "Pick one:",
+      actions: [
+        [authCommand, "store a credential to bake"],
+        [configSetCommand("static-key", "none", profile), "go back to the resolver command"],
+      ],
+    });
   }
   return { kind: "static", token: resolved.token };
 }
@@ -312,7 +307,10 @@ export async function resolveDefaultMode(
   } catch (e) {
     if (mode === "direct") throw e;
     logger.log(
-      `  Copilot Direct rejects this credential → using the local proxy\n${errMessage(e)}`,
+      caught(
+        e,
+        (message) => `  Copilot Direct rejects this credential → using the local proxy\n${message}`,
+      ),
     );
     return { mode: "proxy" };
   }

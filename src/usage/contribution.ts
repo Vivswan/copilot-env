@@ -4,7 +4,7 @@
 // inside the contribution itself. Nothing here pulls in SQLite, the scanner, or a reader.
 import { createHash } from "node:crypto";
 import { consola } from "consola";
-import { errMessage } from "../utils/error.ts";
+import { caught } from "../utils/message.ts";
 
 export type UsageSource = "codex" | "claude";
 
@@ -247,7 +247,7 @@ export const parseEveryCandidate: Reconcile = (_source, walked, parseWhole) => {
       records.push({ path: file.path, contribution: parsed.contribution });
     } catch (e) {
       stats.filesFailed++;
-      consola.warn(`could not read ${file.path} (${errMessage(e)}).`);
+      consola.warn(caught(e, (message) => `could not read ${file.path} (${message}).`));
     }
   }
   return { records, stats };

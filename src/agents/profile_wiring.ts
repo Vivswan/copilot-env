@@ -6,7 +6,7 @@ import { codexAdapter, directWiringFor } from "../codex/config.ts";
 import { type DirectOverlay, directOverlay, renderDirectPair } from "../copilot_api/direct_pair.ts";
 import type { ProfileMode } from "../copilot_api/env_state.ts";
 import { type Profile, type ProfileName, profileLabel } from "../copilot_api/profile.ts";
-import { errMessage } from "../utils/error.ts";
+import { caught, type Message, ScannableError } from "../utils/message.ts";
 import {
   type AgentAdapter,
   type CredentialWiring,
@@ -77,16 +77,19 @@ export async function wireProfileAgents(
             : resolveDirectWiring(name, token)),
         }
       : { mode };
-  const failures: string[] = [];
+  const failures: Message[] = [];
   for (const { agent, credential } of writes) {
     try {
       await agent.configureProfile(name, { ...identity, credential }, { quiet });
     } catch (e) {
-      failures.push(`${agent.label}: ${errMessage(e)}`);
+      failures.push(caught(e, (message) => `${agent.label}: ${message}`));
     }
   }
   if (failures.length > 0) {
-    throw new Error(`could not wire ${profileLabel(name)}:\n  ${failures.join("\n  ")}`);
+    throw new ScannableError({
+      headline: `could not wire ${profileLabel(name)}:`,
+      evidence: failures,
+    });
   }
 }
 

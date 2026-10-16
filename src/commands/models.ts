@@ -11,7 +11,7 @@ import { knownProfile } from "../copilot_api/env_state.ts";
 import { type ModelListEntry, mergeUnlistedModels, parseModelList } from "../copilot_api/models.ts";
 import { agentAuthCommand, agentStartCommand, type Profile } from "../copilot_api/profile.ts";
 import { colorEnabled, palette } from "../utils/ansi.ts";
-import { errMessage } from "../utils/error.ts";
+import { rethrown } from "../utils/message.ts";
 import { formatTable, type TableRow, terminalWidth } from "../utils/table.ts";
 
 interface ModelsArgs {
@@ -153,7 +153,7 @@ export async function runModels(args: ModelsArgs): Promise<void> {
           ? "check `agent health` (or use --direct)"
           : `check \`${agentStartCommand(profile)} --check\` (or use --direct)`
         : `see \`${authCommand} --check\``;
-    throw new Error(`could not list models via ${label}: ${errMessage(e)}; ${hint}`);
+    throw rethrown(e, (message) => `could not list models via ${label}: ${message}; ${hint}`);
   }
   if (args.json) {
     console.log(JSON.stringify({ source, models }, null, 2));

@@ -16,6 +16,7 @@ import { BOUNDED_LOCK_POLICY, type LockPolicy, withFileLockSync } from "../utils
 import * as fs from "../utils/fs_facade.ts";
 import { isRecord } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
+import { caught } from "../utils/message.ts";
 import {
   CONTRIBUTION_VERSION,
   type ContributionOf,
@@ -237,7 +238,9 @@ class SqliteUsageIndex implements UsageIndex {
         return read();
       } catch (e) {
         indexFailure = errMessage(e);
-        logger.warn(`usage index unreadable, parsing every file (${indexFailure}).`);
+        logger.warn(
+          caught(e, (message) => `usage index unreadable, parsing every file (${message}).`),
+        );
         return fallback;
       }
     };
@@ -305,7 +308,7 @@ class SqliteUsageIndex implements UsageIndex {
         });
       } catch (e) {
         stats.filesFailed++;
-        logger.warn(`could not read ${file.path} (${errMessage(e)}).`);
+        logger.warn(caught(e, (message) => `could not read ${file.path} (${message}).`));
         writes.push({ kind: "delete", path: file.path, unwalked: false });
       }
     }
@@ -319,7 +322,7 @@ class SqliteUsageIndex implements UsageIndex {
         stats.filesDeleted = removed;
       }
     } catch (e) {
-      logger.warn(`could not update the usage index (${errMessage(e)}).`);
+      logger.warn(caught(e, (message) => `could not update the usage index (${message}).`));
     }
     return { records, stats };
   };
@@ -393,7 +396,9 @@ export function openUsageIndex(opts: OpenUsageIndexOptions = {}): UsageIndex | n
     // the index names every session file, its models and timestamps.
     if (process.platform !== "win32") fs.chmod(dir, 0o700);
   } catch (e) {
-    logger.warn(`could not create the usage index directory ${dir} (${errMessage(e)}).`);
+    logger.warn(
+      caught(e, (message) => `could not create the usage index directory ${dir} (${message}).`),
+    );
     return null;
   }
   const dbPath = join(dir, USAGE_INDEX_DB_NAME);
@@ -407,28 +412,32 @@ export function openUsageIndex(opts: OpenUsageIndexOptions = {}): UsageIndex | n
     try {
       db = new Database(dbPath);
     } catch (e) {
-      logger.warn(`could not open the usage index (${errMessage(e)}); running without it.`);
+      logger.warn(
+        caught(e, (message) => `could not open the usage index (${message}); running without it.`),
+      );
       return null;
     }
     try {
       return new SqliteUsageIndex(stamped(db, fingerprint), lockPath, lockPolicy);
     } catch (e) {
       if (!isRebuildable(e)) {
-        logger.warn(`usage index unavailable (${errMessage(e)}); running without it.`);
+        logger.warn(
+          caught(e, (message) => `usage index unavailable (${message}); running without it.`),
+        );
         return null;
       }
-      logger.info(`rebuilding the usage index (${errMessage(e)}).`);
+      logger.info(caught(e, (message) => `rebuilding the usage index (${message}).`));
     }
     try {
       removeDbFiles(dbPath);
     } catch (e) {
-      logger.warn(`could not remove the stale usage index (${errMessage(e)}).`);
+      logger.warn(caught(e, (message) => `could not remove the stale usage index (${message}).`));
       return null;
     }
     try {
       return new SqliteUsageIndex(stamped(new Database(dbPath), fingerprint), lockPath, lockPolicy);
     } catch (e) {
-      logger.warn(`could not create the usage index (${errMessage(e)}).`);
+      logger.warn(caught(e, (message) => `could not create the usage index (${message}).`));
       return null;
     }
   });

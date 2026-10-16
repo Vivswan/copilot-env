@@ -3,7 +3,7 @@
 // bypasses this entirely.
 import type { ProfileMode } from "../copilot_api/env_state.ts";
 import { colorEnabled, paintFor, statusPaint, type Tone } from "../utils/ansi.ts";
-import { printWrapped } from "../utils/table.ts";
+import { printWrapped } from "../utils/message.ts";
 import { worstStatus } from "./aggregate.ts";
 import type { CheckGroup, CheckResult, CheckStatus, HealthScope } from "./types.ts";
 

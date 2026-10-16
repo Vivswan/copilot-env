@@ -9,6 +9,7 @@ import {
   wrapToTerminal,
 } from "../../src/utils/logger.ts";
 import { scannable } from "../../src/utils/message.ts";
+import { withColumns } from "../helpers/columns.ts";
 import { captureChannels } from "../helpers/output.ts";
 import { expect, test } from "../helpers/testing.ts";
 
@@ -67,7 +68,6 @@ test("a scannable's command wider than the terminal reaches the sink on one line
       [command, "import the whole store"],
       ["agent profile [<name>] settings --export", "export one profile's bundle"],
     ] as [string, string][],
-    width: 80,
   };
   const printed = [
     "all.json is not a bundle of profile 'work' alone: it carries more than",
@@ -96,6 +96,40 @@ test("a scannable's command wider than the terminal reaches the sink on one line
   const plain = String(seen[0]?.args[0]).split("\n");
   expect(plain.length).toBeGreaterThan(2);
   expect(Math.max(...plain.map((l) => stringWidth(l)))).toBeLessThanOrEqual(80);
+});
+
+// The specimen: `agent auth --check` prints on stdout while its siblings land on stderr, and a
+// message laid out once at the default width was wrong for the stream it reached.
+test("the reporter lays a scannable out for its own stream's width, not the width the message would take as a string", async () => {
+  const message = scannable({
+    headline: "gh cannot serve account 'octocat' by name.",
+    lead: "Pick one:",
+    actions: [
+      ["gh auth login", "re-login on gh 2.40 or newer, then retry"],
+      ["agent profile work auth --gh-user auto", "follow gh's active account (switches with gh)"],
+    ],
+    color: false,
+  });
+  const { log, seen } = capture(40);
+  await withColumns(80, () => {
+    log.info(message);
+    // As a string the message lays out for COLUMNS, two columns wide.
+    expect(String(message).split("\n")[2]).toBe(
+      "  gh auth login                           re-login on gh 2.40 or newer, then",
+    );
+  });
+  expect(String(seen[0]?.args[0]).split("\n")).toEqual([
+    "gh cannot serve account 'octocat' by",
+    "  name.",
+    "Pick one:",
+    "  gh auth login",
+    "    re-login on gh 2.40 or newer, then",
+    "      retry",
+    "",
+    "  agent profile work auth --gh-user auto",
+    "    follow gh's active account (switches",
+    "      with gh)",
+  ]);
 });
 
 /** consola's own fancy reporter writing to a sink, so the decorated lines are measured. */
@@ -191,6 +225,61 @@ test("with color on, the whole wrapped warning body is yellow, an inline backtic
   expect(String(split.seen[1]?.args[0]).split("\n")[1]).toBe(
     `${yellow}${cyan}health${close}${yellow} next${close}`,
   );
+});
+
+// consola holds the sixth identical message and later prints it once more with a "(repeated N
+// times)" string beside it: a second argument, which left the scannable unlaid for the sink.
+test("a scannable consola repeats keeps its layout at the sink's width, the repeat note on its own line", () => {
+  const message = scannable({
+    headline: "one two three four five six seven eight nine ten eleven twelve thirteen",
+    lead: "Fix:",
+    actions: [["agent health --scope full --profile work", "look again"]],
+    color: false,
+  });
+  const { log, seen } = capture(40);
+  for (let i = 0; i < 10; i++) log.warn(message);
+  log.info("flush");
+  const summary = seen.find((obj) => obj.args.length === 1 && /repeated/.test(String(obj.args[0])));
+  // The WARN badge and its space take seven columns of the first line.
+  expect(String(summary?.args[0])).toBe(`${message.fit(40, 7)}\n(repeated 4 times)`);
+});
+
+// An evidence part may carry a tool's own newlines (npm's multi-line error summary): the prose and
+// table boundary is counted in printed lines, or the part's second line would pass for a table row
+// and print unwrapped.
+test("a scannable's evidence with its own newlines wraps like the same text as a string, and the command row after it stays whole", () => {
+  const headline = "npm ls -g failed.";
+  // Three printed lines in one part, the over-wide ones last: a boundary counted in parts would
+  // hand the last of them to the table slice and print it unwrapped.
+  const evidence = [
+    "npm error ELSPROBLEMS",
+    "missing: another-example-package@2.0.0, required by example-tool@1.0.0",
+    "missing: a-third-example-package@3.0.0, required by example-tool@1.0.0",
+  ].join("\n");
+  const command = "agent shell --clis --reinstall-everything-now";
+  const { log, seen } = capture(40);
+  log.warn(
+    scannable({ headline, evidence: [evidence], lead: "Fix:", actions: [[command, "rerun it"]] }),
+  );
+  log.warn(`${headline}\n  ${evidence}`);
+  const laid = String(seen[0]?.args[0]).split("\n");
+  const prose = String(seen[1]?.args[0]).split("\n");
+  expect(laid.slice(0, prose.length)).toEqual(prose);
+  expect(laid.slice(prose.length)).toEqual(["Fix:", `  ${command}`, "    rerun it"]);
+  expect(Math.max(...prose.map((l) => stringWidth(l)))).toBeLessThanOrEqual(40);
+  expect(prose.length).toBeGreaterThan(3);
+});
+
+// The reporter paints a backtick pair into escapes before it wraps, so the pair costs no columns;
+// a scannable laid out before that paint wrapped its headline two columns early.
+test("with color on, a scannable's headline wraps where the same text wraps as a string", () => {
+  const headline = "Run `agent health --scope full` before `agent start`, then retry the wiring.";
+  const { log, seen } = capture(40, true);
+  log.warn(scannable({ headline, color: true }));
+  log.warn(headline);
+  const visible = (i: number): string => stripVTControlCharacters(String(seen[i]?.args[0]));
+  expect(visible(0).split("\n").length).toBeGreaterThan(1);
+  expect(visible(0)).toBe(visible(1));
 });
 
 // The import's preview runs the wiring once on the fs overlay; its narration belongs to the real

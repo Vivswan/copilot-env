@@ -35,6 +35,7 @@ import { errMessage } from "../utils/error.ts";
 import { removeScratchDir, type ScratchDir, scratchDir } from "../utils/fs_facade.ts";
 import { isRecord, parseJsonRecord } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
+import { caught } from "../utils/message.ts";
 
 // Narration goes to stderr, never stdout: the machine-readable `--check` / `env` paths must
 // stay clean.
@@ -474,7 +475,9 @@ export async function probeDirectWorks(
     return false;
   } catch (e) {
     if (e instanceof CliTooOldError) throw e;
-    logger.log(`    • the Direct probe errored (${errMessage(e)}) → using the local proxy`);
+    logger.log(
+      caught(e, (message) => `    • the Direct probe errored (${message}) → using the local proxy`),
+    );
     return false;
   } finally {
     if (tmpHome !== null) {

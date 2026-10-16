@@ -23,10 +23,10 @@ import {
   parseProfileName,
 } from "../copilot_api/profile.ts";
 import { MARKER, MARKER_END, shellTargetFiles } from "../shell/integration.ts";
-import { errMessage } from "../utils/error.ts";
 import { isEnoent, WIN } from "../utils/fs.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { isRecord, parseJsonRecord } from "../utils/json.ts";
+import { caught } from "../utils/message.ts";
 import type { Migration } from "./index.ts";
 
 /** Each file converts independently, but any file left unconverted fails the whole step, so
@@ -126,7 +126,7 @@ function fenceShellBlocks(): void {
       // In place: an rc file may be the user's own symlink, which a rename would replace.
       fs.writeText(file, fenced, { atomic: false, detail: "copilot-env shell block fenced" });
     } catch (e) {
-      consola.warn(`  could not fence ${file}: ${errMessage(e)}`);
+      consola.warn(caught(e, (message) => `  could not fence ${file}: ${message}`));
       failed.push(file);
     }
   }
@@ -265,14 +265,14 @@ function rewriteCodexWiring(): void {
         saveCodexToml(configPath, read.doc, "pre-4.0.0 proxy wiring rewritten");
       }
     } catch (e) {
-      consola.warn(`  could not rewrite ${configPath}: ${errMessage(e)}`);
+      consola.warn(caught(e, (message) => `  could not rewrite ${configPath}: ${message}`));
       failed.push(configPath);
     }
     const envFile = join(home, ".env");
     try {
       removeEnvKey(envFile, LEGACY_DIRECT_ENV_KEY);
     } catch (e) {
-      consola.warn(`  could not rewrite ${envFile}: ${errMessage(e)}`);
+      consola.warn(caught(e, (message) => `  could not rewrite ${envFile}: ${message}`));
       failed.push(envFile);
     }
   }
@@ -401,7 +401,7 @@ export function rewriteClaudeWiring(): void {
     try {
       rewriteLegacyClaudeHelper(claudeHome, profile);
     } catch (e) {
-      consola.warn(`  could not rewrite ${settingsPath}: ${errMessage(e)}`);
+      consola.warn(caught(e, (message) => `  could not rewrite ${settingsPath}: ${message}`));
       failed.push(settingsPath);
     }
   }

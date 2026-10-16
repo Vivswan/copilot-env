@@ -13,6 +13,7 @@ import { usageIndexDir } from "../copilot_api/paths.ts";
 import { errMessage } from "../utils/error.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { parseJsonRecord } from "../utils/json.ts";
+import { rethrown } from "../utils/message.ts";
 import { MILLISECONDS_PER_DAY } from "../utils/time.ts";
 import { COPILOT_ENV_USER_AGENT } from "../utils/user_agent.ts";
 import type { PricingTier } from "./pricing.ts";
@@ -124,8 +125,7 @@ function readRows(text: string): Row[] {
     data = parseYaml(text);
   } catch (e) {
     // The YAML error's first line locates the fault; the lines after it quote the file.
-    const [headline] = errMessage(e).split(":\n");
-    throw new Error(`rate card is not YAML: ${headline}`);
+    throw rethrown(e, (message) => `rate card is not YAML: ${message.split(":\n")[0] ?? message}`);
   }
   const parsed = v.safeParse(CARD_SCHEMA, data);
   if (!parsed.success) throw new Error(describeIssue(parsed.issues[0]));

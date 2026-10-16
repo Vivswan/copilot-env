@@ -73,25 +73,14 @@ function splitHard(word: string, firstRoom: number, restRoom: number): string[] 
  *  escape byte comes from fromCharCode: a control character in a regex literal is a lint error. */
 const LEADING = new RegExp(`^((?:${String.fromCharCode(27)}\\[[0-9;]*m)*)(\\s*)`);
 
-/** The unit separator, in front of a line its layout left wider than the width on purpose (a
- *  lone command), so wrapMessage prints that line as it came; wrapMessage strips it. */
-const WHOLE_MARK = "\u001f";
-
-/** `line` marked for wrapMessage to print as it came, however wide. */
-export function keepWhole(line: string): string {
-  return `${WHOLE_MARK}${line}`;
-}
-
 /** Every line of a message wrapped to `width` under its own indent with a hanging continuation
  *  one GAP deeper; `lead` is what the printer puts in front of the first line (a logger's icon).
- *  A line that fits, or that keepWhole marked, is returned as it came, so table rows pass
- *  through untouched; a null width wraps nothing and still strips the marks. */
+ *  A line that fits is returned as it came; a null width wraps nothing. */
 export function wrapMessage(text: string, width: number | null, lead = 0): string {
+  if (width === null) return text;
   return text
     .split("\n")
     .flatMap((line, i) => {
-      if (line.startsWith(WHOLE_MARK)) return [line.slice(WHOLE_MARK.length)];
-      if (width === null) return [line];
       const room = i === 0 ? width - lead : width;
       if (stringWidth(line) <= room) return [line];
       const [prefix = "", paint = "", indent = ""] = LEADING.exec(line) ?? [];
@@ -100,25 +89,10 @@ export function wrapMessage(text: string, width: number | null, lead = 0): strin
     .join("\n");
 }
 
-/** console.log for prose lines (status reports, next steps): wrapped to the terminal, unwrapped
- *  down a pipe. */
-export function printWrapped(text: string): void {
-  console.log(wrapMessage(text, terminalWidth()));
-}
-
 /** A `key: value` status line (`agent profile mcp`, the `--check` reports): the key cyan, a status word in
  *  its tone. Defaults to the command edge's colorEnabled(); the argument is the test override. */
 export function keyValueLine(key: string, value: string, color = colorEnabled()): string {
   return `${paintFor(color).cyan(key)}: ${statusPaint(value, color)}`;
-}
-
-export function printKeyValue(key: string, value: string, color = colorEnabled()): void {
-  printWrapped(keyValueLine(key, value, color));
-}
-
-/** The stderr twin, for narration beside a command's stdout payload. */
-export function printWrappedToStderr(text: string): void {
-  process.stderr.write(`${wrapMessage(text, terminalWidth(process.stderr))}\n`);
 }
 
 function isHeading(row: TableRow): row is { heading: string } {

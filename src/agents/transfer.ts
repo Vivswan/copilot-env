@@ -46,10 +46,10 @@ import {
   parseProfileName,
 } from "../copilot_api/profile.ts";
 import { type FileChange, underDryRunMarker, withDryRun } from "../utils/dry_run.ts";
-import { errMessage } from "../utils/error.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { isRecord } from "../utils/json.ts";
 import { withNarrationMuted } from "../utils/logger.ts";
+import { caught, type Message } from "../utils/message.ts";
 import { underInternalRoot } from "../utils/report_write.ts";
 import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
 import { reconcileClaudeDesktopWiring } from "./claude_desktop.ts";
@@ -419,9 +419,9 @@ export interface ImportOutcome {
   wiredProfiles: ProfileName[];
   /** Human-readable reasons for slots/wiring intentionally left alone. */
   skipped: string[];
-  /** Wiring failures, default or per-profile (the import continued past them;
-   *  the command layer exits non-zero on any). */
-  failures: string[];
+  /** Wiring failures, default or per-profile (the import continued past them; the command layer
+   *  prints each at its stream's width and exits non-zero on any). */
+  failures: Message[];
 }
 
 /**
@@ -669,7 +669,7 @@ async function importProfiles(plan: ImportPlan, outcome: ImportOutcome): Promise
             outcome.wiredProfiles.push(name);
           }
         } catch (e) {
-          outcome.failures.push(`profile '${name}': ${errMessage(e)}`);
+          outcome.failures.push(caught(e, (message) => `profile '${name}': ${message}`));
         }
       }
       continue;
@@ -694,7 +694,7 @@ async function importProfiles(plan: ImportPlan, outcome: ImportOutcome): Promise
       );
       outcome.wiredProfiles.push(name);
     } catch (e) {
-      outcome.failures.push(`profile '${name}': ${errMessage(e)}`);
+      outcome.failures.push(caught(e, (message) => `profile '${name}': ${message}`));
     }
   }
 }

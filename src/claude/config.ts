@@ -56,13 +56,12 @@ import {
 } from "../copilot_api/profile.ts";
 import { colorEnabled, paintFor } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
-import { errMessage } from "../utils/error.ts";
 import { isEnoentOrNotdir, WIN } from "../utils/fs.ts";
 import type { TextReadResult } from "../utils/fs_facade.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { isRecord, parseJsonRecord, readStringField } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
-import { scannable } from "../utils/message.ts";
+import { printKeyValue, rethrown, ScannableError, scannable } from "../utils/message.ts";
 import { escapeRegExp } from "../utils/regexp.ts";
 import {
   agentAuthGetArgs,
@@ -71,7 +70,6 @@ import {
   proxyTokenCommand,
 } from "../utils/root.ts";
 import { type ManagedEnvValue, quotePosix } from "../utils/shell_quote.ts";
-import { printKeyValue } from "../utils/table.ts";
 import { removeClaudeDesktopEntry, syncClaudeDesktopWiring } from "./desktop.ts";
 import { winQuote } from "./helper_body.ts";
 import {
@@ -583,14 +581,12 @@ export function configureClaudeConfig(claudeHome: string, request: ClaudeWriteRe
     request.mode === "direct" &&
     new Credential(undefined, profile).read().kind === "none"
   ) {
-    throw new Error(
-      scannable({
-        headline: `${profileLabel(profile)} has no credential of its own.`,
-        evidence: ["no fallback to the default credential for a named profile"],
-        lead: "Fix:",
-        actions: [[agentAuthCommand(profile), "store the profile's credential first"]],
-      }),
-    );
+    throw new ScannableError({
+      headline: `${profileLabel(profile)} has no credential of its own.`,
+      evidence: ["no fallback to the default credential for a named profile"],
+      lead: "Fix:",
+      actions: [[agentAuthCommand(profile), "store the profile's credential first"]],
+    });
   }
 
   const settingsPath = settingsPathFor(claudeHome, profile);
@@ -601,17 +597,15 @@ export function configureClaudeConfig(claudeHome: string, request: ClaudeWriteRe
   if (profile !== null) {
     const current = inspectClaudeWiring(JSON.stringify(doc), 0, profile);
     if (current.providerMode === "other") {
-      throw new Error(
-        scannable({
-          headline: `${paintFor(colorEnabled()).cyan(settingsPath)} is wired to something copilot-env does not manage.`,
-          evidence: ["overwrite refused"],
-          lead: "Pick one:",
-          actions: [
-            ["agent profile <other-name> add", "a different profile name, so a different file"],
-            ["remove the file first", "then rerun this command"],
-          ],
-        }),
-      );
+      throw new ScannableError({
+        headline: `${paintFor(colorEnabled()).cyan(settingsPath)} is wired to something copilot-env does not manage.`,
+        evidence: ["overwrite refused"],
+        lead: "Pick one:",
+        actions: [
+          ["agent profile <other-name> add", "a different profile name, so a different file"],
+          ["remove the file first", "then rerun this command"],
+        ],
+      });
     }
   }
 
@@ -656,7 +650,10 @@ export function configureClaudeConfig(claudeHome: string, request: ClaudeWriteRe
   try {
     fs.mkdir(claudeHome);
   } catch (e) {
-    throw new Error(`could not create Claude config directory ${claudeHome}: ${errMessage(e)}`);
+    throw rethrown(
+      e,
+      (message) => `could not create Claude config directory ${claudeHome}: ${message}`,
+    );
   }
   pair.before();
   saveSettings(settingsPath, doc, detail);

@@ -12,9 +12,9 @@ import { type Dirent, readdirSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import { consola } from "consola";
 import { resolveClaudeHome } from "../claude/paths.ts";
-import { errMessage } from "../utils/error.ts";
 import { isDir } from "../utils/fs.ts";
 import { isRecord } from "../utils/json.ts";
+import { caught } from "../utils/message.ts";
 import { type DayKey, dayKeyIn, MILLISECONDS_PER_DAY } from "../utils/time.ts";
 import {
   type ClaudeContribution,
@@ -203,7 +203,7 @@ function collectTranscriptFiles(
   try {
     entries = readdirSync(dir, { withFileTypes: true });
   } catch (e) {
-    consola.warn(`could not list ${dir} (${errMessage(e)}).`);
+    consola.warn(caught(e, (message) => `could not list ${dir} (${message}).`));
     return;
   }
   for (const entry of entries) {
@@ -222,7 +222,7 @@ function collectTranscriptFiles(
     try {
       ({ size, mtimeMs } = statSync(full));
     } catch (e) {
-      consola.warn(`could not read ${full} (${errMessage(e)}).`);
+      consola.warn(caught(e, (message) => `could not read ${full} (${message}).`));
       continue;
     }
     const candidate = sinceMs === undefined || !(mtimeMs + MTIME_CUTOFF_SLACK_MS < sinceMs);

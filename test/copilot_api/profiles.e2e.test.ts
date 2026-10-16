@@ -52,6 +52,7 @@ import {
 import { parseProfileName } from "../../src/copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../../src/copilot_api/run_state.ts";
 import { isRecord } from "../../src/utils/json.ts";
+import { ScannableError, ScannableMessage } from "../../src/utils/message.ts";
 import { stageRefusedStop } from "../helpers/daemon.ts";
 import { envSnapshot, isolateAgentHomes, resetExitCode } from "../helpers/env.ts";
 import { stubGithubLogins } from "../helpers/fixtures.ts";
@@ -646,9 +647,23 @@ test("a wiring failure after the atomic commit leaves a complete slot that agent
   );
 
   await addProfile(WORK, { mode: "proxy", noAuth: true });
-  await expect(runAuth({ set: "ghp_worktoken", profile: "work" })).rejects.toThrow(
-    /could not wire/,
-  );
+  let refused: unknown;
+  try {
+    await runAuth({ set: "ghp_worktoken", profile: "work" });
+  } catch (e) {
+    refused = e;
+  }
+  // The wiring collects the Claude writer's refusal as evidence with its parts, under its own
+  // sentence, so the printer that catches it lays the command rows out whole at any width.
+  if (!(refused instanceof ScannableError)) throw new Error("the wiring did not refuse as parts");
+  expect(refused.message).toMatch(/^could not wire profile 'work':\n {2}Claude: /);
+  expect(refused.scannable.parts.evidence?.[0]).toBeInstanceOf(ScannableMessage);
+  expect(
+    refused.scannable
+      .fit(20)
+      .split("\n")
+      .filter((line) => line.length > 20),
+  ).toEqual(["    agent profile <other-name> add", "    remove the file first"]);
 
   // Never a half profile: the slot is COMPLETE (both halves), only unwired.
   const state = new CopilotEnvState();

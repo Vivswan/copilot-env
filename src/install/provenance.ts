@@ -9,7 +9,7 @@ import type { TrustedRoot } from "@sigstore/protobuf-specs";
 import { getTrustedRoot } from "@sigstore/tuf";
 import { toSignedEntity, toTrustMaterial, Verifier } from "@sigstore/verify";
 import { resolveRootHome } from "../copilot_api/paths.ts";
-import { errMessage } from "../utils/error.ts";
+import { rethrown } from "../utils/message.ts";
 import {
   ATTESTATION_NAME,
   type AttestedSubject,
@@ -54,11 +54,8 @@ export async function verifyReleaseProvenance(
   try {
     bundle = bundleFromJSON(JSON.parse(bundleJson));
   } catch (e) {
-    throw new Error(
-      verificationFailedMessage(
-        tag,
-        `${ATTESTATION_NAME} is not a Sigstore bundle (${errMessage(e)})`,
-      ),
+    throw rethrown(e, (message) =>
+      verificationFailedMessage(tag, `${ATTESTATION_NAME} is not a Sigstore bundle (${message})`),
     );
   }
   if (bundle.content.$case !== "dsseEnvelope") {
@@ -87,10 +84,10 @@ export async function verifyReleaseProvenance(
         cachePath: opts.cachePath ?? tufCachePath(),
       }));
   } catch (e) {
-    throw new Error(
+    throw rethrown(e, (message) =>
       cannotVerifyMessage(
         tag,
-        `the Sigstore trust root could not be refreshed from ${TUF_MIRROR_URL} (${errMessage(e)})`,
+        `the Sigstore trust root could not be refreshed from ${TUF_MIRROR_URL} (${message})`,
       ),
     );
   }
@@ -108,10 +105,10 @@ export async function verifyReleaseProvenance(
     }
     signerIdentity = identity;
   } catch (e) {
-    throw new Error(
+    throw rethrown(e, (message) =>
       verificationFailedMessage(
         tag,
-        `not signed by a GitHub Actions workflow of Vivswan's account (${errMessage(e)})`,
+        `not signed by a GitHub Actions workflow of Vivswan's account (${message})`,
       ),
     );
   }
@@ -120,7 +117,7 @@ export async function verifyReleaseProvenance(
     const statement = parseStatement(envelope.payload);
     assertSubjectsAttested(statement, required);
   } catch (e) {
-    throw new Error(verificationFailedMessage(tag, errMessage(e)));
+    throw rethrown(e, (message) => verificationFailedMessage(tag, message));
   }
   return { signerIdentity };
 }

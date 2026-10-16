@@ -7,9 +7,9 @@ import path from "node:path";
 import { zstdDecompressSync } from "node:zlib";
 import { consola } from "consola";
 import { knownCodexHomes } from "../codex/host.ts";
-import { errMessage } from "../utils/error.ts";
 import { isDir } from "../utils/fs.ts";
 import { isRecord } from "../utils/json.ts";
+import { caught } from "../utils/message.ts";
 import { type DayKey, dayKeyIn, MILLISECONDS_PER_DAY } from "../utils/time.ts";
 import {
   CONTRIBUTION_VERSION,
@@ -230,7 +230,7 @@ function collectRolloutFiles(
   try {
     entries = readdirSync(dir, { withFileTypes: true });
   } catch (e) {
-    consola.warn(`could not list ${dir} (${errMessage(e)}).`);
+    consola.warn(caught(e, (message) => `could not list ${dir} (${message}).`));
     return;
   }
   for (const entry of entries) {
@@ -250,7 +250,7 @@ function collectRolloutFiles(
     try {
       ({ size, mtimeMs } = statSync(full));
     } catch (e) {
-      consola.warn(`could not read ${full} (${errMessage(e)}).`);
+      consola.warn(caught(e, (message) => `could not read ${full} (${message}).`));
       continue;
     }
     let candidate = true;

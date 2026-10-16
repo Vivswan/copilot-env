@@ -20,10 +20,9 @@ import { consola } from "consola";
 import { configSetCommand } from "../copilot_api/env_config.ts";
 
 import { runShellIntegration } from "../shell/integration.ts";
-import { errMessage } from "../utils/error.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { userHomeDir } from "../utils/home.ts";
-import { scannable } from "../utils/message.ts";
+import { caught, printWrapped, ScannableError, type ScannableMessage } from "../utils/message.ts";
 import {
   ASSET_ROOT,
   CURRENT_LINK,
@@ -37,7 +36,6 @@ import {
 } from "../utils/root.ts";
 import { stripV } from "../utils/semver.ts";
 import { quotePowerShell } from "../utils/shell_quote.ts";
-import { printWrapped } from "../utils/table.ts";
 import {
   INSTALLED_BINARY_POSIX,
   INSTALLED_BINARY_WINDOWS,
@@ -75,6 +73,7 @@ export const MATERIALIZED_ASSET_FILES = [
   "src/copilot_api/run_state.ts",
   "src/copilot_api/state_store.ts",
   "src/utils/ansi.ts",
+  "src/utils/error.ts",
   "src/utils/file_lock.ts",
   "src/utils/fs.ts",
   "src/utils/fs_disk.ts",
@@ -161,20 +160,18 @@ export function pointCurrentAt(top: string, versionName: string): void {
           // Double fault: the layout is now LINKLESS. Say so, instead of reporting only the
           // creation failure as if nothing else changed. The `agent` shim dispatches through the
           // missing link, so the installer, aimed at this root, is the way back.
-          throw new Error(
-            scannable({
-              headline:
-                "could not create the current link, and could not restore its previous target.",
-              evidence: [link, errMessage(error)],
-              lead: "Fix:",
-              actions: [
-                [
-                  `$env:COPILOT_ENV_DIR = ${quotePowerShell(top)}; irm https://github.com/Vivswan/copilot-env/releases/latest/download/install.ps1 | iex`,
-                  "re-run the installer in PowerShell to re-point it",
-                ],
+          throw new ScannableError({
+            headline:
+              "could not create the current link, and could not restore its previous target.",
+            evidence: [link, caught(error, (message) => message)],
+            lead: "Fix:",
+            actions: [
+              [
+                `$env:COPILOT_ENV_DIR = ${quotePowerShell(top)}; irm https://github.com/Vivswan/copilot-env/releases/latest/download/install.ps1 | iex`,
+                "re-run the installer in PowerShell to re-point it",
               ],
-            }),
-          );
+            ],
+          });
         }
       }
       throw error;
@@ -243,7 +240,7 @@ function writeShimFile(to: string, text: string, executable: boolean, logger: Lo
  *  `agent start` never reaches stdout. */
 export interface Logger {
   info(message: string): void;
-  warn(message: string): void;
+  warn(message: string | ScannableMessage): void;
   success(message: string): void;
 }
 
@@ -261,7 +258,9 @@ function writeShimBestEffort(shim: FileWrite<string>, logger: Logger): void {
   try {
     writeShimFile(shim.to, shim.body, shim.executable, logger);
   } catch (error) {
-    logger.warn(`Could not refresh the launcher shim ${shim.to}: ${errMessage(error)}`);
+    logger.warn(
+      caught(error, (message) => `Could not refresh the launcher shim ${shim.to}: ${message}`),
+    );
   }
 }
 
@@ -668,7 +667,9 @@ export function runPostFlipMigrations(
       );
     }
   } catch (error) {
-    logger.warn(`Post-update migrations could not run: ${errMessage(error)}; ${retry}.`);
+    logger.warn(
+      caught(error, (message) => `Post-update migrations could not run: ${message}; ${retry}.`),
+    );
   }
 }
 

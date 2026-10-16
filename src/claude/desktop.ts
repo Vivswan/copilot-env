@@ -21,11 +21,10 @@ import { OwnershipLedger } from "../copilot_api/ownership.ts";
 import { CopilotApiPaths, resolveRootHome } from "../copilot_api/paths.ts";
 import { copilotApiResolvePort, proxyLoopbackOrigin } from "../copilot_api/port.ts";
 import { type Profile, profileKey, profileLabel } from "../copilot_api/profile.ts";
-import { errMessage } from "../utils/error.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { isRecord, parseJsonRecord } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
-import { scannable } from "../utils/message.ts";
+import { caught, scannable } from "../utils/message.ts";
 import {
   desktopHelperPath,
   desktopHelperScriptWiring,
@@ -135,7 +134,7 @@ async function wiringModels(
         return desktopModelsFromPicks(rows, labelLookup(discovered.catalogBody));
       }
     } catch (e) {
-      logger.warn(`  Claude Desktop: model discovery failed (${errMessage(e)}).`);
+      logger.warn(caught(e, (message) => `  Claude Desktop: model discovery failed (${message}).`));
     }
   } else {
     for (const source of ["proxy", "direct"] as const) {
@@ -149,7 +148,11 @@ async function wiringModels(
         if (rows.length > 0) return desktopModelsFromPicks(rows, labelLookup(body));
       } catch (e) {
         logger.warn(
-          `  Claude Desktop: could not fetch the ${source} model catalog (${errMessage(e)}).`,
+          caught(
+            e,
+            (message) =>
+              `  Claude Desktop: could not fetch the ${source} model catalog (${message}).`,
+          ),
         );
       }
     }
@@ -366,7 +369,11 @@ export async function syncClaudeDesktopWiring(opts: DesktopWireOptions): Promise
     await syncClaudeDesktopWiringOrThrow(opts);
   } catch (e) {
     logger.warn(
-      `  Could not wire Claude Desktop for ${profileLabel(opts.profile)}: ${errMessage(e)}`,
+      caught(
+        e,
+        (message) =>
+          `  Could not wire Claude Desktop for ${profileLabel(opts.profile)}: ${message}`,
+      ),
     );
   }
 }
@@ -422,7 +429,7 @@ function removeOwned(
     helpers();
     releaseClaims(entries.removed);
   } catch (e) {
-    logger.warn(`  Could not remove ${what}: ${errMessage(e)}`);
+    logger.warn(caught(e, (message) => `  Could not remove ${what}: ${message}`));
   }
 }
 
@@ -472,7 +479,7 @@ export function removeUnmanagedClaudeDesktopWiring(opts: { quiet?: boolean } = {
     try {
       profile = entryProfileAt(path);
     } catch (e) {
-      logger.warn(`  Claude Desktop: ${errMessage(e)}; left alone.`);
+      logger.warn(caught(e, (message) => `  Claude Desktop: ${message}; left alone.`));
       return false;
     }
     if (profile === undefined) {

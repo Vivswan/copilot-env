@@ -186,7 +186,7 @@ async function syncTarget({ profile, mode }: DesktopTarget): Promise<void> {
       logger.warn(
         scannable({
           headline: `${profileLabel(profile)}'s Direct pair is not stored.`,
-          evidence: ["its Desktop entry is left as it is"],
+          evidence: ["Desktop entry left unchanged"],
           lead: "Fix:",
           actions: [[repair, "lands the pair together with both agents' files and the entry"]],
         }),

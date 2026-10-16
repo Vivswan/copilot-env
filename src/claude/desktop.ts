@@ -445,8 +445,8 @@ export function removeAllClaudeDesktopWiring(
         scannable({
           headline: "Would leave Claude Desktop's config library alone.",
           evidence: [
-            "its _meta.json could not be read or parsed",
-            "its copilot-env entries will point at credential-helper scripts that go with the copilot-api home",
+            "_meta.json unreadable or unparsable",
+            "its copilot-env entries left pointing at credential-helper scripts removed with the copilot-api home",
           ],
         }),
       );

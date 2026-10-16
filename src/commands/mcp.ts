@@ -115,8 +115,8 @@ async function runRemove(dryRun: boolean): Promise<void> {
       scannable({
         headline: "Removed the copilot-env MCP registration.",
         evidence: [
-          "the managed WebSearch deny went with it where copilot-env manages settings.json",
-          "stored `claude.wire-mcp false`, so direct rewires stay opted out",
+          "managed WebSearch deny removed with it from the copilot-env-managed settings.json",
+          "`claude.wire-mcp false` stored, direct rewires opted out",
         ],
       }),
     );
@@ -125,7 +125,7 @@ async function runRemove(dryRun: boolean): Promise<void> {
     logger.warn(
       scannable({
         headline: `the '${cyan("copilot-env")}' entry in ${cyan(claudeJsonPath())} was not removed.`,
-        evidence: ["stored `claude.wire-mcp false`", "not ours, or the file could not be written"],
+        evidence: ["`claude.wire-mcp false` stored", "not ours, or the file unwritable"],
         lead: "Fix:",
         actions: [["remove the entry by hand", "if it is not wanted"]],
       }),

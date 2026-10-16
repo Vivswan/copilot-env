@@ -73,8 +73,8 @@ test("a profile key under `agent config` is refused with its three profile verbs
   expect(() => refuseProfileKey("identity")).toThrow(
     [
       "'identity' is a profile preference, not a machine key.",
-      "  it follows the credential",
-      "  a named profile's verb is `agent profile <name> ...`",
+      "  bound to the credential",
+      "  a named profile's verb: `agent profile <name> ...`",
       "Pick one:",
       "  agent profile get identity          read it",
       "  agent profile set identity <value>  set it",

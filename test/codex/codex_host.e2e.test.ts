@@ -898,8 +898,8 @@ skipWin(
     expect(narrated).toContain(
       [
         `Leaving ${hostHome} alone.`,
-        "  copilot-env cannot prove it built it",
-        "  it sits at the per-host CODEX_HOME farm path",
+        "  not provably built by copilot-env",
+        "  at the per-host CODEX_HOME farm path",
         "  no activation record, no managed config.toml",
       ].join("\n"),
     );

@@ -530,9 +530,9 @@ function prepareWebSearchPair(
           scannable({
             headline: "copilot-env MCP registration failed.",
             evidence: [
-              "the managed WebSearch deny is removed",
-              "the builtin WebSearch stays reachable",
-              "it will 400 on Copilot Direct",
+              "managed WebSearch deny removed",
+              "builtin WebSearch still reachable",
+              "a 400 on Copilot Direct",
             ],
             lead: "Fix:",
             actions: [["agent init --direct", `rewire once ${claudeJsonPath()} is fixed`]],
@@ -586,7 +586,7 @@ export function configureClaudeConfig(claudeHome: string, request: ClaudeWriteRe
     throw new Error(
       scannable({
         headline: `${profileLabel(profile)} has no credential of its own.`,
-        evidence: ["a named profile never falls back to the default credential"],
+        evidence: ["no fallback to the default credential for a named profile"],
         lead: "Fix:",
         actions: [[agentAuthCommand(profile), "store the profile's credential first"]],
       }),
@@ -604,7 +604,7 @@ export function configureClaudeConfig(claudeHome: string, request: ClaudeWriteRe
       throw new Error(
         scannable({
           headline: `${paintFor(colorEnabled()).cyan(settingsPath)} is wired to something copilot-env does not manage.`,
-          evidence: ["refusing to overwrite it"],
+          evidence: ["overwrite refused"],
           lead: "Pick one:",
           actions: [
             ["agent profile <other-name> add", "a different profile name, so a different file"],

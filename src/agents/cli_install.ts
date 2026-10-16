@@ -430,17 +430,12 @@ function resolveLatestVersion(packageName: string): string {
 
 function resolveAgedVersion(packageName: string, days: number): string {
   const raw = runNpm(["view", packageName, "time", "--json"], true);
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    throw new Error(`could not parse npm publish times for ${packageName}`);
-  }
-  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error(`npm publish times for ${packageName} were not an object`);
+  const times = parseJsonRecord(raw);
+  if (times === null) {
+    throw new Error(`npm publish times for ${packageName} were not a JSON object`);
   }
   const version = pickAgedVersion(
-    publishTimesMs(parsed as Record<string, string>),
+    publishTimesMs(times as Record<string, string>),
     days * MILLISECONDS_PER_DAY,
     Date.now(),
   );

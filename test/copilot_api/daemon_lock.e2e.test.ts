@@ -17,6 +17,7 @@ import { parseProfileName } from "../../src/copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../../src/copilot_api/run_state.ts";
 import { releaseFileLock } from "../../src/utils/file_lock.ts";
 import { pidAlive } from "../../src/utils/pid.ts";
+import { withColumns } from "../helpers/columns.ts";
 import {
   FAKE_DAEMON_CREDENTIAL,
   FAKE_DAEMON_HOST,
@@ -47,7 +48,7 @@ import { afterEach, expect, tempDir, test } from "../helpers/testing.ts";
 // A pid no real process holds (far above any OS pid ceiling we run on).
 const DEAD_PID = 2_147_483_646;
 
-const restoreEnv = envSnapshot(["COLUMNS"]);
+const restoreEnv = envSnapshot();
 let dir = "";
 afterEach(() => {
   restoreEnv();
@@ -300,19 +301,20 @@ test("stopTrackedProxy: stale tracking + a held lock naming a local NON-daemon p
 
     // The refusal is said in the scannable shape, laid out at 80 columns: the facts as evidence,
     // the one way out as a command.
-    process.env.COLUMNS = "80";
     let result: Awaited<ReturnType<typeof stopTrackedProxy>> | undefined;
-    const said = await captureAllWrites(async () => {
-      result = await stopTrackedProxy();
-    });
+    const said = await withColumns(80, () =>
+      captureAllWrites(async () => {
+        result = await stopTrackedProxy();
+      }),
+    );
 
     expect(result).toEqual({ trackedPid: child.pid, signalled: false, stopped: false });
     expect(said).toContain(
       [
         `Not stopping pid ${child.pid}: this host cannot identify it as our daemon.`,
-        "  its daemon.lock is held",
+        "  daemon.lock held",
         "  a shared home's daemon on another host, or an unreadable process table",
-        "  tracking is left in place",
+        "  tracking left in place",
         "Fix:",
         "  agent stop  run it on the host whose daemon holds the lock",
         "",

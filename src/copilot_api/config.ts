@@ -117,7 +117,7 @@ export class CopilotApiConfig {
       // A scalar or array root is content the store cannot interpret, so it takes the parse-failure
       // path: a write-back would discard it.
       if (isRecord(data)) return { kind: "doc", data };
-      return { kind: "unparseable", error: "the JSON root is not an object" };
+      return { kind: "unparseable", error: "JSON root not an object" };
     } catch {
       return { kind: "unparseable", error: JSON_PARSE_DIAGNOSTIC };
     }
@@ -175,11 +175,7 @@ export class CopilotApiConfig {
       throw new Error(
         scannable({
           headline: `${paintFor(colorEnabled()).cyan(this.path)} is not valid JSON.`,
-          evidence: [
-            read.error,
-            "refusing to overwrite it",
-            "a rewrite would discard whatever it still holds",
-          ],
+          evidence: [read.error, "overwrite refused", "a rewrite discarding its remaining content"],
           lead: "Pick one:",
           actions: [
             ["fix the file", "keeps what it still holds"],

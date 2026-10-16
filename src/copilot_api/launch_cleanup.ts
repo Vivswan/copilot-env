@@ -5,6 +5,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { consola } from "consola";
 import { colorEnabled, paintFor } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
+import { killCommand } from "../utils/kill_command.ts";
 import { scannable } from "../utils/message.ts";
 import { pidAlive } from "../utils/pid.ts";
 import { daemonLockHold, daemonLockHolderPid, daemonLockVerdict } from "./daemon_lock.ts";
@@ -214,12 +215,6 @@ export async function planCleanup(
   return actions;
 }
 
-/** The kill the host's own shell has: cmd.exe knows only taskkill (PowerShell aliases `kill` too),
- *  and the daemon is detached with a hidden window, so only the forced form reaches it. */
-function killCommand(pid: number): string {
-  return process.platform === "win32" ? `taskkill /F /PID ${pid}` : `kill ${pid}`;
-}
-
 /** Emitted for a planned leave, and again when a planned holder stop finds its corroboration lapsed
  *  at the signal boundary. */
 function warnLeaveHolder(pid: number): void {
@@ -227,9 +222,9 @@ function warnLeaveHolder(pid: number): void {
     scannable({
       headline: `Leaving the daemon.lock holder (pid=${paintFor(colorEnabled()).cyan(String(pid))}) alone.`,
       evidence: [
-        "this host cannot identify that pid as our daemon",
+        "that pid not identifiable as our daemon from this host",
         "a shared home's daemon on another host, or an unreadable process table",
-        "a lock still held fails the launch below at its lock acquisition",
+        "the launch below blocked at its lock acquisition by the held lock",
       ],
       lead: "Fix:",
       actions: [
@@ -247,8 +242,8 @@ function warnUnprovenTrackedPid(pid: number): void {
     scannable({
       headline: `Skipping the tracked-pid stop (pid=${paintFor(colorEnabled()).cyan(String(pid))}).`,
       evidence: [
-        "the process scan could not prove its identity",
-        "this stop sends no signal (fail-closed)",
+        "identity unproven by the process scan",
+        "no signal sent by this stop (fail-closed)",
       ],
       lead: "Fix:",
       actions: [

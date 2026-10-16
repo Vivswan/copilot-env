@@ -71,7 +71,10 @@ import {
   stopPreviousDaemons,
 } from "../../src/migrations/5.0.1.ts";
 import { dueMigrations, type Migration, runMigrations } from "../../src/migrations/index.ts";
-import type { LockedDaemonOutcome } from "../../src/migrations/legacy_daemon.ts";
+import {
+  foreignHolderWarning,
+  type LockedDaemonOutcome,
+} from "../../src/migrations/legacy_daemon.ts";
 import { MARKER, MARKER_END } from "../../src/shell/integration.ts";
 import { must } from "../../src/utils/assert.ts";
 import { renderDryRun } from "../../src/utils/dry_run_report.ts";
@@ -1971,7 +1974,12 @@ test("5.0.1: the previous release's lock holder is stopped and swept; a reused p
     await until(() => !pidAlive(deno.pid));
     expect(said).toContain(`pid ${other.pid} runs: `);
     expect(said).toContain("other-process.ts");
-    expect(said).toContain(`kill ${other.pid}`);
+    // The advice names the host's own kill: cmd.exe has no `kill`.
+    expect(said).toContain(
+      process.platform === "win32"
+        ? `yours and stale: taskkill /F /PID ${other.pid}, then re-run the migration`
+        : `yours and stale: kill ${other.pid}, then re-run the migration`,
+    );
     expect(pidAlive(other.pid)).toBe(true);
     expect(homes.map((home) => existsSync(daemonLockPath(home)))).toEqual([
       false,
@@ -1999,6 +2007,21 @@ test("5.0.1: the previous release's lock holder is stopped and swept; a reused p
     await killAndAwaitExit(other.pid);
   }
 }, 30_000);
+
+// The row above reads the host's form, so only a Windows runner sees the taskkill advice there;
+// this row sees both forms on every host. cmd.exe has no `kill`.
+test("the reused-pid advice names taskkill on win32 and kill elsewhere", () => {
+  const platform = Object.getOwnPropertyDescriptor(process, "platform") as PropertyDescriptor;
+  const advice = (): string => foreignHolderWarning("/h", { pid: 4242, command: "node x.js" });
+  try {
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    expect(advice()).toContain("yours and stale: taskkill /F /PID 4242, then re-run the migration");
+    Object.defineProperty(process, "platform", { value: "linux", configurable: true });
+    expect(advice()).toContain("yours and stale: kill 4242, then re-run the migration");
+  } finally {
+    Object.defineProperty(process, "platform", platform);
+  }
+});
 
 /** The previous release's default daemon as 4.0.9 meets it: a child spelling the deno daemon on its
  *  argv (foreign to the classifier, the lock stop's own) holding the ROOT home's daemon.lock, with

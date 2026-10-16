@@ -89,7 +89,7 @@ export async function runAgentConfig(
     throw new Error(
       scannable({
         headline: `the default profile records ${recorded} as the one mode for both agents.`,
-        evidence: [`a ${action.mode} write of ${adapter.id} alone would leave the two apart`],
+        evidence: [`a ${action.mode} write of ${adapter.id} alone, leaving the two apart`],
         lead: "Fix:",
         actions: [[`agent init --${action.mode}`, "move both agents together"]],
       }),

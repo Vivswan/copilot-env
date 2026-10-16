@@ -44,6 +44,7 @@ import { proxyHome } from "../../src/proxy_float.ts";
 import { errMessage } from "../../src/utils/error.ts";
 import { releaseFileLock } from "../../src/utils/file_lock.ts";
 import { pidAlive } from "../../src/utils/pid.ts";
+import { withColumns } from "../helpers/columns.ts";
 import {
   killAndAwaitExit,
   launchAuth,
@@ -72,7 +73,7 @@ const WORK = parseProfileName("work");
 const DEAD_PID = 2_147_483_646;
 const KILL = process.platform === "win32" ? "taskkill /F /PID" : "kill";
 
-const restoreEnv = envSnapshot(["COLUMNS"]);
+const restoreEnv = envSnapshot();
 let dir = "";
 
 afterEach(() => {
@@ -561,18 +562,17 @@ test("planCleanup: a holder another slot ALSO tracks is refused, even with this 
 
     // Executed, the leave is said in the scannable shape, laid out at 80 columns, and the holder
     // lives on under its lock.
-    process.env.COLUMNS = "80";
-    const said = await captureAllWrites(() =>
-      cleanupUnderLock(null, new CopilotEnvRunState(), NO_ORPHANS),
+    const said = await withColumns(80, () =>
+      captureAllWrites(() => cleanupUnderLock(null, new CopilotEnvRunState(), NO_ORPHANS)),
     );
     // The kill is the host's own (taskkill on Windows), and its cell width moves the wrap with the
     // pid's digits, so the Fix row is compared with its whitespace collapsed.
     expect(said).toContain(
       [
         `Leaving the daemon.lock holder (pid=${pid}) alone.`,
-        "  this host cannot identify that pid as our daemon",
+        "  that pid not identifiable as our daemon from this host",
         "  a shared home's daemon on another host, or an unreadable process table",
-        "  a lock still held fails the launch below at its lock acquisition",
+        "  the launch below blocked at its lock acquisition by the held lock",
         "Fix:",
         "",
       ].join("\n"),
@@ -1034,30 +1034,31 @@ test("awaitReadiness: a lost bind race under a pin or strict-port, or a dead dae
       ].join("\n"),
     },
   ];
-  process.env.COLUMNS = "80";
   for (const row of rows) {
     dir = removeDir(dir);
     const home = tmpHome();
     if (row.strict) new CopilotEnvConfig().set({ "daemon.strict-port": true });
     const logFile = seedLog(home, row.log);
     let relaunches = 0;
-    const said = await captureAllWrites(async () => {
-      await expect(
-        awaitReadiness({
-          pid: DEAD_PID,
-          port: row.port,
-          logFile,
-          profile: null,
-          pinnedPort: row.pinnedPort,
-          state: new CopilotEnvRunState(),
-          relaunch: () => {
-            relaunches++;
-            return DEAD_PID;
-          },
-          config: new CopilotEnvConfig(),
-        }),
-      ).rejects.toThrow(row.error(logFile));
-    });
+    const said = await withColumns(80, () =>
+      captureAllWrites(async () => {
+        await expect(
+          awaitReadiness({
+            pid: DEAD_PID,
+            port: row.port,
+            logFile,
+            profile: null,
+            pinnedPort: row.pinnedPort,
+            state: new CopilotEnvRunState(),
+            relaunch: () => {
+              relaunches++;
+              return DEAD_PID;
+            },
+            config: new CopilotEnvConfig(),
+          }),
+        ).rejects.toThrow(row.error(logFile));
+      }),
+    );
     expect({ port: row.port, relaunches }).toEqual({ port: row.port, relaunches: 0 });
     if (row.hint !== undefined) expect(said).toContain(row.hint);
   }
@@ -1328,11 +1329,10 @@ describe("unproven tracked-pid identity scans", () => {
     const home = tmpHome();
     writeRunState({ pid: DEAD_PID, port: 4141 });
     // The skip in the scannable shape at 80 columns: the why is evidence, the way out a command.
-    process.env.COLUMNS = "80";
     const skip = [
       `Skipping the tracked-pid stop (pid=${DEAD_PID}).`,
-      "  the process scan could not prove its identity",
-      "  this stop sends no signal (fail-closed)",
+      "  identity unproven by the process scan",
+      "  no signal sent by this stop (fail-closed)",
       "Fix:",
       ...(process.platform === "win32"
         ? [
@@ -1347,11 +1347,13 @@ describe("unproven tracked-pid identity scans", () => {
     ].join("\n");
     for (const row of rows) {
       let plan: CleanupAction[] = [];
-      const out = await captureAllWrites(async () => {
-        plan = await planCleanup(home, null, new CopilotEnvRunState(), NO_ORPHANS, () =>
-          Promise.resolve(row.verdict),
-        );
-      });
+      const out = await withColumns(80, () =>
+        captureAllWrites(async () => {
+          plan = await planCleanup(home, null, new CopilotEnvRunState(), NO_ORPHANS, () =>
+            Promise.resolve(row.verdict),
+          );
+        }),
+      );
       expect({ verdict: row.verdict, plan, saysSkip: out.includes(skip) }).toEqual({
         verdict: row.verdict,
         plan: row.plan,

@@ -501,10 +501,9 @@ test("every auth message with more than one part prints as a headline, evidence,
         "Already authenticated.",
         `  for profile '${LONGEST}'`,
         "  gh-token as octocat",
-        // A command too wide for its column stacks: the table's own fallback, command then meaning.
+        // A command too wide for its column stacks the table; the command is one line however wide.
         "Pick one:",
-        `  agent profile ${LONGEST} auth --provider`,
-        "    <copilot|gh-cli|gh-token|gh-env>",
+        `  agent profile ${LONGEST} auth --provider <copilot|gh-cli|gh-token|gh-env>`,
         "    switch the provider",
         "",
         `  agent profile ${LONGEST} auth --del`,

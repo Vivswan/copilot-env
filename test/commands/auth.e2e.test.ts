@@ -6,6 +6,7 @@ import {
   chooseGhAccount,
   ensureAuthenticated,
   ghCannotServeByName,
+  loginWithGhCli,
   runAuth,
 } from "../../src/commands/auth.ts";
 import { runDryRun } from "../../src/commands/dry_run.ts";
@@ -216,9 +217,9 @@ test("auth --check: a configured provider reports authenticated with its account
     token: "ghu_stored123",
   });
   const out = await captureStdout(() => runAuth({ check: true }));
-  // The status line is human copy, so only the parenthesized source is pinned; exit 0 is the
+  // The status is human copy, so only its headline and source line are pinned; exit 0 is the
   // machine contract.
-  expect(out).toContain("(gh-token as octocat)");
+  expect(out).toContain("authenticated.\n  gh-token as octocat");
   expect(process.exitCode).toBe(0);
   // The account is a label, never a gate: a token GitHub rejects still reports the stored
   // provider as authenticated (exit 0) and says why the account is missing.
@@ -228,7 +229,9 @@ test("auth --check: a configured provider reports authenticated with its account
     token: "ghu_unknown",
   });
   const unverified = await captureStdout(() => runAuth({ check: true }));
-  expect(unverified).toContain("(gh-token; account unverified: GitHub rejected it, HTTP 401)");
+  expect(unverified).toContain(
+    "authenticated.\n  gh-token; account unverified: GitHub rejected it, HTTP 401",
+  );
   expect(process.exitCode).toBe(0);
 });
 
@@ -567,14 +570,14 @@ test("every auth message with more than one part prints as a headline, evidence,
       ],
     },
     {
-      name: "--del on a half-created profile with the longest name: the store's refusal follows the headline",
+      name: "--del on a half-created profile with the longest name: the store's refusal carries the verb's outcome",
       run: () => {
         mkdirSync(profileHome(LONGEST), { recursive: true });
         return stderr(() => runAuth({ del: true, profile: LONGEST }));
       },
       lines: [
-        "Nothing to clear.",
         `profile '${LONGEST}' has no store slot.`,
+        "  nothing to clear",
         "  half-created: its daemon home exists",
         "Fix:",
         // The command is too wide for its column at 80: the table stacks the meaning under it.
@@ -586,8 +589,9 @@ test("every auth message with more than one part prints as a headline, evidence,
       name: "--del on a nonexistent profile with the longest name",
       run: () => stderr(() => runAuth({ del: true, profile: LONGEST })),
       lines: [
-        "Nothing to clear.",
         `no such profile '${LONGEST}'.`,
+        "  nothing to clear",
+        "  no profiles exist",
         "Fix:",
         `  agent profile ${LONGEST} add --direct|--proxy  create it`,
       ],
@@ -619,6 +623,75 @@ test("every auth message with more than one part prints as a headline, evidence,
         "  Claude's baked value stays as it is",
         "Fix:",
         "  agent init  rewrites it",
+      ],
+    },
+    {
+      name: "--check on the longest profile name, authenticated",
+      run: async () => {
+        await captureChannels(() => addProfile(LONGEST, { mode: "proxy", noAuth: true }));
+        new CopilotEnvState().setCredential(LONGEST, {
+          kind: "stored",
+          provider: "gh-token",
+          token: "ghu_stored123",
+        });
+        return stdout(() => runAuth({ check: true, profile: LONGEST }));
+      },
+      lines: ["authenticated.", `  for profile '${LONGEST}'`, "  gh-token as octocat"],
+    },
+    {
+      name: "the gh CLI login pinned to the longest login",
+      run: () =>
+        stderr(() =>
+          Promise.resolve(
+            loginWithGhCli({ kind: "pinned", login: LOGIN }, () => ({
+              kind: "found",
+              token: "tok",
+              command: `gh auth token --user ${LOGIN}`,
+            })),
+          ),
+        ),
+      lines: ["Using the gh CLI login as the Direct credential.", `  pinned to account ${LOGIN}`],
+    },
+    {
+      name: "a copilot --dry-run on the longest profile name plans the device flow",
+      run: async () => {
+        await captureChannels(() => addProfile(LONGEST, { mode: "proxy", noAuth: true }));
+        return stderr(() => runAuth({ provider: "copilot", profile: LONGEST, dryRun: true }));
+      },
+      lines: [
+        "Would run GitHub's device flow and land the token.",
+        `  in profile '${LONGEST}''s credential slot`,
+      ],
+    },
+    {
+      name: "a gh-cli --dry-run pinned to the longest login on the longest profile name",
+      run: async () => {
+        await captureChannels(() => addProfile(LONGEST, { mode: "proxy", noAuth: true }));
+        return stderr(() =>
+          runDryRun(() =>
+            acquireCredential(
+              { kind: "gh-cli", account: { kind: "pinned", login: LOGIN } },
+              LONGEST,
+              { look: () => ({ kind: "found", token: "gho_saved", command: "gh auth token" }) },
+            ),
+          ),
+        );
+      },
+      lines: [
+        "Would record the gh CLI login.",
+        `  pinned to account ${LOGIN}`,
+        `  in profile '${LONGEST}''s credential slot`,
+      ],
+    },
+    {
+      name: "the login step on the longest profile name",
+      run: async () => {
+        await captureChannels(() => addProfile(LONGEST, { mode: "proxy", noAuth: true }));
+        return stderr(() => ensureAuthenticated(LONGEST, { kind: "gh-token", token: "ghu_x" }));
+      },
+      lines: [
+        "  Not authenticated yet - let's log in to GitHub Copilot.",
+        `    for profile '${LONGEST}'`,
       ],
     },
   ];
@@ -819,7 +892,7 @@ test("auth --get/--del/--check on a named profile per slot state: nonexistent hi
       arrange: () => "no such profile 'ghost'.",
       says: ["no such profile 'ghost'.", addCommand],
       never: "ghost auth",
-      delSays: "Nothing to clear.\nno such profile 'ghost'.",
+      delSays: "no such profile 'ghost'. nothing to clear no profiles exist",
     },
     {
       // A daemon home without a store slot (an interrupted add): the store's own write gate words
@@ -842,7 +915,7 @@ test("auth --get/--del/--check on a named profile per slot state: nonexistent hi
       },
       says: ["profile 'ghost' has no store slot.", addCommand],
       never: "no such profile",
-      delSays: "Nothing to clear.\nprofile 'ghost' has no store slot.",
+      delSays: "profile 'ghost' has no store slot. nothing to clear half-created",
     },
     {
       // A partial slot (de-authed, mode kept) re-auths in place, so the hint stays

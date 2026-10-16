@@ -259,9 +259,12 @@ test("a daemon launch: the credential, refusal, and probe decision per stored cr
       stored: { provider: "gh-token", token: "ghp_default_only" },
       identity: { spy: COPILOT_CLI_INTEGRATION_ID },
       credential: {
-        refused:
-          "no such profile 'work' (no profiles exist - create one with " +
-          "`agent profile <name> add --direct|--proxy`)",
+        refused: [
+          "no such profile 'work'.",
+          "  no profiles exist",
+          "Fix:",
+          "  agent profile work add --direct|--proxy  create it",
+        ].join("\n"),
       },
       probedTokens: [],
     },

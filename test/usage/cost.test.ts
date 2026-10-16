@@ -49,9 +49,11 @@ import {
 } from "../../src/usage/pricing.ts";
 import { type ModelUsage, record, type UsageReport, usageReport } from "../../src/usage/usage.ts";
 import { must } from "../../src/utils/assert.ts";
+import { errMessage } from "../../src/utils/error.ts";
 import { wrapToTerminal } from "../../src/utils/logger.ts";
 import { PROJECT_ROOT } from "../../src/utils/root.ts";
 import { localDayKey, MILLISECONDS_PER_DAY } from "../../src/utils/time.ts";
+import { withColumns } from "../helpers/columns.ts";
 import { captureAllWrites, captureChannels } from "../helpers/output.ts";
 import {
   assistantLine,
@@ -587,18 +589,6 @@ const NO_SOURCES = { sessionRoots: { codex: () => [] as string[], claude: () => 
 // what the terminal shows, so this file wraps it the same way (a width-less capture is untouched).
 wrapToTerminal(consola, false);
 
-/** A message reads its width when it prints, so an 80-column layout row sets it around the run. */
-async function withColumns<T>(columns: number, fn: () => Promise<T>): Promise<T> {
-  const saved = process.env.COLUMNS;
-  process.env.COLUMNS = String(columns);
-  try {
-    return await fn();
-  } finally {
-    if (saved === undefined) delete process.env.COLUMNS;
-    else process.env.COLUMNS = saved;
-  }
-}
-
 function rootsOf(codex: string[], claude: string[]): { sessionRoots: SessionRootDiscovery } {
   return { sessionRoots: { codex: () => codex, claude: () => claude } };
 }
@@ -639,7 +629,7 @@ test("runCost with no sources returns early and never asks for the price list", 
     );
     expect(out).toContain(
       [
-        "WARNING: no usage to report yet.",
+        "no usage to report yet.",
         "  no copilot-api usage databases",
         "  no Codex session logs",
         "  no Claude transcripts",
@@ -721,9 +711,9 @@ const PRICES_OFF_MESSAGE = [
   "  OpenRouter's price list: pricing request failed",
 ].join("\n");
 
-/** How the price list was loaded and the stderr line that earns: the turn (10 in at $15/M +
- *  20 out at $75/M) is priced by a list fetched today or by its last cached copy, and no line ever
- *  names the URL, which a custom one may carry a token in. */
+/** How the price list was loaded and the stderr message that earns: the turn (10 in at $15/M +
+ *  20 out at $75/M) is priced by a list fetched today or by its last cached copy, and no message
+ *  ever names the URL, which a custom one may carry a token in. */
 const PRICE_LIST_WARNINGS: {
   name: string;
   /** The URL the run resolves, stored under the config key or passed as the flag. */
@@ -740,7 +730,7 @@ const PRICE_LIST_WARNINGS: {
 }[] = [
   {
     // A cache stamped two days ago, then the network taken away: the cached list prices the run
-    // and the line names it; the card has no copy, so the list prices alone.
+    // and the message names it; the card has no copy, so the list prices alone.
     name: "the fetch fails with a stale list cached",
     url: PRICE_URL,
     stored: false,
@@ -753,27 +743,18 @@ const PRICE_LIST_WARNINGS: {
     },
     fetchImpl: fakeFetch(null, { fail: true }),
     lines: [
-      "OpenRouter's price list could not be fetched today (pricing request failed); using the cached price list from ",
-      "GitHub's rate card could not be fetched today (rate card request failed); priced at OpenRouter's list alone.",
+      [
+        "OpenRouter's price list could not be fetched today.",
+        "  pricing request failed",
+        "  using the cached price list from ",
+      ].join("\n"),
+      [
+        "GitHub's rate card could not be fetched today.",
+        "  rate card request failed",
+        "  priced at OpenRouter's list alone",
+      ].join("\n"),
     ],
-    totalUsd: 0.0017,
-  },
-  {
-    // A regular file where the cache directory belongs: the write fails, the report is still
-    // priced. --no-index keeps the index from claiming the path.
-    name: "the fetched price list cannot be cached",
-    url: PRICE_URL,
-    stored: false,
-    seed: (home) => {
-      mkdirSync(home, { recursive: true });
-      writeFileSync(join(home, USAGE_INDEX_DIR_NAME), "not a directory");
-    },
-    noIndex: true,
-    fetchImpl: fakeFetch(PRICED_BODY),
-    lines: [
-      "WARNING: could not cache the OpenRouter price list (",
-      "the next run fetches it again.",
-    ],
+    layout: true,
     totalUsd: 0.0017,
   },
   {
@@ -822,6 +803,52 @@ for (const {
       expect(payload.runtime.indexed).toBe(noIndex !== true);
     }));
 }
+
+// What would drift silently: the cache-write warning's shape at 80 columns. Its reason is the
+// OS's own message for the failed mkdir, path included, so the row reproduces that message as its
+// control and pins it whole: every line of the reason under the headline's indent, the path's
+// continuations one GAP deeper, the consequence after them.
+test("runCost warns when the fetched price list cannot be cached: the OS's reason wrapped under the headline at 80 columns, the report still priced", () =>
+  withCostHome(async ({ home, claudeRoot }) => {
+    // A regular file where the cache directory belongs: the write fails, the report is still
+    // priced. --no-index keeps the index from claiming the path.
+    mkdirSync(home, { recursive: true });
+    const cacheDir = join(home, USAGE_INDEX_DIR_NAME);
+    writeFileSync(cacheDir, "not a directory");
+    let reason = "";
+    try {
+      mkdirSync(cacheDir, { recursive: true });
+    } catch (e) {
+      reason = errMessage(e);
+    }
+    expect(reason).toContain(cacheDir);
+    const { payload, stderr } = await withColumns(80, () =>
+      jsonRun(
+        { pricingUrl: PRICE_URL, noIndex: true },
+        { fetchImpl: fakeFetch(PRICED_BODY), ...rootsOf([], [claudeRoot]) },
+      ),
+    );
+    const block =
+      /could not cache the OpenRouter price list\.\n( {2}\S[^\n]*\n(?: {4}\S[^\n]*\n)*) {2}the next run fetches it again\n/.exec(
+        stderr,
+      );
+    expect(block?.[0], stderr).toBeDefined();
+    for (const line of (block?.[0] ?? "").split("\n")) expect(line.length).toBeLessThanOrEqual(80);
+    // A soft wrap drops a space and a hard split of the path adds nothing, so the reason compares
+    // with its whitespace removed: every other character, in order.
+    expect((block?.[1] ?? "").replace(/\s+/g, "")).toBe(reason.replace(/\s+/g, ""));
+    // The card has no copy and its body is not a list, so the list prices alone, in the same shape.
+    expect(stderr).toContain(
+      [
+        "GitHub's rate card could not be fetched today.",
+        "  the rate card is not a list of rows",
+        "  priced at OpenRouter's list alone",
+      ].join("\n"),
+    );
+    expect(stderr + JSON.stringify(payload)).not.toContain(new URL(PRICE_URL).host);
+    expect(payload.claudeSessions.totalUsd).toBe(0.0017);
+    expect(payload.runtime.indexed).toBe(false);
+  }));
 
 async function runtimeOf(
   args: { noIndex?: boolean },
@@ -965,7 +992,7 @@ test("runtime.timing.pricing is the wait for the price list alone, never the war
 // The card's provenance (source, fetch stamp) sits under `runtime`: a fetched and a cached run
 // over the same logs must otherwise agree, or the cost-metrics check reads its own base twice
 // and calls the inputs unstable.
-test("runCost reads GitHub's card from the stored URL, prices at it, names the card and its day, and prices from the list alone in one line when it cannot be read", () =>
+test("runCost reads GitHub's card from the stored URL, prices at it, names the card and its day, and prices from the list alone in one message when it cannot be read", () =>
   withCostHome(async ({ claudeRoot }) => {
     const cardUrl = "https://rates.example/models-and-pricing.yml";
     new CopilotEnvConfig().set({ "cost.github-pricing-url": cardUrl });
@@ -1014,7 +1041,11 @@ test("runCost reads GitHub's card from the stored URL, prices at it, names the c
       deps("not a card", garbledUrl),
     );
     expect(fallback.stderr).toContain(
-      "GitHub's rate card could not be fetched today (the rate card is not a list of rows); priced at OpenRouter's list alone.",
+      [
+        "GitHub's rate card could not be fetched today.",
+        "  the rate card is not a list of rows",
+        "  priced at OpenRouter's list alone",
+      ].join("\n"),
     );
     expect(fallback.stderr).not.toContain("rates.example");
     expect(fallback.stderr).not.toContain("with-secret-token");
@@ -1050,14 +1081,14 @@ test("runCost prices from the cached copies when the fetches fail and names thei
     const args: CostArgs = { pricingUrl: PRICE_URL, noIndex: true };
 
     // Offline with both copies: the card over the list (opus 4.8 at the card's $5/M in and $25/M
-    // out: 10 in + 20 out = $0.00055), each stderr line names the copy's day, and --json says
+    // out: 10 in + 20 out = $0.00055), each stderr message names the copy's day, and --json says
     // cached with the copy's stamp.
     const cached = await jsonRun(args, deps(down));
     expect(cached.stderr).toContain(
-      `OpenRouter's price list could not be fetched today (pricing request failed); using the cached price list from ${day}.`,
+      `OpenRouter's price list could not be fetched today.\n  pricing request failed\n  using the cached price list from ${day}`,
     );
     expect(cached.stderr).toContain(
-      `GitHub's rate card could not be fetched today (rate card request failed); using the cached rate card from ${day}.`,
+      `GitHub's rate card could not be fetched today.\n  rate card request failed\n  using the cached rate card from ${day}`,
     );
     expect(cached.payload.claudeSessions.totalUsd).toBe(0.0006);
     expect(cached.payload.runtime.githubRates).toEqual({ source: "cached", fetchedAt: stamp });
@@ -1096,7 +1127,7 @@ test("runCost prices from the cached copies when the fetches fail and names thei
     const cardOnly = routedFetch(down, RATE_CARD_TEXT, bareCard);
     const priced = await jsonRun(bare, deps(cardOnly));
     expect(priced.stderr).toContain(
-      "OpenRouter's price list could not be fetched today (pricing request failed); priced at GitHub's rate card alone.",
+      "OpenRouter's price list could not be fetched today.\n  pricing request failed\n  priced at GitHub's rate card alone",
     );
     expect(priced.payload.claudeSessions.totalUsd).toBe(0.0006);
     expect(priced.payload.runtime.githubRates?.source).toBe("fetched");
@@ -1339,12 +1370,12 @@ test("the footer's note takes the scannable shape at 80 columns in the combined 
       const combined = await captureChannels(() => runCost(args, deps));
       expect(combined.stdout).toContain(
         [
-          "Note: three sources, merged into one table.",
+          "Three sources, merged into one table.",
           "  proxy DBs: proxied traffic",
           "  Codex session logs: Codex's full traffic, Direct included",
           "  Claude transcripts: Claude's full traffic, Direct included",
-          "  a request both the proxy and a client log recorded (same model, token counts,",
-          "    and time) is counted once",
+          "  a request in both the proxy and a client log (same model, token counts, and",
+          "    time): counted once",
           "Then:",
           "  agent cost --sources  one table per source",
           "Prices are off: ",
@@ -1353,12 +1384,12 @@ test("the footer's note takes the scannable shape at 80 columns in the combined 
       const perSource = await captureChannels(() => runCost({ ...args, sources: true }, deps));
       expect(perSource.stdout).toContain(
         [
-          "Note: three sources, one table each.",
+          "Three sources, one table each.",
           "  proxy DBs: proxied traffic",
           "  Codex session logs: Codex's full traffic, Direct included",
           "  Claude transcripts: Claude's full traffic, Direct included",
-          "  summing the tables double counts traffic that went through the proxy; the",
-          "    default view counts such a request once",
+          "  summed tables: proxied traffic counted twice",
+          "  the default view: such a request counted once",
           "Prices are off: ",
         ].join("\n"),
       );

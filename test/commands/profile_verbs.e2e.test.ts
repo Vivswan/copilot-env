@@ -281,7 +281,25 @@ test("add and del ask before a change: a script without --yes is refused, --yes 
   // A fresh profile and a same-mode re-add ask nothing.
   expect(observe(["profile", "work", "add", "--proxy", "--no-auth"], scratch).exitCode).toBe(0);
   expect(observe(["profile", "work", "auth", "--set", "ghu_work"], scratch).exitCode).toBe(0);
-  expect(observe(["profile", "work", "add", "--proxy"], scratch).exitCode).toBe(0);
+  // The same-mode re-add lands the profile again (the success line) and says what to launch and
+  // how its daemon is managed (its own log-level message), in the scannable shape at 80 columns.
+  const ready = observe(["profile", "work", "add", "--proxy"], {
+    ...scratch,
+    env: { ...scratch.env, COLUMNS: "80" },
+  });
+  expect(ready.exitCode).toBe(0);
+  expect(ready.stderr).toContain("profile 'work' is ready.\n");
+  expect(ready.stderr).toContain(
+    [
+      "Launch it with either agent.",
+      "  its proxy daemon starts on demand",
+      "Then:",
+      "  cl --profile work         launch Claude",
+      "  cx --profile work         launch Codex",
+      "  agent profile work start  start its proxy daemon by hand",
+      "  agent profile work stop   stop it",
+    ].join("\n"),
+  );
   // A mode change asks; headless, that is the refusal.
   const change = observe(["profile", "work", "add", "--direct"], scratch);
   expect(change.exitCode).toBe(1);
@@ -496,7 +514,7 @@ test.skipIf(process.platform === "win32")(
         [
           "  Would probe Direct vs the proxy, then wire both agents.",
           "    the probe runs as the landed credential",
-          "    a dry run plans no verdict: the probe reads the credential from the store",
+          "    no verdict planned: the probe reads the store, not the plan",
         ].join("\n"),
       ),
     ]);

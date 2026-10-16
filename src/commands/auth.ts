@@ -34,7 +34,6 @@ import {
   githubDeviceFlowLogin,
   githubLoginLook,
 } from "../copilot_api/github_login.ts";
-import { profileHomeNames } from "../copilot_api/paths.ts";
 import { DAEMON_SIGKILL_GRACE_MS } from "../copilot_api/process.ts";
 import {
   agentAuthCommand,
@@ -317,33 +316,43 @@ export async function chooseGhAccount(
   }
   // The active account leads (the default selection); auto is LAST and explicit.
   const ordered = [...logins].sort((a, b) => Number(b === active) - Number(a === active));
-  const activeLabel = active === null ? "" : ` (currently ${active})`;
   const value = await prompt("Which gh account should Direct auth use?", {
     type: "select",
-    options: [
-      ...ordered.map((login) => {
-        const env = envOnly(login);
-        const notes = [
-          login === active ? "currently active" : null,
-          env === null ? null : `via $${env}; pinning needs a saved login`,
-        ]
-          .filter((n) => n !== null)
-          .join("; ");
-        return {
-          label: `${login} - always use this account${notes ? ` (${notes})` : ""}`,
-          value: login,
-        };
-      }),
-      // A GitHub login is never empty, so "" cannot collide with a real choice.
-      {
-        label: `auto - follow gh's active account${activeLabel}; switches when you switch gh`,
-        value: "",
-      },
-    ],
+    options: ghAccountChoices(ordered, active, envOnly),
     cancel: "reject",
   });
   const login = String(value);
   return login === "" ? { kind: "auto", activeLogin: active } : { kind: "pinned", login };
+}
+
+/** The picker's rows: each login, then auto, with what picking it means as the row's hint (a
+ *  login runs to 39 characters, so the label carries nothing else). `envOnly` names the env var
+ *  a login is listed through when it has no saved credential. Exported for the wording test. */
+export function ghAccountChoices(
+  ordered: readonly string[],
+  active: string | null,
+  envOnly: (login: string) => string | null,
+): { label: string; value: string; hint: string }[] {
+  const activeLabel = active === null ? "" : ` (currently ${active})`;
+  return [
+    ...ordered.map((login) => {
+      const env = envOnly(login);
+      const notes = [
+        "always use this account",
+        login === active ? "currently active" : null,
+        env === null ? null : `via $${env}; pinning needs a saved login`,
+      ]
+        .filter((n) => n !== null)
+        .join("; ");
+      return { label: login, value: login, hint: notes };
+    }),
+    // A GitHub login is never empty, so "" cannot collide with a real choice.
+    {
+      label: GH_USER_AUTO,
+      value: "",
+      hint: `follow gh's active account${activeLabel}; switches when you switch gh`,
+    },
+  ];
 }
 
 // --- provider acquisition ---------------------------------------------------
@@ -492,7 +501,12 @@ export function loginWithGhCli(
 ): GhCliSlot {
   const slot = settleGhCliAccount(account, look, rerun);
   if (slot.kind === "pinned") {
-    logger.success(`  Using the gh CLI login (account ${slot.ghUser}) as the Direct credential.`);
+    logger.success(
+      scannable({
+        headline: "Using the gh CLI login as the Direct credential.",
+        evidence: [`pinned to account ${slot.ghUser}`],
+      }),
+    );
   } else {
     const evidence = slot.activeLogin === null ? [] : [`currently account ${slot.activeLogin}`];
     evidence.push("follows gh account switches");
@@ -694,7 +708,12 @@ async function plannedAcquisition(
       return { kind: "stored", provider: "gh-env", token: first.token };
     }
     case "copilot":
-      logger.log(`  Would run GitHub's device flow and land the token in ${slot}.`);
+      logger.log(
+        scannable({
+          headline: "Would run GitHub's device flow and land the token.",
+          evidence: [`in ${slot}`],
+        }),
+      );
       return { kind: "stored", provider: "copilot", token: PLANNED_SECRET };
     case "gh-cli": {
       // The real command's pin resolution, off gh's saved accounts (a read); the arm that would
@@ -704,9 +723,15 @@ async function plannedAcquisition(
       // no saved credential to pin).
       const settled = settleGhCliAccount(account, look, rerun);
       logger.log(
-        `  Would record the gh CLI login (${
-          settled.kind === "auto" ? "the active account" : `account ${settled.ghUser}`
-        }) as ${slot}.`,
+        scannable({
+          headline: "Would record the gh CLI login.",
+          evidence: [
+            settled.kind === "auto"
+              ? "on AUTO: gh's active account"
+              : `pinned to account ${settled.ghUser}`,
+            `in ${slot}`,
+          ],
+        }),
       );
       return { kind: "gh-cli", ghUser: settled.ghUser };
     }
@@ -804,27 +829,19 @@ async function authenticate(
 
 /** The read-back sub-actions report instead of hard-failing, so their repair hint must branch the
  *  way the store's write gate does: an existing slot re-auths via `agent profile <name> auth`, a
- *  nonexistent name can only be created by `agent profile <name> add`. */
+ *  nonexistent name can only be created by `agent profile <name> add`, and the store's own
+ *  refusal (missingProfileSlotError) words that hint. */
 function profileSlotMissing(profile: ProfileName): boolean {
   return !new CopilotEnvState().profileSlotStatus(profile).exists;
-}
-
-/** A half-created profile (a daemon home without a store slot) reports itself with the store's
- *  own refusal, never as "no such profile". */
-function noSuchProfileHint(profile: ProfileName): string {
-  if (profileHomeNames().includes(profile)) return errMessage(missingProfileSlotError(profile));
-  return scannable({
-    headline: `no such profile '${profile}'.`,
-    lead: "Fix:",
-    actions: [[`agent profile ${profile} add --direct|--proxy`, "create it"]],
-  });
 }
 
 function resolveOrReport(profile: Profile): string | null {
   const { token, reason } = new Credential(undefined, profile).resolveWithReason();
   if (token === null) {
     logger.error(
-      profile !== null && profileSlotMissing(profile) ? noSuchProfileHint(profile) : reason,
+      profile !== null && profileSlotMissing(profile)
+        ? errMessage(missingProfileSlotError(profile))
+        : reason,
     );
     process.exitCode = 1;
   }
@@ -885,7 +902,7 @@ async function runDel(profile: Profile): Promise<() => void> {
         );
       }
     } else if (profile !== null && profileSlotMissing(profile)) {
-      logger.info(`Nothing to clear.\n${noSuchProfileHint(profile)}`);
+      logger.info(errMessage(missingProfileSlotError(profile, ["nothing to clear"])));
     } else {
       logger.info(
         scannable({
@@ -908,13 +925,12 @@ async function runCheck(profile: Profile): Promise<void> {
   const credential = new Credential(undefined, profile);
   const { provider, resolves } = credential.status();
   const authCommand = agentAuthCommand(profile);
-  const label = profile === null ? "" : ` (${profileLabel(profile)})`;
   const forSlot = profile === null ? [] : [`for ${profileLabel(profile)}`];
   // The status goes to stdout, so the table fits stdout's width, not stderr's.
   const width = terminalWidth();
   if (provider === null) {
     if (profile !== null && profileSlotMissing(profile)) {
-      printWrapped(noSuchProfileHint(profile));
+      printWrapped(errMessage(missingProfileSlotError(profile)));
     } else {
       printWrapped(
         scannable({
@@ -931,7 +947,7 @@ async function runCheck(profile: Profile): Promise<void> {
   }
   const source = (await accountSourceLabel(credential.read())) ?? provider;
   if (resolves) {
-    printWrapped(`authenticated (${source})${label}`);
+    printWrapped(scannable({ headline: "authenticated.", evidence: [...forSlot, source], width }));
     process.exitCode = 0;
   } else {
     // e.g. gh-cli selected but `gh` is no longer authenticated (as the pinned account).
@@ -969,14 +985,17 @@ export async function ensureAuthenticated(
       }),
     );
   }
-  if (!dryRunActive()) {
-    logger.log(
-      profile === null
-        ? "  Not authenticated yet - let's log in to GitHub Copilot."
-        : `  ${profileLabel(profile)} is not authenticated yet - let's log in to GitHub Copilot.`,
-    );
-  }
+  if (!dryRunActive()) logger.log(loggingInLine(profile));
   await authenticate(acquisition, profile);
+}
+
+/** The line before an interactive login runs: indented like the add's other step narrations it
+ *  prints among. Shared with `agent profile <name> add --auto`, whose login runs the same way. */
+export function loggingInLine(profile: Profile): string {
+  return scannable({
+    headline: "  Not authenticated yet - let's log in to GitHub Copilot.",
+    evidence: profile === null ? [] : [`  for ${profileLabel(profile)}`],
+  });
 }
 
 /** `choose` is the bare flag: the interactive pick, in a terminal (src/commands/identity.ts). */

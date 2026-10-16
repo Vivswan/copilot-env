@@ -44,6 +44,7 @@ import {
 import { codexLiveLaunch } from "../../src/health/live_launch.ts";
 import { gatherFacts } from "../../src/health/probe.ts";
 import { runLiveCli } from "../../src/health/probe_deps.ts";
+import { renderReport } from "../../src/health/report.ts";
 import {
   type CheckId,
   type CheckResult,
@@ -52,6 +53,7 @@ import {
   meta,
 } from "../../src/health/types.ts";
 import type { CommandLook } from "../../src/utils/command.ts";
+import { withColumns } from "../helpers/columns.ts";
 import { envSnapshot, isolateProxyHome } from "../helpers/env.ts";
 import {
   type ClaudeSettingsOptions,
@@ -61,6 +63,7 @@ import {
   writeRunState,
 } from "../helpers/fixtures.ts";
 import { probeOf, runIdentity, runOrphan, runPid, runPort } from "../helpers/health.ts";
+import { captureChannels } from "../helpers/output.ts";
 import { expect, removeDir, tempDir, test } from "../helpers/testing.ts";
 
 // --- fixtures ---------------------------------------------------------------
@@ -1189,6 +1192,69 @@ test("checkAuth: the default credential facts decide status, detail, and fix", (
   }
 });
 
+// What would drift silently: a detail line that carried its own "run `agent auth`" beside the
+// fix row that says the same.
+test("checkAuth: a token provider whose stored token is gone states the gap as a fact and leaves the command to the fix", () => {
+  const gone = checkAuth({
+    storedToken: false,
+    ghAuthenticated: false,
+    profile: null,
+    provider: "gh-token",
+    profiles: {},
+    pinnedIntegrationId: null,
+  });
+  expect([gone.status, gone.detail, gone.fix]).toEqual([
+    "warn",
+    [
+      "provider 'gh-token' is selected but no credential resolves",
+      "the stored token is missing",
+    ].join("\n"),
+    "agent auth",
+  ]);
+});
+
+// What would drift silently: the printed shape of a credential miss at 80 columns, the account
+// (39 characters at most) wrapping under its own bullet and both ways out on the fix row.
+test("renderReport prints a credential miss as bullets and one fix row at 80 columns: the pinned gh miss at the longest login, and a named slot whose token is gone", async () => {
+  const login = "l".repeat(39);
+  const pinned = checkAuth({
+    storedToken: false,
+    ghAuthenticated: false,
+    ghUser: login,
+    profile: null,
+    provider: "gh-cli",
+    profiles: {},
+    pinnedIntegrationId: null,
+  });
+  const gone = checkAuth({
+    profile: parseProfileName("p"),
+    slot: { provider: "gh-token", mode: "proxy" },
+    storedToken: false,
+    ghAuthenticated: false,
+  });
+  const { stdout } = await withColumns(80, () =>
+    captureChannels(() => renderReport("full", [pinned, gone], new Map(), false)),
+  );
+  expect(stdout).toContain(
+    [
+      "  ! Authentication",
+      "      \u2022 provider 'gh-cli' is selected but no credential resolves",
+      "      \u2022 `gh` is not authenticated as account",
+      `        '${login}'`,
+      "      \u2192 fix: `gh auth login` for that account, or `agent auth` to switch",
+    ].join("\n"),
+  );
+  expect(stdout).toContain(
+    [
+      "  ! Authentication",
+      "      \u2022 provider 'gh-token' is recorded for profile 'p' but no credential",
+      "        resolves",
+      "      \u2022 the slot's stored token is missing",
+      "      \u2192 fix: agent profile p auth",
+    ].join("\n"),
+  );
+});
+
 test("checkAuth: gh-cli with an UNPROVEN gh probe warns could-not-check, never `gh auth login` advice", () => {
   const unproven = checkAuth({
     storedToken: false,
@@ -1237,13 +1303,14 @@ test("checkAuth: gh-cli with an UNPROVEN gh probe warns could-not-check, never `
     profiles: {},
     pinnedIntegrationId: null,
   });
-  expect(proven.detail).toBe(
+  // The detail states the fact; both ways out (gh's login, or another provider) are the fix.
+  expect([proven.detail, proven.fix]).toEqual([
     [
       "provider 'gh-cli' is selected but no credential resolves",
-      "`gh` is unauthenticated (AUTO - follows gh's active account) - run `gh auth login`, " +
-        "or `agent auth` to switch provider",
+      "`gh` is unauthenticated (AUTO - follows gh's active account)",
     ].join("\n"),
-  );
+    "`gh auth login`, or `agent auth` to switch provider",
+  ]);
   // A failing AUTO slot names the account it follows: the failure is about octocat's credential.
   const provenNamed = checkAuth({
     storedToken: false,
@@ -1255,8 +1322,9 @@ test("checkAuth: gh-cli with an UNPROVEN gh probe warns could-not-check, never `
     pinnedIntegrationId: null,
   });
   expect(provenNamed.detail).toContain(
-    "`gh` is unauthenticated (AUTO - currently account octocat) - run `gh auth login`",
+    "`gh` is unauthenticated (AUTO - currently account octocat)",
   );
+  expect(provenNamed.fix).toBe("`gh auth login`, or `agent auth` to switch provider");
   // A PINNED slot's verdict names its account (the probe ran `gh auth token --user`); gh's active one may be fine.
   const pinned = checkAuth({
     storedToken: false,
@@ -1267,13 +1335,13 @@ test("checkAuth: gh-cli with an UNPROVEN gh probe warns could-not-check, never `
     profiles: {},
     pinnedIntegrationId: null,
   });
-  expect(pinned.detail).toBe(
+  expect([pinned.detail, pinned.fix]).toEqual([
     [
       "provider 'gh-cli' is selected but no credential resolves",
-      "`gh` is not authenticated as account 'work-bot' - run `gh auth login` for that account, " +
-        "or `agent auth` to switch",
+      "`gh` is not authenticated as account 'work-bot'",
     ].join("\n"),
-  );
+    "`gh auth login` for that account, or `agent auth` to switch",
+  ]);
   const pinnedOk = checkAuth({
     storedToken: false,
     ghAuthenticated: true,

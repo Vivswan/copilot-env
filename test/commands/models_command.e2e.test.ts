@@ -268,11 +268,11 @@ test("profile models and profile health with an unknown name hard-fail naming th
   for (const verb of ["models", "health"]) {
     const none = runProfileVerb(verb, undefined, "nope");
     expect(none.exitCode, verb).toBe(1);
-    expect(none.out, verb).toContain("no such profile 'nope' (no profiles exist");
+    expect(none.out, verb).toContain("no such profile 'nope'.\n  no profiles exist");
 
     const known = runProfileVerb(verb, (home) => seedDirectProfile(home, "p1"), "nope");
     expect(known.exitCode, verb).toBe(1);
-    expect(known.out, verb).toContain("no such profile 'nope' (known profiles: p1)");
+    expect(known.out, verb).toContain("no such profile 'nope'.\n  known profiles: p1");
   }
 });
 

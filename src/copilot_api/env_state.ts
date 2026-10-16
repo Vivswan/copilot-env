@@ -347,28 +347,36 @@ export function knownProfile(raw: string | undefined): Profile {
   return profile;
 }
 
-function unknownProfileError(name: ProfileName): Error {
+function unknownProfileError(name: ProfileName, evidence: string[] = []): Error {
   const names = allProfileNames();
-  const hint =
-    names.length === 0
-      ? "no profiles exist - create one with `agent profile <name> add --direct|--proxy`"
-      : `known profiles: ${names.join(", ")}`;
-  return new Error(`no such profile '${name}' (${hint})`);
+  return new Error(
+    scannable({
+      headline: `no such profile '${paintFor(colorEnabled()).cyan(name)}'.`,
+      evidence: [
+        ...evidence,
+        names.length === 0 ? "no profiles exist" : `known profiles: ${names.join(", ")}`,
+      ],
+      lead: "Fix:",
+      actions: [[`agent profile ${name} add --direct|--proxy`, "create it"]],
+    }),
+  );
 }
 
-/** The store's own refusal of a daemon home without a slot; `auth`'s read-back hints print it too. */
-export function missingProfileSlotError(name: ProfileName): Error {
+/** The store's own refusal of a name without a slot: half-created (a daemon home exists) or
+ *  unknown. `auth`'s read-back hints print it too, so one owner words both; `evidence` is the
+ *  caller's own lines (a --del's "nothing to clear"), printed before the store's. */
+export function missingProfileSlotError(name: ProfileName, evidence: string[] = []): Error {
   if (profileHomeNames().includes(name)) {
     return new Error(
       scannable({
         headline: `profile '${paintFor(colorEnabled()).cyan(name)}' has no store slot.`,
-        evidence: ["half-created: its daemon home exists"],
+        evidence: [...evidence, "half-created: its daemon home exists"],
         lead: "Fix:",
         actions: [[`agent profile ${name} add --direct|--proxy`, "re-create it"]],
       }),
     );
   }
-  return unknownProfileError(name);
+  return unknownProfileError(name, evidence);
 }
 
 /**

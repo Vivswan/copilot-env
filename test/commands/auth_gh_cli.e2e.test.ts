@@ -2,6 +2,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   chooseGhAccount,
+  ghAccountChoices,
   ghCannotServeByName,
   loginWithGhCli,
   parseAcquisition,
@@ -31,6 +32,7 @@ import {
 import { setGithubLoginFetch } from "../../src/copilot_api/github_login.ts";
 import { parseProfileName } from "../../src/copilot_api/profile.ts";
 import { errMessage } from "../../src/utils/error.ts";
+import { withColumns } from "../helpers/columns.ts";
 import { envSnapshot, isolateAgentHomes, resetExitCode } from "../helpers/env.ts";
 import { stubGithubLogins } from "../helpers/fixtures.ts";
 import { captureChannels } from "../helpers/output.ts";
@@ -609,12 +611,30 @@ onPosix(
         expect(bareReal, mode).toContain("not a terminal - pass ");
         expect(new CopilotEnvState().profileSlotStatus(other).exists, mode).toBe(false);
       }
-      // In a terminal the bare dry run cannot prompt either: it names the step it would run.
+      // In a terminal the bare dry run cannot prompt either: it names the step it would run. The
+      // raw capture at 80 columns: the step's lines are the layout under test.
       process.stdin.isTTY = true;
-      const named = await captureStderr(() => addProfile(other, { mode: "proxy", dryRun: true }));
-      expect(named).toContain("Would run the credential step (agent profile other auth)");
-      const init = await captureStderr(() => addProfile(null, { mode: "proxy", dryRun: true }));
-      expect(init).toContain("Would run the credential step (agent auth)");
+      const narrated = (profile: Parameters<typeof addProfile>[0]) =>
+        withColumns(
+          80,
+          async () =>
+            (await captureChannels(() => addProfile(profile, { mode: "proxy", dryRun: true })))
+              .stderr,
+        );
+      expect(await narrated(other)).toContain(
+        [
+          "  Would run the credential step.",
+          "    the step: agent profile other auth",
+          "    a dry run never logs in",
+        ].join("\n"),
+      );
+      expect(await narrated(null)).toContain(
+        [
+          "  Would run the credential step.",
+          "    the step: agent auth",
+          "    a dry run never logs in",
+        ].join("\n"),
+      );
     } finally {
       process.stdin.isTTY = hadTty;
     }
@@ -1074,4 +1094,28 @@ test("credentialSourceLabel: a pinned gh account is named, bracket-free", () => 
     "gh-token",
   );
   expect(credentialSourceLabel({ kind: "none", provider: null })).toBeNull();
+});
+
+// What would drift silently: a picker row that put the meaning back into the label, which at the
+// longest login (39 characters) no longer fits a terminal line.
+test("the gh account picker's rows: the login alone as the label, the meaning of picking it as the hint, auto last", () => {
+  const login = "l".repeat(39);
+  const envOnly = (name: string): string | null => (name === "work-bot" ? "GH_TOKEN" : null);
+  expect(ghAccountChoices([login, "work-bot"], login, envOnly)).toEqual([
+    { label: login, value: login, hint: "always use this account; currently active" },
+    {
+      label: "work-bot",
+      value: "work-bot",
+      hint: "always use this account; via $GH_TOKEN; pinning needs a saved login",
+    },
+    {
+      label: "auto",
+      value: "",
+      hint: `follow gh's active account (currently ${login}); switches when you switch gh`,
+    },
+  ]);
+  expect(ghAccountChoices(["octocat"], null, () => null)).toEqual([
+    { label: "octocat", value: "octocat", hint: "always use this account" },
+    { label: "auto", value: "", hint: "follow gh's active account; switches when you switch gh" },
+  ]);
 });

@@ -399,7 +399,7 @@ test("`agent profile <name> add --auto` probes under the profile's own credentia
     );
     expect(trace).toEqual([...PROBED_AS("ghu_work"), ...WROTE("direct")]);
     expect(state.readProfileSlot(work)).toEqual({ kind: "complete", credential, mode: "direct" });
-    expect(moved).toContain("profile 'work' is ready (switched from proxy).");
+    expect(moved).toContain("profile 'work' is ready.\n  switched from proxy");
     // No flag never probes a named profile: the recorded mode is re-wired as it is.
     trace.length = 0;
     await captureAllWrites(() => addProfile(work, { mode: "unflagged" }, probePair(false, trace)));

@@ -1,8 +1,10 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { CopilotEnvState } from "../../src/copilot_api/env_state.ts";
+import { assertKnownProfile, CopilotEnvState } from "../../src/copilot_api/env_state.ts";
 import { parseProfileName } from "../../src/copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../../src/copilot_api/run_state.ts";
+import { errMessage } from "../../src/utils/error.ts";
+import { withColumns } from "../helpers/columns.ts";
 import { envSnapshot, isolateProxyHome } from "../helpers/env.ts";
 import { afterEach, expect, removeDir, test } from "../helpers/testing.ts";
 
@@ -201,6 +203,36 @@ test("run-state clearIfPid clears the daemon tracking ONLY when the tracked pid 
   expect(after.pid).toBeUndefined();
   expect(after.port).toBeUndefined();
   expect(after.lastEnsureAt).toBeUndefined();
+});
+
+// What would drift silently: the refusal every named read verb gives a typo'd name, whose stdout
+// a shell may eval, so its wording is the one place the known names are listed.
+test("assertKnownProfile refuses an unknown name in the scannable shape at 80 columns: what exists as evidence, the add as the fix", async () => {
+  tmpHome();
+  const typo = parseProfileName("p".repeat(32));
+  const refusal = (): string => {
+    try {
+      assertKnownProfile(typo);
+    } catch (e) {
+      return errMessage(e);
+    }
+    throw new Error("expected a refusal");
+  };
+  expect(await withColumns(80, refusal)).toBe(
+    [
+      `no such profile '${typo}'.`,
+      "  no profiles exist",
+      "Fix:",
+      `  agent profile ${typo} add --direct|--proxy  create it`,
+    ].join("\n"),
+  );
+  new CopilotEnvState().commitProfile(WORK, {
+    credential: { kind: "stored", provider: "gh-token", token: "ghp_x" },
+    mode: "direct",
+  });
+  expect(await withColumns(80, refusal)).toContain(
+    `no such profile '${typo}'.\n  known profiles: work`,
+  );
 });
 
 test("setCredential on an unknown named profile errors instead of creating a half profile", () => {

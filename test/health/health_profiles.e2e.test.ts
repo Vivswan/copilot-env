@@ -396,12 +396,16 @@ test("checkAuth (named): the slot and its credential resolution decide status, d
       fix: "agent profile p add --direct|--proxy",
     },
     {
-      // Token provider with no stored token: the slot is provisioned on paper only.
+      // Token provider with no stored token: the slot is provisioned on paper only. The detail
+      // states the gap; the command is the fix row's alone.
       name: "gh-token slot whose token is gone",
       slot: { provider: "gh-token", mode: "proxy" },
       resolves: none,
       status: "warn",
-      detail: ["no credential resolves"],
+      exactDetail: [
+        "provider 'gh-token' is recorded for profile 'p' but no credential resolves",
+        "the slot's stored token is missing",
+      ].join("\n"),
       fix: "agent profile p auth",
     },
     // gh-cli resolves via a live gh login, not a stored token; the wording names the account.
@@ -412,18 +416,21 @@ test("checkAuth (named): the slot and its credential resolution decide status, d
       status: "ok",
     },
     {
+      // A proven miss: gh's login and the slot's re-provision are both the fix row's.
       name: "gh-cli AUTO, unauthenticated",
       slot: ghSlot,
       resolves: none,
       status: "warn",
-      detail: ["gh auth login"],
+      detail: ["`gh` is unauthenticated (AUTO - follows gh's active account)"],
+      fix: "`gh auth login`, or `agent profile p auth` to re-provision the profile",
     },
     {
       name: "gh-cli AUTO following octocat, unauthenticated",
       slot: ghSlot,
       resolves: { ...none, ghActiveLogin: "octocat" },
       status: "warn",
-      detail: ["`gh` is unauthenticated (AUTO - currently account octocat) - run `gh auth login`"],
+      detail: ["`gh` is unauthenticated (AUTO - currently account octocat)"],
+      fix: "`gh auth login`, or `agent profile p auth` to re-provision the profile",
     },
     {
       // A PINNED slot's proven miss names its account; gh's active login may be fine.
@@ -431,9 +438,8 @@ test("checkAuth (named): the slot and its credential resolution decide status, d
       slot: ghSlot,
       resolves: { ...none, ghUser: "work-bot" },
       status: "warn",
-      detail: [
-        "`gh` is not authenticated as account 'work-bot' - run `gh auth login` for that account",
-      ],
+      detail: ["`gh` is not authenticated as account 'work-bot'"],
+      fix: "`gh auth login` for that account, or `agent profile p auth` to re-provision the profile",
     },
     {
       name: "gh-cli pinned to work-bot, authenticated",

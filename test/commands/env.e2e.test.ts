@@ -414,7 +414,7 @@ test("a named profile's env renders the profile's OWN settings file and port; wi
 
 test("profile env with an unknown name hard-fails naming the known profiles, and the CLI exits 1 with an EMPTY stdout (the eval contract)", () => {
   const home = isolate();
-  expect(() => envLines("nope")).toThrow("no such profile 'nope' (no profiles exist");
+  expect(() => envLines("nope")).toThrow("no such profile 'nope'.\n  no profiles exist");
   const proc = runCli(["profile", "nope", "env"], {
     env: { ...process.env, ...childBaseEnv(), CONSOLA_LEVEL: "5" },
   });
@@ -423,5 +423,5 @@ test("profile env with an unknown name hard-fails naming the known profiles, and
   expect(proc.stdout).toBe("");
   expect(proc.stderr).toContain("no such profile 'nope'");
   seedProfile(home, "work", "proxy", 4242);
-  expect(() => envLines("nope")).toThrow("no such profile 'nope' (known profiles: work)");
+  expect(() => envLines("nope")).toThrow("no such profile 'nope'.\n  known profiles: work");
 });

@@ -9,8 +9,10 @@
 #   checks: the test step red     -> a claude or codex release changed the output shape our Direct
 #                                    probe and health checks parse (the `nightly-evidence` artifact
 #                                    holds the CLI versions and the test log)
-#   checks: the install step red  -> npm could not download or install a CLI release; the versions
-#                                    were never recorded, so there is no artifact
+#   checks: the install step red  -> a vendor installer could not download or install a CLI release
+#                                    (the step's error names the CLI and carries the installer's
+#                                    output tail); the versions were never recorded, so there is no
+#                                    artifact
 #   release-assets red            -> a cross-compile target, a bun runtime download, or the installer
 #                                    pinning (release-gate.yml names the steps)
 #   `bun install` or setup red    -> the registry or the runner, not the CLIs

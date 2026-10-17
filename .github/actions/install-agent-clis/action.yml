@@ -1,61 +1,97 @@
 # Repo-owned.
 
 name: Install agent CLIs
-description: >-
-  Installs the current Claude Code and Codex CLI releases with npm and proves
-  each one runs.
+description: |
+  Installs the current Claude Code and Codex CLI releases through the vendors' own installers
+  and proves each one runs.
 
-  Unpinned on purpose. The tests that need these binaries exist to catch a CLI
-  release changing the output shape our Direct probe and health checks parse,
-  so the latest release is the one under test.
+  Unpinned on purpose. The tests that need these binaries exist to catch a CLI release changing
+  the output shape our Direct probe and health checks parse, so the latest release is the one
+  under test.
 
-  Its three callers, which therefore share one install:
+  Its four callers, which therefore share one install:
     - checks.yml `check`, the matrix test job (COPILOT_ENV_LIVE_CLIS)
     - checks.yml `session-log-drift` (COPILOT_ENV_LIVE_CORPUS)
+    - checks.yml `codex-catalog-drift` (COPILOT_ENV_LIVE_CODEX), which needs Codex alone and
+      takes Claude Code as the cost of one implementation
     - nightly.yml `checks` (COPILOT_ENV_LIVE_CLIS)
 
-  checks.yml `codex-catalog-drift` does not use it: it needs Codex alone and
-  installs that package with a plain `npm install -g`.
+  The installers, and where each binary lands:
+    - Claude Code: `curl -fsSL https://claude.ai/install.sh | bash` (install.ps1 on Windows)
+      -> `~/.local/bin/claude` (`%USERPROFILE%\.local\bin\claude.exe`)
+    - Codex: `curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh`
+      (install.ps1 on Windows) -> `~/.local/bin/codex` (`%LOCALAPPDATA%\Programs\OpenAI\Codex\bin\codex.exe`)
 
-  Each CLI is installed globally and then run with `--version`. One that does
-  not run is uninstalled and installed once more. A second failure fails the
-  step with the npm output attached.
+  Each installer puts its bin directory on PATH through a shell profile or the Windows user PATH,
+  which no step of the job reads. The step appends each bin directory to GITHUB_PATH instead, so
+  every later step finds `claude` and `codex` by name, and proves each binary by its full path
+  right after its installer.
 
-  On success the log carries one `claude: <version>` line and one
-  `codex: <version>` line.
+  On success the log carries one `claude: <version>` line and one `codex: <version>` line. A CLI
+  that does not run fails the step with one error naming it and the tail of its installer's
+  output.
 
-  The caller owes bash, node, and npm on PATH, with npm's global bin directory
-  on it too (the hosted runners ship all of these), and network to the npm
-  registry. No inputs, no outputs, no permissions, no secrets.
+  The caller owes curl and bash on Linux and macOS, pwsh on Windows (the hosted runners ship
+  these), and network to the vendors. No inputs, no outputs, no permissions, no secrets.
 
 runs:
   using: composite
   steps:
-    # `npm install -g` can exit 0 and still drop an optional platform package (windows-latest
-    # once added 3 packages instead of 4 and lost @openai/codex-win32-x64), so the CLI failing
-    # at its first run is what the suite would otherwise report twenty minutes later.
+    # Each installer line runs in a bash of its own with pipefail: a bare `curl ... | sh` exits 0
+    # when curl fails (sh reads nothing), and the one shell captures the line's output whole.
     - name: Install the current Claude Code and Codex CLI releases
+      if: runner.os != 'Windows'
       shell: bash
-      run: |
-        install_and_verify() {
-          local cli="$1" package="$2" attempt output status version
-          for attempt in 1 2; do
-            if [ "$attempt" = 2 ]; then
-              echo "::warning::$cli does not run after installing $package; reinstalling once"
-              npm uninstall -g "$package" || true
-            fi
-            status=0
-            output="$(npm install -g "$package" 2>&1)" || status=$?
-            printf '%s\n' "$output"
-            [ "$status" = 0 ] || echo "npm install -g $package exited $status"
-            if version="$("$cli" --version)" && [[ "$version" == *[0-9]* ]]; then
-              echo "$cli: $version"
-              return 0
-            fi
-          done
-          echo "::error::$cli does not run after two installs of $package; npm output:%0A$(printf '%s\n' "$output" |
+      run: | # zizmor: ignore[github-env] the path written is the runner's own home directory; no workflow input reaches it
+        install_and_prove() {
+          local cli="$1" binary="$2" installer="$3" output status version
+          status=0
+          output="$(bash -o pipefail -c "$installer" 2>&1)" || status=$?
+          printf '%s\n' "$output"
+
+          if [ "$status" = 0 ] && version="$("$binary" --version)"; then
+            echo "$cli: $version"
+            return 0
+          fi
+
+          echo "::error::$cli does not run after its installer (exit $status); installer output tail:%0A$(printf '%s\n' "$output" |
             tail -n 40 | awk '{printf "%s%%0A", $0}')"
           return 1
         }
-        install_and_verify claude @anthropic-ai/claude-code
-        install_and_verify codex @openai/codex
+
+        bin="$HOME/.local/bin"
+        echo "$bin" >> "$GITHUB_PATH"
+        install_and_prove claude "$bin/claude" 'curl -fsSL https://claude.ai/install.sh | bash'
+        install_and_prove codex "$bin/codex" 'curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh'
+
+    # Each installer line runs in a pwsh of its own: run in this one, its `exit` on a failure
+    # would end the step before the error line below, and its output could not be captured.
+    - name: Install the current Claude Code and Codex CLI releases
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: | # zizmor: ignore[github-env] the paths written are the runner's own profile directories; no workflow input reaches them
+        function Install-AndProve {
+          param([string]$Cli, [string]$Binary, [string]$Installer)
+          $output = pwsh -NoProfile -Command $Installer 2>&1 | ForEach-Object { "$_" }
+          $status = $LASTEXITCODE
+          $output | Write-Output
+
+          if ($status -eq 0 -and (Test-Path -LiteralPath $Binary)) {
+            $version = & $Binary --version 2>&1 | ForEach-Object { "$_" }
+            if ($LASTEXITCODE -eq 0) {
+              Write-Output "${Cli}: $version"
+              return
+            }
+          }
+
+          $tail = ($output | Select-Object -Last 40) -join '%0A'
+          Write-Output "::error::$Cli does not run after its installer (exit $status); installer output tail:%0A$tail"
+          exit 1
+        }
+
+        $claudeBin = "$env:USERPROFILE\.local\bin"
+        $codexBin = "$env:LOCALAPPDATA\Programs\OpenAI\Codex\bin"
+        Add-Content -Path $env:GITHUB_PATH -Value $claudeBin, $codexBin
+        $env:CODEX_NON_INTERACTIVE = '1'
+        Install-AndProve claude "$claudeBin\claude.exe" 'irm https://claude.ai/install.ps1 | iex'
+        Install-AndProve codex "$codexBin\codex.exe" 'irm https://chatgpt.com/codex/install.ps1 | iex'

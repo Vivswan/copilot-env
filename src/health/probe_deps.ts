@@ -4,7 +4,7 @@
 // probe.ts against the isolated home the tests seed, so nothing else is faked. Tests hand
 // gatherFacts a partial override of this record.
 import { spawn } from "node:child_process";
-import { dirname } from "node:path";
+import { classifyAgentCli } from "../agents/cli_install.ts";
 import { jsonOutputReason, PROBE_TIMEOUT_MS, probeOutputLines } from "../agents/live_probe.ts";
 import { resolveClaudeHome } from "../claude/paths.ts";
 import { effectiveCodexHome } from "../codex/host.ts";
@@ -19,13 +19,7 @@ import { classifyOwnedDaemonPid } from "../copilot_api/process.ts";
 import type { Profile } from "../copilot_api/profile.ts";
 import { shellTargetFiles } from "../shell/integration.ts";
 import { assertNever } from "../utils/assert.ts";
-import {
-  type CommandLook,
-  childEnvWithPath,
-  cliSpawn,
-  findCommand,
-  resolveCommand,
-} from "../utils/command.ts";
+import { type CommandLook, childEnv, findCommand } from "../utils/command.ts";
 import type { CodexDirectAuthFacts, LiveProbeFacts } from "./facts.ts";
 import { claudeLiveLaunch, codexLiveLaunch, type LiveLaunch } from "./live_launch.ts";
 
@@ -39,8 +33,7 @@ export interface ProbeDeps {
   classifyTrackedPid(pid: number): Promise<"yes" | "no" | "unknown">;
   /** The clock the idle watchdog is judged against. */
   now(): number;
-  /** Failure arm kept (see CommandLook): the CLI/tool census rows render "not installed"
-   *  verdicts, so an unproven look must stay marked instead of flattening into "absent". */
+  /** The PATH look behind the CLI census. */
   commandLook(command: string): CommandLook;
   shellTargets(): string[];
   codexHome(): string;
@@ -110,24 +103,14 @@ async function ghActiveLoginProbe(): Promise<string | null> {
 }
 
 async function codexDirectAuth(ghUser: string | null): Promise<CodexDirectAuthFacts> {
-  // The failure arm is kept: this fact renders auth VERDICTS ("GitHub CLI not found", "not
-  // authenticated"), so a look that never ran must arrive marked, not as a proven absence.
   const look = findCommand("gh");
   const pinned = ghUser === null ? {} : { ghUser };
-  switch (look.kind) {
-    case "unproven":
-      return { kind: "unproven", command: null, ...pinned };
-    case "absent":
-      return { kind: "absent", command: null, ...pinned };
-    case "found":
-      // The SAME recipe `agent auth` and every resolve run (ghAuthTokenSpawnSpec: ONE gh call, the
-      // pinned `--user` form or the active account's), off the event loop so it overlaps the other
-      // probes under gatherFacts' Promise.all. The token is read into memory with the rest of gh's
-      // output and only the verdict and the serving call are kept.
-      return directAuthFromLook(look.path, await ghAuthTokenLookAsync(ghUser, look.path), ghUser);
-    default:
-      return assertNever(look);
-  }
+  if (look.kind === "absent") return { kind: "absent", command: null, ...pinned };
+  // The SAME recipe `agent auth` and every resolve run (ghAuthTokenSpawnSpec: ONE gh call, the
+  // pinned `--user` form or the active account's), off the event loop so it overlaps the other
+  // probes under gatherFacts' Promise.all. The token is read into memory with the rest of gh's
+  // output and only the verdict and the serving call are kept.
+  return directAuthFromLook(look.path, await ghAuthTokenLookAsync(ghUser, look.path), ghUser);
 }
 
 /** The CLI's output, line for line, so `agent health --live` shows the complete error: a JSON
@@ -151,46 +134,26 @@ function formatLiveFailure(
   return `exit ${code ?? "?"}`;
 }
 
-/**
- * Unlike the init probe, the environment is NOT sanitized (`--live` tests the real, fully
- * resolved setup), except `launch.omitEnv` (upper-case names): the narrow scrub a NAMED profile
- * needs so a shell export of the DEFAULT wiring cannot override the profile's own and
- * misattribute the answer. Spawns the RESOLVED path so the nvm fallback is not defeated. Exported
- * for the scrub's test.
- */
+/** `--live` tests the real setup: the parent env inherited whole but for `launch.omitEnv`, the
+ *  scrub a named profile needs so a shell export of the default wiring cannot answer for it. */
 export function runLiveCli(
   launch: LiveLaunch,
   find: (command: string) => CommandLook = findCommand,
 ): Promise<LiveProbeFacts> {
-  // `find` is a test seam; the real look keeps its failure arm (see CommandLook) because the
-  // skip renders a "CLI not installed" verdict.
-  const look = find(launch.cli);
-  switch (look.kind) {
-    case "unproven":
-      return Promise.resolve({ kind: "skipped", reason: "look-failed" });
-    case "absent":
-      return Promise.resolve({ kind: "skipped", reason: "not-installed" });
-    case "found":
-      break;
-    default:
-      return assertNever(look);
+  const look = classifyAgentCli(launch.cli, find(launch.cli));
+  if (look.kind === "absent") return Promise.resolve({ kind: "skipped", reason: "not-installed" });
+  if (look.kind === "npm-shim") {
+    return Promise.resolve({ kind: "failed", cli: look.path, detail: look.note });
   }
   const resolved = look.path;
-  const ghPath = resolveCommand("gh");
   return new Promise((resolve) => {
-    const s = cliSpawn(resolved, launch.args);
     // Output is captured so a failure reports the FULL reason. The 64 MB cap is effectively
     // unbounded (a smoke prompt's output is tiny) and only guards a pathologically chatty CLI.
-    // nosemgrep: javascript.lang.security.audit.spawn-shell-true.spawn-shell-true -- Windows-only, for .cmd shims; the spec quotes args
-    const child = spawn(s.file, s.args, {
+    const child = spawn(resolved, launch.args, {
       stdio: ["ignore", "pipe", "pipe"],
       timeout: PROBE_TIMEOUT_MS,
       windowsHide: true,
-      shell: s.shell,
-      // The resolved CLI's and gh's bin dirs lead the child PATH so an nvm-only toolchain (a
-      // node-shim CLI, the config's bare `gh` call) is reachable even when the parent never
-      // sourced nvm.
-      env: childEnvWithPath([dirname(resolved), ghPath ? dirname(ghPath) : null], {
+      env: childEnv({
         extra: launch.env,
         omit: (upper) => launch.omitEnv.includes(upper),
       }),

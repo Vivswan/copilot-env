@@ -83,8 +83,6 @@ const CHECK_DESCRIPTORS = {
   },
   "setup.shell": { label: "Shell integration", group: "setup", scopes: SETUP_SCOPES },
   "setup.launchers": { label: "Launchers (cl/co/cx)", group: "setup", scopes: SETUP_SCOPES },
-  "setup.tool.node": { label: "node", group: "setup", scopes: SETUP_SCOPES },
-  "setup.tool.npm": { label: "npm", group: "setup", scopes: SETUP_SCOPES },
   "setup.auth": { label: "Authentication", group: "auth", scopes: AUTH_SCOPES },
   "setup.codex": { label: "Codex wiring", group: "codex", scopes: CODEX_SCOPES },
   "setup.codex-host": { label: "Per-host CODEX_HOME", group: "codex", scopes: SETUP_SCOPES },

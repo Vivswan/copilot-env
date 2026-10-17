@@ -284,9 +284,10 @@ jobs:
 
   # Each install.sh scenario runs as its OWN isolated job (fresh runner, fresh
   # $HOME) via the reusable installer-sh.yml, which compiles this tree's binary
-  # and installs from it. The default bootstrap path runs on both Linux and
-  # macOS; optional setup variants run on one POSIX OS because the detailed
-  # block/flag behavior is covered by unit tests.
+  # and installs from it. The default bootstrap path and the CLI setup (the
+  # vendors' own installers) run on both Linux and macOS; the other setup
+  # variants run on one POSIX OS because the detailed block/flag behavior is
+  # covered by unit tests.
   install-sh:
     name: install.sh ${{ matrix.name }} / ${{ matrix.os }}
     strategy:
@@ -310,6 +311,14 @@ jobs:
             expect-wiring: true
             rerun: true
           - os: ubuntu-latest
+            name: "setup-clis"
+            args: ""
+            setup-clis: true
+            setup-launchers: false
+            expect-clis: true
+            expect-wiring: true
+            rerun: false
+          - os: macos-latest
             name: "setup-clis"
             args: ""
             setup-clis: true
@@ -344,7 +353,8 @@ jobs:
       rerun: ${{ matrix.rerun }}
 
   # Windows parity: each install.ps1 scenario as its OWN isolated job via the
-  # reusable installer-ps1.yml. Git + Node/npm are preinstalled on windows-latest.
+  # reusable installer-ps1.yml. winget, which the Copilot CLI install needs, is
+  # preinstalled on windows-latest.
   install-ps1:
     name: install.ps1 ${{ matrix.scenario.name }}
     strategy:

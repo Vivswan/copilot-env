@@ -457,53 +457,28 @@ skipWin("e2e: %VAR% / $VAR user args arrive literally (no shell between us and t
   expect(res.exitCode).toBe(0);
 });
 
-// cmd.exe expands %USERPROFILE% even inside quotes, so the launcher must bypass an npm-style .cmd
-// shim for its .ps1 sibling (powershell -File passes argv literally). The .cmd exits 99, so a wrong
-// dispatch fails on the exit code too.
+// An npm-installed CLI on Windows is a `.cmd` shim only cmd.exe runs; a direct spawn is a bare
+// EINVAL.
 test.skipIf(process.platform !== "win32")(
-  "e2e (Windows): user args reach the CLI verbatim through the .ps1 shim",
+  "e2e (Windows): an npm .cmd shim on PATH is refused by name, never spawned",
   () => {
     const root = e2eRoot();
     const bin = join(root, "bin");
     mkdirSync(bin, { recursive: true });
-    writeFileSync(join(bin, "claude.cmd"), "@echo off\r\nexit 99\r\n");
-    writeFileSync(
-      join(bin, "claude.ps1"),
-      ["$i = 0", 'foreach ($a in $args) { $i++; Write-Output "ARG$i=[$a]" }', "exit 0", ""].join(
-        "\n",
-      ),
-    );
+    writeFileSync(join(bin, "claude.cmd"), "@echo off\r\necho ARGS=ran\r\nexit 99\r\n");
     recordDefault(root, "direct");
     writeClaudeSettings(join(root, ".claude"), {
       apiKeyHelper: directHelperCommand(),
       baseUrl: DIRECT_BASE,
     });
     const winEnv = { ...launchEnv(root, bin), PATH: `${bin};${process.env.PATH ?? ""}` };
-    const res = runCli(
-      [
-        "profile",
-        "launch",
-        "claude",
-        "--",
-        "%USERPROFILE%",
-        "x y",
-        "$env:USERPROFILE",
-        "`whoami`",
-        'a"b',
-      ],
-      { env: winEnv },
+    const res = runCli(["profile", "launch", "claude", "--"], { env: winEnv });
+    expect(res.exitCode).toBe(1);
+    expect(res.stderr).toContain("is an npm-installed copy of claude this build cannot run");
+    expect(res.stderr).toContain(
+      "npm uninstall -g @anthropic-ai/claude-code, then agent shell --clis",
     );
-    // USERPROFILE is defined (launchEnv sets it), so an expansion would show a path;
-    // the PowerShell-flavored metacharacters must survive -File's literal argv too.
-    expect(res.stdout).toContain("ARG4=[%USERPROFILE%]");
-    expect(res.stdout).toContain("ARG5=[x y]");
-    expect(res.stdout).toContain("ARG6=[$env:USERPROFILE]");
-    expect(res.stdout).toContain("ARG7=[`whoami`]");
-    expect(res.stdout).toContain('ARG8=[a"b]');
-    expect(res.exitCode).toBe(0);
-
-    writeFileSync(join(bin, "claude.ps1"), "exit 41\n");
-    expect(runCli(["profile", "launch", "claude", "--"], { env: winEnv }).exitCode).toBe(41);
+    expect(res.stdout).not.toContain("ARGS=ran");
   },
 );
 

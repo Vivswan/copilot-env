@@ -1,18 +1,40 @@
-// The one source of "which release to install / update to", read from the GitHub Releases REST
-// API. install.sh / install.ps1 resolve `latest` themselves: they run before anything of ours is
-// on disk.
+// The one source of "which GitHub release to install / update to", read from the Releases REST
+// API: copilot-env's own releases for `agent update` and the autoupdate preflight, and the agent
+// CLI vendors' for `agent shell --clis --cooldown`. install.sh / install.ps1 resolve `latest`
+// themselves: they run before anything of ours is on disk.
 //
 // The lookup is anonymous on purpose: the stored credential exists to reach Copilot, and a token
 // exported in the shell may belong to another account. The anonymous limit (60/hour/IP) covers a
-// lookup that runs once per `--check` or per autoupdate cooldown.
+// lookup that runs once per `--check`, per autoupdate cooldown, or per CLI install.
 import { retry } from "@std/async";
 import type { ProbeFetch } from "../copilot_api/integration_identity.ts";
 import { SECONDS_PER_DAY } from "../utils/time.ts";
 import { COPILOT_ENV_USER_AGENT } from "../utils/user_agent.ts";
 
-// per_page=100 reads every release in one page (this repo will not exceed that for years), so
-// cooldown selection sees the whole eligible set, not just the first 30.
-const RELEASES_API = "https://api.github.com/repos/Vivswan/copilot-env/releases?per_page=100";
+/** A repository whose releases are read: `tagPattern` admits its stable tags alone (a vendor
+ *  marks prereleases, but a tag shape such as `rust-vX.Y.Z-alpha.N` is dropped here too). */
+export interface ReleaseRepo {
+  /** `owner/name`. */
+  repo: string;
+  tagPattern: RegExp;
+}
+
+const COPILOT_ENV_RELEASES: ReleaseRepo = {
+  repo: "Vivswan/copilot-env",
+  tagPattern: /^v\d+\.\d+\.\d+$/,
+};
+
+/** The API's page ceiling, newest first. */
+const PER_PAGE = 100;
+/** Pages an aged pick reads before giving up: a vendor that publishes several prereleases a day
+ *  pushes a week-old stable release past the first page. */
+const MAX_PAGES = 5;
+/** How far back an aged pick looks, for the message that says nothing was old enough. */
+export const AGED_RELEASE_HORIZON = PER_PAGE * MAX_PAGES;
+
+function releasesApi(repo: string, page: number): string {
+  return `https://api.github.com/repos/${repo}/releases?per_page=${PER_PAGE}&page=${page}`;
+}
 
 const GH = {
   Accept: "application/vnd.github+json",
@@ -27,21 +49,32 @@ export interface Release {
   dateSeconds: number;
 }
 
-export function parseReleasesJson(jsonText: string): Release[] {
+/** One API page: its stable releases newest-first, and the rows it held before the stable filter
+ *  (fewer than PER_PAGE: the last page). */
+export interface ReleasePage {
+  releases: Release[];
+  rows: number;
+}
+
+/** Unparseable text, or an API error object, reads as an empty last page. */
+export function parseReleasesJson(
+  jsonText: string,
+  tagPattern: RegExp = COPILOT_ENV_RELEASES.tagPattern,
+): ReleasePage {
   let parsed: unknown;
   try {
     parsed = JSON.parse(jsonText);
   } catch {
-    return [];
+    return { releases: [], rows: 0 };
   }
-  if (!Array.isArray(parsed)) return [];
+  if (!Array.isArray(parsed)) return { releases: [], rows: 0 };
 
   const releases: Release[] = [];
   for (const item of parsed) {
     if (typeof item !== "object" || item === null) continue;
     const r = item as Record<string, unknown>;
     if (r.draft === true || r.prerelease === true) continue;
-    if (typeof r.tag_name !== "string" || !/^v\d+\.\d+\.\d+$/.test(r.tag_name)) continue;
+    if (typeof r.tag_name !== "string" || !tagPattern.test(r.tag_name)) continue;
     const date = typeof r.published_at === "string" ? r.published_at : r.created_at;
     if (typeof date !== "string") continue;
     const dateSeconds = Math.floor(Date.parse(date) / 1000);
@@ -51,17 +84,12 @@ export function parseReleasesJson(jsonText: string): Release[] {
   }
   // The API's order is not trusted; sort newest-first here.
   releases.sort((a, b) => b.dateSeconds - a.dateSeconds);
-  return releases;
+  return { releases, rows: parsed.length };
 }
 
 export function pickAged(releases: Release[], nowSeconds: number, days: number): Release | null {
   const cutoff = nowSeconds - days * SECONDS_PER_DAY;
-  let oldest: Release | null = null;
-  for (const r of releases) {
-    oldest = r; // newest-first, so the last seen is the oldest
-    if (r.dateSeconds <= cutoff) return r;
-  }
-  return oldest;
+  return releases.find((r) => r.dateSeconds <= cutoff) ?? null; // newest-first
 }
 
 // The releases endpoint occasionally 5xx's, rate-limits, or drops the connection; a few
@@ -105,19 +133,69 @@ async function fetchReleasesText(
   }
 }
 
+async function fetchReleasePage(
+  source: ReleaseRepo,
+  page: number,
+  opts: ResolveOptions,
+): Promise<ReleasePage | null> {
+  const text = await fetchReleasesText(
+    releasesApi(source.repo, page),
+    opts.fetchImpl ?? fetch,
+    opts.retryBaseMs ?? RETRY_BASE_MS,
+  );
+  return text === null ? null : parseReleasesJson(text, source.tagPattern);
+}
+
+async function resolveLatest(
+  source: ReleaseRepo,
+  opts: ResolveOptions = {},
+): Promise<Release | null> {
+  const page = await fetchReleasePage(source, 1, opts);
+  return page?.releases[0] ?? null;
+}
+
+export type AgedRelease =
+  | { kind: "release"; release: Release }
+  /** Nothing within AGED_RELEASE_HORIZON was old enough; `oldest` is the oldest stable release the
+   *  pages held, null when they held none. */
+  | { kind: "none"; oldest: Release | null }
+  /** A page could not be read (offline, or the API refused after the retries). */
+  | { kind: "unread" };
+
+export async function resolveAged(
+  source: ReleaseRepo,
+  days: number,
+  opts: ResolveOptions = {},
+): Promise<AgedRelease> {
+  const now = Date.now() / 1000;
+  let oldest: Release | null = null;
+  for (let page = 1; page <= MAX_PAGES; page++) {
+    const read = await fetchReleasePage(source, page, opts);
+    if (read === null) return { kind: "unread" };
+
+    const pick = pickAged(read.releases, now, days);
+    if (pick !== null) return { kind: "release", release: pick };
+    oldest = read.releases.at(-1) ?? oldest;
+    if (read.rows < PER_PAGE) break;
+  }
+  return { kind: "none", oldest };
+}
+
+/** copilot-env's own next release, for `agent update` and the autoupdate preflight: the newest,
+ *  or with a cooldown the newest at least that old, else the oldest known, so a repository whose
+ *  every release is fresh still updates. Null when the lookup failed or found no release. */
 export async function resolveTarget(
   cooldownDays: number | null,
   opts: ResolveOptions = {},
 ): Promise<Release | null> {
-  const text = await fetchReleasesText(
-    RELEASES_API,
-    opts.fetchImpl ?? fetch,
-    opts.retryBaseMs ?? RETRY_BASE_MS,
-  );
-  if (text === null) return null; // offline / API errored after retries
-  const releases = parseReleasesJson(text);
-  if (releases.length === 0) return null;
-  return cooldownDays === null
-    ? (releases[0] ?? null)
-    : pickAged(releases, Date.now() / 1000, cooldownDays);
+  if (cooldownDays === null) return await resolveLatest(COPILOT_ENV_RELEASES, opts);
+  const aged = await resolveAged(COPILOT_ENV_RELEASES, cooldownDays, opts);
+  switch (aged.kind) {
+    case "release":
+      return aged.release;
+    case "none":
+      return aged.oldest;
+    case "unread":
+      return null;
+  }
 }

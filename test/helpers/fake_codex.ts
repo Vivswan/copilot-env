@@ -1,15 +1,25 @@
-// A `codex` on PATH for the catalog tests, the same fake on every platform: a sh dispatcher and a
-// `.cmd` twin hand the argv to test/helpers/fake_codex_cli.mjs under this process's bun, and a
-// failing `npm` beside them keeps the User-Agent's version road off the network. The live-lookup
-// seam is lifted so the production spawns really run; the process memos (the codex path, its
-// version, the probe verdicts by content) are forgotten on every re-script so the new script
-// answers.
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+// A `codex` on PATH for the catalog tests, the same fake on every platform: a sh dispatcher
+// hands the argv to test/helpers/fake_codex_cli.mjs under this process's bun; on Windows the
+// script is compiled into a native codex.exe once per test process, since a .cmd dispatcher
+// cannot be spawned without a shell (EINVAL) and nothing of ours routes through cmd.exe. The
+// live-lookup seam is lifted so the production spawns really run; the process memos (the codex
+// path, its version, the probe verdicts by content) are forgotten on every re-script so the new
+// script answers.
+import {
+  chmodSync,
+  existsSync,
+  linkSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resetCatalogProbeState } from "../../src/codex/catalog.ts";
 import { CI_NO_LIVE_LOOKUPS_ENV, resetCodexVersionMemo } from "../../src/codex/user_agent.ts";
 import { runSync } from "./run.ts";
+import { tempDir } from "./testing.ts";
 
 /** What `codex debug models` answers when the throwaway home references a candidate.
  *    accept         -> parses a catalog-shaped candidate (dumps it back), fails garbage
@@ -56,20 +66,35 @@ export interface FakeCodex {
 
 const CLI = fileURLToPath(new URL("./fake_codex_cli.mjs", import.meta.url));
 
+let compiledFake: string | null = null;
+
+/** The Windows fake as a native executable, compiled once per test process (seconds) and
+ *  hard-linked into each fixture's bin, where it finds its spec beside itself. */
+function compiledFakeCodex(): string {
+  if (compiledFake === null) {
+    const exe = join(tempDir("fake-codex-exe-"), "codex.exe");
+    runSync(process.execPath, ["build", "--compile", CLI, "--outfile", exe], {
+      timeoutMs: 180_000,
+    });
+    compiledFake = exe;
+  }
+  return compiledFake;
+}
+
 /** Installs the fake under `dir` (the test's scratch dir) at the front of PATH. The caller's env
  *  snapshot restores PATH and the live-lookup seam. */
 export function fakeCodexOnPath(dir: string, spec: Partial<FakeCodexSpec> = {}): FakeCodex {
   const bin = join(dir, "fake-codex");
   mkdirSync(bin, { recursive: true });
-  const cli = join(bin, "fake_codex_cli.mjs");
-  writeFileSync(cli, readFileSync(CLI));
-  const bun = process.execPath;
-  writeFileSync(join(bin, "codex"), `#!/bin/sh\nexec "${bun}" "${cli}" "$@"\n`);
-  chmodSync(join(bin, "codex"), 0o755);
-  writeFileSync(join(bin, "codex.cmd"), `@"${bun}" "${cli}" %*\r\n`);
-  writeFileSync(join(bin, "npm"), "#!/bin/sh\nexit 1\n");
-  chmodSync(join(bin, "npm"), 0o755);
-  writeFileSync(join(bin, "npm.cmd"), "@echo off\r\nexit 1\r\n");
+  const codex = join(bin, process.platform === "win32" ? "codex.exe" : "codex");
+  if (process.platform === "win32") {
+    linkSync(compiledFakeCodex(), codex);
+  } else {
+    const cli = join(bin, "fake_codex_cli.mjs");
+    writeFileSync(cli, readFileSync(CLI));
+    writeFileSync(codex, `#!/bin/sh\nexec "${process.execPath}" "${cli}" "$@"\n`);
+    chmodSync(codex, 0o755);
+  }
   process.env.PATH = `${bin}${delimiter}${process.env.PATH ?? ""}`;
   delete process.env[CI_NO_LIVE_LOOKUPS_ENV];
   const runsFile = join(bin, "runs.jsonl");
@@ -95,9 +120,8 @@ export function fakeCodexOnPath(dir: string, spec: Partial<FakeCodexSpec> = {}):
     },
   };
   fake.script(spec);
-  // The dispatcher's first start on a Windows runner has taken seconds, as long as the generator's
+  // The fake's first start on a Windows runner has taken seconds, as long as the generator's
   // dump budget; that start-up cost is the fixture's, paid here, before any budgeted spawn.
-  if (process.platform === "win32") runSync(join(bin, "codex.cmd"), ["--version"], { shell: true });
-  else runSync(join(bin, "codex"), ["--version"]);
+  runSync(codex, ["--version"]);
   return fake;
 }

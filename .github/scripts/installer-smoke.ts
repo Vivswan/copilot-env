@@ -6,6 +6,15 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  AGENT_CLIS,
+  type AgentCli,
+  cliVersion,
+  currentHost,
+  hostSearchPath,
+  installProofTarget,
+  resolveAgentCli,
+} from "../../src/agents/cli_install.ts";
 import { launcherFunctionLines } from "../../src/commands/env.ts";
 import { CopilotApiPaths } from "../../src/copilot_api/paths.ts";
 import { isRecord } from "../../src/utils/json.ts";
@@ -13,10 +22,6 @@ import { installedBinaryName } from "../../src/utils/targets.ts";
 
 const step = process.argv[2];
 const isWindows = process.platform === "win32";
-const optionalClis = ["claude", "copilot", "codex"];
-const posixNvmSource =
-  // biome-ignore lint/suspicious/noTemplateCurlyInString: a POSIX shell line; the braces are the shell's parameter expansion
-  '[ -s "${NVM_DIR:-$HOME/.nvm}/nvm.sh" ] && . "${NVM_DIR:-$HOME/.nvm}/nvm.sh" >/dev/null 2>&1 || true';
 
 function envBool(name: string, fallback = false): boolean {
   const value = process.env[name];
@@ -84,38 +89,21 @@ function outputAnyExit(command: string, args: string[]): string {
   return (proc.stdout ?? "").trim();
 }
 
-function commandPath(command: string): string | null {
-  return isWindows
-    ? output("where.exe", [command])
-    : output("sh", ["-c", `${posixNvmSource}; command -v "$1"`, "sh", command]);
-}
+type Presence =
+  | { kind: "absent" }
+  | { kind: "broken"; path: string; detail: string }
+  | { kind: "works"; path: string; version: string };
 
-function commandOutput(command: string, args: string[]): string | null {
-  return isWindows
-    ? output(command, args)
-    : output("sh", ["-c", `${posixNvmSource}; "$@"`, "sh", command, ...args]);
-}
-
-function npmGlobalBin(): string | null {
-  if (!commandPath(isWindows ? "npm.cmd" : "npm")) {
-    return null;
-  }
-  const prefix = commandOutput(isWindows ? "npm.cmd" : "npm", ["prefix", "-g"]);
-  if (!prefix) {
-    return null;
-  }
-  return isWindows ? prefix : join(prefix, "bin");
-}
-
-function cliExists(command: string): boolean {
-  if (commandPath(command)) {
-    return true;
-  }
-  const bin = npmGlobalBin();
-  if (!bin) {
-    return false;
-  }
-  return existsSync(join(bin, `${command}.cmd`)) || existsSync(join(bin, command));
+/** The judge `agent shell --clis` itself applies, a step later (installProofTarget), so the smoke
+ *  and the pass cannot disagree. */
+function cliPresence(cli: AgentCli): Presence {
+  const searchPath = hostSearchPath();
+  const target = installProofTarget(cli, currentHost(), resolveAgentCli(cli.command, searchPath));
+  if (target.kind === "absent") return { kind: "absent" };
+  const proof = cliVersion(target.path, searchPath);
+  return proof.kind === "failed"
+    ? { kind: "broken", path: target.path, detail: proof.detail }
+    : { kind: "works", path: target.path, version: proof.line };
 }
 
 function runInstaller(args: string[]): void {
@@ -137,30 +125,40 @@ function runInstall(): void {
 }
 
 function assertNoOptionalClis(): void {
-  for (const cli of optionalClis) {
-    if (cliExists(cli)) {
+  for (const cli of AGENT_CLIS) {
+    if (cliPresence(cli).kind !== "absent") {
       console.error(
-        `::error::${cli} must NOT be installed by installer ${process.env.INSTALLER_ARGS ?? ""}`,
+        `::error::${cli.command} must NOT be installed by installer ${process.env.INSTALLER_ARGS ?? ""}`,
       );
       process.exit(1);
     }
-    console.log(`${cli} correctly absent after installer`);
+    console.log(`${cli.command} correctly absent after installer`);
   }
 }
 
 function verifyOptionalClis(): void {
   const expectClis = envBool("EXPECT_CLIS");
-  for (const cli of optionalClis) {
-    const found = cliExists(cli);
-    if (expectClis && !found) {
-      console.error(`::error::${cli} was not installed by agent shell --clis`);
+  for (const cli of AGENT_CLIS) {
+    const presence = cliPresence(cli);
+    if (expectClis && presence.kind !== "works") {
+      const why =
+        presence.kind === "absent"
+          ? "absent"
+          : `${presence.path} --version did not run: ${presence.detail}`;
+      console.error(`::error::${cli.command} was not installed by agent shell --clis (${why})`);
       process.exit(1);
     }
-    if (!expectClis && found) {
-      console.error(`::error::${cli} must NOT have been installed without agent shell --clis`);
+    if (!expectClis && presence.kind !== "absent") {
+      console.error(
+        `::error::${cli.command} must NOT have been installed without agent shell --clis`,
+      );
       process.exit(1);
     }
-    console.log(expectClis ? `found ${cli}` : `${cli} correctly absent`);
+    console.log(
+      presence.kind === "works"
+        ? `${cli.command} works: ${presence.version} (${presence.path})`
+        : `${cli.command} correctly absent`,
+    );
   }
 }
 
@@ -205,7 +203,8 @@ function launcherOutput(launcher: string, args: string[]): string | null {
 }
 
 function verifyLauncherWiring(launcher: string): void {
-  if (!envBool("SETUP_LAUNCHERS")) {
+  // `agent config set shell.launchers true` turns the key on, and so does `agent shell --clis`.
+  if (!envBool("SETUP_LAUNCHERS") && !envBool("EXPECT_CLIS")) {
     return;
   }
   // The launchers are `agent profile env` emissions gated on the `shell.launchers` key, not an rc block,
@@ -213,7 +212,7 @@ function verifyLauncherWiring(launcher: string): void {
   const stored = launcherOutput(launcher, ["config", "get", "shell.launchers"]);
   if (stored !== "true") {
     console.error(
-      `::error::expected the shell.launchers config key to read true after agent config set shell.launchers true (got ${
+      `::error::expected the shell.launchers config key to read true after the launchers were turned on (got ${
         stored ?? "a failing read"
       })`,
     );

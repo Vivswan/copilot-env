@@ -2,7 +2,7 @@
 // every key a test may poke, the temp homes the readers resolve, and the one spelling of the
 // five-key agent-home env a child or this process is pointed at.
 import { mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { forgetDiscoveryAnswers } from "../../src/copilot_api/discovery.ts";
 import { defaultDaemonHome } from "../../src/copilot_api/paths.ts";
 import { removeDir, tempDir } from "./testing.ts";
@@ -44,6 +44,11 @@ export function envSnapshot(extraKeys: readonly string[] = []): () => void {
       else process.env[key] = value;
     }
   };
+}
+
+/** PATH with `dir` first: how a test puts a fixture shim ahead of the machine's own tools. */
+export function pathLedBy(dir: string): string {
+  return `${dir}${delimiter}${process.env.PATH ?? ""}`;
 }
 
 /** 0, not undefined: the runtime's exitCode setter may not clear on undefined, and a test's exit 1

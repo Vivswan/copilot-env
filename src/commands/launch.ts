@@ -8,6 +8,7 @@
 // (the write-report flush, the scratch cleanup).
 import { spawnSync } from "node:child_process";
 import { constants } from "node:os";
+import { resolveAgentCli } from "../agents/cli_install.ts";
 import { runClaude, runCodex } from "../agents/configure_defaults.ts";
 import { wireBothAgents } from "../agents/profile_wiring.ts";
 import { BASE_URL_ENV, managedClaudeBaseUrl } from "../claude/config.ts";
@@ -21,8 +22,7 @@ import {
   parseProfileFlag,
   parseProfileName,
 } from "../copilot_api/profile.ts";
-import { assertNever } from "../utils/assert.ts";
-import { childEnvWithPath, findCommand, verbatimCliSpawn } from "../utils/command.ts";
+import { childEnv } from "../utils/command.ts";
 import { caught, printWrappedToStderr } from "../utils/message.ts";
 import { deferWriteReports, flushWriteReports } from "../utils/report_write.ts";
 import type { ManagedEnvValue } from "../utils/shell_quote.ts";
@@ -83,7 +83,7 @@ export interface LaunchPlan {
 const CLAUDE_MANAGED_FLAGS = ["--permission-mode", "auto", "--enable-auto-mode"] as const;
 
 /** Every inherited casing is scrubbed first: on Windows `Codex_Home` and `CODEX_HOME` would both
- *  reach the child and which one it reads is undefined (childEnvWithPath). The home is read AFTER
+ *  reach the child and which one it reads is undefined (childEnv). The home is read AFTER
  *  the wiring step (resolveCodexHome): a proxy re-wire may have just built the farm, and a shell
  *  CODEX_HOME can never send Codex to a config other than the one copilot-env wrote. */
 function pinCodexHome(plan: LaunchPlan): void {
@@ -235,14 +235,11 @@ export async function prepareLaunch(action: LaunchAction): Promise<LaunchPlan | 
   }
 }
 
-function spawnAgentCli(plan: LaunchPlan): number {
-  const spawn = verbatimCliSpawn(plan.command, plan.args);
+function spawnAgentCli(plan: LaunchPlan, file: string): number {
   // biome-ignore-start lint/plugin/no_unbounded_child_spawn: the agent CLI runs for the user with the terminal handed over
-  // nosemgrep: javascript.lang.security.audit.spawn-shell-true.spawn-shell-true -- Windows-only, for .cmd shims; the spec quotes args
-  const result = spawnSync(spawn.file, spawn.args, {
+  const result = spawnSync(file, plan.args, {
     stdio: "inherit",
-    shell: spawn.shell,
-    env: childEnvWithPath([spawn.binDir], {
+    env: childEnv({
       extra: plan.env,
       omit: (upper) => plan.scrub.includes(upper),
     }),
@@ -254,42 +251,36 @@ function spawnAgentCli(plan: LaunchPlan): number {
   return signalNumber === undefined ? 1 : 128 + signalNumber;
 }
 
-/** The refusal every launch, real or dry, gives before preparing anything. A failed look must not
- *  read "not installed": the probe never completed, which proves nothing about the CLI. The launch
- *  itself is then the honest test; its own spawn error names the real problem. */
-function rejectMissingCli(cli: LaunchAction["kind"]): void {
-  const cliLook = findCommand(cli);
-  switch (cliLook.kind) {
-    case "found":
-      return;
-    case "unproven":
-      printWrappedToStderr(
-        `could not check whether '${cli}' is installed (the command probe failed to run); launching anyway`,
-      );
-      return;
-    case "absent":
-      throw new Error(
-        `'${cli}' is not installed. Run 'agent shell --clis' to install the agent CLIs.`,
-      );
-    default:
-      assertNever(cliLook);
+/** Before anything is prepared, real or dry run alike; the path found is the one spawned. */
+function requireCli(cli: LaunchAction["kind"]): string {
+  const look = resolveAgentCli(cli);
+  if (look.kind === "absent") {
+    throw new Error(
+      `'${cli}' is not installed. Run 'agent shell --clis' to install the agent CLIs.`,
+    );
   }
+  if (look.kind === "npm-shim") throw new Error(look.note);
+  return look.path;
 }
 
 /** process.exitCode, never process.exit, so pending stderr writes flush. A dry run prepares the
  *  launch (the wiring it lands is the plan) and says what it would spawn instead of spawning it. */
 export async function runLaunch(action: LaunchAction, dryRun = false): Promise<void> {
   // The one preparation (the refusal, the wiring, the plan); only what happens to the plan differs.
-  const prepare = async (): Promise<LaunchPlan | null> => {
-    rejectMissingCli(action.kind);
+  const prepare = async (): Promise<{ plan: LaunchPlan; file: string } | null> => {
+    const file = requireCli(action.kind);
     const plan = await prepareLaunch(action);
-    if (plan === null) process.exitCode = 1;
-    return plan;
+    if (plan === null) {
+      process.exitCode = 1;
+      return null;
+    }
+    return { plan, file };
   };
   if (dryRun) {
     await runDryRun(async () => {
-      const plan = await prepare();
-      if (plan === null) return;
+      const prepared = await prepare();
+      if (prepared === null) return;
+      const { plan } = prepared;
       printWrappedToStderr(
         `Would launch ${[plan.command, ...plan.args].join(" ")} with ${
           Object.keys(plan.env).length
@@ -304,9 +295,9 @@ export async function runLaunch(action: LaunchAction, dryRun = false): Promise<v
   // ignores the same signal.
   deferWriteReports();
   try {
-    const plan = await prepare();
-    if (plan === null) return;
-    process.exitCode = spawnAgentCli(plan);
+    const prepared = await prepare();
+    if (prepared === null) return;
+    process.exitCode = spawnAgentCli(prepared.plan, prepared.file);
   } finally {
     flushWriteReports();
   }

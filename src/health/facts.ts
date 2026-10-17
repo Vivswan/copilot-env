@@ -209,14 +209,7 @@ export interface ShellFacts {
 export interface CliFacts {
   command: string;
   name: string;
-  /** Failure arm kept (see CommandLook): the census renders a "not installed" verdict, so an
-   *  unproven look must arrive marked. */
   look: CommandLook;
-}
-
-interface ToolFacts {
-  node: CommandLook;
-  npm: CommandLook;
 }
 
 /** How far a Direct gh probe got before it missed: no resolved gh (absent from PATH, or a command
@@ -229,8 +222,8 @@ type GhProbeMiss = { command: null } | { command: string; ghDetail: string };
  *    found     -> authenticated; `ghCommand` is the gh call that served the token (the pinned
  *                 `--user` form for a pin, the plain host-scoped call for gh's active account)
  *    absent    -> a proven miss: no gh on PATH, or gh served no token
- *    unproven  -> the probe never RAN to completion (the command probe failed, or `gh auth token`
- *                 spawned but errored / was timeout-killed): renderers say "could not check",
+ *    unproven  -> `gh auth token` spawned but never RAN to completion (it errored or was
+ *                 timeout-killed): renderers say "could not check",
  *                 never a confident "not found"/"not authenticated" or `gh auth login` advice */
 export type CodexDirectAuthFacts = {
   /** The pinned gh account the probe asked about (`gh auth token --user`). Absent/null = gh's
@@ -244,17 +237,11 @@ export type CodexDirectAuthFacts = {
 } & (
   | { kind: "found"; command: string; ghCommand: string }
   | ({ kind: "absent" } & GhProbeMiss)
-  | ({ kind: "unproven" } & GhProbeMiss)
+  | { kind: "unproven"; command: string; ghDetail: string }
 );
 
-/** Why a live probe did not run: the CLI is proven not installed (not a failure), or the look
- *  for it never completed (a could-not-check, never a proven absence). */
-export type LiveSkipReason = "not-installed" | "look-failed";
-
-/** A probe that RAN names the resolved CLI and a failure carries the captured reason, so a
- *  skipped-yet-ok result is unrepresentable. */
 export type LiveProbeFacts =
-  | { kind: "skipped"; reason: LiveSkipReason }
+  | { kind: "skipped"; reason: "not-installed" }
   | { kind: "ok"; cli: string }
   | { kind: "failed"; cli: string; detail: string };
 
@@ -331,7 +318,6 @@ export interface HealthFacts {
   proxy?: ProxyFacts;
   shell?: ShellFacts;
   clis?: CliFacts[];
-  tools?: ToolFacts;
   /** The run's credential line: the default's, or the narrowed profile's own slot. */
   auth?: AuthFacts;
   codex?: CodexFacts;

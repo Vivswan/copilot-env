@@ -4,11 +4,11 @@
 import { Buffer } from "node:buffer";
 import { spawnSync } from "node:child_process";
 import * as path from "node:path";
+import { resolveAgentCli } from "../agents/cli_install.ts";
 import type { CodexHomePrefs } from "../copilot_api/config_registry.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { CopilotEnvRunState } from "../copilot_api/run_state.ts";
 import { colorEnabled, paintFor } from "../utils/ansi.ts";
-import { resolveCommand } from "../utils/command.ts";
 import { errMessage } from "../utils/error.ts";
 import { isDir, isEnoentOrNotdir, isFile } from "../utils/fs.ts";
 import * as fs from "../utils/fs_facade.ts";
@@ -416,17 +416,17 @@ function primeSharedCodexHomeIfMissing(sharedRoot: string): void {
   } catch (e) {
     if (!isEnoentOrNotdir(e)) return;
   }
-  // resolveCommand's nvm fallback also finds an nvm-only codex, and spawning the RESOLVED path
-  // keeps the prime working even though this process never sourced nvm.sh.
-  const codexBin = resolveCommand("codex");
-  if (codexBin === null) return;
+  // No codex, or an npm shim this build cannot spawn (the launch refuses it by name): the prime
+  // is a convenience, so either skips it.
+  const codex = resolveAgentCli("codex");
+  if (codex.kind !== "found") return;
 
   // Codex itself creates the shared home before we seed and symlink into it. The prime is a
   // convenience, never a build failure, so spawnSync's result (a nonzero exit, ENOENT, and the
   // timeout land there; none throw) is ignored on purpose.
   //   CODEX_HOME set explicitly -> an inherited value (our own farm export) would send codex's
   //                                writes elsewhere; the scan below covers exactly the home given
-  spawnSync(codexBin, ["exec"], {
+  spawnSync(codex.path, ["exec"], {
     input: "hi\n",
     stdio: ["pipe", "ignore", "ignore"],
     timeout: 10_000,

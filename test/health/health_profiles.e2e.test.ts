@@ -1,5 +1,4 @@
 import { existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
-
 import { join } from "node:path";
 import { BASE_URL_ENV, proxyHelperCommand } from "../../src/claude/config.ts";
 import { configureCodexConfig } from "../../src/codex/config.ts";
@@ -35,6 +34,7 @@ import { gatherFacts } from "../../src/health/probe.ts";
 import { type ProbeDeps, runLiveCli } from "../../src/health/probe_deps.ts";
 import type { CheckId, CheckResult, CheckStatus } from "../../src/health/types.ts";
 import { must } from "../../src/utils/assert.ts";
+import type { CommandLook } from "../../src/utils/command.ts";
 import { dryRunChanges } from "../helpers/dry_run.ts";
 import { envSnapshot, isolateAgentHomes, isolateProxyHome } from "../helpers/env.ts";
 import { writeRunState } from "../helpers/fixtures.ts";
@@ -754,30 +754,36 @@ test("a --live exit 0 counts only when the stream carries the model's answer", a
     expect(launch.answered(stdout)).toBe(answered);
   }
   // The mechanism: runLiveCli turns an exit 0 without an answer into a failed probe that shows why.
-  // The stream rides an env var: on Windows the argv crosses cmd.exe, where its quotes would break.
-  const hookStopped = await runLiveCli({
-    ...claudeLiveLaunch("/h", null),
-    cli: process.execPath,
-    args: ["-e", "console.log(process.env.HOOK_STOP_STREAM)"],
-    env: { HOOK_STOP_STREAM: CLAUDE_HOOK_STOP },
-  });
+  // The stream rides an env var, so no argv quoting is involved.
+  // The look seam answers this runtime for `claude`, so the launch's own name stays typed.
+  const asThisRuntime = (): CommandLook => ({ kind: "found", path: process.execPath });
+  const hookStopped = await runLiveCli(
+    {
+      ...claudeLiveLaunch("/h", null),
+      args: ["-e", "console.log(process.env.HOOK_STOP_STREAM)"],
+      env: { HOOK_STOP_STREAM: CLAUDE_HOOK_STOP },
+    },
+    asThisRuntime,
+  );
   expect(hookStopped.kind).toBe("failed");
   expect(hookStopped.kind === "failed" ? hookStopped.detail : "").toContain(
     'exit 0 without a model answer\n{"type":"system","subtype":"init"}',
   );
   // A failed exit whose stream ends in claude's result event reports the event's `result` text,
   // not the counters the one-line event opens with.
-  const apiError = await runLiveCli({
-    ...claudeLiveLaunch("/h", null),
-    cli: process.execPath,
-    args: ["-e", "console.log(process.env.API_ERROR_STREAM); process.exit(1)"],
-    env: {
-      API_ERROR_STREAM:
-        '{"type":"system","subtype":"init"}\n' +
-        '{"duration_api_ms":0,"total_cost_usd":0,"usage":{"input_tokens":0},"is_error":true,' +
-        '"api_error_status":400,"result":"API Error: 400 model x does not support reasoning effort","type":"result"}',
+  const apiError = await runLiveCli(
+    {
+      ...claudeLiveLaunch("/h", null),
+      args: ["-e", "console.log(process.env.API_ERROR_STREAM); process.exit(1)"],
+      env: {
+        API_ERROR_STREAM:
+          '{"type":"system","subtype":"init"}\n' +
+          '{"duration_api_ms":0,"total_cost_usd":0,"usage":{"input_tokens":0},"is_error":true,' +
+          '"api_error_status":400,"result":"API Error: 400 model x does not support reasoning effort","type":"result"}',
+      },
     },
-  });
+    asThisRuntime,
+  );
   expect(apiError.kind === "failed" ? apiError.detail : "").toBe(
     '{"type":"system","subtype":"init"}\nAPI Error: 400 model x does not support reasoning effort',
   );
@@ -792,13 +798,13 @@ test("a named Claude live probe scrubs ANTHROPIC_BASE_URL; the default scrubs no
   try {
     const probe = (omitEnv: readonly string[]) => {
       const launch: LiveLaunch = {
-        cli: process.execPath,
+        cli: "claude",
         args: ["-e", "process.exit(process.env.ANTHROPIC_BASE_URL ? 1 : 0)"],
         env: { CLAUDE_CONFIG_DIR: tempDir("copilot-health-profiles-") },
         omitEnv,
         answered: () => true,
       };
-      return runLiveCli(launch);
+      return runLiveCli(launch, () => ({ kind: "found", path: process.execPath }));
     };
     expect((await probe(claudeLiveOmitEnv(P))).kind).toBe("ok");
     expect((await probe(claudeLiveOmitEnv(null))).kind).toBe("failed");
@@ -912,7 +918,6 @@ test("a named profile narrows gathering to its target and excludes account-wide 
     expect(facts.proxy).toBeUndefined();
     expect(facts.shell).toBeUndefined();
     expect(facts.clis).toBeUndefined();
-    expect(facts.tools).toBeUndefined();
     expect(facts.codexHost).toBeUndefined();
     expect(facts.autoupdate).toBeUndefined();
     // The credential line is the profile's own slot, never the default's.
@@ -940,7 +945,6 @@ test("a named profile narrows gathering to its target and excludes account-wide 
       "proxy.package",
       "setup.shell",
       "setup.launchers",
-      "setup.tool.node",
       "setup.codex-host",
       "setup.autoupdate",
     ]) {

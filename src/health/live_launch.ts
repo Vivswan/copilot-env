@@ -5,6 +5,7 @@
 //
 // The launcher also re-derives ANTHROPIC_BASE_URL / CODEX_HOME because its own wiring step may have
 // just moved a port; health wires nothing, so the shell's exports are the real values and stay.
+import type { CliCommand } from "../agents/cli_install.ts";
 import { PROBE_PROMPT } from "../agents/live_probe.ts";
 import { BASE_URL_ENV } from "../claude/config.ts";
 import { settingsPathFor } from "../claude/paths.ts";
@@ -14,7 +15,7 @@ import { isRecord, parseJsonRecord } from "../utils/json.ts";
 /** The launcher's LaunchPlan shape plus the success postcondition; tests pin the composition
  *  without spawning. */
 export interface LiveLaunch {
-  cli: string;
+  cli: CliCommand;
   args: string[];
   /** Layered over the parent env, which is otherwise inherited whole. */
   env: Record<string, string>;

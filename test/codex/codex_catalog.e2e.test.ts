@@ -14,7 +14,11 @@ import {
 } from "../../src/codex/catalog.ts";
 import { refreshCodexCatalogAndSync } from "../../src/codex/catalog_reference.ts";
 import { codexConfigPath } from "../../src/codex/paths.ts";
-import { CI_NO_LIVE_LOOKUPS_ENV, codexUserAgent } from "../../src/codex/user_agent.ts";
+import {
+  CI_NO_LIVE_LOOKUPS_ENV,
+  codexUserAgent,
+  resetCodexVersionMemo,
+} from "../../src/codex/user_agent.ts";
 import { runDryRun } from "../../src/commands/dry_run.ts";
 import { CopilotEnvConfig } from "../../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../../src/copilot_api/env_state.ts";
@@ -758,6 +762,32 @@ test("generateCodexModelCatalog fetches Copilot FIRST (cheap fail skips the code
   expect(codex.runs()).toEqual([]);
   expect(existsSync(new CopilotApiPaths().codexModelCatalogFile)).toBe(false);
 });
+
+// On Windows an npm install leaves a `codex.cmd` shim, which a direct spawn turns into a bare EINVAL.
+test.skipIf(process.platform !== "win32")(
+  "the bundled dump (Windows): an npm codex.cmd shim on PATH is never spawned; the catalog is not written and the warning says why",
+  async () => {
+    isolate();
+    const bin = join(dir, "bin");
+    mkdirSync(bin, { recursive: true });
+    const ran = join(dir, "ran.txt");
+    writeFileSync(join(bin, "codex.cmd"), `@echo off\r\necho ran > "${ran}"\r\n`);
+    process.env.PATH = `${bin};${process.env.PATH ?? ""}`;
+    delete process.env[CI_NO_LIVE_LOOKUPS_ENV];
+    resetCatalogProbeState();
+    resetCodexVersionMemo();
+    let written = true;
+    const narrated = await stderrOf(async () => {
+      written = await generate();
+    });
+    expect(written).toBe(false);
+    expect(narrated).toContain(
+      `codex model catalog not written: codex debug models --bundled did not run: ${join(bin, "codex.cmd")} is an npm-installed copy of codex this build cannot run`,
+    );
+    expect(existsSync(ran)).toBe(false);
+    expect(existsSync(new CopilotApiPaths().codexModelCatalogFile)).toBe(false);
+  },
+);
 
 test("a candidate the installed codex rejects is never written; an unverifiable one is", async () => {
   const codex = catalogFixture({ probe: "reject" });

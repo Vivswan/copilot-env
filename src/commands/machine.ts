@@ -165,16 +165,24 @@ export function registerMachineCommands(program: Command): void {
     .description(
       "Wire copilot-env into your shell: one block in your rc file or PowerShell $PROFILE " +
         "defines `agent` and, with `shell.launchers` on, cl / co / cx. " +
-        "--clis also installs or updates the agent CLIs.",
+        "--clis also installs or updates the agent CLIs through their vendors' installers and turns the launchers on.",
     )
-    .option("--clis", "Also install or update the claude, codex, copilot CLIs.")
+    .option(
+      "--clis",
+      "Also install or update the claude, codex, copilot CLIs through their vendors' installers, " +
+        "and turn the cl / co / cx launchers on (shell.launchers).",
+    )
     .option(
       "--cooldown [days]",
-      `With --clis: CLI releases at least N days old (bare: ${DEFAULT_CLI_COOLDOWN_DAYS}).`,
+      `With --clis: codex and copilot releases at least N days old (bare: ${DEFAULT_CLI_COOLDOWN_DAYS}); ` +
+        "a positive N puts claude on its stable channel (about a week behind latest); 0 means latest.",
       coerceDays,
     )
-    .option("--no-sudo", "With --clis: no sudo or system package managers.")
-    .option("--no-prereqs", "With --clis: check prerequisites and CLIs; install nothing.")
+    .option(
+      "--no-sudo",
+      "With --clis: no system package manager; on Windows that skips winget, the Copilot CLI's only installer.",
+    )
+    .option("--no-prereqs", "With --clis: report which CLIs are installed; install nothing.")
     .option("--all-hosts", "Windows: wire the CurrentUserAllHosts profile.")
     .option("--remove", "Take the block out again (config keys untouched).")
     .option("--dry-run", DRY_RUN_HELP)

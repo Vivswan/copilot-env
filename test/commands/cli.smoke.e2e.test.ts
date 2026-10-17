@@ -845,8 +845,6 @@ test("profile health narrows the run to the named profile and excludes account-w
     "proxy.package",
     "setup.shell",
     "setup.launchers",
-    "setup.tool.node",
-    "setup.tool.npm",
     "setup.codex-host",
     "setup.autoupdate",
   ]) {

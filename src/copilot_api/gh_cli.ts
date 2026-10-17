@@ -1,7 +1,6 @@
 // The gh-token env vars and the ONE recipe for probing gh's login, kept apart from credential.ts so the
 // CLI help strings and the Direct probes name the same contract without importing the live-probe machinery.
-import { dirname } from "node:path";
-import { childEnvWithPath, cliSpawn } from "../utils/command.ts";
+import { childEnv } from "../utils/command.ts";
 
 /** Most specific first; reading a token from the environment keeps the secret out of argv and shell history. */
 const GH_TOKEN_ENV_VARS = ["COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"] as const;
@@ -43,33 +42,31 @@ const GH_AUTH_TIMEOUT_MS = 5000;
  *  `gh auth token` would follow a GH_HOST override to another host's credential. */
 export const GH_COPILOT_HOST = "github.com";
 
-/** A GitHub login: 1-39 alphanumerics and dashes, plus underscore for EMU accounts ("user_shortcode").
- *  Doubles as the spawn-safety gate for the pinned `--user` argument: no cmd.exe metacharacter fits it,
- *  so the Windows cliSpawn hop can never rewrite a pin into a different account. */
+/** A GitHub login: 1-39 alphanumerics and dashes, plus underscore for EMU accounts ("user_shortcode"). */
 export const GH_LOGIN_RE = /^[A-Za-z0-9_-]{1,39}$/;
 
 /**
  * One recipe for the token capture and the health probe, so the command and its timeout never
  * drift.
  *
- *   gh's RESOLVED path, its bin dir on PATH  -> an nvm-only or node-shim gh runs
- *   a Windows .cmd/.exe shim                 -> cliSpawn routes it through cmd.exe
- *   stdio                                    -> the caller's: capture the token, or keep it out of process memory
+ *   gh's RESOLVED path  -> the binary the look found, spawned directly
+ *   stdio               -> the caller's: capture the token, or keep it out of process memory
  */
 export function ghAuthTokenSpawnSpec(ghPath: string, ghUser: string | null = null): GhSpawnSpec {
-  const s = cliSpawn(
-    ghPath,
-    ghUser === null
-      ? ["auth", "token", "--hostname", GH_COPILOT_HOST]
-      : ["auth", "token", "--user", ghUser, "--hostname", GH_COPILOT_HOST],
-  );
-  return { ...s, timeout: GH_AUTH_TIMEOUT_MS, env: childEnvWithPath([dirname(ghPath)]) };
+  return {
+    file: ghPath,
+    args:
+      ghUser === null
+        ? ["auth", "token", "--hostname", GH_COPILOT_HOST]
+        : ["auth", "token", "--user", ghUser, "--hostname", GH_COPILOT_HOST],
+    timeout: GH_AUTH_TIMEOUT_MS,
+    env: childEnv(),
+  };
 }
 
 export interface GhSpawnSpec {
   file: string;
   args: string[];
-  shell: boolean;
   timeout: number;
   env: Record<string, string>;
 }
@@ -90,12 +87,12 @@ export interface GhSpawnResult {
  *   older gh wrote status to stderr  -> callers capture BOTH streams
  */
 export function ghAuthStatusSpawnSpec(ghPath: string): GhSpawnSpec {
-  const s = cliSpawn(ghPath, ["auth", "status", "--hostname", GH_COPILOT_HOST]);
   const colorForcers = ["CLICOLOR", "CLICOLOR_FORCE", "FORCE_COLOR", "GH_FORCE_TTY"];
   return {
-    ...s,
+    file: ghPath,
+    args: ["auth", "status", "--hostname", GH_COPILOT_HOST],
     timeout: GH_AUTH_TIMEOUT_MS,
-    env: childEnvWithPath([dirname(ghPath)], {
+    env: childEnv({
       extra: { NO_COLOR: "1" },
       omit: (upper) => colorForcers.includes(upper),
     }),

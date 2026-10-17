@@ -264,8 +264,8 @@ test("a gh-cli account pin round-trips; an absent/blank stored pin reads as auto
 
   // A pre-pin store (no ghUser key), a hand-mangled blank pin, and a pin outside
   // a GitHub login's alphabet all read auto: the pin becomes `gh auth token
-  // --user` argv (through cmd.exe on Windows), so a shell metacharacter must be
-  // unrepresentable in the parsed state.
+  // --user` argv, so a shell metacharacter must be unrepresentable in the parsed
+  // state.
   seedRawState({ profiles: { default: { authProvider: "gh-cli" } } });
   expect(state.readCredential(null)).toEqual({ kind: "gh-cli", ghUser: null });
   seedRawState({ profiles: { default: { authProvider: "gh-cli", ghUser: "   " } } });

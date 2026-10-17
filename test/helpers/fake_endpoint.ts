@@ -16,7 +16,7 @@ import {
 } from "../../src/claude/config.ts";
 import { settingsPathFor } from "../../src/claude/paths.ts";
 import { directClientHeaders } from "../../src/copilot_api/integration_identity.ts";
-import { childPathPrepending, verbatimCliSpawn } from "../../src/utils/command.ts";
+import { resolveCommand } from "../../src/utils/command.ts";
 import {
   type FakeModelEndpoint,
   hermeticEnv,
@@ -152,16 +152,11 @@ export function writeCodexFakeConfig(
 }
 
 /** The COMPLETE env a CLI child gets (the spawn clears the inherited one): the hermetic
- *  allowlist (hermeticEnv), PATH led by the CLI's own bin dir (an npm shim needs node beside it),
- *  a scratch HOME so nothing on the machine is read or written, the CLIs' quiet switches, and
- *  the caller's `extra`. */
-function fakeCliEnv(
-  home: string,
-  binDir: string | null,
-  extra: Record<string, string>,
-): Record<string, string> {
+ *  allowlist (hermeticEnv), the parent's PATH, a scratch HOME so nothing on the machine is read
+ *  or written, the CLIs' quiet switches, and the caller's `extra`. */
+function fakeCliEnv(home: string, extra: Record<string, string>): Record<string, string> {
   return hermeticEnv({
-    PATH: childPathPrepending([binDir]),
+    PATH: process.env.PATH ?? "",
     HOME: home,
     USERPROFILE: home,
     NO_PROXY: "127.0.0.1,localhost",
@@ -182,17 +177,13 @@ interface CliRun {
   timedOut: boolean;
 }
 
-/** After the deadline kill, how long the output pipes get to close. An npm shim is a launcher
- *  whose native child (codex) may outlive it holding the pipes; the wait is bounded so a wedged
- *  CLI ends the test instead of the test waiting on it. */
+/** After the deadline kill, how long the output pipes get to close. A CLI's own child may
+ *  outlive it holding the pipes; the wait is bounded so a wedged CLI ends the test instead of
+ *  the test waiting on it. */
 const KILL_GRACE_MS = 5_000;
 
-/**
- * Run an installed CLI to completion under the hermetic env, cwd `home`. Async on purpose: the
- * fake's front serves from THIS process, so a blocking spawn would starve the very requests the
- * child is making. The spawn recipe is verbatimCliSpawn's (an npm `.ps1` shim on Windows runs
- * through powershell without cmd.exe; a batch-only shim takes the cmd.exe hop).
- */
+/** Async on purpose: the fake's front serves from THIS process, so a blocking spawn would starve
+ *  the very requests the child is making. */
 export async function runFakeCli(
   cli: "claude" | "codex",
   args: string[],
@@ -200,12 +191,10 @@ export async function runFakeCli(
   extra: Record<string, string>,
   timeoutMs: number,
 ): Promise<CliRun> {
-  const spec = verbatimCliSpawn(cli, args);
-  const child = spawnChild(spec.shell ? "cmd.exe" : spec.file, {
-    args: spec.shell ? ["/d", "/s", "/c", [spec.file, ...spec.args].join(" ")] : spec.args,
-    windowsVerbatimArguments: spec.shell,
+  const child = spawnChild(resolveCommand(cli) ?? cli, {
+    args,
     cwd: home,
-    env: fakeCliEnv(home, spec.binDir, extra),
+    env: fakeCliEnv(home, extra),
     clearEnv: true,
     stdin: "ignore",
     stdout: "pipe",

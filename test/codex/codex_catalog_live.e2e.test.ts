@@ -2,7 +2,7 @@
 // token and no Copilot call: the CLI's bundled dump plus a fixture /models body, under
 // scratch homes only.
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { stringify } from "smol-toml";
 import {
   type CopilotCatalogModel,
@@ -12,7 +12,7 @@ import {
 import { CI_NO_LIVE_LOOKUPS_ENV } from "../../src/codex/user_agent.ts";
 import { CopilotEnvConfig } from "../../src/copilot_api/env_config.ts";
 import { CopilotApiPaths } from "../../src/copilot_api/paths.ts";
-import { childEnvWithPath, cliSpawn, resolveCommand } from "../../src/utils/command.ts";
+import { childEnv, resolveCommand } from "../../src/utils/command.ts";
 import { PROJECT_ROOT } from "../../src/utils/root.ts";
 import { envSnapshot, isolateAgentHomes } from "../helpers/env.ts";
 import { runSync } from "../helpers/run.ts";
@@ -60,15 +60,10 @@ function fixtureBodyFor(bundledSlugs: Set<string>): { data: Model[]; overlaid: s
 
 /** A spawn failure throws (runSync); a killed child reads as a null exit code. */
 function codexDebugModels(codexPath: string, home: string, args: string[] = []) {
-  // The shared CLI recipe: cmd.exe for a Windows .cmd shim, the CLI's own bin dir on
-  // PATH for an nvm-resolved shim (resolveCommand returns a bare name on Windows).
-  const s = cliSpawn(codexPath, ["debug", "models", ...args]);
-  const cliDir = dirname(codexPath);
-  return runSync(s.file, s.args, {
+  return runSync(codexPath, ["debug", "models", ...args], {
     cwd: home,
-    env: childEnvWithPath([cliDir === "." ? null : cliDir], { extra: { CODEX_HOME: home } }),
+    env: childEnv({ extra: { CODEX_HOME: home } }),
     timeoutMs: 60_000,
-    shell: s.shell,
   });
 }
 

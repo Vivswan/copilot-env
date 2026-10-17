@@ -35,7 +35,7 @@
       "usage",
       "utils"
     ],
-    "agents": ["claude", "codex", "copilot_api", "utils"],
+    "agents": ["claude", "codex", "copilot_api", "install", "utils"],
     "claude": ["agents", "codex", "copilot_api", "mcp", "utils"],
     "codex": ["agents", "copilot_api", "utils"],
     "copilot_api": ["proxy_float", "utils"],

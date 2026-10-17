@@ -384,20 +384,6 @@ test("checkCodex/checkClaude direct: an UNPROVEN gh probe says could-not-check, 
     "gh auth: could not check gh authentication " +
       "(`gh auth token` did not complete (ETIMEDOUT); AUTO - currently account octocat)",
   );
-  // The gh LOOKUP itself failed to run: not a proven "GitHub CLI not found".
-  const lookupUnproven = checkCodex(
-    {
-      ...codexDirect,
-      directAuth: { kind: "unproven", command: null },
-    },
-    null,
-  );
-  expect(lookupUnproven.status).toBe("warn");
-  expect(lookupUnproven.detail).toContain(
-    "gh auth: could not check for the GitHub CLI (the command probe failed to run)",
-  );
-  expect(lookupUnproven.detail).not.toContain("not found");
-  expect(lookupUnproven.fix).toBe("re-run `agent health` (the gh check did not run to completion)");
   // Same shared verdict on the Claude side.
   const claudeUnproven = checkClaude({ ...CLAUDE_DIRECT, directAuth: UNPROVEN_TOKEN_CALL }, null);
   expect(claudeUnproven.status).toBe("warn");
@@ -467,10 +453,6 @@ test("health --json: the directAuth row keeps its flat bytes (authenticated, an 
       json:
         '{"command":"/bin/gh","authenticated":false,"unproven":true,"ghUser":"work-bot",' +
         '"ghDetail":"`gh auth token --user work-bot` did not complete (ETIMEDOUT)"}',
-    },
-    {
-      directAuth: { kind: "unproven", command: null },
-      json: '{"command":null,"authenticated":false,"unproven":true}',
     },
   ];
   for (const row of rows) {
@@ -852,21 +834,12 @@ test("checkAgentLive: the probe outcome decides status, fix, detail, and value",
       detail: "401 Unauthorized",
       notDetail: "did not answer",
     },
-    // A proven absence keeps the plain wording, unmarked; a skip off a FAILED look says
-    // could-not-check, never "not installed".
     {
       agent: "codex",
       outcome: { kind: "skipped", reason: "not-installed" },
       status: "ok",
       exactDetail: "skipped (codex CLI not installed)",
       value: { kind: "skipped" },
-    },
-    {
-      agent: "codex",
-      outcome: { kind: "skipped", reason: "look-failed" },
-      status: "ok",
-      exactDetail: "skipped (could not check for the codex CLI - the command probe failed to run)",
-      value: { kind: "skipped", lookFailed: true },
     },
     { agent: "claude", outcome: { kind: "ok", cli: "/bin/claude" }, status: "ok" },
     {
@@ -883,12 +856,6 @@ test("checkAgentLive: the probe outcome decides status, fix, detail, and value",
       notDetail: "did not answer",
     },
     { agent: "claude", outcome: { kind: "skipped", reason: "not-installed" }, status: "ok" },
-    {
-      agent: "claude",
-      outcome: { kind: "skipped", reason: "look-failed" },
-      status: "ok",
-      exactDetail: "skipped (could not check for the claude CLI - the command probe failed to run)",
-    },
   ];
   for (const row of rows) {
     const name = `${row.agent} ${JSON.stringify(row.outcome)}`;

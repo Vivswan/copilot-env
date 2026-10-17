@@ -115,6 +115,15 @@ export function reportWrite(kind: WriteKind, path: string, detail?: string): voi
   emit(`${kind} -> ${path}${detail === undefined ? "" : ` (${detail})`}`);
 }
 
+/** A write to a value that is no file (the Windows User PATH, a registry value an installer
+ *  edits), on the same ledger: no home can contain it, so only the per-value dedup applies and
+ *  it always reads as rewritten. */
+export function reportValueWrite(label: string, detail: string): void {
+  if (REPORTED.has(label)) return;
+  REPORTED.set(label, new Set(["rewritten"]));
+  emit(`rewritten -> ${label} (${detail})`);
+}
+
 /** A path that moved away is a fresh epoch at its old name, and every recorded descendant goes
  *  with it. */
 export function forgetReported(path: string): void {

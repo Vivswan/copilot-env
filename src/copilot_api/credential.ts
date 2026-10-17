@@ -2,7 +2,6 @@
 // so the agent config writers, health, and the daemon never import the `commands/` layer; the
 // interactive surface (provider prompt, device flow, `runAuth`) is src/commands/auth.ts on top.
 import { spawn, spawnSync } from "node:child_process";
-import { assertNever } from "../utils/assert.ts";
 import { findCommand } from "../utils/command.ts";
 import {
   type AuthProvider,
@@ -31,8 +30,8 @@ interface CredentialStatus {
   resolves: boolean;
 }
 
-/** `unproven` means the look never RAN to completion (the gh probe or the spawn errored or was
- *  killed), so a consumer must say "could not check", never "gh is not authenticated". `absent` is
+/** `unproven` means the look never RAN to completion (the gh spawn errored or was killed), so a
+ *  consumer must say "could not check", never "gh is not authenticated". `absent` is
  *  proven: gh is missing, or it RAN and produced no token. Each miss carries what the spawn or the
  *  `gh` probe reported, and a found token names the gh call that served it, as a report names it. */
 export type GhTokenLook =
@@ -72,12 +71,10 @@ export function ghTokenLookFromSpawn(
 }
 
 function runGhSpec(s: GhSpawnSpec): GhSpawnResult {
-  // nosemgrep: javascript.lang.security.audit.spawn-shell-true.spawn-shell-true -- Windows-only, for .cmd shims; the spec quotes args
   return spawnSync(s.file, s.args, {
     encoding: "utf8",
     timeout: s.timeout,
     windowsHide: true,
-    shell: s.shell,
     env: s.env,
   });
 }
@@ -94,12 +91,10 @@ const PIPE_HANDOVER_GRACE_MS = 100;
  */
 export function runGhSpecAsync(s: GhSpawnSpec): Promise<GhSpawnResult> {
   return new Promise((resolve) => {
-    // nosemgrep: javascript.lang.security.audit.spawn-shell-true.spawn-shell-true -- Windows-only, for .cmd shims; the spec quotes args
     const child = spawn(s.file, s.args, {
       stdio: ["ignore", "pipe", "pipe"],
       timeout: s.timeout,
       windowsHide: true,
-      shell: s.shell,
       env: s.env,
     });
     let stdout = "";
@@ -166,16 +161,8 @@ export async function ghAuthTokenLookAsync(
 /** `ghUser` pins the call to that gh account; null follows gh's active account. */
 export function ghAuthTokenLook(ghUser: string | null = null): GhTokenLook {
   const gh = findCommand("gh");
-  switch (gh.kind) {
-    case "found":
-      return ghAuthTokenLookVia(ghUser, gh.path);
-    case "unproven":
-      return { kind: "unproven", detail: "looking for `gh` on PATH failed" };
-    case "absent":
-      return { kind: "absent", detail: "`gh` is not on this process's PATH" };
-    default:
-      return assertNever(gh);
-  }
+  if (gh.kind === "absent") return { kind: "absent", detail: "`gh` is not on this process's PATH" };
+  return ghAuthTokenLookVia(ghUser, gh.path);
 }
 
 /**
@@ -206,16 +193,8 @@ export function ghAccountsLookFromSpawn(result: GhSpawnResult): GhAccountsLook {
 
 export function ghAccountsLook(): GhAccountsLook {
   const gh = findCommand("gh");
-  switch (gh.kind) {
-    case "found":
-      return ghAccountsLookFromSpawn(runGhSpec(ghAuthStatusSpawnSpec(gh.path)));
-    case "unproven":
-      return { kind: "unproven" };
-    case "absent":
-      return { kind: "listed", accounts: [] };
-    default:
-      return assertNever(gh);
-  }
+  if (gh.kind === "absent") return { kind: "listed", accounts: [] };
+  return ghAccountsLookFromSpawn(runGhSpec(ghAuthStatusSpawnSpec(gh.path)));
 }
 
 /**

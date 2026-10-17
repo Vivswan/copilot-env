@@ -22,8 +22,10 @@ const REGISTRY_FILE = join(SRC, "copilot_api", "config_registry.ts");
 const NOT_KEYS = new Set([
   "daemon.lock",
   "update.lock",
+  "claude.ai",
   "claude.json",
   "claude.exe",
+  "codex.exe",
   "claude.mcp",
   "claude.live",
   "codex.live",

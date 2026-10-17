@@ -5,7 +5,7 @@ import { isEnoentOrNotdir } from "../utils/fs.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { dottedKey, isRecord, stableStringify } from "../utils/json.ts";
 import { taggedLogger } from "../utils/logger.ts";
-import { scannable } from "../utils/message.ts";
+import { ScannableError } from "../utils/message.ts";
 import { CopilotApiPaths } from "./paths.ts";
 import type { Profile } from "./profile.ts";
 
@@ -172,17 +172,15 @@ export class CopilotApiConfig {
     if (read.kind === "unparseable") {
       // A corrupt-but-readable file is NOT a reset candidate: a hand-edited store holds salvageable
       // content. The reset stays an explicit user act: fix or delete the file.
-      throw new Error(
-        scannable({
-          headline: `${paintFor(colorEnabled()).cyan(this.path)} is not valid JSON.`,
-          evidence: [read.error, "overwrite refused", "a rewrite discarding its remaining content"],
-          lead: "Pick one:",
-          actions: [
-            ["fix the file", "keeps what it still holds"],
-            ["delete the file", "resets the store"],
-          ],
-        }),
-      );
+      throw new ScannableError({
+        headline: `${paintFor(colorEnabled()).cyan(this.path)} is not valid JSON.`,
+        evidence: [read.error, "overwrite refused", "a rewrite discarding its remaining content"],
+        lead: "Pick one:",
+        actions: [
+          ["fix the file", "keeps what it still holds"],
+          ["delete the file", "resets the store"],
+        ],
+      });
     }
     return read.data;
   }

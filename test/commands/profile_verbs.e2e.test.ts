@@ -5,8 +5,10 @@
 // homes, and the verbs are reserved names, refused at the CLI.
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
+import stringWidth from "string-width";
 import { changedPaths, plannedPaths } from "../helpers/dry_run.ts";
 import { freePort } from "../helpers/net.ts";
+import { runCli } from "../helpers/run.ts";
 import {
   expectIdentical,
   observe,
@@ -460,6 +462,28 @@ test("`agent sync` exits 1 when a named profile's re-render fails: a foreign set
   expect(existsSync(join(scratch.home, ".claude", "settings-work.json"))).toBe(true);
   // Six cold CLI spawns; generous headroom for loaded Windows CI runners.
 }, 180_000);
+
+// The specimen: at a 20-column stderr this command printed the refusal's recovery command as
+// "agent profile" over "<other-name> add", the wiring collector having joined the Claude writer's
+// thrown message into one string under its own sentence.
+test("`agent profile <name> sync --claude` on a foreign settings-<name>.json lays the refusal out at stderr's width: at 20 columns only its command rows run wider, each one line", () => {
+  const scratch = scratchHome();
+  seedProxyProfiles(scratch);
+  const foreign = JSON.stringify({ apiKeyHelper: "/opt/x/helper.sh" });
+  writeFileSync(join(scratch.home, ".claude", "settings-work.json"), foreign);
+  const sync = runCli(["profile", "work", "sync", "--claude"], {
+    env: { ...scratch.env, COLUMNS: "20" },
+  });
+  expect(sync.exitCode).toBe(1);
+  const lines = sync.stderr.split("\n");
+  expect(lines.filter((line) => stringWidth(line) > 20)).toEqual([
+    "    agent profile <other-name> add",
+    "    remove the file first",
+  ]);
+  expect(sync.stderr.replaceAll(/\s+/g, " ")).toContain("could not wire profile 'work':");
+  expect(readFileSync(join(scratch.home, ".claude", "settings-work.json"), "utf8")).toBe(foreign);
+  // Five cold CLI spawns; generous headroom for loaded Windows CI runners.
+}, 150_000);
 
 test("set identity: an unknown named profile is refused like every other key, and --dry-run plans the pin without writing", () => {
   const scratch = scratchHome();

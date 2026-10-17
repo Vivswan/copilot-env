@@ -13,10 +13,10 @@ import {
 } from "../copilot_api/paths.ts";
 import { isValidProfileName } from "../copilot_api/profile.ts";
 import { must } from "../utils/assert.ts";
-import { errMessage } from "../utils/error.ts";
 import { isEnoentOrNotdir } from "../utils/fs.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { isRecord } from "../utils/json.ts";
+import { caught } from "../utils/message.ts";
 import { type DayKey, dayKeyIn } from "../utils/time.ts";
 import { canonicalModelName } from "./pricing.ts";
 
@@ -352,7 +352,7 @@ export function readUsageRequests(dbPaths: string[], sinceMs?: number): UsageReq
             .flatMap((raw) => parseUsageRow(raw) ?? []),
       );
     } catch (e) {
-      consola.warn(`could not read ${path} (${errMessage(e)}).`);
+      consola.warn(caught(e, (message) => `could not read ${path} (${message}).`));
       continue;
     }
     // One push per row: a spread of a whole DB's rows is a call with that many arguments.

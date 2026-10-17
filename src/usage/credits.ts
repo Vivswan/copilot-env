@@ -8,8 +8,8 @@ import { Credential } from "../copilot_api/credential.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { COPILOT_USER_URL } from "../copilot_api/integration_identity.ts";
 import { blue, cyan, green, red } from "../utils/ansi.ts";
-import { errMessage } from "../utils/error.ts";
 import { isRecord } from "../utils/json.ts";
+import { rethrown } from "../utils/message.ts";
 import { MILLISECONDS_PER_DAY as DAY_MS } from "../utils/time.ts";
 import { COPILOT_ENV_USER_AGENT } from "../utils/user_agent.ts";
 
@@ -88,7 +88,7 @@ export function resolveCreditsTarget(
   try {
     return parse(explicit.raw) as number;
   } catch (e) {
-    throw new Error(`${explicit.source}: ${errMessage(e)}`);
+    throw rethrown(e, (message) => `${explicit.source}: ${message}`);
   }
 }
 

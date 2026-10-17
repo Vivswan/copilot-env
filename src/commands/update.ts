@@ -10,7 +10,7 @@ import { AutoupdateState, effectiveUpdateCooldownDays } from "../autoupdate/stat
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { type Release, resolveTarget } from "../install/resolve-release.ts";
 import { assertNever } from "../utils/assert.ts";
-import { scannable } from "../utils/message.ts";
+import { type ScannableMessage, scannable } from "../utils/message.ts";
 import { isProtectedRoot } from "../utils/root.ts";
 import { isUpToDate, stripV } from "../utils/semver.ts";
 import { assertNonNegativeDays } from "../utils/time.ts";
@@ -117,7 +117,11 @@ function runAutoStatus(config: CopilotEnvConfig): void {
 }
 
 /** The dry run's message: the steps, then the migrations' own preview as the command to run. */
-export function updatePreviewMessage(current: string, tag: string, provenance: boolean): string {
+export function updatePreviewMessage(
+  current: string,
+  tag: string,
+  provenance: boolean,
+): ScannableMessage {
   return scannable({
     headline: `Would download the ${tag} release for this platform.`,
     evidence: [

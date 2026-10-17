@@ -86,11 +86,11 @@ import {
 import { rootStateStore } from "../copilot_api/state_store.ts";
 import { shellTargetFiles } from "../shell/integration.ts";
 import { assertNever } from "../utils/assert.ts";
-import { errMessage } from "../utils/error.ts";
 import { isEnoentOrNotdir } from "../utils/fs.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { getSanitizedHostname } from "../utils/hostname.ts";
 import { isRecord, parseJsonRecord, sameStrings } from "../utils/json.ts";
+import { caught } from "../utils/message.ts";
 import {
   agentAuthGetArgs,
   agentLauncherCommand,
@@ -198,7 +198,9 @@ function moveCodexProfileTablesEverywhere(): void {
     try {
       moveCodexProfileTables(home);
     } catch (e) {
-      consola.warn(`  could not convert ${codexConfigPath(home)}: ${errMessage(e)}`);
+      consola.warn(
+        caught(e, (message) => `  could not convert ${codexConfigPath(home)}: ${message}`),
+      );
       failed.push(codexConfigPath(home));
     }
   }
@@ -449,7 +451,7 @@ function stripLaunchersRcBlocks(): void {
         detail: "copilot-env launchers block removed",
       });
     } catch (e) {
-      consola.warn(`  could not strip ${file}: ${errMessage(e)}`);
+      consola.warn(caught(e, (message) => `  could not strip ${file}: ${message}`));
       failed.push(file);
     }
   }
@@ -1263,7 +1265,9 @@ export async function moveProfilesToVerbTree(): Promise<void> {
     try {
       await moveProfile(move, claudeHome, codexHomes);
     } catch (e) {
-      consola.warn(`  could not move ${profileLabel(move.from)}: ${errMessage(e)}`);
+      consola.warn(
+        caught(e, (message) => `  could not move ${profileLabel(move.from)}: ${message}`),
+      );
       failed.push(profileLabel(move.from));
     }
   }

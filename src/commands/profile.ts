@@ -57,13 +57,18 @@ import {
 } from "../copilot_api/profile.ts";
 import { bold, colorEnabled, gray, paintFor, statusPaint } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
-import { errMessage } from "../utils/error.ts";
 import { isEnoentOrNotdir } from "../utils/fs.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { createStderrLogger } from "../utils/logger.ts";
-import { scannable } from "../utils/message.ts";
+import {
+  caught,
+  printKeyValue,
+  printWrapped,
+  type ScannableMessage,
+  scannable,
+} from "../utils/message.ts";
 import { prompt } from "../utils/prompt.ts";
-import { formatTable, printKeyValue, printWrapped, terminalWidth } from "../utils/table.ts";
+import { formatTable, terminalWidth } from "../utils/table.ts";
 import {
   acquireCredential,
   type CredentialAcquisition,
@@ -274,7 +279,7 @@ function credentialStep(
 
 /** A dry run's word for the sign-in it would have to ask for, indented like the add's other step
  *  narrations. */
-function plannedCredentialStep(profile: Profile): string {
+function plannedCredentialStep(profile: Profile): ScannableMessage {
   return scannable({
     headline: "  Would run the credential step.",
     evidence: [`  the step: ${agentAuthCommand(profile)}`, "  a dry run never logs in"],
@@ -788,7 +793,7 @@ export async function syncNamedProfiles(): Promise<{ synced: number; failed: num
       synced++;
     } catch (e) {
       failed++;
-      logger.warn(`could not sync ${profileLabel(name)}: ${errMessage(e)}`);
+      logger.warn(caught(e, (message) => `could not sync ${profileLabel(name)}: ${message}`));
     }
   }
   // Cleanup only: the profile writes above landed their own entries, and the launcher hot path
@@ -812,7 +817,7 @@ export async function syncEveryProfile(dryRun: boolean): Promise<void> {
         await syncDefault(null);
         defaultSynced = 1;
       } catch (e) {
-        logger.warn(`could not sync the default profile: ${errMessage(e)}`);
+        logger.warn(caught(e, (message) => `could not sync the default profile: ${message}`));
         process.exitCode = 1;
       }
     }

@@ -23,10 +23,9 @@ import { type ProfileName, profileLabel } from "../copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../copilot_api/run_state.ts";
 import { proxyFloatArtifactPaths, removeProxyFloatArtifacts } from "../proxy_float.ts";
 import { ownedShellTargets, removeShellIntegrationFrom } from "../shell/integration.ts";
-import { errMessage } from "../utils/error.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { userHomeDir } from "../utils/home.ts";
-import { scannable } from "../utils/message.ts";
+import { caught, scannable } from "../utils/message.ts";
 import { prompt } from "../utils/prompt.ts";
 import {
   installStateRoot,
@@ -173,7 +172,9 @@ function uninstallSteps(ctx: UninstallContext): UninstallStep[] {
         try {
           removeClaudeMcpRegistration();
         } catch (e) {
-          consola.warn(`could not remove the copilot-env MCP registration: ${errMessage(e)}`);
+          consola.warn(
+            caught(e, (message) => `could not remove the copilot-env MCP registration: ${message}`),
+          );
         }
       }
       return () => consola.info("Removed the copilot-env Claude wiring.");
@@ -183,7 +184,9 @@ function uninstallSteps(ctx: UninstallContext): UninstallStep[] {
       try {
         removeAllClaudeDesktopWiring(ctx.targets.desktop);
       } catch (e) {
-        consola.warn(`could not remove the Claude Desktop entries: ${errMessage(e)}`);
+        consola.warn(
+          caught(e, (message) => `could not remove the Claude Desktop entries: ${message}`),
+        );
       }
     },
     // 5. The default credential, before the home that stores it: if a later step fails partway,

@@ -45,8 +45,7 @@ import {
 } from "../copilot_api/profile.ts";
 import { colorEnabled, paintFor } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
-import { errMessage } from "../utils/error.ts";
-import { scannable } from "../utils/message.ts";
+import { rethrown, ScannableError, type ScannableMessage, scannable } from "../utils/message.ts";
 import { terminalWidth, wrapMessage } from "../utils/table.ts";
 import { runDryRun } from "./dry_run.ts";
 
@@ -87,17 +86,15 @@ function refuseStateKey(key: string): void {
   const leaf = key.split(".").at(-1) ?? key;
   const owner = STATE_KEY_OWNERS.find(([keys]) => keys.includes(leaf))?.[1];
   if (owner === undefined) return;
-  throw new Error(
-    scannable({
-      headline: `'${paintFor(colorEnabled()).cyan(key)}' is state written by ${owner}.`,
-      evidence: ["preference verbs: preferences only"],
-      lead: "Pick one:",
-      actions: [
-        ["agent config get", "lists the machine's keys and the shared defaults"],
-        ["agent profile [<name>] get", "lists a profile's"],
-      ],
-    }),
-  );
+  throw new ScannableError({
+    headline: `'${paintFor(colorEnabled()).cyan(key)}' is state written by ${owner}.`,
+    evidence: ["preference verbs: preferences only"],
+    lead: "Pick one:",
+    actions: [
+      ["agent config get", "lists the machine's keys and the shared defaults"],
+      ["agent profile [<name>] get", "lists a profile's"],
+    ],
+  });
 }
 
 function unknownKeyError(key: string): Error {
@@ -111,18 +108,16 @@ function unknownKeyError(key: string): Error {
 export function refuseProfileKey(key: string): void {
   const def = configKeyDef(key);
   if (def === undefined || def.scope !== "profile") return;
-  throw new Error(
-    scannable({
-      headline: `'${paintFor(colorEnabled()).cyan(def.key)}' is a profile preference, not a machine key.`,
-      evidence: ["bound to the credential", "a named profile's verb: `agent profile <name> ...`"],
-      lead: "Pick one:",
-      actions: [
-        [configGetCommand(def.key), "read it"],
-        [configSetCommand(def.key, "<value>"), "set it"],
-        [configDelCommand(def.key), "unset it"],
-      ],
-    }),
-  );
+  throw new ScannableError({
+    headline: `'${paintFor(colorEnabled()).cyan(def.key)}' is a profile preference, not a machine key.`,
+    evidence: ["bound to the credential", "a named profile's verb: `agent profile <name> ...`"],
+    lead: "Pick one:",
+    actions: [
+      [configGetCommand(def.key), "read it"],
+      [configSetCommand(def.key, "<value>"), "set it"],
+      [configDelCommand(def.key), "unset it"],
+    ],
+  });
 }
 
 /** The set verbs take two spellings, `set <key> <value>` and `set <key>=<value>`, and the body
@@ -149,7 +144,7 @@ export function resolveSetPair(
 
 /** The daemon that reads a projected or launch-time key is the profile's own, so the restart the
  *  hint names is that daemon's. Hints stay shell-neutral (no `&&`) for Windows PowerShell 5.1. */
-function proxyRestartHint(profile: Profile): string {
+function proxyRestartHint(profile: Profile): ScannableMessage {
   return scannable({
     headline: "Applies on the next proxy start.",
     lead: "Then:",
@@ -161,7 +156,7 @@ function proxyRestartHint(profile: Profile): string {
 }
 
 /** Shared with `agent settings --import`, whose bundle may touch every profile's knobs. */
-export function proxyRestartHintAll(): string {
+export function proxyRestartHintAll(): ScannableMessage {
   return scannable({
     headline: "Applies on the next proxy start.",
     lead: "Then:",
@@ -228,7 +223,7 @@ function runSet(key: string, raw: string, profile: Profile, platform: NodeJS.Pla
   try {
     value = def.parse(raw);
   } catch (e) {
-    throw new Error(`invalid value for '${def.key}': ${errMessage(e)}`);
+    throw rethrown(e, (message) => `invalid value for '${def.key}': ${message}`);
   }
   const target = new CopilotEnvConfig().assign(def, value, profile);
   return () => {

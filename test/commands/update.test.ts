@@ -86,7 +86,7 @@ test("updatePreviewMessage lists the steps one per line and names the migration 
     [false, "  verify its checksum"],
   ];
   for (const [provenance, verify] of rows) {
-    expect(updatePreviewMessage("v1.0.0", "v1.2.3", provenance), String(provenance)).toBe(
+    expect(String(updatePreviewMessage("v1.0.0", "v1.2.3", provenance)), String(provenance)).toBe(
       [
         "Would download the v1.2.3 release for this platform.",
         verify,

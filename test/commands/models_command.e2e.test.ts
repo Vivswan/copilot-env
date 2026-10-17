@@ -1,9 +1,15 @@
 import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { formatTokens, renderModelTable } from "../../src/commands/models.ts";
+import { formatTokens, renderModelTable, runModels } from "../../src/commands/models.ts";
+import { acquireDaemonLockForLife, daemonLockPath } from "../../src/copilot_api/daemon_lock.ts";
 import { type ModelListEntry, parseModelList } from "../../src/copilot_api/models.ts";
+import { releaseFileLock } from "../../src/utils/file_lock.ts";
+import { ScannableError } from "../../src/utils/message.ts";
+import { defaultHomeDir, envSnapshot, isolateProxyHome } from "../helpers/env.ts";
+import { writeRunState } from "../helpers/fixtures.ts";
+import { closeServer, listenEphemeral } from "../helpers/net.ts";
 import { runCli } from "../helpers/run.ts";
-import { expect, tempDir, test } from "../helpers/testing.ts";
+import { afterEach, expect, removeDir, tempDir, test } from "../helpers/testing.ts";
 
 // --- parseModelList (pure) ----------------------------------------------------
 
@@ -228,6 +234,54 @@ function runProfileVerb(
     rmSync(home, { recursive: true, force: true });
   }
 }
+
+const restoreEnv = envSnapshot();
+let dir = "";
+
+afterEach(() => {
+  restoreEnv();
+  if (dir !== "") dir = removeDir(dir);
+});
+
+// The specimen: with the proxy up, a default config.json that is not JSON reaches the store's
+// refusal through fetchRawModels() and ensureApiKey(), and the command's rethrow had made it one
+// string, so at a 12-column stderr the recovery row printed as "  fix the" over "    file".
+test("models --proxy on a config.json that is not JSON rethrows the store's refusal with its parts: at 12 columns its recovery rows are the only lines wider, each one line", async () => {
+  dir = isolateProxyHome("copilot-models-refusal-");
+  const home = defaultHomeDir();
+  writeFileSync(join(home, "config.json"), "{ not json");
+  // The proxy reads as up: this process holds the daemon.lock as the tracked pid, and a listener
+  // answers the port probe.
+  const { server, port } = await listenEphemeral();
+  try {
+    expect(acquireDaemonLockForLife(home, { waitMs: 0 })).toBe(true);
+    try {
+      writeRunState({ pid: process.pid, port });
+      let refused: unknown;
+      try {
+        await runModels({ mode: "proxy" });
+      } catch (e) {
+        refused = e;
+      }
+      if (!(refused instanceof ScannableError)) {
+        throw new Error("the listing did not refuse as parts");
+      }
+      expect(refused.message.split("\n")[0]).toMatch(
+        /^could not list models via the local proxy \(port \d+\): .* is not valid JSON\.; check `agent health` \(or use --direct\)$/,
+      );
+      expect(
+        refused.scannable
+          .fit(12)
+          .split("\n")
+          .filter((line) => line.length > 12),
+      ).toEqual(["  fix the file", "  delete the file"]);
+    } finally {
+      releaseFileLock(daemonLockPath(home));
+    }
+  } finally {
+    await closeServer(server);
+  }
+});
 
 /** profiles.<name> carries no credential, so `agent profile <name> models` must hard-fail. The root-level pair
  *  is the pre-3.5.6 legacy shape: CopilotEnvState reads the default slot only from profiles.default

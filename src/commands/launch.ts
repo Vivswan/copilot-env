@@ -23,10 +23,9 @@ import {
 } from "../copilot_api/profile.ts";
 import { assertNever } from "../utils/assert.ts";
 import { childEnvWithPath, findCommand, verbatimCliSpawn } from "../utils/command.ts";
-import { errMessage } from "../utils/error.ts";
+import { caught, printWrappedToStderr } from "../utils/message.ts";
 import { deferWriteReports, flushWriteReports } from "../utils/report_write.ts";
 import type { ManagedEnvValue } from "../utils/shell_quote.ts";
-import { printWrappedToStderr } from "../utils/table.ts";
 import { runDryRun } from "./dry_run.ts";
 import { proxyTokenDeps, resolveProxyToken } from "./proxy_token.ts";
 
@@ -195,8 +194,12 @@ export async function prepareLaunch(action: LaunchAction): Promise<LaunchPlan | 
           await wireBothAgents(action.profile, mode, true, "stored");
         } catch (e) {
           printWrappedToStderr(
-            "agent profile launch: could not refresh the profile wiring; launching with the " +
-              `existing config (${errMessage(e)}).`,
+            caught(
+              e,
+              (message) =>
+                "agent profile launch: could not refresh the profile wiring; launching with the " +
+                `existing config (${message}).`,
+            ),
           );
         }
         // Read AFTER the sync: the home its write resolved is the one the child must open.

@@ -7,6 +7,7 @@ import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { resolveTarget } from "../install/resolve-release.ts";
 import { errMessage } from "../utils/error.ts";
 import { createStderrLogger } from "../utils/logger.ts";
+import { caught } from "../utils/message.ts";
 import { isProtectedRoot } from "../utils/root.ts";
 import { isUpToDate } from "../utils/semver.ts";
 import { isDue } from "../utils/time.ts";
@@ -58,7 +59,7 @@ async function checkAndApply(
     target = await resolveTarget(cooldownDays);
   } catch (e) {
     state.set({ lastCheckMs: nowMs, lastResult: `error: ${errMessage(e)}` });
-    logger.warn(`autoupdate: release check failed: ${errMessage(e)}`);
+    logger.warn(caught(e, (message) => `autoupdate: release check failed: ${message}`));
     return;
   }
 
@@ -95,6 +96,6 @@ async function checkAndApply(
     logger.info(`copilot-env updated to ${target.tag}; active on the next \`agent start\``);
   } catch (e) {
     state.set({ lastCheckMs: nowMs, lastResult: `error: ${errMessage(e)}` });
-    logger.warn(`autoupdate: update failed (continuing): ${errMessage(e)}`);
+    logger.warn(caught(e, (message) => `autoupdate: update failed (continuing): ${message}`));
   }
 }

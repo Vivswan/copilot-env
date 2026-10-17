@@ -3,10 +3,10 @@
 // the search on Copilot's backend. This is the plain client behind the `agent profile mcp --serve` server's
 // `web_search` tool; it lives here, not in the MCP server, so that server stays a thin protocol adapter.
 
-import { errMessage } from "../utils/error.ts";
 import { defaultFetch } from "../utils/fetch.ts";
 import { isRecord } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
+import { caught } from "../utils/message.ts";
 import { directRequestIdentity, fetchRawModels } from "./catalog.ts";
 import { Credential } from "./credential.ts";
 import { CopilotEnvConfig } from "./env_config.ts";
@@ -143,7 +143,11 @@ async function resolveWebSearchModel(
     return (await catalogAliases(profile, token, pair, fetchImpl))[model] ?? model;
   } catch (e) {
     logger.warn(
-      `could not resolve '${model}' against the live catalog (${errMessage(e)}); sending it as-is`,
+      caught(
+        e,
+        (message) =>
+          `could not resolve '${model}' against the live catalog (${message}); sending it as-is`,
+      ),
     );
     return model;
   }

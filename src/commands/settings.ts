@@ -41,7 +41,7 @@ import { renderDryRun } from "../utils/dry_run_report.ts";
 import { errMessage } from "../utils/error.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { createStderrLogger } from "../utils/logger.ts";
-import { scannable } from "../utils/message.ts";
+import { rethrown, ScannableError, type ScannableMessage } from "../utils/message.ts";
 import { prompt } from "../utils/prompt.ts";
 import { proxyRestartHintAll } from "./config.ts";
 import { runDryRun } from "./dry_run.ts";
@@ -110,13 +110,32 @@ function parseSettingsAction(args: SettingsArgs): SettingsAction {
 const ROLLBACK_SCOPE_NOTE =
   "(restores the stores; profiles this import created stay until `agent profile <name> del`)";
 
+/** The caught error with the rollback added: a ScannableError keeps its parts and gains the backup as
+ *  evidence and the rollback as an action beside its own; any other error's message gets the hint as
+ *  a trailing line. */
+function withRollbackHint(e: unknown, backupPath: string): Error {
+  const rollback = `${rollbackCommand(backupPath)} ${ROLLBACK_SCOPE_NOTE}`;
+  if (!(e instanceof ScannableError)) {
+    return new Error(
+      `${errMessage(e)}\nThe previous settings were backed up first - roll back with: ${rollback}`,
+    );
+  }
+  const { evidence = [], actions = [] } = e.scannable.parts;
+  return new ScannableError({
+    ...e.scannable.parts,
+    evidence: [...evidence, "the previous settings were backed up first"],
+    lead: actions.length === 0 ? "Then:" : "Pick one:",
+    actions: [...actions, [rollbackCommand(backupPath), `roll back ${ROLLBACK_SCOPE_NOTE}`]],
+  });
+}
+
 /** Projection happens at `agent start` per profile, and an auto-start no-op never re-projects, so a
  *  running daemon misses a projected key the bundle set or reset until it restarts. Exported for
  *  tests. */
 export function importRestartHints(
   config: CopilotEnvConfigData,
   preImportPrefs: CopilotEnvConfigData,
-): string[] {
+): ScannableMessage[] {
   // Prefs are full-replace, so a projected key changes when the bundle carries it OR when the
   // bundle drops one the store had, in the global map or any profile's section.
   const carries = (data: CopilotEnvConfigData, key: GlobalMapKey & ProfileMapKey): boolean =>
@@ -206,7 +225,7 @@ async function runImport(
   try {
     raw = fs.readText(file);
   } catch (e) {
-    throw new Error(`could not read ${file}: ${errMessage(e)}`);
+    throw rethrown(e, (message) => `could not read ${file}: ${message}`);
   }
   let parsed: unknown;
   try {
@@ -249,14 +268,8 @@ async function runImport(
   try {
     outcome = await apply(plan, scope.plan);
   } catch (e) {
-    // A mid-import throw may leave the stores half-written, so the rollback hint rides the rendered
-    // error.
-    if (backupPath !== null) {
-      throw new Error(
-        `${errMessage(e)}\nThe previous settings were backed up first - roll back with: ` +
-          `${rollbackCommand(backupPath)} ${ROLLBACK_SCOPE_NOTE}`,
-      );
-    }
+    // A mid-import throw may leave the stores half-written, so the rollback hint rides the error.
+    if (backupPath !== null) throw withRollbackHint(e, backupPath);
     throw e;
   }
 
@@ -414,17 +427,15 @@ function assertProfileBundle(bundle: SettingsBundle, profile: Profile, action: I
     }
   }
   if (stray.length > 0) {
-    throw new Error(
-      scannable({
-        headline: `${paintFor(colorEnabled()).cyan(file)} is not a bundle of ${profileLabel(profile)} alone.`,
-        evidence: stray.map((part) => `${part} present`),
-        lead: "Pick one:",
-        actions: [
-          [wholeStoreImport, "import the whole store"],
-          ["agent profile [<name>] settings --export", "export one profile's bundle"],
-        ],
-      }),
-    );
+    throw new ScannableError({
+      headline: `${paintFor(colorEnabled()).cyan(file)} is not a bundle of ${profileLabel(profile)} alone.`,
+      evidence: stray.map((part) => `${part} present`),
+      lead: "Pick one:",
+      actions: [
+        [wholeStoreImport, "import the whole store"],
+        ["agent profile [<name>] settings --export", "export one profile's bundle"],
+      ],
+    });
   }
   // Every genuine named-profile export carries the profile's slot under `profiles` (its `add`
   // records a mode before anything else). Without it (a fresh machine's empty whole-store export,

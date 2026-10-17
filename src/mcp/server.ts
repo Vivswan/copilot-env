@@ -11,7 +11,7 @@ import type { Profile } from "../copilot_api/profile.ts";
 import { webSearch } from "../copilot_api/web_search.ts";
 import { errMessage } from "../utils/error.ts";
 import { createStderrLogger, redirectConsolaToStderr } from "../utils/logger.ts";
-import { wrapMessage } from "../utils/table.ts";
+import { caught } from "../utils/message.ts";
 import { packageVersion } from "../utils/version.ts";
 
 const logger = createStderrLogger();
@@ -71,9 +71,8 @@ export async function runMcpServer(opts: McpServerOptions): Promise<void> {
           return { content: [{ type: "text", text: answer }] };
         } catch (e) {
           // Never rethrow: a failed search must not kill the server. The credential errors already
-          // say how to fix themselves. This text is JSON-RPC to the client, not a terminal, so the
-          // null-width wrap only strips the marks a scannable's over-wide command row carries.
-          return toolError(wrapMessage(errMessage(e), null));
+          // say how to fix themselves.
+          return toolError(errMessage(e));
         }
       },
     );
@@ -86,7 +85,7 @@ export async function runMcpServer(opts: McpServerOptions): Promise<void> {
     transport: wire,
     // Reporting only, never written to the wire: malformed input, wire write failures, teardown
     // races.
-    onerror: (e) => logger.debug(`mcp serve error: ${errMessage(e)}`),
+    onerror: (e) => logger.debug(caught(e, (message) => `mcp serve error: ${message}`)),
   });
   logger.debug(`copilot-env MCP server up (v${packageVersion()})`);
 

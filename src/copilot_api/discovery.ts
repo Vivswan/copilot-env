@@ -9,9 +9,9 @@
 //   1m probe  -> a >200k-token prompt; Copilot bills per REQUEST, so it costs the same as the ping
 // Verdicts are identity-exact: meaningful only for the header set the consumer will actually send.
 
-import { errMessage } from "../utils/error.ts";
 import { defaultFetch } from "../utils/fetch.ts";
 import { createStderrLogger } from "../utils/logger.ts";
+import { caught } from "../utils/message.ts";
 import { isDue } from "../utils/time.ts";
 import { CODEX_IDENTITY_NAME } from "./config_registry.ts";
 import { PING_TIMEOUT_MS } from "./endpoint_smoke.ts";
@@ -157,7 +157,10 @@ export async function discoverServableClaudeModels(
     }
   } catch (e) {
     logger.warn(
-      `  model discovery: enrichment failed (${errMessage(e)}); using the catalog alone.`,
+      caught(
+        e,
+        (message) => `  model discovery: enrichment failed (${message}); using the catalog alone.`,
+      ),
     );
   }
   return { catalogBody, models, unlisted };

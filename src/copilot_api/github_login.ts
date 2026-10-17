@@ -7,6 +7,7 @@ import { request as octokitRequest } from "@octokit/request";
 import { errMessage } from "../utils/error.ts";
 import { defaultFetch } from "../utils/fetch.ts";
 import { isRecord } from "../utils/json.ts";
+import { rethrown } from "../utils/message.ts";
 import { COPILOT_ENV_USER_AGENT } from "../utils/user_agent.ts";
 import type { ProbeFetch } from "./integration_identity.ts";
 
@@ -114,7 +115,7 @@ export async function githubDeviceFlowLogin(deps: DeviceFlowDeps): Promise<strin
   try {
     return (await auth({ type: "oauth" })).token;
   } catch (e) {
-    throw new Error(`device-flow login failed: ${deviceFlowRefusal(e)}`);
+    throw rethrown(e, () => `device-flow login failed: ${deviceFlowRefusal(e)}`);
   }
 }
 

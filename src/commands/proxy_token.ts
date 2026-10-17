@@ -22,11 +22,10 @@ import {
 import { assertNever } from "../utils/assert.ts";
 import { withPowershellChildEnv } from "../utils/command.ts";
 import { promptRefusedInDryRun } from "../utils/dry_run.ts";
-import { errMessage } from "../utils/error.ts";
 import { dryRunActive } from "../utils/fs_facade.ts";
+import { caught, printWrappedToStderr, type ScannableMessage } from "../utils/message.ts";
 import { prompt } from "../utils/prompt.ts";
 import { agentLauncherCommand } from "../utils/root.ts";
-import { printWrappedToStderr } from "../utils/table.ts";
 import { runDryRun } from "./dry_run.ts";
 import { runStart } from "./start.ts";
 
@@ -60,7 +59,7 @@ export interface ProxyTokenDeps {
    *  Codex catalog refresh instead: launch needs reachability, not the credential. */
   printProxyToken(profile: Profile): Promise<void>;
   /** stderr, never stdout. */
-  notify(line: string): void;
+  notify(line: string | ScannableMessage): void;
 }
 
 /** Through bin/agent rather than in-process, so a dev checkout bootstraps its dependencies there.
@@ -132,7 +131,7 @@ export async function resolveProxyToken(
       // the in-process preview's refusal is said the same way, and the resolve reaches the same
       // failed-start arm.
       if (!dryRunActive()) throw e;
-      deps.notify(`the proxy start would refuse: ${errMessage(e)}`);
+      deps.notify(caught(e, (message) => `the proxy start would refuse: ${message}`));
       return;
     }
     plannedStart = dryRunActive();

@@ -24,9 +24,8 @@ import { Credential } from "../copilot_api/credential.ts";
 import { directOverlay, storeProbedPair } from "../copilot_api/direct_pair.ts";
 import { CopilotEnvState, type ProfileMode } from "../copilot_api/env_state.ts";
 import { bold } from "../utils/ansi.ts";
-import { errMessage } from "../utils/error.ts";
 import { createStderrLogger } from "../utils/logger.ts";
-import { scannable } from "../utils/message.ts";
+import { caught, type Message, ScannableError } from "../utils/message.ts";
 import {
   type AgentAdapter,
   type AgentRunAction,
@@ -73,7 +72,10 @@ export async function runAgentConfig(
       adapters,
     );
     if (outcome.failures.length > 0) {
-      throw new Error(`could not wire the default profile:\n  ${outcome.failures.join("\n  ")}`);
+      throw new ScannableError({
+        headline: "could not wire the default profile:",
+        evidence: outcome.failures,
+      });
     }
     const landed = outcome[adapter.id];
     return landed === "direct" || landed === "proxy" ? landed : null;
@@ -86,14 +88,12 @@ export async function runAgentConfig(
     );
   }
   if (action.mode !== "auto" && action.mode !== recorded) {
-    throw new Error(
-      scannable({
-        headline: `the default profile records ${recorded} as the one mode for both agents.`,
-        evidence: [`a ${action.mode} write of ${adapter.id} alone, leaving the two apart`],
-        lead: "Fix:",
-        actions: [[`agent init --${action.mode}`, "move both agents together"]],
-      }),
-    );
+    throw new ScannableError({
+      headline: `the default profile records ${recorded} as the one mode for both agents.`,
+      evidence: [`a ${action.mode} write of ${adapter.id} alone, leaving the two apart`],
+      lead: "Fix:",
+      actions: [[`agent init --${action.mode}`, "move both agents together"]],
+    });
   }
   if (recorded === "direct") {
     if (directPairIncomplete(null)) {
@@ -141,7 +141,8 @@ interface DefaultAgentRequest {
 interface DefaultAgentsOutcome {
   codex: AgentProviderMode;
   claude: AgentProviderMode;
-  failures: string[];
+  /** Each failed write under its agent's name, a thrown scannable with its parts kept. */
+  failures: Message[];
   failedAgents: ManagedAgentId[];
 }
 
@@ -155,7 +156,7 @@ export async function configureDefaultAgents(
   request: DefaultAgentRequest,
   adapters: readonly AgentAdapter[] = bothAgents(),
 ): Promise<DefaultAgentsOutcome> {
-  const failures: string[] = [];
+  const failures: Message[] = [];
   const failedAgents: ManagedAgentId[] = [];
   const landed: { codex: AgentProviderMode; claude: AgentProviderMode } = {
     codex: "none",
@@ -207,8 +208,8 @@ export async function configureDefaultAgents(
       await writeDefaultAgent(adapter, resolved, ghToken);
       landed[adapter.id] = resolved.mode;
     } catch (e) {
-      logger.warn(`  Could not configure ${adapter.label}: ${errMessage(e)}`);
-      failures.push(`${adapter.label}: ${errMessage(e)}`);
+      logger.warn(caught(e, (message) => `  Could not configure ${adapter.label}: ${message}`));
+      failures.push(caught(e, (message) => `${adapter.label}: ${message}`));
       failedAgents.push(adapter.id);
     }
   }

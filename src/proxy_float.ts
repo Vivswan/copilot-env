@@ -42,7 +42,7 @@ import { errMessage } from "./utils/error.ts";
 import { readTextOrNull } from "./utils/fs.ts";
 import * as fs from "./utils/fs_facade.ts";
 import { type ConsolaCreateOptions, wrapToTerminal } from "./utils/logger.ts";
-import { scannable } from "./utils/message.ts";
+import { caught, rethrown, scannable } from "./utils/message.ts";
 import { type ProjectConfig, readProjectConfig } from "./utils/project_config.ts";
 import { pickAgedVersion, toSemverString, versionLessThan } from "./utils/semver.ts";
 import { SECONDS_PER_DAY } from "./utils/time.ts";
@@ -165,7 +165,7 @@ async function fetchRegistryDoc(fetchLike: FetchLike = fetch): Promise<ProxyRegi
   try {
     response = await fetchLike(PROXY_REGISTRY_URL);
   } catch (e) {
-    throw new Error(`npm registry unreachable (${errMessage(e)})`);
+    throw rethrown(e, (message) => `npm registry unreachable (${message})`);
   }
   if (!response.ok) {
     throw new Error(`npm registry responded HTTP ${response.status} for ${PROXY_PKG}`);
@@ -534,7 +534,11 @@ function recordResolution(rootHome: string, version: string, atMs: number): bool
     return true;
   } catch (e) {
     logger.warn(
-      `the install holds ${PROXY_PKG}@${version}, but could not write ${resolvedVersionFile(rootHome)}: ${errMessage(e)}; the install is the version that runs`,
+      caught(
+        e,
+        (message) =>
+          `the install holds ${PROXY_PKG}@${version}, but could not write ${resolvedVersionFile(rootHome)}: ${message}; the install is the version that runs`,
+      ),
     );
     return false;
   }
@@ -556,7 +560,7 @@ function removeDebris(dir: string): void {
   try {
     fs.rm(dir, { recursive: true, force: true });
   } catch (e) {
-    logger.warn(`could not remove ${dir} yet: ${errMessage(e)}`);
+    logger.warn(caught(e, (message) => `could not remove ${dir} yet: ${message}`));
   }
 }
 
@@ -627,7 +631,7 @@ function installIntoProxyHome(
     pruneCaches(rootHome, installCacheDir(rootHome, version));
     return true;
   } catch (e) {
-    logger.warn(`could not install into ${next}: ${errMessage(e)}`);
+    logger.warn(caught(e, (message) => `could not install into ${next}: ${message}`));
     return false;
   } finally {
     fs.rm(next, { recursive: true, force: true });
@@ -686,7 +690,9 @@ function pruneCaches(rootHome: string, keep: string): void {
     try {
       fs.rm(dir, { recursive: true, force: true });
     } catch (e) {
-      logger.warn(`could not remove the superseded cache ${dir} yet: ${errMessage(e)}`);
+      logger.warn(
+        caught(e, (message) => `could not remove the superseded cache ${dir} yet: ${message}`),
+      );
     }
   }
 }
@@ -810,14 +816,18 @@ async function handlePinnedOverride(ctx: FloatContext, override: string): Promis
       const kept = usableRecord(ctx);
       if (kept !== null) {
         logger.warn(
-          `could not resolve the '${override}' tag pin (${errMessage(e)}); keeping ${PROXY_PKG}@${kept.version}`,
+          caught(
+            e,
+            (message) =>
+              `could not resolve the '${override}' tag pin (${message}); keeping ${PROXY_PKG}@${kept.version}`,
+          ),
         );
         return;
       }
-      throw new Error(
-        `failed to resolve ${PROXY_PKG}@${override} (pinned via ${PROXY_VERSION_ENV}): ${errMessage(
-          e,
-        )}`,
+      throw rethrown(
+        e,
+        (message) =>
+          `failed to resolve ${PROXY_PKG}@${override} (pinned via ${PROXY_VERSION_ENV}): ${message}`,
       );
     }
     const tagged = doc.distTags[override];

@@ -46,12 +46,15 @@ import {
 import { colorEnabled, cyan, paintFor } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
 import { PLANNED_SECRET } from "../utils/dry_run.ts";
-import { errMessage } from "../utils/error.ts";
 import { dryRunActive } from "../utils/fs_facade.ts";
 import { createStderrLogger } from "../utils/logger.ts";
-import { scannable } from "../utils/message.ts";
+import {
+  printWrapped,
+  ScannableError,
+  type ScannableMessage,
+  scannable,
+} from "../utils/message.ts";
 import { prompt, promptSecret } from "../utils/prompt.ts";
-import { printWrapped, terminalWidth } from "../utils/table.ts";
 import { runDryRun } from "./dry_run.ts";
 import {
   chooseIdentity,
@@ -187,17 +190,15 @@ const PROVIDER_PICKER_DETAIL: Record<AuthProvider, string> = {
  *  ways out name: a fresh profile's `add --auto` carries neither --provider nor --set. */
 async function chooseProvider(authCommand: string): Promise<AuthProvider> {
   if (!process.stdin.isTTY) {
-    throw new Error(
-      scannable({
-        headline: "not a terminal - store a credential first.",
-        lead: "Pick one:",
-        actions: [
-          [`${authCommand} --provider gh-env`, PROVIDER_PICKER_DETAIL["gh-env"]],
-          [`${authCommand} --provider ${PROVIDER_CHOICES}`, "store a credential by provider"],
-          [`${authCommand} --set <token>`, "store a GitHub token"],
-        ],
-      }),
-    );
+    throw new ScannableError({
+      headline: "not a terminal - store a credential first.",
+      lead: "Pick one:",
+      actions: [
+        [`${authCommand} --provider gh-env`, PROVIDER_PICKER_DETAIL["gh-env"]],
+        [`${authCommand} --provider ${PROVIDER_CHOICES}`, "store a credential by provider"],
+        [`${authCommand} --set <token>`, "store a GitHub token"],
+      ],
+    });
   }
   const value = await prompt("How should GitHub Copilot authenticate?", {
     type: "select",
@@ -230,17 +231,15 @@ export async function chooseGhAccount(
   const interactive = mode === "interactive";
   const listing = look();
   if (listing.kind === "unproven") {
-    throw new Error(
-      scannable({
-        headline: "could not list gh accounts.",
-        evidence: ["`gh auth status` did not run to completion"],
-        lead: "Pick one:",
-        actions: [
-          [retry, "run it again"],
-          [`${retry} --gh-user <login>`, "pin an account by name, no listing needed"],
-        ],
-      }),
-    );
+    throw new ScannableError({
+      headline: "could not list gh accounts.",
+      evidence: ["`gh auth status` did not run to completion"],
+      lead: "Pick one:",
+      actions: [
+        [retry, "run it again"],
+        [`${retry} --gh-user <login>`, "pin an account by name, no listing needed"],
+      ],
+    });
   }
   const { accounts } = listing;
   // The SOURCE never filters the menu: gh's status shows only the winning source per login, so an
@@ -264,16 +263,14 @@ export async function chooseGhAccount(
     return envSource !== undefined && sources.every((s) => /_TOKEN$/.test(s)) ? envSource : null;
   };
   if (logins.length === 0) {
-    throw new Error(
-      scannable({
-        headline: "gh has no logged-in github.com account.",
-        lead: "Fix:",
-        actions: [
-          ["gh auth login", "log in"],
-          [retry, "then run it again"],
-        ],
-      }),
-    );
+    throw new ScannableError({
+      headline: "gh has no logged-in github.com account.",
+      lead: "Fix:",
+      actions: [
+        ["gh auth login", "log in"],
+        [retry, "then run it again"],
+      ],
+    });
   }
   if (logins.length === 1 && allLogins.length === 1) {
     const only = logins[0] ?? "";
@@ -300,19 +297,17 @@ export async function chooseGhAccount(
       return { kind: "pinned", login: active };
     }
     const dryRun = mode === "dry-run";
-    throw new Error(
-      scannable({
-        headline: `gh has ${allLogins.length} logged-in accounts and no pinnable active one.`,
-        evidence: [`pinnable: ${logins.join(", ")}`],
-        lead: dryRun ? "Fix:" : "Pick one:",
-        actions: dryRun
-          ? [["--gh-user <login>", "add it to plan that landing (a dry run never prompts)"]]
-          : [
-              [`${retry} --gh-user <login>`, "pin one of them"],
-              [retry, "choose in a terminal"],
-            ],
-      }),
-    );
+    throw new ScannableError({
+      headline: `gh has ${allLogins.length} logged-in accounts and no pinnable active one.`,
+      evidence: [`pinnable: ${logins.join(", ")}`],
+      lead: dryRun ? "Fix:" : "Pick one:",
+      actions: dryRun
+        ? [["--gh-user <login>", "add it to plan that landing (a dry run never prompts)"]]
+        : [
+            [`${retry} --gh-user <login>`, "pin one of them"],
+            [retry, "choose in a terminal"],
+          ],
+    });
   }
   // The active account leads (the default selection); auto is LAST and explicit.
   const ordered = [...logins].sort((a, b) => Number(b === active) - Number(a === active));
@@ -392,16 +387,14 @@ function tokenLabel(subject: string, token: string, look: GithubLoginLook): stri
 
 async function promptForGhToken(): Promise<string> {
   if (!process.stdin.isTTY) {
-    throw new Error(
-      scannable({
-        headline: "no GitHub token given.",
-        lead: "Pick one:",
-        actions: [
-          ["--set <token>", "pass the token"],
-          ["--provider gh-env", `copy one of ${ghTokenEnvVarsList()}`],
-        ],
-      }),
-    );
+    throw new ScannableError({
+      headline: "no GitHub token given.",
+      lead: "Pick one:",
+      actions: [
+        ["--set <token>", "pass the token"],
+        ["--provider gh-env", `copy one of ${ghTokenEnvVarsList()}`],
+      ],
+    });
   }
   const token = await promptSecret("Paste your Copilot-enabled GitHub token");
   if (token === undefined) throw new Error("cancelled");
@@ -428,13 +421,11 @@ function providedToken(raw: string): string {
 }
 
 function noEnvTokenError(): Error {
-  return new Error(
-    scannable({
-      headline: "no GitHub token in the environment.",
-      lead: "Fix:",
-      actions: [[ghTokenEnvVarsList(), "set one of these"]],
-    }),
-  );
+  return new ScannableError({
+    headline: "no GitHub token in the environment.",
+    lead: "Fix:",
+    actions: [[ghTokenEnvVarsList(), "set one of these"]],
+  });
 }
 
 /** A terminal sees the var and its account before the token is used; headless cannot ask, so it takes
@@ -562,55 +553,46 @@ function pinGhCliAccount(
 
 /** Color carries meaning: the login and each command the reader can run are cyan, nothing else.
  *  `rerun` is the command that ran this acquisition (a fresh profile's `add` has no slot for
- *  `auth` to address yet). `color` and `width` are the command edge's; exported with them for the
- *  wording test. */
+ *  `auth` to address yet). `color` is the command edge's; exported with it for the wording test. */
 export function ghCannotServeByName(
   login: string,
   detail: string,
   rerun: string,
   color = colorEnabled(),
-  width: number | null = terminalWidth(process.stderr),
-): Error {
-  return new Error(
-    scannable({
-      headline: "gh cannot serve the pinned account by name.",
-      evidence: [`account: ${paintFor(color).cyan(login)}`, detail],
-      lead: "Pick one:",
-      actions: [
-        ["gh auth login", "re-login on gh 2.40 or newer, then retry"],
-        [`${rerun} --gh-user ${GH_USER_AUTO}`, "follow gh's active account (switches with gh)"],
-      ],
-      color,
-      width,
-    }),
-  );
+): ScannableError {
+  return new ScannableError({
+    headline: "gh cannot serve the pinned account by name.",
+    evidence: [`account: ${paintFor(color).cyan(login)}`, detail],
+    lead: "Pick one:",
+    actions: [
+      ["gh auth login", "re-login on gh 2.40 or newer, then retry"],
+      [`${rerun} --gh-user ${GH_USER_AUTO}`, "follow gh's active account (switches with gh)"],
+    ],
+    color,
+  });
 }
 
 /** An UNPROVEN look wears its own words: "not authenticated" and the `gh auth login` advice are
  *  wrong when gh was never asked. `rerun` is the command that ran this acquisition. */
-function ghCliMiss(gh: Exclude<GhTokenLook, { kind: "found" }>, rerun: string): Error {
+function ghCliMiss(gh: Exclude<GhTokenLook, { kind: "found" }>, rerun: string): ScannableError {
   switch (gh.kind) {
     case "unproven":
-      return new Error(
-        scannable({
-          headline: "could not check gh authentication.",
-          evidence: [gh.detail],
-          lead: "Fix:",
-          actions: [[rerun, "retry"]],
-        }),
-      );
+      return new ScannableError({
+        headline: "could not check gh authentication.",
+        evidence: [gh.detail],
+        lead: "Fix:",
+        actions: [[rerun, "retry"]],
+      });
     case "absent":
-      return new Error(
-        scannable({
-          headline: "gh is not authenticated.",
-          evidence: [gh.detail],
-          lead: "Fix:",
-          actions: [
-            ["gh auth login", "log in"],
-            [rerun, "then retry"],
-          ],
-        }),
-      );
+      return new ScannableError({
+        headline: "gh is not authenticated.",
+        evidence: [gh.detail],
+        lead: "Fix:",
+        actions: [
+          ["gh auth login", "log in"],
+          [rerun, "then retry"],
+        ],
+      });
     default:
       return assertNever(gh);
   }
@@ -664,27 +646,23 @@ async function plannedAcquisition(
       : `${profileLabel(profile)}'s credential slot`;
   switch (acquisition.kind) {
     case "choose":
-      throw new Error(
-        scannable({
-          headline: "a dry run never prompts.",
-          evidence: [`no provider to plan ${slot} from`],
-          lead: "Pick one:",
-          actions: [
-            [`--provider <${PROVIDER_CHOICES}>`, "plan that provider's landing"],
-            ["--set <token>", "plan a gh-token landing"],
-          ],
-        }),
-      );
+      throw new ScannableError({
+        headline: "a dry run never prompts.",
+        evidence: [`no provider to plan ${slot} from`],
+        lead: "Pick one:",
+        actions: [
+          [`--provider <${PROVIDER_CHOICES}>`, "plan that provider's landing"],
+          ["--set <token>", "plan a gh-token landing"],
+        ],
+      });
     case "gh-token": {
       if (acquisition.token === null) {
-        throw new Error(
-          scannable({
-            headline: "a dry run never prompts.",
-            evidence: [`no token to plan ${slot} with`],
-            lead: "Fix:",
-            actions: [["--set <token>", "the token to land"]],
-          }),
-        );
+        throw new ScannableError({
+          headline: "a dry run never prompts.",
+          evidence: [`no token to plan ${slot} with`],
+          lead: "Fix:",
+          actions: [["--set <token>", "the token to land"]],
+        });
       }
       // The login's own reading, refusal included, before any plan row is landed.
       const token = providedToken(acquisition.token);
@@ -840,7 +818,7 @@ function resolveOrReport(profile: Profile): string | null {
   if (token === null) {
     logger.error(
       profile !== null && profileSlotMissing(profile)
-        ? errMessage(missingProfileSlotError(profile))
+        ? missingProfileSlotError(profile).scannable
         : reason,
     );
     process.exitCode = 1;
@@ -902,7 +880,7 @@ async function runDel(profile: Profile): Promise<() => void> {
         );
       }
     } else if (profile !== null && profileSlotMissing(profile)) {
-      logger.info(errMessage(missingProfileSlotError(profile, ["nothing to clear"])));
+      logger.info(missingProfileSlotError(profile, ["nothing to clear"]).scannable);
     } else {
       logger.info(
         scannable({
@@ -926,11 +904,9 @@ async function runCheck(profile: Profile): Promise<void> {
   const { provider, resolves } = credential.status();
   const authCommand = agentAuthCommand(profile);
   const forSlot = profile === null ? [] : [`for ${profileLabel(profile)}`];
-  // The status goes to stdout, so the table fits stdout's width, not stderr's.
-  const width = terminalWidth();
   if (provider === null) {
     if (profile !== null && profileSlotMissing(profile)) {
-      printWrapped(errMessage(missingProfileSlotError(profile)));
+      printWrapped(missingProfileSlotError(profile).scannable);
     } else {
       printWrapped(
         scannable({
@@ -938,7 +914,6 @@ async function runCheck(profile: Profile): Promise<void> {
           evidence: forSlot,
           lead: "Fix:",
           actions: [[authCommand, "log in"]],
-          width,
         }),
       );
     }
@@ -947,7 +922,7 @@ async function runCheck(profile: Profile): Promise<void> {
   }
   const source = (await accountSourceLabel(credential.read())) ?? provider;
   if (resolves) {
-    printWrapped(scannable({ headline: "authenticated.", evidence: [...forSlot, source], width }));
+    printWrapped(scannable({ headline: "authenticated.", evidence: [...forSlot, source] }));
     process.exitCode = 0;
   } else {
     // e.g. gh-cli selected but `gh` is no longer authenticated (as the pinned account).
@@ -957,7 +932,6 @@ async function runCheck(profile: Profile): Promise<void> {
         evidence: [...forSlot, `provider '${source}' is selected`],
         lead: "Fix:",
         actions: [[authCommand, "log in again"]],
-        width,
       }),
     );
     process.exitCode = 1;
@@ -976,14 +950,12 @@ export async function ensureAuthenticated(
   if (new Credential(undefined, profile).isAuthenticated()) return;
   if (dryRunActive() && acquisition.kind === "choose") {
     const authCommand = agentAuthCommand(profile);
-    throw new Error(
-      scannable({
-        headline: "a dry run never logs in.",
-        evidence: [`${profileLabel(profile)} is not authenticated`],
-        lead: "Fix:",
-        actions: [[authCommand, "log in first, then re-run with --dry-run"]],
-      }),
-    );
+    throw new ScannableError({
+      headline: "a dry run never logs in.",
+      evidence: [`${profileLabel(profile)} is not authenticated`],
+      lead: "Fix:",
+      actions: [[authCommand, "log in first, then re-run with --dry-run"]],
+    });
   }
   if (!dryRunActive()) logger.log(loggingInLine(profile));
   await authenticate(acquisition, profile);
@@ -991,7 +963,7 @@ export async function ensureAuthenticated(
 
 /** The line before an interactive login runs: indented like the add's other step narrations it
  *  prints among. Shared with `agent profile <name> add --auto`, whose login runs the same way. */
-export function loggingInLine(profile: Profile): string {
+export function loggingInLine(profile: Profile): ScannableMessage {
   return scannable({
     headline: "  Not authenticated yet - let's log in to GitHub Copilot.",
     evidence: profile === null ? [] : [`  for ${profileLabel(profile)}`],
@@ -1100,19 +1072,17 @@ export async function runAuth(args: AuthArgs): Promise<void> {
       }
       if (!process.stdin.isTTY) {
         const { profile } = action;
-        throw new Error(
-          scannable({
-            headline: "no terminal to choose the identity in.",
-            lead: "Pick one:",
-            actions: [
-              [configSetCommand("identity", "<id|auto>", profile), "pin an id, or auto"],
-              [
-                profile === null ? "agent profile identity" : `agent profile ${profile} identity`,
-                "show the current identity",
-              ],
+        throw new ScannableError({
+          headline: "no terminal to choose the identity in.",
+          lead: "Pick one:",
+          actions: [
+            [configSetCommand("identity", "<id|auto>", profile), "pin an id, or auto"],
+            [
+              profile === null ? "agent profile identity" : `agent profile ${profile} identity`,
+              "show the current identity",
             ],
-          }),
-        );
+          ],
+        });
       }
       const token = resolveOrReport(action.profile);
       if (token !== null) {

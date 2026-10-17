@@ -67,7 +67,7 @@ function fakeDeps(opts: FakeOptions): { deps: ProxyTokenDeps; rec: Recorded } {
       return Promise.resolve();
     },
     notify: (line) => {
-      rec.notes.push(line);
+      rec.notes.push(String(line));
     },
   };
   return { deps, rec };

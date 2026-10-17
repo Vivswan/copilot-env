@@ -5,10 +5,10 @@ import { join } from "node:path";
 import type { ProfileMode } from "../copilot_api/env_state.ts";
 import { HELPERS_DIR_NAME, resolveRootHome } from "../copilot_api/paths.ts";
 import { type Profile, parseProfileName } from "../copilot_api/profile.ts";
-import { errMessage } from "../utils/error.ts";
 import { isEnoentOrNotdir, WIN } from "../utils/fs.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { createStderrLogger } from "../utils/logger.ts";
+import { caught } from "../utils/message.ts";
 import { agentAuthGetArgs, agentLauncherCommand, proxyTokenArgs } from "../utils/root.ts";
 import { readFileOrNull, removeFile } from "./desktop_library.ts";
 import { cmdHelperBody, posixExecBody } from "./helper_body.ts";
@@ -75,7 +75,7 @@ export function planRemoveFiles(paths: readonly string[]): () => void {
       fs.assertNotDirectory(path);
       return true;
     } catch (e) {
-      logger.warn(`  Claude Desktop: ${errMessage(e)}; left alone.`);
+      logger.warn(caught(e, (message) => `  Claude Desktop: ${message}; left alone.`));
       return false;
     }
   });

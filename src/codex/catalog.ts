@@ -26,6 +26,7 @@ import * as fs from "../utils/fs_facade.ts";
 import { removeScratchDir, type ScratchDir, scratchDir } from "../utils/fs_facade.ts";
 import { isRecord } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
+import { caught } from "../utils/message.ts";
 import { isDue } from "../utils/time.ts";
 import { stringify } from "../utils/toml.ts";
 import { codexConfigPath } from "./paths.ts";
@@ -597,7 +598,7 @@ export async function generateCodexModelCatalog(
     });
     return true;
   } catch (e) {
-    logger.warn(`codex model catalog generation failed: ${errMessage(e)}`);
+    logger.warn(caught(e, (message) => `codex model catalog generation failed: ${message}`));
     return false;
   }
 }
@@ -631,7 +632,9 @@ function judgeCatalog(catalogJson: string): boolean | null {
     try {
       state.set({ codexCatalogAccepted: { sha256: digest, codexVersion: version } });
     } catch (e) {
-      logger.warn(`codex model catalog: acceptance not recorded: ${errMessage(e)}`);
+      logger.warn(
+        caught(e, (message) => `codex model catalog: acceptance not recorded: ${message}`),
+      );
     }
   }
   return verdict;
@@ -683,7 +686,7 @@ export async function refreshCodexModelCatalogIfStale(source: CatalogSource): Pr
     });
     return await generateCodexModelCatalog(source);
   } catch (e) {
-    logger.warn(`codex model catalog refresh failed: ${errMessage(e)}`);
+    logger.warn(caught(e, (message) => `codex model catalog refresh failed: ${message}`));
     return false;
   }
 }

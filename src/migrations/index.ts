@@ -5,9 +5,9 @@
 //   bun src/migrations/index.ts <fromVersion> <toVersion>
 import "../utils/dotenv.ts";
 import { consola } from "consola";
-import { errMessage } from "../utils/error.ts";
 import { dryRunActive } from "../utils/fs_facade.ts";
 import { configureConsolaOutput } from "../utils/logger.ts";
+import { caught } from "../utils/message.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
 import { type SemverString, stripV, toSemverString, versionLessThan } from "../utils/semver.ts";
 import { v400AutoupdateFlag, v400ClaudeWiring, v400CodexWiring, v400ShellFence } from "./4.0.0.ts";
@@ -133,8 +133,12 @@ export async function runMigrations(
       if (!preview) consola.success(`Migration ${m.version} complete.`);
     } catch (e) {
       consola.warn(
-        `Migration ${m.version} did not complete (non-fatal): ${errMessage(e)}. ` +
-          `Re-run it with \`agent migrate ${stripV(from)} ${stripV(to)}\` once fixed.`,
+        caught(
+          e,
+          (message) =>
+            `Migration ${m.version} did not complete (non-fatal): ${message}. ` +
+            `Re-run it with \`agent migrate ${stripV(from)} ${stripV(to)}\` once fixed.`,
+        ),
       );
     }
   }
@@ -149,7 +153,7 @@ if (import.meta.main) {
     process.exitCode = 2;
   } else {
     runMigrations(from, to).catch((e: unknown) => {
-      consola.error(errMessage(e));
+      consola.error(caught(e, (message) => message));
       process.exitCode = 1;
     });
   }

@@ -116,7 +116,7 @@ The rc file and profile it edits are in the [wiring write list](getting-started.
 
 ### Launchers
 
-The `cl` / `co` / `cx` launchers are opt-in shell functions over `agent profile launch`. They follow the `shell.launchers` config key:
+The `cl` / `co` / `cx` launchers are opt-in shell functions over `agent profile launch`. They follow the `shell.launchers` config key, which `agent shell --clis` sets to `true`:
 
 ```bash
 agent config set shell.launchers true

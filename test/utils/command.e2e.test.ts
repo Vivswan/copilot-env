@@ -1,27 +1,19 @@
-import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { writeFileSync } from "node:fs";
+import { delimiter, join, relative, resolve } from "node:path";
 import {
-  childEnvWithPath,
-  childPathPrepending,
-  cmdSpawn,
-  commandLookFromSpawn,
+  childEnv,
   findCommand,
-  pickVerbatimWindowsSpawn,
   runCaptured,
-  verbatimCliSpawn,
   withPowershellChildEnv,
 } from "../../src/utils/command.ts";
+import { pathLedBy } from "../helpers/env.ts";
 import { runSync } from "../helpers/run.ts";
 import { afterEach, expect, step, tempDir, test } from "../helpers/testing.ts";
-
-const SEP = process.platform === "win32" ? ";" : ":";
 
 const SAVED_PATH = process.env.PATH;
 const HAD_PATH_CASE = Object.hasOwn(process.env, "Path");
 const SAVED_PATH_CASE = process.env.Path;
 // On Windows the two spellings are one variable, so both saves and both restores agree there.
-const HAD_NVM_DIR = Object.hasOwn(process.env, "NVM_DIR");
-const SAVED_NVM_DIR = process.env.NVM_DIR;
 const SAVED_PSMODULEPATH = [
   ["PSModulePath", process.env.PSModulePath],
   ["psmodulepath", process.env.psmodulepath],
@@ -35,70 +27,65 @@ afterEach(() => {
     if (saved === undefined) delete process.env[key];
     else process.env[key] = saved;
   }
-  if (HAD_NVM_DIR) process.env.NVM_DIR = SAVED_NVM_DIR;
-  else delete process.env.NVM_DIR;
   delete process.env.COPILOT_TEST_LEAK;
   delete process.env.Copilot_Mixed_Var;
 });
 
-const BASE_PATH = `/usr/bin${SEP}/bin`;
-
-// The parent PATH is pinned per row, so the WHOLE child PATH is asserted, not just its head. A
-// key mapped to null must be absent from the child env, not merely empty.
+// A key mapped to null must be absent from the child env, not merely empty.
 const CHILD_ENV_ROWS: {
   name: string;
-  /** Set on process.env before the call; PATH itself is always BASE_PATH, set last. */
+  /** Set on process.env before the call. */
   parent: Record<string, string>;
-  dirs: (string | null)[];
-  opts?: Parameters<typeof childEnvWithPath>[1];
-  path: string[];
-  keys: Record<string, string | null>;
+  opts?: Parameters<typeof childEnv>[0];
+  /** A thunk where the expectation reads the parent just set. */
+  keys: Record<string, string | null> | (() => Record<string, string | null>);
+  /** The PATH value under whichever casing the child env carries it. */
+  pathAnyCase?: string | null;
 }[] = [
   {
-    name: "dirs go first, ahead of the rest of PATH, and other vars ride along",
+    // PATH keeps the parent's own casing (`Path` on Windows), so it is read case-insensitively.
+    name: "the parent's vars ride along, PATH untouched",
     parent: { COPILOT_TEST_LEAK: "keep-me" },
-    dirs: ["/opt/cli/bin"],
-    path: ["/opt/cli/bin", "/usr/bin", "/bin"],
     keys: { COPILOT_TEST_LEAK: "keep-me" },
+    pathAnyCase: process.env.PATH ?? null,
   },
   {
-    // The Windows shape: process.env carries `Path` while we set canonical PATH; the child gets
-    // exactly one, and it is the new one.
-    name: "any case-variant PATH key is dropped (the Windows Path/PATH collision)",
+    // On Windows, whose env names are case-insensitive, setting `Path` set PATH too, so the tail
+    // is read once the parent is set.
+    name: "a lead dir heads PATH, and every inherited PATH casing is dropped for it",
     parent: { Path: "C:\\stale\\only" },
-    dirs: ["/new/dir"],
-    path: ["/new/dir", "/usr/bin", "/bin"],
-    keys: { Path: null },
+    opts: { leadPath: ["/opt/gh/bin"] },
+    keys: () => ({ Path: null, PATH: `/opt/gh/bin${delimiter}${process.env.PATH ?? ""}` }),
+  },
+  {
+    name: "a given path replaces PATH wholesale (the registry-refreshed one after a Windows install)",
+    parent: { Path: "C:\\stale\\only" },
+    opts: { path: "/only/this" },
+    keys: { Path: null, PATH: "/only/this" },
   },
   {
     // The predicate sees the UPPERCASED key, mirroring Windows' case-insensitive env names; the
     // original-cased key is what gets dropped.
     name: "extra is applied and the omit predicate is honored case-insensitively",
     parent: { Copilot_Mixed_Var: "leaked" },
-    dirs: [],
     opts: { extra: { HOME_OVERRIDE: "/tmp/h" }, omit: (upper) => upper === "COPILOT_MIXED_VAR" },
-    path: ["/usr/bin", "/bin"],
     keys: { HOME_OVERRIDE: "/tmp/h", Copilot_Mixed_Var: null },
   },
 ];
 
-test("childPathPrepending dedupes the dirs; childEnvWithPath builds the child env on top of it per row", () => {
-  process.env.PATH = BASE_PATH;
-  const out = childPathPrepending(["/opt/gh/bin", "/opt/gh/bin", null]);
-  expect(out.split(SEP)).toEqual(["/opt/gh/bin", "/usr/bin", "/bin"]);
-
+test("childEnv copies the parent env, leads or replaces PATH when asked, applies extra, and honors omit case-insensitively", () => {
   for (const row of CHILD_ENV_ROWS) {
     for (const [key, value] of Object.entries(row.parent)) process.env[key] = value;
-    process.env.PATH = BASE_PATH;
-    const env = childEnvWithPath(row.dirs, row.opts);
+    const env = childEnv(row.opts);
+    const expected = typeof row.keys === "function" ? row.keys() : row.keys;
     const keys = Object.fromEntries(
-      Object.keys(row.keys).map((key) => [key, Object.hasOwn(env, key) ? env[key] : null]),
+      Object.keys(expected).map((key) => [key, Object.hasOwn(env, key) ? env[key] : null]),
     );
-    expect({ name: row.name, path: env.PATH?.split(SEP), keys }).toEqual({
-      name: row.name,
-      path: row.path,
-      keys: row.keys,
-    });
+    expect({ name: row.name, keys }).toEqual({ name: row.name, keys: expected });
+    if (row.pathAnyCase !== undefined) {
+      const pathKey = Object.keys(env).find((key) => key.toUpperCase() === "PATH");
+      expect(pathKey === undefined ? null : env[pathKey], row.name).toBe(row.pathAnyCase);
+    }
   }
 });
 
@@ -131,171 +118,42 @@ test("withPowershellChildEnv: a 5.1 child sees no PSModulePath under any casing,
   expect(psModulePathIn(process.env)).toEqual(parentOwn);
 });
 
-// cmd.exe expands %VAR% even inside double quotes, so the Windows dispatch may fall back to it only
-// for a batch-ONLY shim. The picker is pure, so the whole decision table runs on every platform.
+// --- the command look ------------------------------------------------------------
 
-const PS_PREFIX = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"];
-const ARGS = ["--resume", "%USERPROFILE%", "x y"];
-
-// The decision table: a native .exe spawns directly; an npm .ps1 shim (or the .ps1 sibling npm
-// always ships beside a .cmd) runs via powershell -File with literal argv; only a batch-ONLY shim
-// or an unresolved command takes the cmd.exe hop, quoted (binDir stays the real directory).
-test("pickVerbatimWindowsSpawn: .exe direct, .ps1 (or its sibling) via powershell -File, batch-only and none via cmd.exe", () => {
-  const rows: {
-    label: string;
-    candidates: string[];
-    args: string[];
-    exists: (path: string) => boolean;
-    picked: { file: string; args: string[]; shell: boolean; binDir: string | null };
-  }[] = [
-    {
-      label: "a native .exe spawns directly with plain argv",
-      candidates: ["C:\\apps\\claude.exe", "C:\\npm\\claude.cmd"],
-      args: ARGS,
-      exists: () => true,
-      picked: { file: "C:\\apps\\claude.exe", args: ARGS, shell: false, binDir: "C:\\apps" },
-    },
-    {
-      label: "the npm .ps1 shim runs via powershell -File (literal argv)",
-      candidates: ["C:\\npm\\claude.ps1"],
-      args: ARGS,
-      exists: () => false,
-      picked: {
-        file: "powershell",
-        args: [...PS_PREFIX, "C:\\npm\\claude.ps1", ...ARGS],
-        shell: false,
-        binDir: "C:\\npm",
-      },
-    },
-    {
-      label: "a .cmd candidate with the .ps1 sibling npm always ships: prefer the sibling",
-      candidates: ["C:\\npm\\claude", "C:\\npm\\claude.cmd"],
-      args: ARGS,
-      exists: (path) => path === "C:\\npm\\claude.ps1",
-      picked: {
-        file: "powershell",
-        args: [...PS_PREFIX, "C:\\npm\\claude.ps1", ...ARGS],
-        shell: false,
-        binDir: "C:\\npm",
-      },
-    },
-    {
-      label: "a batch-only shim falls back to cmd.exe quoting",
-      candidates: ["C:\\hand tools\\claude.cmd"],
-      args: ["a b"],
-      exists: () => false,
-      picked: {
-        file: '"C:\\hand tools\\claude.cmd"',
-        args: ['"a b"'],
-        shell: true,
-        binDir: "C:\\hand tools",
-      },
-    },
-    {
-      label: "no candidate falls back to the bare command through cmd.exe",
-      candidates: [],
-      args: ["a"],
-      exists: () => false,
-      picked: { file: "claude", args: ["a"], shell: true, binDir: null },
-    },
-  ];
-  for (const row of rows) {
-    const picked = pickVerbatimWindowsSpawn("claude", row.candidates, row.args, row.exists);
-    expect({ label: row.label, picked }).toEqual({ label: row.label, picked: row.picked });
-  }
-});
-
-test("cmdSpawn quotes the program like every arg, and only when needed", () => {
-  // Unquoted, a program path with a space launches `C:\Users\Jane` and fails, with or without args.
-  expect(cmdSpawn("C:\\Users\\Jane Doe\\bin\\codex.cmd", [])).toEqual({
-    file: '"C:\\Users\\Jane Doe\\bin\\codex.cmd"',
-    args: [],
-    shell: true,
-  });
-  expect(cmdSpawn("codex", ["--version", "a b"])).toEqual({
-    file: "codex",
-    args: ["--version", '"a b"'],
-    shell: true,
-  });
-});
-
-test("verbatimCliSpawn on POSIX resolves the command and never adds a shell", () => {
-  if (process.platform === "win32") return; // the Windows half is the pure picker above
-  const spawn = verbatimCliSpawn("sh", ["-c", "echo %USERPROFILE%"]);
-  expect(spawn.shell).toBe(false);
-  expect(spawn.args).toEqual(["-c", "echo %USERPROFILE%"]);
-  expect(spawn.file.endsWith("sh")).toBe(true);
-});
-
-// --- the command look: a failed probe never reads "command missing" ------------
-
-test("commandLookFromSpawn: only a completed probe yields a proven verdict", () => {
-  const resolved = () => "/bin/gh";
-  expect(commandLookFromSpawn({ status: 0 }, resolved)).toEqual({ kind: "found", path: "/bin/gh" });
-  expect(commandLookFromSpawn({ status: 1 }, resolved)).toEqual({ kind: "absent" });
-  // A completed probe that resolved no path is a proven absence too.
-  expect(commandLookFromSpawn({ status: 0 }, () => null)).toEqual({ kind: "absent" });
-  // A probe that never completed is the failed look, never a proven absence (the runCaptured mark contract).
-  expect(commandLookFromSpawn({ status: null, error: new Error("ENOENT") }, resolved)).toEqual({
-    kind: "unproven",
-  });
-  expect(commandLookFromSpawn({ status: null }, resolved)).toEqual({ kind: "unproven" });
-});
-
-// The real lookup argv against the real probe shell: a completed look is proven either way.
-test("findCommand: a real found command and a real proven absence, both proven", () => {
-  // The probe shell itself is always findable where the probe can run at all.
-  const found = findCommand(process.platform === "win32" ? "powershell" : "sh");
-  expect(found).toMatchObject({ kind: "found" });
-  expect(found.kind === "found" && found.path).toBeTruthy();
+// Bun.which is the look: no spawned probe, so a look cannot fail, and the answer is the path the
+// vendors' binaries are proven and spawned at. The PATH argument is what an installer-refreshed
+// PATH rides in on.
+test("findCommand: a real command answers its full path, a missing one is a proven absence, and the PATH given is the one walked", () => {
+  const shell = process.platform === "win32" ? "powershell" : "sh";
+  const found = findCommand(shell);
+  expect(found.kind).toBe("found");
+  if (found.kind === "found") expect(resolve(found.path)).toBe(found.path);
   expect(findCommand("copilot-env-no-such-command-xyz")).toEqual({ kind: "absent" });
+  expect(findCommand(shell, "")).toEqual({ kind: "absent" });
+
+  step("a fixture shim is found through the PATH given, not the process's");
+  const bin = tempDir("copilot-env-look-");
+  const name = process.platform === "win32" ? "copilot-env-shim.cmd" : "copilot-env-shim";
+  writeFileSync(join(bin, name), process.platform === "win32" ? "@echo off\r\n" : "#!/bin/sh\n", {
+    mode: 0o755,
+  });
+  expect(findCommand("copilot-env-shim")).toEqual({ kind: "absent" });
+  expect(findCommand("copilot-env-shim", pathLedBy(bin))).toEqual({
+    kind: "found",
+    path: join(bin, name),
+  });
 });
 
-// Nothing in the runtime bounds a child, so a probe shell that never returns would hang every
-// look. The shim ignores TERM and execs the sleeper under its own pid, so only a KILL ends it.
-const HANGING_SHIM = "#!/bin/sh\ntrap '' TERM\nexec sleep 20\n";
-
+// `PATH=tools:...` is legal and dash-era `command -v` answered it relative; Bun.which joins a
+// relative entry with cwd on POSIX, so the answer a child spawned from another cwd gets is still
+// the file.
 test.skipIf(process.platform === "win32")(
-  "findCommand: a probe shell that never exits reads as unproven at the bound, never as absent",
+  "findCommand: a relative PATH entry answers an absolute path on POSIX",
   () => {
-    const bin = tempDir("copilot-env-hanging-sh-");
-    writeFileSync(join(bin, "sh"), HANGING_SHIM, { mode: 0o755 });
-    process.env.PATH = childPathPrepending([bin]);
-    const started = performance.now();
-    const look = findCommand("gh", { timeoutMs: 2_000 });
-    const elapsed = performance.now() - started;
-    // Control: a missing shell fails in milliseconds; only the bound ending a live child takes
-    // seconds, and the sleeper on its own would run 20 s, past the test's deadline.
-    expect({ look, waited: elapsed > 1000 && elapsed < 15_000 }).toEqual({
-      look: { kind: "unproven" },
-      waited: true,
-    });
-  },
-);
-
-// A look bound retuned below a slow shell startup reads installed tools as absent: the nvm fallback
-// sources nvm.sh, and a slow one once outran a 5 s bound, so an installed codex read as not found.
-// The fixture is the shape of that nvm.sh, a startup that takes seconds before the tool is on PATH.
-const SLOW_NVM_SH = '#!/bin/sh\nsleep 6\nexport PATH="$NVM_DIR/bin:$PATH"\n';
-
-test.skipIf(process.platform === "win32")(
-  "findCommand: a tool that a slow nvm.sh exposes after seconds is found under the default bound",
-  () => {
-    const nvmDir = tempDir("copilot-env-slow-nvm-");
-    const bin = join(nvmDir, "bin");
-    mkdirSync(bin);
-    writeFileSync(join(nvmDir, "nvm.sh"), SLOW_NVM_SH, { mode: 0o755 });
-    writeFileSync(join(bin, "copilot-env-nvm-only-codex"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
-    process.env.NVM_DIR = nvmDir;
-    process.env.PATH = BASE_PATH;
-    const started = performance.now();
-    const look = findCommand("copilot-env-nvm-only-codex");
-    // Control: the tool is on no PATH entry before nvm.sh runs, so a found that skipped the sleep is
-    // impossible; the wait proves the slow sourcing was crossed, not bypassed.
-    expect({ look, waited: performance.now() - started > 5000 }).toEqual({
-      look: { kind: "found", path: join(bin, "copilot-env-nvm-only-codex") },
-      waited: true,
-    });
+    const bin = tempDir("copilot-env-relative-look-");
+    writeFileSync(join(bin, "copilot-env-rel"), "#!/bin/sh\n", { mode: 0o755 });
+    const look = findCommand("copilot-env-rel", relative(process.cwd(), bin));
+    expect(look.kind === "found" ? resolve(look.path) : look).toBe(join(bin, "copilot-env-rel"));
   },
 );
 

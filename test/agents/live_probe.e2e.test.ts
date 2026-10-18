@@ -17,7 +17,7 @@ import type { DirectSmoke, SmokeModelOutcome } from "../../src/copilot_api/endpo
 import { ghAuthVerdict, ghTokenFromEnv } from "../../src/copilot_api/gh_cli.ts";
 import type { CommandLook } from "../../src/utils/command.ts";
 import { envSnapshot } from "../helpers/env.ts";
-import { captureAllWrites } from "../helpers/output.ts";
+import { captureAllWrites, captureChannels } from "../helpers/output.ts";
 import { expect, step, test } from "../helpers/testing.ts";
 
 // The one catalog-noise filter shared by summarizeProbeFailure and formatLiveFailure
@@ -216,18 +216,13 @@ test("ghAuthVerdict: exit 0 proves auth, a completed nonzero disproves it, a dea
   expect(ghAuthVerdict({ status: null })).toBe("unproven");
 });
 
-// --- probeDirectWorks: a missing or uncheckable CLI ----------------------------
+// --- probeDirectWorks: a missing CLI -------------------------------------------
 
 test("probeDirectWorks: with no CLI to run, the endpoint smoke's verdict decides, and no smoke means the proxy; the CLI probe never runs", async () => {
-  // Both miss arms (not found; the look itself FAILED) consult the smoke when there is one, since
-  // it needs no binary; without one they fall back to the proxy before any model call, and a
-  // failed look never borrows the proven arm's "not found" advice.
-  const cases: { launchFailed: boolean; smoke: boolean | null; expected: boolean }[] = [
-    { launchFailed: false, smoke: null, expected: false },
-    { launchFailed: true, smoke: null, expected: false },
-    { launchFailed: false, smoke: true, expected: true },
-    { launchFailed: false, smoke: false, expected: false },
-    { launchFailed: true, smoke: true, expected: true },
+  const cases: { smoke: boolean | null; expected: boolean }[] = [
+    { smoke: null, expected: false },
+    { smoke: true, expected: true },
+    { smoke: false, expected: false },
   ];
   for (const c of cases) {
     let probeCalls = 0;
@@ -236,7 +231,7 @@ test("probeDirectWorks: with no CLI to run, the endpoint smoke's verdict decides
       () => {},
       c.smoke === null ? null : fakeSmoke(undefined, c.smoke),
       {
-        findCommand: () => (c.launchFailed ? { kind: "unproven" } : { kind: "absent" }),
+        findCommand: () => ({ kind: "absent" }),
         runProbe: () => {
           probeCalls++;
           return { ok: true };
@@ -244,6 +239,39 @@ test("probeDirectWorks: with no CLI to run, the endpoint smoke's verdict decides
       },
     );
     expect({ ...c, verdict, probeCalls }).toEqual({ ...c, verdict: c.expected, probeCalls: 0 });
+  }
+});
+
+// On Windows an npm install leaves a `claude.cmd` shim, which a direct spawn turns into a bare
+// EINVAL read as a failed probe.
+test("probeDirectWorks: an npm .cmd shim on PATH takes the no-CLI arms with its note said, and the CLI probe never runs", async () => {
+  const cases: { smoke: boolean | null; expected: boolean }[] = [
+    { smoke: null, expected: false },
+    { smoke: true, expected: true },
+    { smoke: false, expected: false },
+  ];
+  for (const c of cases) {
+    let probeCalls = 0;
+    let verdict: boolean | null = null;
+    const { all } = await captureChannels(async () => {
+      verdict = await probeDirectWorks(
+        FAKE_DESCRIPTOR,
+        () => {},
+        c.smoke === null ? null : fakeSmoke(undefined, c.smoke),
+        {
+          findCommand: () => ({ kind: "found", path: "C:\\npm\\claude.cmd" }),
+          runProbe: () => {
+            probeCalls++;
+            return { ok: true };
+          },
+        },
+      );
+    });
+    expect({ ...c, verdict, probeCalls }).toEqual({ ...c, verdict: c.expected, probeCalls: 0 });
+    expect(all, JSON.stringify(c)).toContain(
+      "C:\\npm\\claude.cmd is an npm-installed copy of claude this build cannot run; npm uninstall -g @anthropic-ai/claude-code, then agent shell --clis",
+    );
+    expect(all, JSON.stringify(c)).not.toContain("CLI not found");
   }
 });
 
@@ -476,8 +504,9 @@ test("probeDirectWorks spawns the CLI from inside the throwaway home, never the 
   // expands. The child imports nothing: one importing node:fs stalled past the deadline twice on
   // the macOS runner.
   const script = "cwd_check.mts";
+  // The look seam below answers this runtime for `claude`, so the descriptor's name stays typed.
   const descriptor: ProbeDescriptor = {
-    cli: "bun",
+    cli: "claude",
     homeEnvVar: "CLAUDE_CONFIG_DIR",
     updateCommand: "claude update",
     args: (_prompt, home) => ["run", join(home, script), home, realpathSync.native(home)],
@@ -498,31 +527,26 @@ test("probeDirectWorks spawns the CLI from inside the throwaway home, never the 
   expect(ok).toBe(true);
 });
 
-// `command -v` under dash answers with the relative form for a relative or empty PATH entry
-// (./node_modules/.bin/codex, or a bare `codex` for one in the caller's dir); spawned from
-// inside the temp home that path is ENOENT and the verdict would fall to the proxy. Windows
-// findCommand answers with a bare name on purpose (PATH resolves it), so the POSIX shape alone
-// is pinned here.
-test.skipIf(process.platform === "win32")(
-  "probeDirectWorks anchors a relative CLI path to the caller's cwd before the child leaves it",
-  async () => {
-    let seen: { cliPath: string; path: string[] } | null = null;
-    const ok = await probeDirectWorks(FAKE_DESCRIPTOR, () => {}, fakeSmoke(), {
-      findCommand: (c: string) => ({ kind: "found", path: join(".", "tools", c) }),
-      runProbe: (cliPath, _args, env) => {
-        seen = { cliPath, path: (env.PATH ?? "").split(delimiter) };
-        return { ok: true };
-      },
-    });
-    expect(ok).toBe(true);
-    const got = seen as unknown as { cliPath: string; path: string[] };
-    expect(got.cliPath).toBe(resolve("tools", "claude"));
-    // Only the entries this probe ADDED (the CLI's and gh's shared bin dir, once): the inherited PATH
-    // may itself carry "." or the like.
-    const inherited = new Set((process.env.PATH ?? "").split(delimiter));
-    expect(got.path.filter((p) => !inherited.has(p))).toEqual([resolve("tools")]);
-  },
-);
+// A relative PATH entry (`tools:`) answers a relative path on Windows (Bun.which leaves it as
+// given there); spawned from inside the temp home that path is ENOENT and the verdict would fall
+// to the proxy, so the probe anchors it to the caller's cwd first.
+test("probeDirectWorks anchors a relative CLI path to the caller's cwd before the child leaves it", async () => {
+  let seen: { cliPath: string; path: string[] } | null = null;
+  const ok = await probeDirectWorks(FAKE_DESCRIPTOR, () => {}, fakeSmoke(), {
+    findCommand: (c: string) => ({ kind: "found", path: join(".", "tools", c) }),
+    runProbe: (cliPath, _args, env) => {
+      seen = { cliPath, path: (env.PATH ?? "").split(delimiter) };
+      return { ok: true };
+    },
+  });
+  expect(ok).toBe(true);
+  const got = seen as unknown as { cliPath: string; path: string[] };
+  expect(got.cliPath).toBe(resolve("tools", "claude"));
+  // Only the entry this probe ADDED (gh's anchored bin dir; the CLI itself is spawned by its
+  // anchored path): the inherited PATH may itself carry "." or the like.
+  const inherited = new Set((process.env.PATH ?? "").split(delimiter));
+  expect(got.path.filter((p) => !inherited.has(p))).toEqual([resolve("tools")]);
+});
 
 // --- probeDirectWorks: env sanitization -------------------------------------
 
@@ -535,8 +559,9 @@ test("the real probe child never sees a provider variable the parent shell expor
   process.env.ANTHROPIC_BASE_URL = "http://127.0.0.1:4141";
   process.env.OPENAI_BASE_URL = "http://127.0.0.1:4141/v1";
   const script = "env_check.mts";
+  // The look seam below answers this runtime for `claude`, so the descriptor's name stays typed.
   const descriptor: ProbeDescriptor = {
-    cli: "bun",
+    cli: "claude",
     homeEnvVar: "CLAUDE_CONFIG_DIR",
     updateCommand: "claude update",
     args: (_prompt, home) => ["run", join(home, script)],

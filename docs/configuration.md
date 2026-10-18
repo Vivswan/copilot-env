@@ -204,7 +204,21 @@ Unset, the claude smoke runs `--model haiku` (the CLI resolves its own alias, so
 | ----------------- | -------- | ------- | ---------------------------- |
 | `shell.launchers` | `global` | `false` | Shell launchers cl / co / cx |
 
-The functions are described under [launchers](usage.md#launchers).
+The functions are described under [launchers](usage.md#launchers). `agent shell --clis` sets the key to `true`.
+
+### Installing the CLIs
+
+`agent shell --clis` runs each vendor's own installer, proves the result with `<cli> --version`, and turns `shell.launchers` on. No Node.js or npm is involved: an older `npm install -g` copy stays until you run `npm uninstall -g @anthropic-ai/claude-code @github/copilot @openai/codex` yourself.
+
+| CLI                | Linux / macOS                                           | Windows                                   | `--cooldown N`                                                                 |
+| ------------------ | ------------------------------------------------------- | ----------------------------------------- | ------------------------------------------------------------------------------ |
+| Claude Code        | `curl -fsSL https://claude.ai/install.sh \| bash`       | `irm https://claude.ai/install.ps1 \| iex` | any positive N: the `stable` channel, about a week behind `latest`; 0: `latest` |
+| GitHub Copilot CLI | `curl -fsSL https://gh.io/copilot-install \| bash`      | `winget install --id GitHub.Copilot --scope user --location "$env:LOCALAPPDATA\Microsoft\WinGet\Packages\GitHub.Copilot_Microsoft.Winget.Source_8wekyb3d8bbwe"` | the newest `github/copilot-cli` release at least N days old (`VERSION=` / `--version`) |
+| Codex CLI          | `curl -fsSL https://chatgpt.com/codex/install.sh \| CODEX_NON_INTERACTIVE=1 sh` | `irm https://chatgpt.com/codex/install.ps1 \| iex` | the newest `openai/codex` release at least N days old (`--release`) |
+
+Every run prints the installer line it runs and names every file that installer writes outside copilot-env's homes, the shell profile it may add a PATH line to included. Without `--cooldown`, each vendor installs its latest; with one, a vendor whose newest 500 releases hold none that old is skipped rather than pinned to a fresher one.
+
+`--no-sudo` skips winget, the Copilot CLI's only installer on Windows; the other installers are user-local everywhere. `--no-prereqs` only reports which CLIs are installed, with their versions.
 
 ## update
 

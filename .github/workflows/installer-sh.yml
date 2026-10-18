@@ -20,7 +20,10 @@ on:
         type: boolean
         default: false
       setup-clis:
-        description: true runs `agent shell --clis --cooldown` after install.
+        description: >-
+          true runs `agent shell --clis` after install: the three vendors'
+          own installers, at their latest (no --cooldown, so no anonymous
+          GitHub API read that a shared runner IP could exhaust).
         type: boolean
         default: false
       setup-launchers:
@@ -83,7 +86,7 @@ jobs:
       - name: Run agent shell --clis
         if: ${{ inputs.setup-clis }}
         run: |
-          "$HOME/.copilot-env/bin/agent" shell --clis --cooldown
+          "$HOME/.copilot-env/bin/agent" shell --clis
 
       - name: Enable the launchers (the shell.launchers config key)
         if: ${{ inputs.setup-launchers }}

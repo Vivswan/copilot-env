@@ -7,6 +7,7 @@ import {
   deferWriteReports,
   flushWriteReports,
   hideWritesUnder,
+  reportValueWrite,
 } from "../../src/utils/report_write.ts";
 import { envSnapshot, isolateAgentHomes } from "../helpers/env.ts";
 import { CHILD_VALUES, childValuesEnv, importSpecifier, ROOT, runScript } from "../helpers/run.ts";
@@ -146,6 +147,17 @@ const CONTRACTS: ContractCase[] = [
     ],
   },
 ];
+
+// A registry value is no path: resolved against cwd it could fall under a home and vanish, so it
+// takes the value road, which only dedups.
+test("a value write (the Windows User PATH) is named once, as rewritten, whatever the cwd", () => {
+  deferWriteReports();
+  reportValueWrite("HKCU\\Environment\\Path", "the User PATH, by the Codex CLI installer");
+  reportValueWrite("HKCU\\Environment\\Path", "again");
+  expect(flushWriteReports()).toEqual([
+    "rewritten -> HKCU\\Environment\\Path (the User PATH, by the Codex CLI installer)",
+  ]);
+});
 
 test("the transient cleanup names only a proven change", () => {
   for (const c of CONTRACTS) {

@@ -364,7 +364,6 @@ test.skipIf(process.platform === "win32")(
     const result = await runGhSpecAsync({
       file: "sh",
       args: ["-c", "echo tok; sleep 5 & echo $! >&2"],
-      shell: false,
       timeout: 10_000,
       env: { PATH: "/usr/bin:/bin" },
     });
@@ -1020,9 +1019,9 @@ test("parseAcquisition: --gh-user implies gh-cli and rejects every conflicting f
     "--gh-user only applies to `--provider gh-cli`",
   );
   expect(() => parseAcquisition(undefined, "tok", "x")).toThrow("--set implies gh-token");
-  // The shape gate: the pin becomes a `gh auth token --user` argv token that
-  // crosses cmd.exe on Windows, so anything outside a GitHub login's alphabet
-  // (blank included) is rejected before it can reach a shell.
+  // The shape gate: the pin becomes a `gh auth token --user` argv token, so
+  // anything outside a GitHub login's alphabet (blank included) is rejected
+  // before it reaches gh.
   for (const bad of ["   ", "%USERNAME%", "a b", "x;rm", "why'd"]) {
     expect(() => parseAcquisition(undefined, undefined, bad)).toThrow(
       "--gh-user must be a GitHub login (1-39 letters, digits, dashes, or underscores) or `auto`",

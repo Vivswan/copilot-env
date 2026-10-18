@@ -1,5 +1,6 @@
-// The fake codex CLI the catalog tests put on PATH (test/helpers/fake_codex.ts writes the
-// dispatchers that run it). Scripted by the JSON file beside it, re-read on every spawn.
+// The fake codex CLI the catalog tests put on PATH (test/helpers/fake_codex.ts writes the sh
+// dispatcher that runs it, or compiles it into codex.exe). Scripted by the JSON file beside the
+// dispatcher or the executable, re-read on every spawn.
 //   codex --version               -> `codex-cli <version>`, or exit 1 when null
 //   codex debug models --bundled  -> the bundled dump, or exit 1 when null
 //   codex debug models            -> the catalog probe: the answer depends on `probe` and on
@@ -9,8 +10,10 @@
 // and the last candidate's bytes are kept, so a test can see what a real codex would have been
 // asked to parse.
 import { appendFileSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 
-const dir = import.meta.dirname;
+// Compiled, the script's own dir is the executable's embedded root; the fixture sits beside the exe.
+const dir = Bun.isStandaloneExecutable ? dirname(process.execPath) : import.meta.dirname;
 const spec = JSON.parse(readFileSync(`${dir}/spec.json`, "utf8"));
 
 function out(text) {

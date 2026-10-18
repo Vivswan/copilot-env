@@ -329,6 +329,7 @@ graph TD
   agents --> claude
   agents --> codex
   agents --> copilot_api
+  agents --> install
   agents --> utils
   claude --> agents
   claude --> codex

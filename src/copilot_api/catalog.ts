@@ -27,7 +27,7 @@ export type CatalogSource = "direct" | "proxy";
  * Which User-Agent the one header set (directClientHeaders) carries on a direct fetch: `agents`
  * names a Direct agent's own (the Codex catalog seed, the web-search aliases); `passthrough` is
  * the version-free codex UA for consumers that feed no agent's requests (Desktop's fallback) and
- * must not resolve the versioned one, whose lookup can spawn `codex --version` and `npm view`.
+ * must not resolve the versioned one, whose lookup can spawn `codex --version`.
  */
 type DirectCatalogIdentity = { kind: "passthrough" } | { kind: "agents"; userAgent: string };
 

@@ -19,7 +19,7 @@ import {
   MATERIALIZED_ASSET_FILES,
 } from "../../src/install/installer.ts";
 import { readInstallMinimumReleaseAge } from "../../src/utils/bunfig.ts";
-import { childPathPrepending, withPowershellChildEnv } from "../../src/utils/command.ts";
+import { withPowershellChildEnv } from "../../src/utils/command.ts";
 import { readProjectConfig } from "../../src/utils/project_config.ts";
 import {
   currentReleaseTarget,
@@ -27,6 +27,7 @@ import {
   RELEASE_TARGETS,
   releaseAssetName,
 } from "../../src/utils/targets.ts";
+import { pathLedBy } from "../helpers/env.ts";
 import { ROOT, runScript, runSync, spawnChild } from "../helpers/run.ts";
 import { moduleSpecifiers, parseModule, resolveRelative, visit } from "../helpers/syntax.ts";
 import { describe, expect, removeDir, tempDir, test } from "../helpers/testing.ts";
@@ -628,7 +629,7 @@ describe("installer checkout guard refuses before mutating, proceeds on legacy r
             const res = runSync("bash", [join(ROOT, "install.sh"), "--dir", root], {
               env: {
                 ...process.env,
-                PATH: childPathPrepending([binDir]),
+                PATH: pathLedBy(binDir),
                 CI: "1",
                 CE_TEST_FINAL_URL: finalUrl,
                 CE_TEST_CURL_LOG: log,

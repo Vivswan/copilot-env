@@ -10,15 +10,28 @@ import { join } from "node:path";
 import { consola } from "consola";
 import {
   AGENT_CLIS,
-  buildNodePosixInstallScript,
-  computePathRefresh,
+  type AgentCli,
+  type CliInstallDeps,
+  classifyAgentCli,
+  defaultCliInstallDeps,
+  type InstallerCommand,
+  type InstallHost,
+  installedBinaryPath,
+  judgeInstallerExit,
+  judgePin,
+  planCliInstall,
+  type VendorWrite,
+  WINGET_UPDATE_NOT_APPLICABLE,
 } from "../../src/agents/cli_install.ts";
 import { runShell } from "../../src/commands/setup.ts";
 import { CopilotEnvConfig } from "../../src/copilot_api/env_config.ts";
 import { CI_RC_DIR_ENV, MARKER } from "../../src/shell/integration.ts";
+import { type CommandLook, findCommand } from "../../src/utils/command.ts";
 import { envSnapshot, isolateProxyHome } from "../helpers/env.ts";
-import { captureChannelsSync } from "../helpers/output.ts";
+import { captureChannels } from "../helpers/output.ts";
 import { expect, removeDir, tempDir, test } from "../helpers/testing.ts";
+
+const [CLAUDE, COPILOT, CODEX] = AGENT_CLIS;
 
 // runShell's flag validation throws BEFORE any install or rc wiring, so these
 // need no filesystem/network isolation.
@@ -45,7 +58,7 @@ test("shell: the CLI-install tuning flags require --clis, --no-prereqs excludes 
 });
 
 // The rc writes ride the suite's rc-dir/Documents seams, so this runs for real on every OS.
-test("runShell reports the launchers key on a wire and never writes it", () => {
+test("runShell reports the launchers key on a plain wire and never writes it", async () => {
   const restore = envSnapshot();
   let dir = isolateProxyHome("copilot-setup-");
   const lines: string[] = [];
@@ -54,13 +67,13 @@ test("runShell reports the launchers key on a wire and never writes it", () => {
     lines.push(String(msg));
   }) as typeof consola.info;
   try {
-    runShell({});
+    await runShell({});
     expect(lines.at(-1)).toContain("Launchers: disabled (the shell.launchers config key)");
     expect(new CopilotEnvConfig().read().global["shell.launchers"]).toBeUndefined();
     new CopilotEnvConfig().set({ "shell.launchers": true });
-    runShell({});
+    await runShell({});
     expect(lines.at(-1)).toContain("Launchers: enabled (the shell.launchers config key)");
-    runShell({ remove: true }); // the unwire is the rc block's; the key is the user's
+    await runShell({ remove: true }); // the unwire is the rc block's; the key is the user's
     expect(new CopilotEnvConfig().launchersEnabled()).toBe(true);
   } finally {
     consola.info = orig;
@@ -69,379 +82,1056 @@ test("runShell reports the launchers key on a wire and never writes it", () => {
   }
 });
 
-// --- the best-effort `--clis` install run ---------------------------------------
-//
-// POSIX-only: the fake `npm` is a sh script, and the win32 arm rewrites the real
-// user-registry PATH, which no test may touch.
+// --- the installer commands ------------------------------------------------------
 
-/** What the fake `npm view <pkg> version` answers: the version every run targets. */
-const FAKE_LATEST = "2.0.0";
-/** Hand-written npm failure shapes: the `error` object `npm ls -g --json` prints to stdout, and
- *  the stderr of a failed listing, with the blank lines npm leaves between its groups; its last
- *  line names the debug log. */
-const NPM_LS_ERROR = {
-  code: "ENOTDIR",
-  summary: "not a directory, scandir C:\\npm\\prefix\\node_modules",
-  detail: "",
-};
-const NPM_LS_LOG_LINE =
-  "npm error A complete log of this run can be found in: C:\\npm\\cache\\_logs\\2026-01-01T00_00_00_000Z-debug-0.log";
-const NPM_LS_STDERR = [
-  "npm error code ENOTDIR",
-  "",
-  "npm error syscall scandir",
-  "npm error path C:\\npm",
-  "",
-  NPM_LS_LOG_LINE,
+const CLAUDE_SH = "https://claude.ai/install.sh";
+const CLAUDE_PS1 = "https://claude.ai/install.ps1";
+const COPILOT_SH = "https://gh.io/copilot-install";
+const CODEX_SH = "https://chatgpt.com/codex/install.sh";
+const CODEX_PS1 = "https://chatgpt.com/codex/install.ps1";
+const POWERSHELL_ARGS = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"];
+const COPILOT_PACKAGE_DIR =
+  "C:\\Users\\user\\AppData\\Local\\Microsoft\\WinGet\\Packages\\GitHub.Copilot_Microsoft.Winget.Source_8wekyb3d8bbwe";
+/** The plan pins winget's scope and package directory, so its own settings move nothing the
+ *  ledger names. */
+const WINGET_ARGS = [
+  "install",
+  "--id",
+  "GitHub.Copilot",
+  "--exact",
+  "--scope",
+  "user",
+  "--location",
+  COPILOT_PACKAGE_DIR,
+  "--accept-package-agreements",
+  "--accept-source-agreements",
 ];
-const LS_FAILED_SKIP =
-  "Could not read npm's global package list (npm ls -g failed); skipping the CLI installs.";
 
-interface CliInstallFixture {
-  dir: string;
-  /** Where the fake `npm install -g` lays down CLI shims (`<prefix>/bin`). */
-  globalBin: string;
-  /** The rc file the wire targets (pre-created so rcFiles picks it). */
-  bashrc: string;
+/** Hand-written hosts for the pure planner and path tests: a user on each platform, no vendor
+ *  knobs set, no profile file present. */
+function host(platform: NodeJS.Platform, over: Partial<InstallHost> = {}): InstallHost {
+  const windows = platform === "win32";
+  return {
+    platform,
+    home: windows ? "C:\\Users\\user" : "/home/user",
+    localAppData: windows ? "C:\\Users\\user\\AppData\\Local" : "/home/user/.local",
+    env: {},
+    root: false,
+    exists: () => false,
+    ...over,
+  };
 }
 
+const LATEST_POSIX_LINES = [
+  `curl -fsSL ${CLAUDE_SH} | bash`,
+  `curl -fsSL ${COPILOT_SH} | bash`,
+  `curl -fsSL ${CODEX_SH} | CODEX_NON_INTERACTIVE=1 sh`,
+];
+
+// The vendors' documented installers, read 2026-10-17: https://code.claude.com/docs/en/setup
+// (stable / latest / a version as the script's argument), https://github.com/github/copilot-cli
+// (install.sh takes VERSION; Windows is winget GitHub.Copilot), and https://github.com/openai/codex
+// (install.sh --release, install.ps1 -Release, CODEX_NON_INTERACTIVE skips its prompts). CI runs
+// only the unpinned lines live (the installer smoke legs), so the pinned spellings and the
+// --no-sudo refusal are pinned here per platform. The POSIX line runs under `bash -o pipefail`:
+// a curl that fails must not leave the pipeline at `sh`'s exit 0.
+test("planCliInstall spells each vendor's documented installer per platform under bash -o pipefail, splices the pin --cooldown resolved, and refuses winget under --no-sudo", () => {
+  const posixRows: Array<[AgentCli, string | null, string]> = [
+    [CLAUDE, null, `curl -fsSL ${CLAUDE_SH} | bash`],
+    [CLAUDE, "stable", `curl -fsSL ${CLAUDE_SH} | bash -s stable`],
+    [COPILOT, null, `curl -fsSL ${COPILOT_SH} | bash`],
+    [COPILOT, "v1.0.95", `curl -fsSL ${COPILOT_SH} | VERSION=v1.0.95 bash`],
+    [CODEX, null, `curl -fsSL ${CODEX_SH} | CODEX_NON_INTERACTIVE=1 sh`],
+    [
+      CODEX,
+      "0.163.0",
+      `curl -fsSL ${CODEX_SH} | CODEX_NON_INTERACTIVE=1 sh -s -- --release 0.163.0`,
+    ],
+  ];
+  for (const platform of ["linux", "darwin"] as const) {
+    for (const [cli, pin, line] of posixRows) {
+      // --no-sudo changes nothing here: every POSIX installer is user-local.
+      for (const noSudo of [false, true]) {
+        expect(
+          planCliInstall(cli, pin, host(platform), noSudo),
+          `${platform} ${cli.command} ${pin}`,
+        ).toEqual({
+          kind: "run",
+          command: {
+            cli: cli.command,
+            kind: "posix",
+            file: "bash",
+            args: ["-o", "pipefail", "-c", line],
+            line,
+            writes: expect.any(Array),
+          },
+        });
+      }
+    }
+  }
+
+  const windowsRows: Array<
+    [AgentCli, string | null, Pick<InstallerCommand, "kind" | "file" | "args" | "line">]
+  > = [
+    [
+      CLAUDE,
+      null,
+      {
+        kind: "powershell",
+        file: "powershell",
+        args: [...POWERSHELL_ARGS, `irm ${CLAUDE_PS1} | iex`],
+        line: `irm ${CLAUDE_PS1} | iex`,
+      },
+    ],
+    [
+      CLAUDE,
+      "stable",
+      {
+        kind: "powershell",
+        file: "powershell",
+        args: [...POWERSHELL_ARGS, `& ([scriptblock]::Create((irm ${CLAUDE_PS1}))) stable`],
+        line: `& ([scriptblock]::Create((irm ${CLAUDE_PS1}))) stable`,
+      },
+    ],
+    [
+      CODEX,
+      null,
+      {
+        kind: "powershell",
+        file: "powershell",
+        args: [...POWERSHELL_ARGS, `$env:CODEX_NON_INTERACTIVE = '1'; irm ${CODEX_PS1} | iex`],
+        line: `$env:CODEX_NON_INTERACTIVE = '1'; irm ${CODEX_PS1} | iex`,
+      },
+    ],
+    [
+      CODEX,
+      "0.163.0",
+      {
+        kind: "powershell",
+        file: "powershell",
+        args: [
+          ...POWERSHELL_ARGS,
+          `$env:CODEX_NON_INTERACTIVE = '1'; & ([scriptblock]::Create((irm ${CODEX_PS1}))) -Release 0.163.0`,
+        ],
+        line: `$env:CODEX_NON_INTERACTIVE = '1'; & ([scriptblock]::Create((irm ${CODEX_PS1}))) -Release 0.163.0`,
+      },
+    ],
+    [
+      COPILOT,
+      null,
+      {
+        kind: "winget",
+        file: "winget",
+        args: WINGET_ARGS,
+        line: `winget ${WINGET_ARGS.join(" ")}`,
+      },
+    ],
+    [
+      COPILOT,
+      "v1.0.95",
+      {
+        kind: "winget",
+        file: "winget",
+        args: [...WINGET_ARGS, "--version", "v1.0.95"],
+        line: `winget ${WINGET_ARGS.join(" ")} --version v1.0.95`,
+      },
+    ],
+  ];
+  for (const [cli, pin, command] of windowsRows) {
+    expect(planCliInstall(cli, pin, host("win32"), false), `win32 ${cli.command} ${pin}`).toEqual({
+      kind: "run",
+      command: { cli: cli.command, ...command, writes: expect.any(Array) },
+    });
+  }
+  // The argv stays literal; the narrated line quotes, for PowerShell, a path a shell would split
+  // at its space.
+  const spaced = planCliInstall(
+    COPILOT,
+    null,
+    host("win32", { localAppData: "C:\\Users\\example user\\AppData\\Local" }),
+    false,
+  );
+  const spacedDir =
+    "C:\\Users\\example user\\AppData\\Local\\Microsoft\\WinGet\\Packages\\GitHub.Copilot_Microsoft.Winget.Source_8wekyb3d8bbwe";
+  expect(spaced.kind === "run" ? spaced.command.args : null).toContain(spacedDir);
+  expect(spaced.kind === "run" ? spaced.command.line : null).toContain(`--location '${spacedDir}'`);
+
+  // The vendor PowerShell installers are user-local, so --no-sudo keeps them.
+  expect(planCliInstall(CLAUDE, null, host("win32"), true).kind).toBe("run");
+  expect(planCliInstall(CODEX, null, host("win32"), true).kind).toBe("run");
+
+  const refused = planCliInstall(COPILOT, null, host("win32"), true);
+  expect(refused.kind).toBe("refused");
+  if (refused.kind === "refused") {
+    const text = refused.message.render(null);
+    expect(text).toContain("--no-sudo rules out winget, its only installer on Windows");
+    expect(text).toContain("https://github.com/github/copilot-cli/releases");
+  }
+});
+
+// The install paths the vendors' scripts resolve (the same sources as above, read in their
+// install.sh / install.ps1): where an install is proven when this process's PATH predates the
+// installer's PATH edit, and what the disclosure names.
+test("installedBinaryPath follows each vendor's script: ~/.local/bin by default, CODEX_INSTALL_DIR and PREFIX when set, /usr/local for a root Copilot install, the Windows dirs, and winget's package directory for the Copilot CLI", () => {
+  const rows: Array<[string, AgentCli, InstallHost, string]> = [
+    ["claude linux", CLAUDE, host("linux"), "/home/user/.local/bin/claude"],
+    ["copilot darwin", COPILOT, host("darwin"), "/home/user/.local/bin/copilot"],
+    ["codex linux", CODEX, host("linux"), "/home/user/.local/bin/codex"],
+    [
+      "codex honors CODEX_INSTALL_DIR",
+      CODEX,
+      host("linux", { env: { CODEX_INSTALL_DIR: "/opt/codex-bin" } }),
+      "/opt/codex-bin/codex",
+    ],
+    [
+      "copilot honors PREFIX",
+      COPILOT,
+      host("linux", { env: { PREFIX: "/home/user/custom" } }),
+      "/home/user/custom/bin/copilot",
+    ],
+    // `${VAR:-default}` in the POSIX scripts: only an EMPTY knob is unset, a blank one is a
+    // directory named by a space; the PowerShell installer's IsNullOrWhiteSpace takes a blank as
+    // unset too.
+    [
+      "an empty knob is unset",
+      CODEX,
+      host("linux", { env: { CODEX_INSTALL_DIR: "" } }),
+      "/home/user/.local/bin/codex",
+    ],
+    [
+      "a blank knob names a directory on POSIX",
+      CODEX,
+      host("linux", { env: { CODEX_INSTALL_DIR: " " } }),
+      " /codex",
+    ],
+    [
+      "a blank knob is unset on Windows",
+      CODEX,
+      host("win32", { env: { CODEX_INSTALL_DIR: " " } }),
+      "C:\\Users\\user\\AppData\\Local\\Programs\\OpenAI\\Codex\\bin\\codex.exe",
+    ],
+    [
+      "an empty PREFIX is unset",
+      COPILOT,
+      host("linux", { env: { PREFIX: "" } }),
+      "/home/user/.local/bin/copilot",
+    ],
+    [
+      "copilot as root defaults to /usr/local",
+      COPILOT,
+      host("linux", { root: true }),
+      "/usr/local/bin/copilot",
+    ],
+    ["claude win32", CLAUDE, host("win32"), "C:\\Users\\user\\.local\\bin\\claude.exe"],
+    [
+      "codex win32",
+      CODEX,
+      host("win32"),
+      "C:\\Users\\user\\AppData\\Local\\Programs\\OpenAI\\Codex\\bin\\codex.exe",
+    ],
+    [
+      "codex win32 honors CODEX_INSTALL_DIR",
+      CODEX,
+      host("win32", { env: { CODEX_INSTALL_DIR: "D:\\tools\\codex" } }),
+      "D:\\tools\\codex\\codex.exe",
+    ],
+    [
+      "copilot win32 is winget's package directory",
+      COPILOT,
+      host("win32"),
+      `${COPILOT_PACKAGE_DIR}\\copilot.exe`,
+    ],
+  ];
+  for (const [name, cli, at, path] of rows) {
+    expect(installedBinaryPath(cli, at), name).toBe(path);
+  }
+  // The Codex POSIX installer symlinks codex (and on macOS codex-code-mode-host) into the release
+  // its `current` link selects.
+  const plan = planCliInstall(CODEX, null, host("darwin", { env: { SHELL: "/bin/zsh" } }), false);
+  expect(plan.kind === "run" ? plan.command.writes : []).toEqual([
+    {
+      kind: "link",
+      path: "/home/user/.local/bin/codex",
+      target: "/home/user/.codex/packages/standalone/current/bin/codex",
+    },
+    {
+      kind: "link",
+      path: "/home/user/.local/bin/codex-code-mode-host",
+      target: "/home/user/.codex/packages/standalone/current/bin/codex-code-mode-host",
+    },
+    { kind: "file", path: "/home/user/.codex/packages/standalone/" },
+    {
+      kind: "file",
+      path: "/home/user/.zprofile",
+      detail: "a PATH block it appends when its directory is not on PATH",
+    },
+  ]);
+});
+
+// The Claude installer's writes as its vendor lists them (its install troubleshooting page, read
+// 2026-10-17): the launcher is a symlink into the data home's versions/; XDG_DATA_HOME,
+// XDG_STATE_HOME, and XDG_CACHE_HOME replace ~/.local/share, ~/.local/state, and ~/.cache; the
+// global config file follows CLAUDE_CONFIG_DIR. Windows is documented as writing under
+// %USERPROFILE% only.
+test("the Claude writes follow the XDG homes and CLAUDE_CONFIG_DIR on POSIX, an empty knob unset, and stay under the profile on Windows", () => {
+  const writes = (at: InstallHost): VendorWrite[] | null => {
+    const plan = planCliInstall(CLAUDE, null, at, false);
+    return plan.kind === "run" ? plan.command.writes : null;
+  };
+  expect(writes(host("linux"))).toEqual([
+    {
+      kind: "link",
+      path: "/home/user/.local/bin/claude",
+      target: "/home/user/.local/share/claude/versions/<version>",
+    },
+    { kind: "file", path: "/home/user/.local/share/claude/", detail: "each version it downloads" },
+    { kind: "file", path: "/home/user/.local/state/claude/", detail: "its lock files" },
+    { kind: "file", path: "/home/user/.cache/claude/", detail: "staged downloads" },
+    { kind: "file", path: "/home/user/.claude/downloads/", detail: "a download it removes again" },
+    { kind: "file", path: "/home/user/.claude.json", detail: "the install method it records" },
+  ]);
+  const knobs = host("linux", {
+    env: {
+      XDG_DATA_HOME: "/mnt/data",
+      XDG_STATE_HOME: "/mnt/state",
+      XDG_CACHE_HOME: "",
+      CLAUDE_CONFIG_DIR: "/home/user/cfg/claude",
+    },
+  });
+  expect(writes(knobs)?.map((write) => write.path)).toEqual([
+    "/home/user/.local/bin/claude",
+    "/mnt/data/claude/",
+    "/mnt/state/claude/",
+    "/home/user/.cache/claude/",
+    "/home/user/.claude/downloads/",
+    "/home/user/cfg/claude/.claude.json",
+  ]);
+  expect(writes(knobs)?.[0]).toEqual({
+    kind: "link",
+    path: "/home/user/.local/bin/claude",
+    target: "/mnt/data/claude/versions/<version>",
+  });
+  expect(writes(host("win32"))).toEqual([
+    { kind: "file", path: "C:\\Users\\user\\.local\\bin\\claude.exe" },
+    { kind: "file", path: "C:\\Users\\user\\.local\\share\\claude\\" },
+    {
+      kind: "file",
+      path: "C:\\Users\\user\\.claude\\downloads\\",
+      detail: "a download it removes again",
+    },
+    {
+      kind: "file",
+      path: "C:\\Users\\user\\.claude.json",
+      detail: "the install method it records",
+    },
+  ]);
+});
+
+// The profile files the vendors' scripts edit, as their scripts pick them (read 2026-10-17):
+// Codex's pick_profile switches on `$os:$SHELL` (`*/zsh`, `*/bash`, else ~/.profile); the
+// Copilot installer on `basename "${SHELL:-/bin/sh}"` (zsh: `${ZDOTDIR:-$HOME}/.zprofile`; bash:
+// the first of ~/.bash_profile and ~/.bash_login that exists, else ~/.profile; fish: its conf.d
+// file; else ~/.profile). The Codex Windows installer edits the User PATH in the registry.
+test("the disclosed profile file is the one each vendor's script picks from the shell, the platform, and the files present", () => {
+  const pathEdit = (cli: AgentCli, at: InstallHost): VendorWrite | undefined => {
+    const plan = planCliInstall(cli, null, at, false);
+    return plan.kind === "run" ? plan.command.writes.at(-1) : undefined;
+  };
+  const codexRows: Array<[string, InstallHost, string]> = [
+    ["darwin zsh", host("darwin", { env: { SHELL: "/bin/zsh" } }), "/home/user/.zprofile"],
+    ["darwin bash", host("darwin", { env: { SHELL: "/bin/bash" } }), "/home/user/.bash_profile"],
+    ["linux zsh", host("linux", { env: { SHELL: "/usr/bin/zsh" } }), "/home/user/.zshrc"],
+    ["linux bash", host("linux", { env: { SHELL: "/bin/bash" } }), "/home/user/.bashrc"],
+    ["linux fish", host("linux", { env: { SHELL: "/usr/bin/fish" } }), "/home/user/.profile"],
+    ["no SHELL", host("linux"), "/home/user/.profile"],
+  ];
+  for (const [name, at, path] of codexRows) {
+    expect(pathEdit(CODEX, at), `codex ${name}`).toEqual({
+      kind: "file",
+      path,
+      detail: "a PATH block it appends when its directory is not on PATH",
+    });
+  }
+  expect(pathEdit(CODEX, host("win32"))).toEqual({
+    kind: "value",
+    path: "HKCU\\Environment\\Path",
+    detail: "the User PATH",
+  });
+
+  const bashProfile = (...present: string[]): InstallHost =>
+    host("linux", {
+      env: { SHELL: "/bin/bash" },
+      exists: (path) => present.includes(path),
+    });
+  const copilotRows: Array<[string, InstallHost, string]> = [
+    ["zsh", host("linux", { env: { SHELL: "/bin/zsh" } }), "/home/user/.zprofile"],
+    [
+      "zsh with ZDOTDIR",
+      host("linux", { env: { SHELL: "/bin/zsh", ZDOTDIR: "/home/user/.config/zsh" } }),
+      "/home/user/.config/zsh/.zprofile",
+    ],
+    [
+      "bash with a .bash_profile",
+      bashProfile("/home/user/.bash_profile"),
+      "/home/user/.bash_profile",
+    ],
+    [
+      "bash with only a .bash_login",
+      bashProfile("/home/user/.bash_login"),
+      "/home/user/.bash_login",
+    ],
+    ["bash with neither", bashProfile(), "/home/user/.profile"],
+    [
+      "fish",
+      host("linux", { env: { SHELL: "/usr/bin/fish" } }),
+      "/home/user/.config/fish/conf.d/copilot.fish",
+    ],
+    [
+      "fish with XDG_CONFIG_HOME",
+      host("darwin", {
+        env: { SHELL: "/opt/homebrew/bin/fish", XDG_CONFIG_HOME: "/home/user/cfg" },
+      }),
+      "/home/user/cfg/fish/conf.d/copilot.fish",
+    ],
+    ["no SHELL (sh)", host("linux"), "/home/user/.profile"],
+  ];
+  for (const [name, at, path] of copilotRows) {
+    expect(pathEdit(COPILOT, at), `copilot ${name}`).toEqual({
+      kind: "file",
+      path,
+      detail: "a PATH line it offers to append when its directory is not on PATH",
+    });
+  }
+  // The Codex Windows installer makes the visible bin dir a junction into the standalone tree's
+  // current release (its Ensure-Junction), holding codex.exe and rg.exe (its required files); on
+  // POSIX rg lives inside the standalone tree named above.
+  const codexWindows = planCliInstall(CODEX, null, host("win32"), false);
+  expect(codexWindows.kind === "run" ? codexWindows.command.writes : null).toEqual([
+    {
+      kind: "link",
+      path: "C:\\Users\\user\\AppData\\Local\\Programs\\OpenAI\\Codex\\bin",
+      target: "C:\\Users\\user\\.codex\\packages\\standalone\\current\\bin\\",
+      detail: "a junction",
+    },
+    {
+      kind: "file",
+      path: "C:\\Users\\user\\AppData\\Local\\Programs\\OpenAI\\Codex\\bin\\codex.exe",
+    },
+    {
+      kind: "file",
+      path: "C:\\Users\\user\\AppData\\Local\\Programs\\OpenAI\\Codex\\bin\\rg.exe",
+      detail: "ripgrep, beside codex.exe",
+    },
+    { kind: "file", path: "C:\\Users\\user\\.codex\\packages\\standalone\\" },
+    { kind: "value", path: "HKCU\\Environment\\Path", detail: "the User PATH" },
+  ]);
+
+  // winget's footprint for GitHub.Copilot (its manifest and winget's sources, read 2026-10-17).
+  // The dependency lands as an MSIX: the user scope rules out Microsoft.PowerShell's machine-scope
+  // MSI arms.
+  const winget = planCliInstall(
+    COPILOT,
+    null,
+    host("win32", { env: { ProgramFiles: "D:\\Program Files" } }),
+    false,
+  );
+  const pwsh =
+    "D:\\Program Files\\WindowsApps\\Microsoft.PowerShell_<version>_<arch>__8wekyb3d8bbwe";
+  expect(winget.kind === "run" ? winget.command.writes : null).toEqual([
+    { kind: "file", path: `${COPILOT_PACKAGE_DIR}\\copilot.exe` },
+    {
+      kind: "file",
+      path: `${COPILOT_PACKAGE_DIR}\\`,
+      detail: "the archive's other files and winget's portable index",
+    },
+    {
+      kind: "link",
+      path: "C:\\Users\\user\\AppData\\Local\\Microsoft\\WinGet\\Links\\copilot.exe",
+      target: `${COPILOT_PACKAGE_DIR}\\copilot.exe`,
+      detail: "where winget can make a symlink; else its directory goes on the PATH",
+    },
+    { kind: "value", path: "HKCU\\Environment\\Path", detail: "the User PATH" },
+    {
+      kind: "value",
+      path: "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\GitHub.Copilot_Microsoft.Winget.Source_8wekyb3d8bbwe",
+      detail: "its Apps & features entry",
+    },
+    {
+      kind: "file",
+      path: "C:\\Users\\user\\AppData\\Local\\Packages\\Microsoft.DesktopAppInstaller_8wekyb3d8bbwe\\",
+      detail: "winget's own state: tracking, settings, logs",
+    },
+    {
+      kind: "file",
+      path: "D:\\Program Files\\WindowsApps\\Microsoft.Winget.Source_<version>_neutral__8wekyb3d8bbwe\\",
+      detail: "its source index, when winget refreshes its source",
+    },
+    {
+      kind: "file",
+      path: `${pwsh}\\`,
+      detail: "pwsh 7 as its MSIX package, when PowerShell 7 is absent",
+    },
+    {
+      kind: "link",
+      path: "C:\\Users\\user\\AppData\\Local\\Microsoft\\WindowsApps\\pwsh.exe",
+      target: `${pwsh}\\pwsh.exe`,
+      detail: "its execution alias, when PowerShell 7 is absent",
+    },
+  ]);
+});
+
+// --cooldown pins a release; the proof's `--version` line names whatever landed. A substring
+// match took 1.0.98 for a pinned 1.0.9, so the line's version token is compared as a semver.
+test("judgePin compares the --version line's version token with the pin as a semver: the v prefix and the vendor's wording ignored, a prefix no match, a line without a version unverifiable", () => {
+  const rows: Array<[string, string, ReturnType<typeof judgePin>]> = [
+    ["codex-cli 0.163.0", "0.163.0", { kind: "pinned" }],
+    ["1.0.95", "v1.0.95", { kind: "pinned" }],
+    ["2.0.14 (Claude Code)", "2.0.14", { kind: "pinned" }],
+    ["GitHub Copilot CLI 1.0.98", "v1.0.9", { kind: "other", proved: "1.0.98" }],
+    ["copilot 1.0.98-1", "v1.0.98", { kind: "other", proved: "1.0.98-1" }],
+    ["copilot 9.9.9 (fake)", "v1.0.95", { kind: "other", proved: "9.9.9" }],
+    ["codex (fake)", "0.163.0", { kind: "unverifiable" }],
+    ["codex 0.163.0", "stable", { kind: "unverifiable" }],
+  ];
+  for (const [line, pin, judgement] of rows) {
+    expect(judgePin(line, pin), `${line} vs ${pin}`).toEqual(judgement);
+  }
+});
+
+// An npm-installed CLI on Windows is a `.cmd` shim that only cmd.exe runs, and nothing of ours
+// routes through cmd.exe any more: one classification, shared by every spawn site, decides by
+// the extension, not by the EINVAL a spawn would give.
+test("classifyAgentCli reads a .cmd or .bat path as an npm shim this build cannot run, with the uninstall line; any other path is found; absent stays absent", () => {
+  const found = (path: string): CommandLook => ({ kind: "found", path });
+  const shim = (path: string): ReturnType<typeof classifyAgentCli> => ({
+    kind: "npm-shim",
+    path,
+    note: `${path} is an npm-installed copy of codex this build cannot run; npm uninstall -g @openai/codex, then agent shell --clis`,
+  });
+  const rows: Array<[CommandLook, ReturnType<typeof classifyAgentCli>]> = [
+    [found("C:\\npm\\codex.cmd"), shim("C:\\npm\\codex.cmd")],
+    [found("C:\\npm\\codex.CMD"), shim("C:\\npm\\codex.CMD")],
+    [found("C:\\npm\\codex.bat"), shim("C:\\npm\\codex.bat")],
+    [
+      found("C:\\Users\\user\\AppData\\Local\\Programs\\OpenAI\\Codex\\bin\\codex.exe"),
+      {
+        kind: "found",
+        path: "C:\\Users\\user\\AppData\\Local\\Programs\\OpenAI\\Codex\\bin\\codex.exe",
+      },
+    ],
+    [found("/home/user/.local/bin/codex"), { kind: "found", path: "/home/user/.local/bin/codex" }],
+    [{ kind: "absent" }, { kind: "absent" }],
+  ];
+  for (const [look, classified] of rows) {
+    expect(classifyAgentCli("codex", look), JSON.stringify(look)).toEqual(classified);
+  }
+  const claude = classifyAgentCli("claude", found("C:\\npm\\claude.cmd"));
+  expect(claude.kind === "npm-shim" ? claude.note : null).toContain(
+    "npm uninstall -g @anthropic-ai/claude-code",
+  );
+});
+
+// winget answers 0x8A15002B (APPINSTALLER_CLI_ERROR_UPDATE_NOT_APPLICABLE, -1978335189 as the
+// int32 a spawn reports) when the package is installed and no upgrade applies: a re-run of --clis
+// with the Copilot CLI current is not a failed install. Nothing on CI re-runs winget, so the code
+// is pinned here.
+test("judgeInstallerExit: exit 0 installed, winget's no-applicable-upgrade code already current, every other exit or spawn error failed with the reason", () => {
+  const posix = planCliInstall(CLAUDE, null, host("linux"), false);
+  const winget = planCliInstall(COPILOT, null, host("win32"), false);
+  if (posix.kind !== "run" || winget.kind !== "run") throw new Error("both plans must run");
+  const rows: Array<
+    [
+      string,
+      InstallerCommand,
+      Parameters<typeof judgeInstallerExit>[1],
+      ReturnType<typeof judgeInstallerExit>,
+    ]
+  > = [
+    ["exit 0", posix.command, { status: 0 }, { kind: "installed" }],
+    [
+      "winget already current",
+      winget.command,
+      { status: WINGET_UPDATE_NOT_APPLICABLE },
+      { kind: "already-current" },
+    ],
+    [
+      "the same code from another installer is a failure",
+      posix.command,
+      { status: WINGET_UPDATE_NOT_APPLICABLE },
+      { kind: "failed", detail: "the installer exited -1978335189" },
+    ],
+    ["exit 1", posix.command, { status: 1 }, { kind: "failed", detail: "the installer exited 1" }],
+    [
+      "a signal death",
+      posix.command,
+      { status: null, signal: "SIGKILL" },
+      { kind: "failed", detail: "the installer was killed by SIGKILL" },
+    ],
+    [
+      "a spawn error",
+      posix.command,
+      { status: null, error: new Error("spawnSync bash ENOENT") },
+      { kind: "failed", detail: "the installer did not start: spawnSync bash ENOENT" },
+    ],
+  ];
+  for (const [name, command, result, verdict] of rows) {
+    expect(judgeInstallerExit(command, result), name).toEqual(verdict);
+  }
+});
+
+// --- the best-effort `--clis` install run ---------------------------------------
+//
+// POSIX-only: the installs and the `--version` proofs run real `sh` shims.
+
+type Command = AgentCli["command"];
+
+type Landing = "vendor-dir" | "unversioned" | "broken" | "nowhere";
+
+interface Fixture {
+  dir: string;
+  /** The first PATH entry: where pre-existing copies sit. */
+  pathBin: string;
+  /** The vendors' install dir under the fixture HOME, on PATH unless the row says otherwise. */
+  vendorBin: string;
+  home: string;
+  /** The rc file the wire targets (pre-created so rcFiles picks it). */
+  bashrc: string;
+  /** Every installer command the run handed the fake, in order. */
+  runs: InstallerCommand[];
+  deps: CliInstallDeps;
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** The Claude installer's XDG knobs: cleared per fixture so its writes land under the fixture HOME. */
+const XDG_HOMES = ["XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME"] as const;
+
+/** A hand-written GitHub release row published `daysAgo` days before the run. */
+function release(tag: string, daysAgo: number, flags: { prerelease?: boolean } = {}): unknown {
+  return {
+    tag_name: tag,
+    published_at: new Date(Date.now() - daysAgo * DAY_MS).toISOString(),
+    draft: false,
+    prerelease: flags.prerelease ?? false,
+  };
+}
+
+/** Each vendor's releases as API pages, newest first; a short page is the last one. */
+const COPILOT_PAGES: unknown[][] = [
+  [
+    release("v1.0.99", 1),
+    release("v1.0.100-1", 0, { prerelease: true }),
+    release("v1.0.95", 8),
+    release("v1.0.90", 20),
+  ],
+];
+const CODEX_PAGES: unknown[][] = [
+  [
+    release("rust-v0.164.0-alpha.1", 0, { prerelease: true }),
+    release("rust-v0.164.0", 2),
+    release("rust-v0.163.0", 9),
+    release("rust-v0.160.0", 30),
+  ],
+];
+/** A full first page of fresh alphas, the shape openai/codex answers most days, with the week-old
+ *  stable release on the page after it. */
+const CODEX_PAGED: unknown[][] = [
+  Array.from({ length: 100 }, (_, i) =>
+    release(`rust-v0.165.0-alpha.${i}`, 0, { prerelease: true }),
+  ),
+  [release("rust-v0.163.0", 9)],
+];
+
 /**
- * Nothing real may satisfy a look: PATH holds only the fixture bin (the fake npm plus `sh` and
- * `chmod` links), NVM_DIR points nowhere, and the rc seam targets a fresh dir. The fake npm
- * answers silently: stdio is inherited, so a chatty fake would bypass captureRun.
+ * Nothing real may satisfy a look: PATH holds the fixture bin (`sh` for the shims plus any
+ * pre-existing copies) and the vendors' install dir under the fixture HOME; SHELL is bash and
+ * CODEX_HOME the fixture's so the vendors' write picks are known; the rc seam targets a fresh dir.
  */
-function stageCliInstallFixture(opts: {
-  /** `npm prefix -g` exits 1 instead of printing the prefix. */
-  prefixFails?: boolean;
-  /** The shim's interpreter is missing: it still resolves (`command -v` checks the executable bit
-   *  alone), and every npm spawn fails with ENOENT. */
-  npmUnspawnable?: boolean;
-  /** `npm ls -g` exits 1 instead of printing the tree: with npm's `error` object on stdout and
-   *  nothing on stderr, or with error lines on stderr and nothing on stdout. */
-  lsFails?: "json" | "stderr";
-  /** Packages whose `npm install -g` exits 1 instead of laying down the shim. */
-  failInstalls?: readonly string[];
-  /** Commands pre-placed on PATH, so installCli reads them as already installed. */
-  preinstalled?: readonly string[];
-  /** What the fake `npm ls -g` reports as installed: package name -> version, or null for a
-   *  package npm lists without a version (its package.json unreadable). */
-  npmInstalled?: Readonly<Record<string, string | null>>;
-}): CliInstallFixture {
+function stageFixture(opts: {
+  lands?: Partial<Record<Command, Landing>>;
+  /** CLIs whose installer exits 1. */
+  fails?: readonly Command[];
+  /** Copies already on PATH (ahead of the vendors' dir) before the run. */
+  preinstalled?: readonly Command[];
+  /** Copies already on PATH whose `--version` exits 1. */
+  brokenOnPath?: readonly Command[];
+  /** The vendors' install dir is NOT on PATH: a fresh host whose installer edit lands in new shells. */
+  vendorOffPath?: boolean;
+  /** `owner/name` -> its release pages, or the HTTP status its lookup answers. */
+  releases?: Record<string, unknown[][] | number>;
+  /** The PATH look, where a row needs an answer no POSIX PATH can give (a `.cmd` shim). */
+  look?: CliInstallDeps["look"];
+}): Fixture {
   const dir = tempDir("copilot-setup-clis-");
   const pathBin = join(dir, "path-bin");
-  const prefix = join(dir, "npm-prefix");
-  const globalBin = join(prefix, "bin");
+  const home = join(dir, "home");
+  const vendorBin = join(home, ".local", "bin");
   const rcDir = join(dir, "rc");
-  for (const d of [pathBin, globalBin, rcDir]) mkdirSync(d, { recursive: true });
+  for (const d of [pathBin, vendorBin, rcDir]) mkdirSync(d, { recursive: true });
   const bashrc = join(rcDir, ".bashrc");
   writeFileSync(bashrc, "");
   symlinkSync("/bin/sh", join(pathBin, "sh"));
-  const chmod = ["/bin/chmod", "/usr/bin/chmod"].find((p) => existsSync(p));
-  if (!chmod) throw new Error("no chmod found for the fake npm");
-  symlinkSync(chmod, join(pathBin, "chmod"));
 
-  const shim = (path: string): void => {
-    writeFileSync(path, "#!/bin/sh\nexit 0\n");
-    chmodSync(path, 0o755);
+  const shim = (where: string, command: string, body = `echo "${command} 9.9.9 (fake)"`): void => {
+    writeFileSync(join(where, command), `#!/bin/sh\n${body}\n`);
+    chmodSync(join(where, command), 0o755);
   };
-  // The install arm writes the spec it was given into the shim, so a test can read back
-  // WHICH version npm was told to install.
-  const installArms = AGENT_CLIS.map((cli) => {
-    if (opts.failInstalls?.includes(cli.packageName)) return `  "${cli.packageName}"@*) exit 1 ;;`;
-    const target = `"${globalBin}/${cli.command}"`;
-    return (
-      `  "${cli.packageName}"@*) printf '#!/bin/sh\\n# %s\\nexit 0\\n' "$3" > ${target}` +
-      `; chmod +x ${target}; exit 0 ;;`
-    );
-  });
-  // The real `npm ls -g --json` shapes: no `dependencies` key for an empty tree, a
-  // version-less entry for a package whose package.json it could not read, and only an
-  // `error` object when the list itself failed.
-  const installedEntries = Object.entries(opts.npmInstalled ?? {});
-  const lsTree = JSON.stringify(
-    installedEntries.length === 0
-      ? {}
-      : {
-          dependencies: Object.fromEntries(
-            installedEntries.map(([name, version]) => [name, version === null ? {} : { version }]),
-          ),
-        },
-  );
-  const lsFailArms = {
-    json: `printf '%s\\n' '${JSON.stringify({ error: NPM_LS_ERROR })}'; exit 1`,
-    stderr: `printf '%s\\n' ${NPM_LS_STDERR.map((line) => `'${line}'`).join(" ")} >&2; exit 1`,
-  };
-  const lsArm = opts.lsFails ? lsFailArms[opts.lsFails] : `echo '${lsTree}'; exit 0`;
-  writeFileSync(
-    join(pathBin, "npm"),
-    [
-      opts.npmUnspawnable ? "#!/nonexistent/sh" : "#!/bin/sh",
-      'case "$1" in',
-      opts.prefixFails ? "  prefix) exit 1 ;;" : `  prefix) echo "${prefix}"; exit 0 ;;`,
-      `  ls) ${lsArm} ;;`,
-      `  view) echo '${JSON.stringify([FAKE_LATEST])}'; exit 0 ;;`,
-      '  install) case "$3" in',
-      ...installArms,
-      "  *) exit 1 ;;",
-      "  esac ;;",
-      "  *) exit 1 ;;",
-      "esac",
-      "",
-    ].join("\n"),
-  );
-  chmodSync(join(pathBin, "npm"), 0o755);
-  for (const command of opts.preinstalled ?? []) shim(join(pathBin, command));
+  for (const command of opts.preinstalled ?? []) shim(pathBin, command);
+  for (const command of opts.brokenOnPath ?? []) shim(pathBin, command, "echo boom >&2; exit 1");
 
-  process.env.PATH = pathBin;
-  process.env.NVM_DIR = join(dir, "no-nvm");
+  process.env.PATH = opts.vendorOffPath ? pathBin : `${pathBin}:${vendorBin}`;
+  process.env.HOME = home;
+  process.env.SHELL = "/bin/bash";
+  // The Codex installer reads CODEX_HOME for its package tree; the suite exports one, so the
+  // fixture pins the home's own.
+  process.env.CODEX_HOME = join(home, ".codex");
+  // The Claude installer reads CLAUDE_CONFIG_DIR (the suite points it at its sandbox) and the
+  // XDG homes: the fixture pins the config dir under its home and clears the knobs.
+  process.env.CLAUDE_CONFIG_DIR = join(home, ".claude");
+  for (const name of XDG_HOMES) delete process.env[name];
   process.env[CI_RC_DIR_ENV] = rcDir;
-  return { dir, globalBin, bashrc };
+
+  const runs: InstallerCommand[] = [];
+  const real = defaultCliInstallDeps();
+  const releases = opts.releases ?? {};
+  const deps: CliInstallDeps = {
+    run(command) {
+      runs.push(command);
+      if (opts.fails?.includes(command.cli)) return { status: 1 };
+      const landing = opts.lands?.[command.cli] ?? "vendor-dir";
+      if (landing === "vendor-dir") shim(vendorBin, command.cli);
+      if (landing === "unversioned") {
+        shim(vendorBin, command.cli, `echo "${command.cli} (fake, no version)"`);
+      }
+      if (landing === "broken") shim(vendorBin, command.cli, "echo boom >&2; exit 1");
+      return { status: 0 };
+    },
+    fetch: (input) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      const repo = Object.keys(releases).find((name) => url.pathname.includes(`/repos/${name}/`));
+      const answer = repo === undefined ? 404 : (releases[repo] ?? 404);
+      if (typeof answer === "number") return Promise.resolve(new Response("", { status: answer }));
+      const page = Number(url.searchParams.get("page"));
+      return Promise.resolve(Response.json(answer[page - 1] ?? []));
+    },
+    look: opts.look ?? real.look,
+    version: real.version,
+  };
+  return { dir, pathBin, vendorBin, home, bashrc, runs, deps };
 }
 
-function captureRun(fn: () => void): string {
-  return captureChannelsSync(fn).all;
-}
+const CLI_ENV_EXTRAS = ["PATH", "Path", "SHELL", ...XDG_HOMES] as const;
 
-const CLI_ENV_EXTRAS = ["PATH", "Path", "NVM_DIR"] as const;
-
-const [FIRST, SECOND, THIRD] = AGENT_CLIS;
+/** The Codex installer's bash profile pick on this platform (pick_profile in its install.sh). */
+const CODEX_BASH_PROFILE = process.platform === "darwin" ? ".bash_profile" : ".bashrc";
 
 interface CliInstallRow {
   name: string;
-  opts: Parameters<typeof stageCliInstallFixture>[0];
-  /** Lines the run must print, and lines it must never print. */
-  lines: readonly string[];
+  opts: Parameters<typeof stageFixture>[0];
+  args: Parameters<typeof runShell>[0];
+  lines: (fixture: Fixture) => readonly string[];
   never: readonly string[];
-  /** CLI commands the fake npm must have laid down under the global bin, and must not have. */
-  installed: readonly string[];
-  absent: readonly string[];
-  /** The install spec a shim must name: the readback proves WHICH version npm was told. */
-  shimSpec?: readonly [command: string, spec: string];
-  /** syncNpmGlobalBinToPath prepended npm's global bin, so fresh installs resolve in THIS process. */
-  pathPrepended?: true;
+  runs: readonly string[];
+  launchers: boolean;
+  wired: boolean;
 }
 
 const CLI_INSTALL_ROWS: readonly CliInstallRow[] = [
   {
-    name: "one CLI's npm failure warns as itself, the rest still install",
-    opts: { failInstalls: [FIRST.packageName] },
-    // The genuine npm failure warns as ITSELF (which CLI, why, and that the run goes on),
-    // never dressed in the could-not-check look-failure wording.
-    lines: [
-      `Could not install ${FIRST.name} (npm install -g ${FIRST.packageName}@${FAKE_LATEST} failed); continuing.`,
-    ],
-    never: ["probe failed to run"],
-    installed: [SECOND.command, THIRD.command],
-    absent: [FIRST.command],
-  },
-  {
-    name: "a failed npm PATH sync warns, the CLIs are still checked",
-    opts: { prefixFails: true, preinstalled: AGENT_CLIS.map((cli) => cli.command) },
-    // Each CLI is on PATH but absent from the fake `npm ls`, so it reads as a non-npm install;
-    // the sync failure must never be dressed as a per-CLI install or could-not-check failure.
-    lines: [
-      "Could not sync npm's global bin dir to PATH (npm prefix -g failed); continuing.",
-      ...AGENT_CLIS.map((cli) => `${cli.name} is installed outside npm; leaving it as it is.`),
-    ],
-    never: ["Could not install", "probe failed to run"],
-    installed: [],
-    absent: [],
-  },
-  {
-    name: "the all-good run installs every CLI and extends PATH, warn-free",
+    name: "the plain run installs each CLI through its vendor's installer, names its writes on the ledger first, proves it with --version at the vendor's path, turns the launchers on, and wires the shell",
     opts: {},
-    lines: AGENT_CLIS.map(
-      (cli) => `Installing ${cli.name} (${cli.packageName}@${FAKE_LATEST}) ...`,
-    ),
-    never: ["Could not"],
-    installed: AGENT_CLIS.map((cli) => cli.command),
-    absent: [],
-    pathPrepended: true,
+    args: { clis: true },
+    lines: (f) => [
+      "Installing Claude Code CLI (latest) through its vendor's installer ...",
+      `runs: curl -fsSL ${CLAUDE_SH} | bash`,
+      `linked -> ${join(f.vendorBin, "claude")} (to ${join(f.home, ".local", "share", "claude", "versions")}/<version>, by the Claude Code CLI installer)`,
+      `created -> ${join(f.home, ".local", "share", "claude")}/ (each version it downloads, by the Claude Code CLI installer)`,
+      `created -> ${join(f.home, ".local", "state", "claude")}/ (its lock files, by the Claude Code CLI installer)`,
+      `created -> ${join(f.home, ".cache", "claude")}/ (staged downloads, by the Claude Code CLI installer)`,
+      `created -> ${join(f.home, ".claude", "downloads")}/ (a download it removes again, by the Claude Code CLI installer)`,
+      `created -> ${join(f.home, ".claude", ".claude.json")} (the install method it records, by the Claude Code CLI installer)`,
+      `created -> ${join(f.vendorBin, "copilot")} (by the GitHub Copilot CLI installer)`,
+      `created -> ${join(f.home, ".profile")} (a PATH line it offers to append when its directory is not on PATH, by the GitHub Copilot CLI installer)`,
+      `linked -> ${join(f.vendorBin, "codex")} (to ${join(f.home, ".codex", "packages", "standalone", "current", "bin", "codex")}, by the Codex CLI installer)`,
+      `created -> ${join(f.home, ".codex", "packages", "standalone")}/ (by the Codex CLI installer)`,
+      `created -> ${join(f.home, CODEX_BASH_PROFILE)} (a PATH block it appends when its directory is not on PATH, by the Codex CLI installer)`,
+      `Claude Code CLI: claude 9.9.9 (fake) (${join(f.vendorBin, "claude")}).`,
+      `GitHub Copilot CLI: copilot 9.9.9 (fake) (${join(f.vendorBin, "copilot")}).`,
+      `Codex CLI: codex 9.9.9 (fake) (${join(f.vendorBin, "codex")}).`,
+      "Set shell.launchers to true (--clis turns the launchers on).",
+      "Launchers: enabled (the shell.launchers config key)",
+    ],
+    never: ["Could not", "shadows", "would write"],
+    runs: LATEST_POSIX_LINES,
+    launchers: true,
+    wired: true,
   },
   {
-    name: "an outdated npm-installed CLI is updated; a current or newer one is kept",
+    name: "one installer failing warns as itself; the other two still install and the wiring lands",
+    opts: { fails: ["copilot"] },
+    args: { clis: true },
+    lines: () => [
+      "Could not install GitHub Copilot CLI (the installer exited 1); continuing.",
+      "Claude Code CLI: claude 9.9.9 (fake)",
+      "Codex CLI: codex 9.9.9 (fake)",
+      "Launchers: enabled (the shell.launchers config key)",
+    ],
+    never: ["GitHub Copilot CLI: copilot"],
+    runs: LATEST_POSIX_LINES,
+    launchers: true,
+    wired: true,
+  },
+  {
+    name: "--cooldown pins codex and copilot to the newest stable release old enough and puts claude on its stable channel",
+    opts: { releases: { "github/copilot-cli": COPILOT_PAGES, "openai/codex": CODEX_PAGES } },
+    args: { clis: true, cooldown: 7 },
+    lines: () => [
+      "Installing Claude Code CLI (the stable channel, about a week behind latest) through its vendor's installer ...",
+      "Installing GitHub Copilot CLI (v1.0.95, the newest release at least 7 days old) through its vendor's installer ...",
+      "Installing Codex CLI (0.163.0, the newest release at least 7 days old) through its vendor's installer ...",
+      "GitHub Copilot CLI proved 9.9.9, not the pinned v1.0.95.",
+      "Codex CLI proved 9.9.9, not the pinned 0.163.0.",
+    ],
+    never: ["Could not"],
+    runs: [
+      `curl -fsSL ${CLAUDE_SH} | bash -s stable`,
+      `curl -fsSL ${COPILOT_SH} | VERSION=v1.0.95 bash`,
+      `curl -fsSL ${CODEX_SH} | CODEX_NON_INTERACTIVE=1 sh -s -- --release 0.163.0`,
+    ],
+    launchers: true,
+    wired: true,
+  },
+  {
+    name: "a --version line naming no version cannot be checked against the pin, and the proof says so instead of guessing",
     opts: {
-      preinstalled: AGENT_CLIS.map((cli) => cli.command),
-      npmInstalled: {
-        [FIRST.packageName]: "1.0.0",
-        [SECOND.packageName]: FAKE_LATEST,
-        [THIRD.packageName]: "3.0.0",
+      releases: { "github/copilot-cli": COPILOT_PAGES, "openai/codex": CODEX_PAGES },
+      lands: { codex: "unversioned" },
+    },
+    args: { clis: true, cooldown: 7 },
+    lines: () => [
+      'Codex CLI proved "codex (fake, no version)", a line naming no version to check against the pinned 0.163.0.',
+    ],
+    never: ["Could not", "not the pinned 0.163.0"],
+    runs: [
+      `curl -fsSL ${CLAUDE_SH} | bash -s stable`,
+      `curl -fsSL ${COPILOT_SH} | VERSION=v1.0.95 bash`,
+      `curl -fsSL ${CODEX_SH} | CODEX_NON_INTERACTIVE=1 sh -s -- --release 0.163.0`,
+    ],
+    launchers: true,
+    wired: true,
+  },
+  {
+    name: "a week-old release on the second page is still the pin",
+    opts: { releases: { "github/copilot-cli": COPILOT_PAGES, "openai/codex": CODEX_PAGED } },
+    args: { clis: true, cooldown: 7 },
+    lines: () => ["Installing Codex CLI (0.163.0, the newest release at least 7 days old)"],
+    never: ["Could not", "skipping"],
+    runs: [
+      `curl -fsSL ${CLAUDE_SH} | bash -s stable`,
+      `curl -fsSL ${COPILOT_SH} | VERSION=v1.0.95 bash`,
+      `curl -fsSL ${CODEX_SH} | CODEX_NON_INTERACTIVE=1 sh -s -- --release 0.163.0`,
+    ],
+    launchers: true,
+    wired: true,
+  },
+  {
+    name: "a failed release lookup skips that CLI with its repo named; the rest still install",
+    opts: { releases: { "github/copilot-cli": COPILOT_PAGES, "openai/codex": 404 } },
+    args: { clis: true, cooldown: 7 },
+    lines: () => [
+      "Could not read openai/codex's releases to pick one at least 7 days old; skipping Codex CLI.",
+      "agent shell --clis  take the vendor's latest instead",
+      "Installing GitHub Copilot CLI (v1.0.95, the newest release at least 7 days old)",
+    ],
+    never: ["Installing Codex CLI", "Could not install"],
+    runs: [
+      `curl -fsSL ${CLAUDE_SH} | bash -s stable`,
+      `curl -fsSL ${COPILOT_SH} | VERSION=v1.0.95 bash`,
+    ],
+    launchers: true,
+    wired: true,
+  },
+  {
+    name: "a vendor whose releases are all fresher than the cooldown is skipped, never pinned to a fresh one",
+    opts: {
+      releases: {
+        "github/copilot-cli": COPILOT_PAGES,
+        "openai/codex": [[release("rust-v0.164.0", 2)]],
       },
     },
-    lines: [
-      `Updating ${FIRST.name} 1.0.0 -> ${FAKE_LATEST} ...`,
-      `${SECOND.name} is current (${FAKE_LATEST}).`,
-      `${THIRD.name} 3.0.0 is newer than the target ${FAKE_LATEST}; keeping it.`,
+    args: { clis: true, cooldown: 7 },
+    lines: () => [
+      "No openai/codex release among its newest 500 is at least 7 days old; skipping Codex CLI.",
+      "agent shell --clis  take the vendor's latest instead",
+    ],
+    never: ["Installing Codex CLI", "0.164.0"],
+    runs: [
+      `curl -fsSL ${CLAUDE_SH} | bash -s stable`,
+      `curl -fsSL ${COPILOT_SH} | VERSION=v1.0.95 bash`,
+    ],
+    launchers: true,
+    wired: true,
+  },
+  {
+    name: "on a host whose PATH predates the installer's edit, the binary is proven at the vendor's path and the missing PATH entry is named",
+    opts: { vendorOffPath: true },
+    args: { clis: true },
+    lines: (f) => [
+      `Claude Code CLI: claude 9.9.9 (fake) (${join(f.vendorBin, "claude")}); ${f.vendorBin} is not on this shell's PATH: add it where the installer did not, then open a new shell.`,
     ],
     never: ["Could not"],
-    installed: [FIRST.command],
-    // The current and the newer CLI were never reinstalled, let alone downgraded.
-    absent: [SECOND.command, THIRD.command],
-    shimSpec: [FIRST.command, `${FIRST.packageName}@${FAKE_LATEST}`],
+    runs: LATEST_POSIX_LINES,
+    launchers: true,
+    wired: true,
   },
   {
-    name: "an npm-installed CLI whose command is off PATH, or whose version is unreadable, is never downgraded",
-    opts: { npmInstalled: { [FIRST.packageName]: null, [THIRD.packageName]: "3.0.0" } },
-    lines: [
-      [
-        `${THIRD.name} 3.0.0 is installed by npm, but '${THIRD.command}' is not on PATH.`,
-        "  leaving it as it is",
-        "Fix:",
-        "  agent shell --clis  rerun it from a new shell",
-      ].join("\n"),
-      `${FIRST.name} is installed by npm, but its version could not be read; leaving it as it is.`,
-      `Installing ${SECOND.name} (${SECOND.packageName}@${FAKE_LATEST}) ...`,
+    name: "an older copy ahead on PATH is never the one proven; it is named as shadowing the new install, with the npm uninstall line",
+    opts: { preinstalled: ["claude"] },
+    args: { clis: true },
+    lines: (f) => [
+      `Claude Code CLI: claude 9.9.9 (fake) (${join(f.vendorBin, "claude")}).`,
+      `Claude Code CLI on PATH is ${join(f.pathBin, "claude")}, which shadows the new install at ${join(f.vendorBin, "claude")}.`,
+      // The action table pads its columns, so the command and its meaning are pinned apart.
+      "npm uninstall -g @anthropic-ai/claude-code",
+      "remove an npm copy",
     ],
-    never: ["Could not"],
-    installed: [SECOND.command],
-    absent: [FIRST.command, THIRD.command],
-  },
-  // With npm's list unreadable the run cannot rule out a newer install whose bin dir is off
-  // PATH, so it installs nothing.
-  {
-    name: "an npm that cannot be spawned warns with the spawn error and installs nothing",
-    opts: { npmUnspawnable: true },
-    lines: [`${LS_FAILED_SKIP}\n  spawn: `, "ENOENT"],
-    never: ["Installing", "\n  exit status"],
-    installed: [],
-    absent: AGENT_CLIS.map((cli) => cli.command),
+    never: ["Could not", `(${join("path-bin", "claude")})`],
+    runs: LATEST_POSIX_LINES,
+    launchers: true,
+    wired: true,
   },
   {
-    name: "a failed npm package list warns with its exit status and npm's stdout error object",
-    opts: { lsFails: "json" },
-    lines: [
-      `${LS_FAILED_SKIP}\n  exit status: 1\n  npm error ${NPM_LS_ERROR.code}: ${NPM_LS_ERROR.summary}`,
+    name: "an installer that lands nothing at the vendor's path fails that CLI, naming the path",
+    opts: { lands: { codex: "nowhere" } },
+    args: { clis: true },
+    lines: (f) => [
+      `Could not install Codex CLI (the installer finished, but ${join(f.vendorBin, "codex")} is absent; rerun 'agent shell --clis'); continuing.`,
+      "Launchers: enabled (the shell.launchers config key)",
     ],
-    never: ["Installing", "\n  stderr:"],
-    installed: [],
-    absent: AGENT_CLIS.map((cli) => cli.command),
+    never: ["Codex CLI: codex"],
+    runs: LATEST_POSIX_LINES,
+    launchers: true,
+    wired: true,
   },
   {
-    name: "a failed npm package list that wrote only to stderr warns with its exit status and every line that says something",
-    opts: { lsFails: "stderr" },
-    // npm leaves blank lines between its stderr groups; the tail counts only the lines that say
-    // something, so the code line at the top survives.
-    lines: [
-      [
-        LS_FAILED_SKIP,
-        "  exit status: 1",
-        "  stderr: npm error code ENOTDIR",
-        "  stderr: npm error syscall scandir",
-        "  stderr: npm error path C:\\npm",
-        `  stderr: ${NPM_LS_LOG_LINE}`,
-      ].join("\n"),
+    name: "an installer that lands a binary whose --version fails has not proven the install, and the failure says what happened",
+    opts: { lands: { copilot: "broken" } },
+    args: { clis: true },
+    lines: (f) => [
+      `Could not install GitHub Copilot CLI (the installer finished, but '${join(f.vendorBin, "copilot")} --version' did not run (exit 1; stderr: boom)); continuing.`,
     ],
-    never: ["Installing", "\n  npm error "],
-    installed: [],
-    absent: AGENT_CLIS.map((cli) => cli.command),
+    never: ["GitHub Copilot CLI: copilot"],
+    runs: LATEST_POSIX_LINES,
+    launchers: true,
+    wired: true,
+  },
+  {
+    name: "an npm .cmd shim ahead on PATH is classified once with every spawn site: named as shadowing the new install, never spawned",
+    opts: {
+      look: (command, path) =>
+        command === "codex"
+          ? { kind: "found", path: "C:\\npm\\codex.cmd" }
+          : findCommand(command, path),
+    },
+    args: { clis: true },
+    lines: (f) => [
+      `Codex CLI: codex 9.9.9 (fake) (${join(f.vendorBin, "codex")}).`,
+      `Codex CLI on PATH is C:\\npm\\codex.cmd, which shadows the new install at ${join(f.vendorBin, "codex")}.`,
+      "npm uninstall -g @openai/codex",
+    ],
+    never: ["Could not", "EINVAL", "spawn failed"],
+    runs: LATEST_POSIX_LINES,
+    launchers: true,
+    wired: true,
+  },
+  {
+    name: "the dry run names every installer line, every write it would make, and the config write, and runs and writes nothing",
+    opts: {},
+    args: { clis: true, dryRun: true },
+    lines: (f) => [
+      "Would install Claude Code CLI (latest) through its vendor's installer.",
+      `runs: curl -fsSL ${CLAUDE_SH} | bash`,
+      `would link: ${join(f.vendorBin, "claude")} (to ${join(f.home, ".local", "share", "claude", "versions")}/<version>)`,
+      `would write: ${join(f.home, ".claude", "downloads")}/ (a download it removes again)`,
+      `would write: ${join(f.home, ".claude", ".claude.json")} (the install method it records)`,
+      "Would install GitHub Copilot CLI (latest) through its vendor's installer.",
+      `runs: curl -fsSL ${COPILOT_SH} | bash`,
+      `would write: ${join(f.home, ".profile")} (a PATH line it offers to append when its directory is not on PATH)`,
+      "Would install Codex CLI (latest) through its vendor's installer.",
+      `runs: curl -fsSL ${CODEX_SH} | CODEX_NON_INTERACTIVE=1 sh`,
+      `would link: ${join(f.vendorBin, "codex")} (to ${join(f.home, ".codex", "packages", "standalone", "current", "bin", "codex")})`,
+      "Would set shell.launchers to true (--clis turns the launchers on).",
+      "Launchers: enabled (the shell.launchers config key)",
+      "DRY RUN: nothing was written.",
+    ],
+    never: ["Installing", "Set shell.launchers", "created ->", "linked ->"],
+    runs: [],
+    launchers: false,
+    wired: false,
+  },
+  {
+    name: "--no-prereqs reports each CLI as found, absent, or broken with the reason, installs nothing, and leaves the launchers off",
+    opts: { preinstalled: ["claude"], brokenOnPath: ["codex"] },
+    args: { clis: true, noPrereqs: true },
+    lines: (f) => [
+      `Claude Code CLI: claude 9.9.9 (fake) (${join(f.pathBin, "claude")}).`,
+      // The basic reporter (NO_COLOR, pinned for the suite) keeps the backticks CI sees too.
+      "GitHub Copilot CLI ('copilot') is not installed; `agent shell --clis` installs it.",
+      `Codex CLI: ${join(f.pathBin, "codex")} is installed, but 'codex --version' did not run (exit 1; stderr: boom).`,
+      "Launchers: disabled (the shell.launchers config key)",
+    ],
+    never: ["Installing", "Would", "shell.launchers to true"],
+    runs: [],
+    launchers: false,
+    wired: true,
+  },
+  {
+    name: "--no-prereqs reads an npm .cmd shim on PATH as broken by its extension, with the uninstall line, and never spawns it",
+    opts: {
+      preinstalled: ["claude", "copilot"],
+      look: (command, path) =>
+        command === "codex"
+          ? { kind: "found", path: "C:\\npm\\codex.cmd" }
+          : findCommand(command, path),
+    },
+    args: { clis: true, noPrereqs: true },
+    lines: () => [
+      "Codex CLI: C:\\npm\\codex.cmd is installed, but 'codex --version' did not run (C:\\npm\\codex.cmd is an npm-installed copy of codex this build cannot run; npm uninstall -g @openai/codex, then agent shell --clis).",
+    ],
+    never: ["Installing", "spawn failed", "EINVAL"],
+    runs: [],
+    launchers: false,
+    wired: true,
   },
 ];
 
 test.skipIf(process.platform === "win32")(
-  "shell --clis: every npm outcome is reported as itself, the other CLIs still install, and the wiring lands",
-  () => {
+  "shell --clis: every vendor installer runs as documented, its writes are on the ledger, each outcome is reported as itself, the other CLIs still install, the launchers turn on, and the wiring lands",
+  async () => {
     for (const row of CLI_INSTALL_ROWS) {
       const restore = envSnapshot(CLI_ENV_EXTRAS);
       let dir = "";
+      let proxyHome = isolateProxyHome("copilot-setup-clis-home-");
       try {
-        const fixture = stageCliInstallFixture(row.opts);
+        const fixture = stageFixture(row.opts);
         dir = fixture.dir;
-        const output = captureRun(() => runShell({ clis: true }));
-        for (const line of row.lines) expect(output, row.name).toContain(line);
+        const output = (
+          await captureChannels(() => runShell(row.args, fixture.deps), { writeReports: true })
+        ).all;
+        for (const line of row.lines(fixture)) expect(output, row.name).toContain(line);
         for (const line of row.never) expect(output, row.name).not.toContain(line);
-        for (const command of row.installed) {
-          expect(existsSync(join(fixture.globalBin, command)), `${row.name}: ${command}`).toBe(
-            true,
-          );
-        }
-        for (const command of row.absent) {
-          expect(existsSync(join(fixture.globalBin, command)), `${row.name}: ${command}`).toBe(
-            false,
-          );
-        }
-        if (row.shimSpec) {
-          const [command, spec] = row.shimSpec;
-          expect(readFileSync(join(fixture.globalBin, command), "utf-8"), row.name).toContain(spec);
-        }
-        if (row.pathPrepended) {
-          expect(process.env.PATH?.startsWith(`${fixture.globalBin}:`), row.name).toBe(true);
-        }
-        expect(readFileSync(fixture.bashrc, "utf-8"), row.name).toContain(MARKER);
+        expect(
+          fixture.runs.map((command) => command.line),
+          row.name,
+        ).toEqual([...row.runs]);
+        expect(new CopilotEnvConfig().launchersEnabled(), row.name).toBe(row.launchers);
+        expect(readFileSync(fixture.bashrc, "utf-8").includes(MARKER), row.name).toBe(row.wired);
+        expect(existsSync(fixture.bashrc), row.name).toBe(true);
       } finally {
         restore();
         dir = removeDir(dir);
+        proxyHome = removeDir(proxyHome);
       }
     }
   },
 );
-
-// computePathRefresh takes the platform as a parameter so the win32 arm runs on POSIX CI.
-
-test("computePathRefresh: win32 writes BOTH Path and PATH with ';' off the prefix itself, POSIX uses ':' and <prefix>/bin, each prepended, and a bin dir already on PATH is a no-op", () => {
-  const winPrefix = "C:\\Users\\me\\AppData\\Roaming\\npm";
-  const winOld = "C:\\Windows;C:\\Windows\\System32";
-  const prefix = "/home/me/.npm-global";
-  const old = "/usr/bin:/bin";
-  const rows: Array<[NodeJS.Platform, string, string, ReturnType<typeof computePathRefresh>]> = [
-    // On Windows the npm prefix IS the bin dir (no /bin suffix).
-    [
-      "win32",
-      winPrefix,
-      winOld,
-      {
-        bin: winPrefix,
-        separator: ";",
-        assignments: { PATH: `${winPrefix};${winOld}`, Path: `${winPrefix};${winOld}` },
-      },
-    ],
-    [
-      "linux",
-      prefix,
-      old,
-      {
-        bin: `${prefix}/bin`,
-        separator: ":",
-        assignments: { PATH: `${prefix}/bin:${old}`, Path: `${prefix}/bin:${old}` },
-      },
-    ],
-    // darwin behaves like linux (any non-win32 platform).
-    [
-      "darwin",
-      prefix,
-      old,
-      {
-        bin: `${prefix}/bin`,
-        separator: ":",
-        assignments: { PATH: `${prefix}/bin:${old}`, Path: `${prefix}/bin:${old}` },
-      },
-    ],
-    [
-      "linux",
-      prefix,
-      `${prefix}/bin:/usr/bin`,
-      {
-        bin: `${prefix}/bin`,
-        separator: ":",
-        assignments: {},
-      },
-    ],
-  ];
-  for (const [platform, npmPrefix, oldPath, expected] of rows) {
-    expect(computePathRefresh(platform, npmPrefix, oldPath), `${platform} ${oldPath}`).toEqual(
-      expected,
-    );
-  }
-});
-
-// A `default` aliased at the remote `lts/*` meta-alias resolves to N/A offline, so sourcing
-// nvm.sh activates nothing and the resolveCommand nvm fallback silently breaks.
-test("buildNodePosixInstallScript pins default to the installed version, not lts/*", () => {
-  const script = buildNodePosixInstallScript();
-  expect(script).toContain("nvm install --lts");
-  expect(script).not.toContain("alias default 'lts/*'");
-  expect(script).not.toContain("alias default lts/*");
-  // default tracks the concrete active version, with a `node` (latest local) fallback.
-  expect(script).toContain('NODE_DEFAULT="$(nvm current)"');
-  expect(script).toContain('nvm alias default "$NODE_DEFAULT"');
-  expect(script).toContain("NODE_DEFAULT=node");
-});

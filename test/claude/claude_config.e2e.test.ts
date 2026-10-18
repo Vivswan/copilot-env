@@ -120,7 +120,7 @@ test("direct mode writes the inline apiKeyHelper command + env, preserving user 
   expect(env.ANTHROPIC_BASE_URL).toBe(DEFAULT_COPILOT_API_BASE);
   expect(env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBe("1");
   // The codex_exec User-Agent derives from the installed codex binary; the suite's live-lookup
-  // seam turns the npm-latest lookup off, so here it carries FALLBACK_CODEX_UA_VERSION.
+  // seam turns that spawn off, so here it carries FALLBACK_CODEX_UA_VERSION.
   const headers = env[CUSTOM_HEADERS_ENV] as string;
   expect(headers).toContain("Openai-Intent: conversation-edits");
   expect(headers).toMatch(/(^|\n)User-Agent: codex_exec/);

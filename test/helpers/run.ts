@@ -53,8 +53,6 @@ export interface RunOptions {
   input?: string;
   /** Hard kill for a wedged child; sync spawns block the deadline race in testing.ts. */
   timeoutMs?: number;
-  /** Run through the platform shell (the cliSpawn recipe's `shell`, for Windows .cmd shims). */
-  shell?: boolean;
 }
 
 /**
@@ -142,7 +140,6 @@ export function runSync(cmd: string, args: string[], opts: RunOptions = {}): Run
     maxBuffer: 16 * 1024 * 1024,
     // Windows runners are the slow leg.
     timeout: opts.timeoutMs ?? (process.platform === "win32" ? 300_000 : 120_000),
-    shell: opts.shell ?? false,
   });
   if (res.error) throw res.error;
   return { exitCode: res.status, stdout: res.stdout ?? "", stderr: res.stderr ?? "" };

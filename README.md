@@ -22,7 +22,7 @@ TypeScript port of the original Python `copilot-api` helper. Runs on Linux, macO
 
 - A GitHub account with Copilot access. `agent profile auth` stores the credential: device flow, your `gh` login, or a token.
 - Linux, macOS, or Windows. Nothing else first: the install is one self-contained binary, and on Windows the installer needs only Windows PowerShell 5.1 or pwsh 7.
-- The Claude and Codex CLIs, or let `agent shell --clis` install them.
+- The Claude and Codex CLIs, or let `agent shell --clis` install them through their vendors' own installers (no Node.js or npm).
 
 ## Quick start
 

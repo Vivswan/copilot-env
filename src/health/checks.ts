@@ -7,7 +7,6 @@ import { lastActivityMs } from "../copilot_api/idle_watchdog.ts";
 import { agentAuthCommand, agentStartCommand, agentStopCommand } from "../copilot_api/profile.ts";
 import { PROXY_PACKAGE_NAME, type ProxyVersionStatus } from "../copilot_api/version.ts";
 import { assertNever } from "../utils/assert.ts";
-import type { CommandLook } from "../utils/command.ts";
 import { formatDuration, SECONDS_PER_DAY } from "../utils/time.ts";
 import { filterByScope } from "./aggregate.ts";
 import {
@@ -32,7 +31,7 @@ import type {
   RuntimeTarget,
   ShellFacts,
 } from "./facts.ts";
-import type { CheckGroup, CheckId, CheckOutcome, CheckResult, HealthScope } from "./types.ts";
+import type { CheckOutcome, CheckResult, HealthScope } from "./types.ts";
 import { meta, profileAddFix, SETUP_SCOPES as SETUP } from "./types.ts";
 
 /** THE predicate of checkAuth, for both targets: a stored token resolves by presence, gh-cli by
@@ -605,25 +604,24 @@ export function checkLaunchers(f: ShellFacts): CheckResult {
       };
 }
 
-/** One PATH-look row, shared by the CLI census (checkCli) and the node/npm tools: only the
- *  identity and the extra `value` fields differ. A FAILED look is not a proven absence: the same
- *  warn + fix, honest words. */
-export function checkLook(
-  identity: { id: CheckId; label: string; group: CheckGroup; scopes: readonly HealthScope[] },
-  look: CommandLook,
-  value: Record<string, unknown> = {},
-): CheckResult {
-  const base = { ...identity, profile: null };
-  switch (look.kind) {
+/** The one check family whose id is minted outside the descriptor table: the CLI list is runtime
+ *  data (see CHECK_DESCRIPTORS). */
+export function checkCli(c: CliFacts): CheckResult {
+  const base: Pick<CheckResult, "id" | "label" | "group" | "scopes" | "profile"> = {
+    id: `setup.cli.${c.command}`,
+    label: `${c.name} (${c.command})`,
+    group: "setup",
+    scopes: SETUP,
+    profile: null,
+  };
+  const value = { command: c.command };
+  switch (c.look.kind) {
     case "found":
-      return { ...base, value: { ...value, resolved: look.path }, status: "ok", detail: look.path };
-    case "unproven":
       return {
         ...base,
-        value: { ...value, resolved: null, lookFailed: true },
-        status: "warn",
-        detail: "could not check (the command probe failed to run)",
-        fix: "agent shell --clis",
+        value: { ...value, resolved: c.look.path },
+        status: "ok",
+        detail: c.look.path,
       };
     case "absent":
       return {
@@ -634,23 +632,8 @@ export function checkLook(
         fix: "agent shell --clis",
       };
     default:
-      return assertNever(look);
+      return assertNever(c.look);
   }
-}
-
-/** The one check family whose id is minted outside the descriptor table: the CLI list is runtime
- *  data (see CHECK_DESCRIPTORS). */
-export function checkCli(c: CliFacts): CheckResult {
-  return checkLook(
-    {
-      id: `setup.cli.${c.command}`,
-      label: `${c.name} (${c.command})`,
-      group: "setup",
-      scopes: SETUP,
-    },
-    c.look,
-    { command: c.command },
-  );
 }
 
 /**
@@ -870,12 +853,6 @@ export function evaluateAll(scope: HealthScope, facts: HealthFacts): CheckResult
     out.push(checkShellIntegration(facts.shell), checkLaunchers(facts.shell));
   }
   for (const c of facts.clis ?? []) out.push(checkCli(c));
-  if (facts.tools) {
-    out.push(
-      checkLook(meta("setup.tool.node"), facts.tools.node),
-      checkLook(meta("setup.tool.npm"), facts.tools.npm),
-    );
-  }
   if (facts.auth) out.push(checkAuth(facts.auth));
   if (facts.codex) out.push(checkCodex(facts.codex, runProfile));
   if (facts.codexLive) out.push(checkAgentLive("codex", facts.codexLive, runProfile));

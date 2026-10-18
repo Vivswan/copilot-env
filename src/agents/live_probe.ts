@@ -29,13 +29,13 @@ import { deadline } from "@std/async/deadline";
 import { settingsPathFor } from "../claude/paths.ts";
 import type { DirectSmoke } from "../copilot_api/endpoint_smoke.ts";
 import type { ProbeFetch } from "../copilot_api/integration_identity.ts";
-import { assertNever } from "../utils/assert.ts";
-import { type CommandLook, childEnvWithPath, cliSpawn, findCommand } from "../utils/command.ts";
+import { type CommandLook, childEnv, findCommand } from "../utils/command.ts";
 import { errMessage } from "../utils/error.ts";
 import { removeScratchDir, type ScratchDir, scratchDir } from "../utils/fs_facade.ts";
 import { isRecord, parseJsonRecord } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import { caught } from "../utils/message.ts";
+import { type CliCommand, classifyAgentCli } from "./cli_install.ts";
 
 // Narration goes to stderr, never stdout: the machine-readable `--check` / `env` paths must
 // stay clean.
@@ -67,7 +67,7 @@ function isModelRejection(detail: string | undefined, model: string): boolean {
  *  user's real launch, and builds its own argv in src/health/live_launch.ts; an isolating flag
  *  added here must never be copied there. */
 export interface ProbeDescriptor {
-  cli: string;
+  cli: CliCommand;
   homeEnvVar: string;
   /** `home` is the temp config dir the probe points the CLI at; `model` pins the call to the
    *  catalog pick (null = the CLI's own choice). The per-CLI notes below say how. */
@@ -168,32 +168,8 @@ export interface ProbeOutcome {
   detail?: string;
 }
 
-/** The miss line and the install advice that follows it when no smoke runs: a failed look gets
- *  no advice, since "install it" is wrong when the look itself failed. */
-function cliMissWording(
-  cli: string,
-  look: Exclude<CommandLook, { kind: "found" }>,
-): { look: string; advice: string } {
-  switch (look.kind) {
-    case "unproven":
-      return {
-        look: `could not check for the ${cli} CLI (the command probe failed to run)`,
-        advice: "",
-      };
-    case "absent":
-      return {
-        look: `${cli} CLI not found`,
-        advice:
-          " (install it with `agent shell --clis` and re-run to auto-detect Direct, or pass --direct)",
-      };
-    default:
-      return assertNever(look);
-  }
-}
-
 /** Injectable I/O so unit tests decide the probe outcome without real model calls. */
 export interface DirectProbeDeps {
-  /** Look for a CLI binary on PATH / via nvm, failure arm kept (see CommandLook). */
   findCommand?: (cmd: string) => CommandLook;
   /** Run the agent CLI's read-only smoke prompt at its RESOLVED path (ok = exit 0), with `cwd`
    *  the throwaway home the probe spawns from. */
@@ -338,28 +314,25 @@ function defaultRunProbe(
   env: Record<string, string>,
   cwd: string,
 ): Promise<ProbeOutcome> {
-  const s = cliSpawn(cliPath, args);
   // `env` is the COMPLETE child environment probeDirectWorks built: a shell ANTHROPIC_BASE_URL at
   // a running proxy must never reach the child, or it answers the Claude smoke prompt for it.
   // `cwd` is the throwaway home, never the caller's: both CLIs read project-level config from the
   // working directory.
-  // nosemgrep: javascript.lang.security.audit.spawn-shell-true.spawn-shell-true -- Windows-only, for .cmd shims; the spec quotes args
-  const child = spawn(s.file, s.args, {
+  const child = spawn(cliPath, args, {
     cwd,
     stdio: ["ignore", "pipe", "pipe"],
     timeout: PROBE_TIMEOUT_MS,
     windowsHide: true,
-    shell: s.shell,
     env,
   });
   return probeChildOutcome(child);
 }
 
-/** POSIX `command -v` answers with a path that can be RELATIVE (dash, a relative or empty PATH
- *  entry), which the child could not follow once it has moved into the temp home; it is anchored to
- *  the caller's cwd here. Windows findCommand answers with the bare name, left for PATH to resolve. */
+/** A relative PATH entry answers a RELATIVE path on Windows (Bun.which joins it with cwd
+ *  elsewhere), which the child could not follow once it has moved into the temp home; it is
+ *  anchored to the caller's cwd here. */
 function anchorToCallerCwd(found: string): string {
-  return process.platform === "win32" ? found : resolve(found);
+  return resolve(found);
 }
 
 /** The bin dir a found command contributes to the child PATH; a bare name has none. */
@@ -368,9 +341,10 @@ function binDir(found: string): string | null {
   return dir === "." ? null : dir;
 }
 
-/** The RESOLVED CLI path is threaded to the spawn, or findCommand's nvm fallback is defeated by
- *  a bare PATH-only command name. gh is looked up only to lead the child PATH: a gh-cli
- *  credential's helper spawns it from inside the temp home, while a stored token needs no gh.
+/** The RESOLVED CLI path is threaded to the spawn: the child runs from the temp home, so a
+ *  relative answer is anchored first (anchorToCallerCwd). gh is looked up only to lead the child
+ *  PATH with its anchored dir: a gh-cli credential's helper calls `gh` by name from inside the
+ *  temp home, where a relative PATH entry no longer resolves; a stored token needs no gh.
  *
  *  `smoke` is the caller's credential bound to Copilot's own endpoint. Its catalog pick names the
  *  model for BOTH arms; its ping decides ONLY when no CLI ran, since a CLI that ran and failed is
@@ -388,14 +362,16 @@ export async function probeDirectWorks(
 
   logger.log(`  Probing GitHub Copilot Direct for ${descriptor.cli} ...`);
 
-  // A FAILED look never borrows the proven verdict's words: "not found" carries advice that is
-  // wrong when the look itself failed, so that arm says "could not check" and gives no install
-  // advice. A dry run takes the same arms: the plan is the real decision, and the CLI's auth
-  // helper (this CLI, as a silent dry run) reads the credential the store already holds, since a
-  // dry run never lands one it does not have.
-  const cliLook = find(descriptor.cli);
+  // A dry run takes the same arms: the plan is the real decision, and the CLI's auth helper (this
+  // CLI, as a silent dry run) reads the credential the store already holds, since a dry run never
+  // lands one it does not have.
+  const cliLook = classifyAgentCli(descriptor.cli, find(descriptor.cli));
   if (cliLook.kind !== "found") {
-    const { look, advice } = cliMissWording(descriptor.cli, cliLook);
+    const look = cliLook.kind === "absent" ? `${descriptor.cli} CLI not found` : cliLook.note;
+    const advice =
+      cliLook.kind === "absent"
+        ? " (install it with `agent shell --clis` and re-run to auto-detect Direct, or pass --direct)"
+        : "";
     if (smoke === null) {
       logger.log(`    • ${look} → using the local proxy${advice}`);
       return false;
@@ -426,16 +402,16 @@ export async function probeDirectWorks(
   }
   const cliPath = anchorToCallerCwd(cliLook.path);
   const ghLook = find("gh");
-  const ghPath = ghLook.kind === "found" ? anchorToCallerCwd(ghLook.path) : null;
+  const ghDir = ghLook.kind === "found" ? binDir(anchorToCallerCwd(ghLook.path)) : null;
 
   let tmpHome: ScratchDir | null = null;
   try {
     tmpHome = scratchDir(join(tmpdir(), `copilot-env-${descriptor.cli}-`));
     writeDirectConfig(tmpHome);
     const home: ScratchDir = tmpHome;
-    // Provider families stripped (why: PROVIDER_ENV_PREFIXES); the resolved CLI's and gh's bin
-    // dirs lead PATH so an nvm-only toolchain resolves (why: childEnvWithPath).
-    const childEnv = childEnvWithPath([binDir(cliPath), ghPath === null ? null : binDir(ghPath)], {
+    // Provider families stripped (why: PROVIDER_ENV_PREFIXES); gh's dir leads PATH (why: above).
+    const probeEnv = childEnv({
+      leadPath: ghDir === null ? [] : [ghDir],
       extra: { [descriptor.homeEnvVar]: tmpHome },
       omit: (upper) => PROVIDER_ENV_PREFIXES.some((prefix) => upper.startsWith(prefix)),
     });
@@ -445,7 +421,7 @@ export async function probeDirectWorks(
         `    • running a read-only smoke prompt through ${descriptor.cli} with ${model} (live model call, a few seconds; pass --direct to skip) ...`,
       );
       const args = descriptor.args(PROBE_PROMPT, home, model);
-      const outcome = await runProbe(cliPath, args, childEnv, home);
+      const outcome = await runProbe(cliPath, args, probeEnv, home);
       if (outcome.ok) logger.success("    GitHub Copilot Direct is available");
       return outcome;
     };

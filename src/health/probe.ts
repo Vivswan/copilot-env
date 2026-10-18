@@ -706,7 +706,6 @@ export async function gatherFacts(
           name: c.name,
           look: deps.commandLook(c.command),
         }));
-        facts.tools = { node: deps.commandLook("node"), npm: deps.commandLook("npm") };
         const farm = codexHostFarm();
         facts.codexHost = {
           supported: process.platform !== "win32",

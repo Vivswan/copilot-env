@@ -3,7 +3,7 @@
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { childPathPrepending, verbatimCliSpawn } from "../../../src/utils/command.ts";
+import { resolveCommand } from "../../../src/utils/command.ts";
 import { isRecord } from "../../../src/utils/json.ts";
 import { log, writeFile } from "./cli.ts";
 
@@ -50,10 +50,8 @@ const REAL_ENV_KEYS = [
 function childEnvironment(
   parent: Record<string, string | undefined>,
   home: string,
-  binDir: string | null,
   real: boolean,
   extra: Record<string, string>,
-  pathPrepending: (dirs: (string | null)[]) => string = childPathPrepending,
 ): Record<string, string> {
   const wanted = new Set([...BASE_ENV_KEYS, ...(real ? REAL_ENV_KEYS : [])]);
   const out: Record<string, string> = {};
@@ -62,7 +60,7 @@ function childEnvironment(
   }
   out.HOME = home;
   out.USERPROFILE = home;
-  out.PATH = pathPrepending([binDir]);
+  out.PATH = parent.PATH ?? "";
   if (!real) {
     out.NO_PROXY = "127.0.0.1,localhost";
     out.no_proxy = "127.0.0.1,localhost";
@@ -93,14 +91,11 @@ class ChildRegistry {
     file: string,
     args: string[],
     opts: {
-      shell: boolean;
       env: Record<string, string>;
       cwd: string;
     },
   ): ChildProcess {
-    // nosemgrep: javascript.lang.security.audit.spawn-shell-true.spawn-shell-true -- Windows-only, for .cmd shims; the spec quotes args
     const child = spawn(file, args, {
-      shell: opts.shell,
       env: opts.env,
       cwd: opts.cwd,
       stdio: ["ignore", "pipe", "pipe"],
@@ -195,15 +190,14 @@ export async function runTurn(
 ): Promise<TurnResult> {
   if (registry.stopping) return { ok: false, stdout: "", stuck: false };
   log(`${label}: running`);
-  const spec = verbatimCliSpawn(command, [...args, prompt]);
-  const env = childEnvironment(process.env, home, spec.binDir, real, extraEnv);
+  const file = resolveCommand(command) ?? command;
+  const env = childEnvironment(process.env, home, real, extraEnv);
   let child: ChildProcess | undefined;
   const chunks = { stdout: [] as Buffer[], stderr: [] as Buffer[] };
   let stuck = false;
   let result: TurnResult = { ok: false, stdout: "", stuck: false };
   try {
-    // nosemgrep: javascript.lang.security.audit.spawn-shell-true.spawn-shell-true -- Windows-only, for .cmd shims; the spec quotes args
-    child = registry.spawn(spec.file, spec.args, { shell: spec.shell, env, cwd });
+    child = registry.spawn(file, [...args, prompt], { env, cwd });
     const spawned = child;
     spawned.stdout?.on("data", (chunk: Buffer) => chunks.stdout.push(chunk));
     spawned.stderr?.on("data", (chunk: Buffer) => chunks.stderr.push(chunk));

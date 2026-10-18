@@ -1,5 +1,5 @@
 // Tolerant on purpose: a ragged (`1.2`) or `v`-prefixed input never throws.
-import { format, lessThan, type SemVer, tryParse } from "@std/semver";
+import { equals, format, lessThan, type SemVer, tryParse } from "@std/semver";
 
 /** A compile-time tripwire, not a proof of parseability: a literal `x.y.z` assigns structurally, an
  *  arbitrary runtime string must pass through `toSemverString` first, and boundaries still parse.
@@ -22,6 +22,13 @@ function toSemver(v: string): SemVer | null {
   const partial = /^v?(\d+)(?:\.(\d+))?$/.exec(text);
   if (partial !== null) text = `${partial[1]}.${partial[2] ?? "0"}.0`;
   return tryParse(text) ?? null;
+}
+
+export function sameVersion(a: string, b: string): boolean | null {
+  const sa = toSemver(a);
+  const sb = toSemver(b);
+  if (sa === null || sb === null) return null;
+  return equals(sa, sb);
 }
 
 /** Un-parseable input reads as not less-than rather than throwing. */

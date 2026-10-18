@@ -2,6 +2,7 @@ import {
   isUpToDate,
   pickAgedVersion,
   publishTimesMs,
+  sameVersion,
   stripV,
   versionLessThan,
 } from "../../src/utils/semver.ts";
@@ -52,6 +53,14 @@ test("isUpToDate: current >= target, with a leading v stripped from either side"
   expect(isUpToDate("v1.2.3", "v1.2.3")).toBe(true);
   expect(isUpToDate("v1.2.4", "1.2.3")).toBe(true);
   expect(isUpToDate("1.2.2", "v1.2.3")).toBe(false);
+});
+
+test("sameVersion: one release under any spelling, a prefix no match, build metadata ignored, an unparseable side null", () => {
+  expect(sameVersion("v1.0.98", "1.0.98")).toBe(true);
+  expect(sameVersion("1.0.98+abc", "1.0.98")).toBe(true);
+  expect(sameVersion("1.0.98", "1.0.9")).toBe(false);
+  expect(sameVersion("1.0.98-1", "1.0.98")).toBe(false);
+  expect(sameVersion("stable", "1.0.98")).toBeNull();
 });
 
 const NOW = Date.parse("2026-06-05T00:00:00.000Z");

@@ -18,7 +18,6 @@ import type {
   CodexFacts,
   CodexHostFacts,
   LiveProbeFacts,
-  LiveSkipReason,
 } from "./facts.ts";
 import { type CheckResult, meta, profileAddFix } from "./types.ts";
 
@@ -57,19 +56,13 @@ function describeDirectGhAuth(a: CodexDirectAuthFacts): {
   // The account is part of the verdict: a pinned slot's verdict is about THAT account (gh's
   // active login is exactly what it did NOT check), and ghActiveLogin is its own probe, so an
   // auto slot names its account even on the unproven line.
-  //
-  //   gh found, proven or unproven -> the line names the account
-  //   command === null             -> not-found / could-not-check, with no account
   const accountClause = ghAccountClause(a.ghUser ?? null, a.ghActiveLogin ?? null);
   const account = (a.ghUser ?? null) !== null ? ` as ${accountClause}` : ` (${accountClause})`;
   switch (a.kind) {
     case "unproven":
       return {
         ok: false,
-        detail:
-          a.command === null
-            ? "gh auth: could not check for the GitHub CLI (the command probe failed to run)"
-            : `gh auth: ${ghCouldNotCheck(a.ghDetail, accountClause)}`,
+        detail: `gh auth: ${ghCouldNotCheck(a.ghDetail, accountClause)}`,
         ghFix: "re-run `agent health` (the gh check did not run to completion)",
       };
     case "absent":
@@ -133,7 +126,7 @@ function directAuthJson(a: CodexDirectAuthFacts): DirectAuthJson {
         authenticated: false,
         unproven: true,
         ...ghUser,
-        ...(a.command === null ? {} : { ghDetail: a.ghDetail }),
+        ghDetail: a.ghDetail,
         ...ghActiveLogin,
       };
     default:
@@ -649,14 +642,11 @@ export function checkAgentLive(
   const base = {
     ...meta(agent === "codex" ? "codex.live" : "claude.live"),
     profile,
-    value: {
-      kind: f.kind,
-      ...(f.kind === "skipped" && f.reason === "look-failed" ? { lookFailed: true } : {}),
-    },
+    value: { kind: f.kind },
   };
   switch (f.kind) {
     case "skipped":
-      return { ...base, status: "ok", detail: `skipped (${liveSkipWording(agent, f.reason)})` };
+      return { ...base, status: "ok", detail: `skipped (${agent} CLI not installed)` };
     case "ok":
       return { ...base, status: "ok", detail: `read-only prompt responded via ${f.cli}` };
     case "failed":
@@ -668,17 +658,5 @@ export function checkAgentLive(
       };
     default:
       return assertNever(f);
-  }
-}
-
-/** A skip off a FAILED look is a could-not-check, never a proven absence. */
-function liveSkipWording(agent: "codex" | "claude", reason: LiveSkipReason): string {
-  switch (reason) {
-    case "look-failed":
-      return `could not check for the ${agent} CLI - the command probe failed to run`;
-    case "not-installed":
-      return `${agent} CLI not installed`;
-    default:
-      return assertNever(reason);
   }
 }

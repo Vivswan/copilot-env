@@ -85,7 +85,6 @@ const restoreEnv = envSnapshot([
   CI_RC_DIR_ENV,
   CI_PS_DOCUMENTS_DIR_ENV,
   "COPILOT_ENV_DOWNLOAD_BASE",
-  "NVM_DIR",
   "PATH",
   "SHELL",
 ]);
@@ -620,10 +619,7 @@ skipWin(
     mkdirSync(bin, { recursive: true });
     const marker = join(dir, "spawned");
     writeFileSync(join(bin, "codex"), `#!/bin/sh\ntouch "${marker}"\n`, { mode: 0o755 });
-    // The command lookup falls back to nvm's bin dirs; pointed at an empty one, only the PATH's
-    // fake codex resolves.
     process.env.PATH = `${bin}:/usr/bin:/bin`;
-    process.env.NVM_DIR = join(dir, "no-nvm");
     // A proxy default whose daemon is up (the fake, over the default daemon home): the launch's
     // wiring step re-renders Codex onto that daemon, and its config write is the plan.
     new CopilotEnvState().recordDefaultMode("proxy");

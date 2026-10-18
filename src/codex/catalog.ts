@@ -15,12 +15,13 @@ import { type SpawnSyncReturns, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
+import { type AgentCliLook, resolveAgentCli } from "../agents/cli_install.ts";
 import { type CatalogSource, fetchRawModels } from "../copilot_api/catalog.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { CopilotEnvState } from "../copilot_api/env_state.ts";
 import { ONE_M_SUFFIX } from "../copilot_api/models.ts";
 import { CopilotApiPaths } from "../copilot_api/paths.ts";
-import { childEnvWithPath, cliSpawn, resolveCommand } from "../utils/command.ts";
+import { childEnv } from "../utils/command.ts";
 import { errMessage } from "../utils/error.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { removeScratchDir, type ScratchDir, scratchDir } from "../utils/fs_facade.ts";
@@ -333,13 +334,11 @@ export function patchModelCatalog(
   return doc;
 }
 
-let cachedCodexCliPath: string | null | undefined;
+let cachedCodexCliLook: AgentCliLook | undefined;
 
-/** Resolved once per process: the PATH look is a shell spawn of its own, and the several runs below
- *  all want the same answer. */
-function codexCliPath(): string | null {
-  if (cachedCodexCliPath === undefined) cachedCodexCliPath = resolveCommand("codex");
-  return cachedCodexCliPath;
+function codexCliLook(): AgentCliLook {
+  if (cachedCodexCliLook === undefined) cachedCodexCliLook = resolveAgentCli("codex");
+  return cachedCodexCliLook;
 }
 
 type DebugModelsRun =
@@ -353,11 +352,9 @@ function runCodexDebugModels(
   prepareHome: (home: string) => void,
   budgetMs: number,
 ): DebugModelsRun {
-  // The PATH look comes before the budget: it is paid once per process, and on Windows it is a
-  // PowerShell start that has taken seconds on a loaded machine, which is not the run's cost.
-  // Preparing the home still comes off the child's timeout, never on top of it.
-  const cliPath = codexCliPath();
-  if (cliPath === null) return { kind: "skipped", reason: "codex did not resolve on PATH" };
+  const codex = codexCliLook();
+  if (codex.kind === "absent") return { kind: "skipped", reason: "codex did not resolve on PATH" };
+  if (codex.kind === "npm-shim") return { kind: "skipped", reason: codex.note };
   const deadline = Date.now() + budgetMs;
   let tmpHome: ScratchDir;
   try {
@@ -371,15 +368,10 @@ function runCodexDebugModels(
     if (timeoutMs <= 0) {
       return { kind: "skipped", reason: `the ${budgetMs} ms budget went on preparing the home` };
     }
-    const s = cliSpawn(cliPath, ["debug", "models", ...args]);
-    // On Windows resolveCommand returns the bare command name (no directory): "." must not be
-    // prepended to PATH.
-    const cliDir = path.dirname(cliPath);
     // cwd is the throwaway home too: codex reads project-level config from the working directory,
     // and a caller's project must not colour the verdict. The catalog is hundreds of KB, so the
     // default 1 MB maxBuffer risks ENOBUFS.
-    // nosemgrep: javascript.lang.security.audit.spawn-shell-true.spawn-shell-true -- Windows-only, for .cmd shims; the spec quotes args
-    const result = spawnSync(s.file, s.args, {
+    const result = spawnSync(codex.path, ["debug", "models", ...args], {
       cwd: tmpHome,
       stdio: ["ignore", "pipe", "pipe"],
       encoding: "utf8",
@@ -388,10 +380,7 @@ function runCodexDebugModels(
       // A hard kill: a codex that ignores SIGTERM must not outlive the budget.
       killSignal: "SIGKILL",
       windowsHide: true,
-      shell: s.shell,
-      env: childEnvWithPath([cliDir === "." ? null : cliDir], {
-        extra: { CODEX_HOME: tmpHome },
-      }),
+      env: childEnv({ extra: { CODEX_HOME: tmpHome } }),
     });
     return { kind: "ran", result };
   } catch (e) {
@@ -464,7 +453,7 @@ export const UNVERIFIED_SUFFIX =
  *  codex (its path, the bundled dump, the probe verdicts). */
 export function resetCatalogProbeState(budgetMs: number = CATALOG_PROBE_TIMEOUT_MS): void {
   probeBudgetLeftMs = budgetMs;
-  cachedCodexCliPath = undefined;
+  cachedCodexCliLook = undefined;
   bundledDump = undefined;
   probeVerdicts.clear();
 }
@@ -473,7 +462,7 @@ export function resetCatalogProbeState(budgetMs: number = CATALOG_PROBE_TIMEOUT_
  *  PATH look is resolved first so the budget pays for probe runs alone, as the dump's does. */
 function runProbeSpawn(prepareHome: (home: string) => void): SpawnSyncReturns<string> | null {
   if (probeBudgetLeftMs <= 0) return null;
-  if (codexCliPath() === null) return null;
+  if (codexCliLook().kind !== "found") return null;
   const started = Date.now();
   try {
     const run = runCodexDebugModels([], prepareHome, probeBudgetLeftMs);
@@ -544,8 +533,8 @@ async function fetchCopilotModels(
   // The deadline aborts the requests themselves (identity probes included), so a slow Copilot
   // cannot hold a wiring write or a launch past the budget. The catalog feeds Codex's OWN requests,
   // so the direct fetch asks as Codex does (identity-exact gating, copilot_api/catalog.ts); the
-  // proxy fetch names no identity, and never resolves the User-Agent, whose version lookup can
-  // spawn `codex --version` and `npm view` for seconds with no codex installed.
+  // proxy fetch names no identity, and never resolves the User-Agent, whose version lookup would
+  // spawn `codex --version`.
   const deadline = new AbortController();
   const timer = setTimeout(() => deadline.abort(), COPILOT_FETCH_BUDGET_MS);
   try {

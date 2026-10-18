@@ -1,8 +1,7 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { getOrphanPids } from "../../src/copilot_api/process.ts";
-import { childPathPrepending } from "../../src/utils/command.ts";
-import { envSnapshot } from "../helpers/env.ts";
+import { envSnapshot, pathLedBy } from "../helpers/env.ts";
 import { afterEach, expect, step, tempDir, test } from "../helpers/testing.ts";
 
 // Nothing in the runtime bounds a child, so a `ps` that never returns would hang the command that
@@ -20,7 +19,7 @@ test.skipIf(process.platform === "win32")(
   async () => {
     const bin = tempDir("copilot-env-hanging-ps-");
     writeFileSync(join(bin, "ps"), HANGING_SHIM, { mode: 0o755 });
-    process.env.PATH = childPathPrepending([bin]);
+    process.env.PATH = pathLedBy(bin);
     step("scan with the hanging ps on PATH");
     const started = performance.now();
     const scan = await getOrphanPids(process.pid, process.ppid);

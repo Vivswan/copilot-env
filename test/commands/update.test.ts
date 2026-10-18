@@ -8,6 +8,7 @@ import {
   parseReleasesJson,
   pickAged,
   type Release,
+  resolveAged,
   resolveTarget,
 } from "../../src/install/resolve-release.ts";
 import { must } from "../../src/utils/assert.ts";
@@ -101,8 +102,8 @@ test("updatePreviewMessage lists the steps one per line and names the migration 
   }
 });
 
-test("parseReleasesJson keeps published vX.Y.Z releases newest-first and drops the rest", () => {
-  const rows: { name: string; json: string; releases: Release[] }[] = [
+test("parseReleasesJson keeps published vX.Y.Z releases newest-first, drops the rest, and counts the page's rows", () => {
+  const rows: { name: string; json: string; releases: Release[]; count: number }[] = [
     {
       name: "sorted newest-first",
       json: JSON.stringify([
@@ -113,9 +114,10 @@ test("parseReleasesJson keeps published vX.Y.Z releases newest-first and drops t
         parsed("v3.0.0", "2026-06-05T00:00:00Z"),
         parsed("v1.9.0", "2026-05-27T00:00:00Z"),
       ],
+      count: 2,
     },
     {
-      name: "drafts, prereleases, and non-vX.Y.Z tags are skipped",
+      name: "drafts, prereleases, and non-vX.Y.Z tags are skipped but still counted",
       json: JSON.stringify([
         rel("v1.0.0", "2026-06-01T00:00:00Z"),
         rel("v1.1.0", "2026-06-02T00:00:00Z", { draft: true }),
@@ -124,30 +126,33 @@ test("parseReleasesJson keeps published vX.Y.Z releases newest-first and drops t
         rel("nightly", "2026-06-05T00:00:00Z"),
       ]),
       releases: [parsed("v1.0.0", "2026-06-01T00:00:00Z")],
+      count: 5,
     },
     // A draft's assets are not publicly downloadable, so it is never a target.
     {
       name: "a draft alone leaves nothing",
       json: JSON.stringify([rel("v3.0.0", "2026-06-05T00:00:00Z", { draft: true })]),
       releases: [],
+      count: 1,
     },
     {
       name: "created_at stands in for a missing published_at",
       json: JSON.stringify([{ tag_name: "v1.0.0", created_at: "2026-06-01T00:00:00Z" }]),
       releases: [parsed("v1.0.0", "2026-06-01T00:00:00Z")],
+      count: 1,
     },
-    { name: "invalid JSON", json: "not json", releases: [] },
-    { name: "an API error object", json: '{"message":"Not Found"}', releases: [] },
-    { name: "an empty array", json: "[]", releases: [] },
+    { name: "invalid JSON", json: "not json", releases: [], count: 0 },
+    { name: "an API error object", json: '{"message":"Not Found"}', releases: [], count: 0 },
+    { name: "an empty array", json: "[]", releases: [], count: 0 },
   ];
-  for (const { name, json, releases } of rows) {
-    expect(parseReleasesJson(json), name).toEqual(releases);
+  for (const { name, json, releases, count } of rows) {
+    expect(parseReleasesJson(json), name).toEqual({ releases, rows: count });
   }
 });
 
-test("pickAged selects one release from the parsed list", () => {
+test("pickAged selects the newest release old enough, or nothing", () => {
   const now = secs("2026-06-06T00:00:00Z");
-  const releases: Release[] = parseReleasesJson(
+  const { releases } = parseReleasesJson(
     JSON.stringify([
       rel("v3.0.0", "2026-06-05T00:00:00Z"), // 1 day old
       rel("v1.9.0", "2026-05-27T00:00:00Z"), // 10 days old
@@ -163,14 +168,99 @@ test("pickAged selects one release from the parsed list", () => {
     },
     { name: "pickAged(0) is the latest", pick: () => pickAged(releases, now, 0), tag: "v3.0.0" },
     {
-      name: "pickAged falls back to the oldest when none is old enough",
-      pick: () => pickAged(fresh, now, 7),
-      tag: "v4.0.0",
+      name: "pickAged is null when none is old enough",
+      pick: () => pickAged(fresh.releases, now, 7),
+      tag: null,
     },
   ];
   for (const { name, pick, tag } of rows) {
     expect(pick()?.tag ?? null, name).toBe(tag);
   }
+});
+
+/** A fetch stub answering each `page=N` from `pages` (a short page is the last), or the status. */
+function pagedFetch(pages: unknown[][], failPage?: number) {
+  const seen: number[] = [];
+  const fetchImpl = (input: string | URL | Request): Promise<Response> => {
+    const page = Number(new URL(String(input)).searchParams.get("page"));
+    seen.push(page);
+    if (page === failPage) return Promise.resolve(new Response("", { status: 404 }));
+    return Promise.resolve(Response.json(pages[page - 1] ?? []));
+  };
+  return { fetchImpl, seen };
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+const daysAgo = (days: number): string => new Date(Date.now() - days * DAY_MS).toISOString();
+/** A full page of too-fresh prereleases: what a vendor that publishes many alphas a day returns
+ *  first. */
+const FRESH_PAGE: unknown[] = Array.from({ length: 100 }, (_, i) =>
+  rel(`v9.0.0-alpha.${i}`, daysAgo(0), { prerelease: true }),
+);
+const COPILOT_ENV = { repo: "example/repo", tagPattern: /^v\d+\.\d+\.\d+$/ };
+
+// The vendors' release lists are longer than one API page, and a page can be all prereleases;
+// a one-page read called a week-old release absent and, before that, picked a fresher one.
+test("resolveAged reads pages until one holds a release old enough, stops at a short page with the oldest it saw, and reports an unread page", async () => {
+  const rows: {
+    name: string;
+    pages: unknown[][];
+    failPage?: number;
+    days: number;
+    result: Awaited<ReturnType<typeof resolveAged>>;
+    seen: number[];
+  }[] = [
+    {
+      name: "the pick sits on page two",
+      pages: [FRESH_PAGE, [rel("v2.0.0", daysAgo(2)), rel("v1.0.0", daysAgo(9))]],
+      days: 7,
+      result: { kind: "release", release: { tag: "v1.0.0", dateSeconds: expect.any(Number) } },
+      seen: [1, 2],
+    },
+    {
+      name: "a short page ends the read with the oldest stable release seen",
+      pages: [[rel("v2.0.0", daysAgo(2)), rel("v1.0.0", daysAgo(3))]],
+      days: 7,
+      result: { kind: "none", oldest: { tag: "v1.0.0", dateSeconds: expect.any(Number) } },
+      seen: [1],
+    },
+    {
+      name: "five full pages with nothing old enough give up",
+      pages: [
+        FRESH_PAGE,
+        FRESH_PAGE,
+        FRESH_PAGE,
+        FRESH_PAGE,
+        FRESH_PAGE,
+        [rel("v1.0.0", daysAgo(9))],
+      ],
+      days: 7,
+      result: { kind: "none", oldest: null },
+      seen: [1, 2, 3, 4, 5],
+    },
+    {
+      name: "a page that cannot be read is unread, whatever the pages before it held",
+      pages: [FRESH_PAGE],
+      failPage: 2,
+      days: 7,
+      result: { kind: "unread" },
+      seen: [1, 2],
+    },
+  ];
+  for (const row of rows) {
+    const { fetchImpl, seen } = pagedFetch(row.pages, row.failPage);
+    const result = await resolveAged(COPILOT_ENV, row.days, { fetchImpl, retryBaseMs: 0 });
+    expect(result, row.name).toEqual(row.result);
+    expect(seen, row.name).toEqual(row.seen);
+  }
+});
+
+// copilot-env's own update keeps installing something from a repository whose every release is
+// fresh (the first weeks of a new repository), where a vendor install must not.
+test("resolveTarget with a cooldown falls back to the oldest release when none is old enough", async () => {
+  const { fetchImpl } = pagedFetch([[rel("v2.0.0", daysAgo(2)), rel("v1.0.0", daysAgo(3))]]);
+  const target = await resolveTarget(7, { fetchImpl, retryBaseMs: 0 });
+  expect(target?.tag).toBe("v1.0.0");
 });
 
 describe("resolveTarget retry (de-flakes the release lookup)", () => {

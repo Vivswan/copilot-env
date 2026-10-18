@@ -104,7 +104,7 @@ identity = auto: the identity is probed per credential again.
 - A pin overlays the stored identity: it applies to Direct at the next re-render and to the proxy at its next daemon launch.
 - `agent profile <name> identity` surveys with that profile's credential and slot; `agent profile <name> set identity <id>` (or `identity --set <id>`) pins that profile's `identity` key.
 
-**User-Agent.** Every mode sends `codex_exec/<version>`, and the version is resolved once per process, in this order: the installed `codex --version`, else npm's current `@openai/codex` release (`npm view @openai/codex version`), else the version baked into this copilot-env build. A machine without Codex and without network still sends a versioned header, since Copilot rejects some models for the bare shape.
+**User-Agent.** Every mode sends `codex_exec/<version>`, and the version is resolved once per process: the installed `codex --version`, else the version baked into this copilot-env build. A machine without Codex still sends a versioned header, since Copilot rejects some models for the bare shape.
 
 ## Static key
 

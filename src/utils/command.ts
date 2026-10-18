@@ -1,49 +1,25 @@
-// Not the `which` npm package: this also sources nvm.sh so a freshly nvm-installed binary resolves
-// in the same process that installed it. Its own module because importing setup.ts here would close
-// a cycle (setup -> codex/claude config -> agents/live_probe -> setup).
-import { type ChildProcess, execFile, spawnSync } from "node:child_process";
+// The command look and the child environment every CLI probe and launch share. Its own module
+// because importing setup.ts here would close a cycle (setup -> codex/claude config ->
+// agents/live_probe -> setup).
+import { type ChildProcess, execFile } from "node:child_process";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join, win32 } from "node:path";
+import { delimiter, isAbsolute, join } from "node:path";
 import { deadline } from "@std/async/deadline";
 import * as fs from "./fs_facade.ts";
-
-const POSIX_NVM_SH = '"$' + '{NVM_DIR:-$HOME/.nvm}/nvm.sh"';
 
 /** A one-shot PowerShell command's cost is its startup: Windows PowerShell 5.1 takes seconds on a
  *  cold or loaded machine, the work itself milliseconds. */
 export const POWERSHELL_COMMAND_TIMEOUT_MS = 10_000;
-/** The `Get-Command` look walks PATH and the module catalog on top of that startup, and shares the
- *  bound of its POSIX twin below. */
-const POWERSHELL_LOOK_TIMEOUT_MS = 30_000;
-/** `command -v` alone answers in milliseconds, but the nvm fallback sources nvm.sh, which a slow
- *  shell startup stretches to many seconds; a tighter bound read an installed codex as unproven. */
-const COMMAND_LOOK_TIMEOUT_MS = 30_000;
 /** SIGKILL, not the default TERM: a child that ignores TERM holds a sync spawn forever, since the
  *  runtime waits for the exit, not for the signal. */
 export const LOOK_KILL_SIGNAL = "SIGKILL";
 
-/** `found` carries the path (the bare name on Windows: Get-Command probes, the spawn recipe stays
- *  the name). `absent` is proven: the probe ran and found nothing. `unproven` is a probe that never
- *  completed, so a failed look can never read as a proven "command missing": a consumer that
- *  renders a verdict or mutates on the miss switches on `kind`. */
-export type CommandLook =
-  | { kind: "found"; path: string }
-  | { kind: "absent" }
-  | { kind: "unproven" };
-
-/** Exported for tests. */
-export function commandLookFromSpawn(
-  result: { status: number | null; error?: unknown },
-  resolvedPath: () => string | null,
-): CommandLook {
-  if (result.error || result.status === null) return { kind: "unproven" };
-  if (result.status !== 0) return { kind: "absent" };
-  const path = resolvedPath();
-  return path === null ? { kind: "absent" } : { kind: "found", path };
-}
+/** `found` carries the path Bun.which resolved (a relative PATH entry answers relative on Windows,
+ *  joined with cwd elsewhere); `absent` is proven: an in-process PATH walk cannot fail to look. */
+export type CommandLook = { kind: "found"; path: string } | { kind: "absent" };
 
 /** `powershell -File` passes argv literally: the one spelling for launching a `.ps1` with the
- *  caller's args verbatim (the agent launcher, the npm `.ps1` shims). */
+ *  caller's args verbatim (the agent launcher). */
 export function powershellFileArgs(ps1: string, args: readonly string[]): string[] {
   return ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ps1, ...args];
 }
@@ -86,98 +62,47 @@ export function scratchPowershellProfile(): {
   };
 }
 
-/** `timeoutMs` replaces the platform's look bound; a test that provokes a stall cannot wait out the
- *  shipped one. */
-export function findCommand(command: string, opts: { timeoutMs?: number } = {}): CommandLook {
-  if (process.platform === "win32") {
-    const timeout = opts.timeoutMs ?? POWERSHELL_LOOK_TIMEOUT_MS;
-    const profile = scratchPowershellProfile();
-    try {
-      const result = withPowershellChildEnv("powershell", (env) =>
-        spawnSync(
-          "powershell",
-          [
-            "-NoProfile",
-            "-Command",
-            `if (Get-Command ${command} -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }`,
-          ],
-          {
-            stdio: "ignore",
-            env: { ...env, ...profile.env },
-            timeout,
-            killSignal: LOOK_KILL_SIGNAL,
-          },
-        ),
-      );
-      return commandLookFromSpawn(result, () => command);
-    } finally {
-      profile.dispose();
-    }
-  }
-
-  const timeout = opts.timeoutMs ?? COMMAND_LOOK_TIMEOUT_MS;
-  const result = spawnSync(
-    "sh",
-    [
-      "-c",
-      `command -v "$1" 2>/dev/null || { [ -s ${POSIX_NVM_SH} ] && . ${POSIX_NVM_SH} >/dev/null 2>&1 && command -v "$1" 2>/dev/null; }`,
-      "sh",
-      command,
-    ],
-    { encoding: "utf8", timeout, killSignal: LOOK_KILL_SIGNAL },
-  );
-  return commandLookFromSpawn(result, () => result.stdout.trim() || null);
+export function currentPath(): string {
+  return process.env.PATH ?? process.env.Path ?? "";
 }
 
-/** A failed look reads false here, which is safe only for consumers whose miss action is
- *  non-destructive (an abort, a skip warn, a proxy fallback). Sites that render a "missing" verdict
- *  or would mutate on the miss go through findCommand and honor the mark. */
-export function commandExists(command: string): boolean {
-  return findCommand(command).kind === "found";
+/** Bun.which over `path`: this process's PATH, or the one an installer just changed in the
+ *  registry. On Windows it tries .exe, .cmd, .bat, then .com for a bare name, reading no PATHEXT. */
+export function findCommand(command: string, path: string = currentPath()): CommandLook {
+  const found = Bun.which(command, { PATH: path });
+  return found === null ? { kind: "absent" } : { kind: "found", path: found };
 }
 
-/** The same flatten as commandExists: a failed look reads null. */
 export function resolveCommand(command: string): string | null {
   const look = findCommand(command);
   return look.kind === "found" ? look.path : null;
 }
 
-/** A binary found via the nvm fallback may be a `#!/usr/bin/env node` shim that shells out to
- *  `gh`/`node` by name, so the child needs those bin dirs on PATH even when the parent never
- *  sourced nvm. */
-export function childPathPrepending(dirs: (string | null | undefined)[]): string {
-  const separator = process.platform === "win32" ? ";" : ":";
-  const base = process.env.PATH ?? process.env.Path ?? "";
-  const seen = new Set<string>();
-  const parts: string[] = [];
-  for (const part of [...dirs.filter((d): d is string => Boolean(d)), ...base.split(separator)]) {
-    if (part && !seen.has(part)) {
-      seen.add(part);
-      parts.push(part);
-    }
-  }
-  return parts.join(separator);
-}
-
-/** On Windows env names are case-insensitive, so `{ ...process.env, PATH }` yields both the
- *  inherited `Path` and the new `PATH`, and which one the child sees is undefined; every PATH
- *  casing is dropped first. The one way to build a PATH-overriding child env: callers that also
- *  drop keys pass `opts.omit`. */
-export function childEnvWithPath(
-  dirs: (string | null | undefined)[],
-  opts: { extra?: Record<string, string>; omit?: (upperKey: string) => boolean } = {},
+/** A child's environment: the parent's minus the keys `omit` names, then `extra` on top, with
+ *  PATH replaced by `path` (the registry-refreshed one after a Windows install) or led by
+ *  `leadPath`. `omit` sees each key upper-cased, since Windows env names are case-insensitive and a
+ *  scrub of `CODEX_HOME` must catch an inherited `Codex_Home` too; for the same reason a PATH
+ *  override drops every inherited casing first, or the child would get both `Path` and `PATH`. */
+export function childEnv(
+  opts: {
+    path?: string;
+    leadPath?: readonly string[];
+    extra?: Record<string, string>;
+    omit?: (upperKey: string) => boolean;
+  } = {},
 ): Record<string, string> {
-  const { extra, omit } = opts;
+  const { path, leadPath = [], extra, omit } = opts;
+  const overridesPath = path !== undefined || leadPath.length > 0;
   const out: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
     if (value === undefined) continue;
     const upper = key.toUpperCase();
-    if (upper === "PATH") continue;
+    if (overridesPath && upper === "PATH") continue;
     if (omit?.(upper)) continue;
     out[key] = value;
   }
+  if (overridesPath) out.PATH = [...leadPath, path ?? currentPath()].join(delimiter);
   if (extra) Object.assign(out, extra);
-  out.PATH = childPathPrepending(dirs);
   return out;
 }
 
@@ -230,131 +155,9 @@ export async function runCaptured(
   }
 }
 
-function quoteCmdArg(arg: string): string {
-  if (arg !== "" && !/[\s"&|<>^()]/.test(arg)) return arg;
-  return `"${arg.replace(/"/g, '""')}"`;
-}
-
-/** Node joins program and args into one command line that cmd.exe re-parses, so the program is
- *  quoted like every arg; unquoted, `C:\Program Files\...` splits at the space and nothing
- *  launches. */
-export function cmdSpawn(
-  file: string,
-  args: string[],
-): { file: string; args: string[]; shell: true } {
-  return { file: quoteCmdArg(file), args: args.map(quoteCmdArg), shell: true };
-}
-
-/** On Windows the npm-installed CLIs are `.cmd` shims Node refuses to spawn without a shell, hence
- *  the cmd.exe hop. Program-controlled args only: cmd.exe expands `%VAR%` even inside double
- *  quotes, so user-typed args go through verbatimCliSpawn. */
-export function cliSpawn(
-  file: string,
-  args: string[],
-): { file: string; args: string[]; shell: boolean } {
-  if (process.platform !== "win32") return { file, args, shell: false };
-  return cmdSpawn(file, args);
-}
-
-/** `binDir` is for callers that prepend it to the child PATH: an npm/nvm shim needs node beside it.
- */
-interface VerbatimCliSpawn {
-  file: string;
-  args: string[];
-  shell: boolean;
-  binDir: string | null;
-}
-
-/** `pattern` is where.exe's own vocabulary: a bare name searches the cwd first, then PATH (the
- *  agent-CLI launch keeps that, matching what the user's own shell would run); `$ENV:name` scopes
- *  the search to that var. */
-function windowsWhereCandidates(pattern: string): string[] {
-  const result = spawnSync("where.exe", [pattern], {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "ignore"],
-    windowsHide: true,
-    timeout: COMMAND_LOOK_TIMEOUT_MS,
-    killSignal: LOOK_KILL_SIGNAL,
-  });
-  if (result.error || result.status !== 0) return [];
-  return (result.stdout ?? "")
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter(Boolean);
-}
-
-/** A shim script cannot stand in for a binary another process spawns as its runtime. */
-function pickWindowsExecutable(candidates: string[]): string | null {
-  return (
-    candidates.find((candidate) => {
-      const lower = candidate.toLowerCase();
-      return lower.endsWith(".exe") || lower.endsWith(".com");
-    }) ?? null
-  );
-}
-
-/** A relative PATH entry makes `command -v` print a relative path, which reads null here: a
- *  cwd-dependent resolution is not a stable binary for another process to spawn. A look that never
- *  ran reads null too; every caller's miss action is a non-destructive fallback and null never
- *  renders a verdict. */
+/** Only an absolute answer is a stable binary for another process to spawn: a relative PATH entry
+ *  answers relative on Windows. Null never renders a verdict. */
 export function resolveExecutablePath(command: string): string | null {
-  if (process.platform !== "win32") {
-    const path = resolveCommand(command);
-    return path !== null && isAbsolute(path) ? path : null;
-  }
-  // `$PATH:` scopes where.exe to PATH: a bare pattern searches the current directory first, the
-  // same unstable resolution the POSIX arm rejects.
-  return pickWindowsExecutable(windowsWhereCandidates(`$PATH:${command}`));
-}
-
-/** Dispatched on extension so user-typed args skip cmd.exe's parser (it expands `%VAR%` even inside
- *  quotes) wherever a direct route exists; a batch-only shim or an unresolved command still takes
- *  the cmd.exe hop. An extensionless candidate (npm's sh script) is not spawnable on Windows and is
- *  skipped; its `.cmd`/`.ps1` siblings are their own candidates. Pure, with the sibling probe
- *  injected, for tests. */
-export function pickVerbatimWindowsSpawn(
-  command: string,
-  candidates: string[],
-  args: string[],
-  siblingExists: (path: string) => boolean,
-): VerbatimCliSpawn {
-  // win32.dirname explicitly: the pure tests run on POSIX, where plain dirname would not split
-  // backslashes.
-  const psFile = (ps1: string): VerbatimCliSpawn => ({
-    file: "powershell",
-    args: powershellFileArgs(ps1, args),
-    shell: false,
-    binDir: win32.dirname(ps1),
-  });
-  for (const candidate of candidates) {
-    const lower = candidate.toLowerCase();
-    if (lower.endsWith(".exe") || lower.endsWith(".com")) {
-      return { file: candidate, args, shell: false, binDir: win32.dirname(candidate) };
-    }
-    if (lower.endsWith(".ps1")) return psFile(candidate);
-    // npm always ships a `.ps1` beside its `.cmd`; a batch-only shim falls back to the cmd.exe hop,
-    // whose `%` expansion is unavoidable for a bare batch file.
-    if (lower.endsWith(".cmd") || lower.endsWith(".bat")) {
-      const sibling = `${candidate.slice(0, -4)}.ps1`;
-      if (siblingExists(sibling)) return psFile(sibling);
-      return { ...cmdSpawn(candidate, args), binDir: win32.dirname(candidate) };
-    }
-  }
-  return { ...cmdSpawn(command, args), binDir: null };
-}
-
-/** For user-typed args, which the launch contract passes through verbatim: no cmd.exe hop touches
- *  them unless the CLI is a batch-only shim or never resolved. Fixed-arg callers keep using
- *  cliSpawn. */
-export function verbatimCliSpawn(command: string, args: string[]): VerbatimCliSpawn {
-  if (process.platform !== "win32") {
-    const resolved = resolveCommand(command) ?? command;
-    return {
-      file: resolved,
-      args,
-      shell: false,
-      binDir: resolved.includes("/") ? dirname(resolved) : null,
-    };
-  }
-  return pickVerbatimWindowsSpawn(command, windowsWhereCandidates(command), args, fs.exists);
+  const path = resolveCommand(command);
+  return path !== null && isAbsolute(path) ? path : null;
 }

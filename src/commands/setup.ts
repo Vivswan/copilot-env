@@ -1,7 +1,8 @@
 import { consola } from "consola";
-import { type CliSetup, installAgentClis } from "../agents/cli_install.ts";
+import { type CliInstallDeps, type CliSetup, installAgentClis } from "../agents/cli_install.ts";
 import { CopilotEnvConfig, configSetCommand } from "../copilot_api/env_config.ts";
 import { runShellIntegration } from "../shell/integration.ts";
+import { dryRunActive } from "../utils/fs_facade.ts";
 import { assertNonNegativeDays } from "../utils/time.ts";
 import { runDryRun } from "./dry_run.ts";
 
@@ -9,11 +10,11 @@ import { runDryRun } from "./dry_run.ts";
 export const DEFAULT_CLI_COOLDOWN_DAYS = 7;
 
 /** The cl/co/cx launchers belong to the `shell.launchers` config key (`agent profile env` emits them); a wire
- *  only reports that state. */
+ *  only reports that state, and `--clis` turns it on. */
 interface ShellArgs {
   remove?: boolean;
   clis?: boolean;
-  /** Days of npm release aging; null = latest. */
+  /** Days of release aging for the CLI installs; null = each vendor's latest. */
   cooldown?: number | null;
   noSudo?: boolean;
   noPrereqs?: boolean;
@@ -59,18 +60,32 @@ function parseShellAction(args: ShellArgs): ShellAction {
   };
 }
 
-export function runShell(args: ShellArgs): void | Promise<void> {
+/** The flag refusals throw before anything runs; `deps` is the install pass's test seam. */
+export function runShell(args: ShellArgs, deps?: CliInstallDeps): Promise<void> {
   const action = parseShellAction(args);
-  if (args.dryRun) return runDryRun(() => Promise.resolve(applyShell(action)));
-  applyShell(action);
+  if (args.dryRun) return runDryRun(() => applyShell(action, deps));
+  return applyShell(action, deps);
 }
 
-function applyShell(action: ShellAction): void {
+/** The write `agent config set shell.launchers true` makes, through the same store. */
+function enableLaunchers(): void {
+  const config = new CopilotEnvConfig();
+  if (config.launchersEnabled()) return;
+  config.set({ "shell.launchers": true });
+  consola.info(
+    `${dryRunActive() ? "Would set" : "Set"} shell.launchers to true (--clis turns the launchers on).`,
+  );
+}
+
+async function applyShell(action: ShellAction, deps?: CliInstallDeps): Promise<void> {
   if (action.kind === "remove") {
     runShellIntegration({ kind: "remove", allHosts: action.allHosts });
     return;
   }
-  if (action.clis !== null) installAgentClis(action.clis);
+  if (action.clis !== null) await installAgentClis(action.clis, deps);
+  // Before the wiring, so the same run defines cl / co / cx; --no-prereqs installs nothing and
+  // turns nothing on.
+  if (action.clis?.mode === "install") enableLaunchers();
   runShellIntegration({ kind: "wire", allHosts: action.allHosts });
   consola.info(
     new CopilotEnvConfig().launchersEnabled()

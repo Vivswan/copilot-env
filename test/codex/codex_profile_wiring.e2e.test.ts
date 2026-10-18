@@ -5,14 +5,14 @@
 // OPENAI_API_KEY facts read false here.
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { parse, stringify } from "smol-toml";
 import { configureCodexConfig, removeCodexProfile } from "../../src/codex/config.ts";
 import { type CodexWiringStatus, inspectCodexWiring } from "../../src/codex/inspect.ts";
 import { codexProfileConfigPath } from "../../src/codex/paths.ts";
 import { openaiBaseUrl } from "../../src/copilot_api/port.ts";
 import { parseProfileName } from "../../src/copilot_api/profile.ts";
-import { childEnvWithPath, cliSpawn, resolveCommand } from "../../src/utils/command.ts";
+import { childEnv, resolveCommand } from "../../src/utils/command.ts";
 import { readTextResult } from "../../src/utils/fs_facade.ts";
 import { proxyTokenCommand } from "../../src/utils/root.ts";
 import { envSnapshot, isolateAgentHomes } from "../helpers/env.ts";
@@ -551,8 +551,7 @@ test("malformed TOML in either file reads other for the named view, naming the f
 
 /** Skips where no codex is installed; `codex --profile <name> mcp list` loads the config (and the
  *  profile file) without a model call or a credential, so it is the cheapest "does Codex accept
- *  what the writer produced" probe. Resolved ONCE, here: isolate() swaps HOME, under which an
- *  nvm-installed codex no longer resolves. */
+ *  what the writer produced" probe. */
 const CODEX_PATH = resolveCommand("codex");
 const liveCodex = test.skipIf(CODEX_PATH === null);
 
@@ -568,13 +567,10 @@ liveCodex(
     });
     const codexPath = CODEX_PATH ?? "";
     const run = (home: string) => {
-      const s = cliSpawn(codexPath, ["--profile", WORK, "mcp", "list"]);
-      const cliDir = dirname(codexPath);
-      return runSync(s.file, s.args, {
+      return runSync(codexPath, ["--profile", WORK, "mcp", "list"], {
         cwd: home,
-        env: childEnvWithPath([cliDir === "." ? null : cliDir], { extra: { CODEX_HOME: home } }),
+        env: childEnv({ extra: { CODEX_HOME: home } }),
         timeoutMs: 60_000,
-        shell: s.shell,
       });
     };
     const accepted = run(codexHome);

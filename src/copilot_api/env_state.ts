@@ -224,8 +224,8 @@ type EnvStatePatch = {
 const PROFILE_SCHEMA = v.object({
   githubToken: v.fallback(v.nullable(v.pipe(v.string(), v.trim(), v.minLength(1))), null),
   authProvider: v.fallback(v.nullable(v.picklist(AUTH_PROVIDERS)), null),
-  // The pin flows into `gh auth token --user` argv (through cmd.exe on Windows), so a hand-mangled
-  // value reads as null instead of reaching a shell.
+  // The pin flows into `gh auth token --user` argv, so a hand-mangled value reads as null instead
+  // of reaching gh.
   ghUser: v.fallback(v.nullable(v.pipe(v.string(), v.trim(), v.regex(GH_LOGIN_RE))), null),
   mode: v.fallback(v.nullable(v.picklist(PROFILE_MODES)), null),
 });

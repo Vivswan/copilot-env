@@ -350,7 +350,7 @@ export async function runUninstall(
     scannable({
       headline: "Not removed: these are yours, not copilot-env's.",
       evidence: [
-        "the agent CLIs themselves (claude / copilot / codex npm globals)",
+        "the agent CLIs themselves (claude / copilot / codex, installed by their vendors' installers)",
         "the PowerShell execution policy",
         "Codex's sandbox_workspace_write.network_access key",
         "other hosts' ~/.codex/hosts/* dirs on a shared home",

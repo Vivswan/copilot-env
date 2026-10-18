@@ -18,7 +18,6 @@ import {
   checkAutoupdate,
   checkCli,
   checkLaunchers,
-  checkLook,
   checkNodeModules,
   checkProxyPackage,
   checkProxyResolved,
@@ -45,13 +44,7 @@ import { codexLiveLaunch } from "../../src/health/live_launch.ts";
 import { gatherFacts } from "../../src/health/probe.ts";
 import { runLiveCli } from "../../src/health/probe_deps.ts";
 import { renderReport } from "../../src/health/report.ts";
-import {
-  type CheckId,
-  type CheckResult,
-  type CheckStatus,
-  type HealthScope,
-  meta,
-} from "../../src/health/types.ts";
+import type { CheckId, CheckResult, CheckStatus, HealthScope } from "../../src/health/types.ts";
 import type { CommandLook } from "../../src/utils/command.ts";
 import { withColumns } from "../helpers/columns.ts";
 import { envSnapshot, isolateProxyHome } from "../helpers/env.ts";
@@ -1094,7 +1087,7 @@ test("shell + launcher wiring: missing warns, present ok", () => {
   expect(checkLaunchers(bare).status).toBe("warn");
 });
 
-test("optional CLI + tools: missing warns (not fail), present ok, a FAILED look says could-not-check", () => {
+test("optional CLI: missing warns (not fail) with the install fix, present ok", () => {
   expect(
     checkCli({ command: "claude", name: "Claude", look: { kind: "found", path: "/bin/claude" } })
       .status,
@@ -1102,33 +1095,8 @@ test("optional CLI + tools: missing warns (not fail), present ok, a FAILED look 
   const missing = checkCli({ command: "codex", name: "Codex", look: { kind: "absent" } });
   expect(missing.status).toBe("warn");
   expect(missing.detail).toBe("not installed (optional)");
-  // An unproven look keeps the warn + fix but never claims "not installed".
-  const unproven = checkCli({
-    command: "codex",
-    name: "Codex",
-    look: { kind: "unproven" },
-  });
-  expect(unproven.status).toBe("warn");
-  expect(unproven.detail).toBe("could not check (the command probe failed to run)");
-  expect(unproven.fix).toBe("agent shell --clis");
-  expect(unproven.value).toEqual({ command: "codex", resolved: null, lookFailed: true });
-
-  // The tools share the CLI census's look row under their own registered ids.
-  expect(
-    checkLook(meta("setup.tool.node"), { kind: "found", path: "/usr/bin/node" }),
-  ).toMatchObject({
-    id: "setup.tool.node",
-    label: "node",
-    status: "ok",
-  });
-  expect(checkLook(meta("setup.tool.npm"), { kind: "absent" })).toMatchObject({
-    status: "warn",
-    detail: "not installed (optional)",
-  });
-  const toolUnproven = checkLook(meta("setup.tool.npm"), { kind: "unproven" });
-  expect(toolUnproven.status).toBe("warn");
-  expect(toolUnproven.detail).toBe("could not check (the command probe failed to run)");
-  expect(toolUnproven.value).toEqual({ resolved: null, lookFailed: true });
+  expect(missing.fix).toBe("agent shell --clis");
+  expect(missing.value).toEqual({ command: "codex", resolved: null });
 });
 
 // --- auth (credential) check ------------------------------------------------
@@ -1384,15 +1352,22 @@ test("checkAuth: gh-cli with an UNPROVEN gh probe warns could-not-check, never `
 
 // --- live (--live) checks ---------------------------------------------------
 
-test("runLiveCli: a FAILED CLI look skips as look-failed; a proven absence as not-installed", async () => {
+test("runLiveCli: a CLI absent from PATH skips as not-installed", async () => {
   const launch = codexLiveLaunch("/tmp", null);
-  expect(await runLiveCli(launch, () => ({ kind: "unproven" }))).toEqual({
-    kind: "skipped",
-    reason: "look-failed",
-  });
   expect(await runLiveCli(launch, () => ({ kind: "absent" }))).toEqual({
     kind: "skipped",
     reason: "not-installed",
+  });
+});
+
+// On Windows an npm install leaves a `codex.cmd` shim, which a direct spawn turns into a bare EINVAL.
+test("runLiveCli: an npm .cmd shim on PATH is a failed probe carrying the note, never spawned", async () => {
+  const launch = codexLiveLaunch("/tmp", null);
+  expect(await runLiveCli(launch, () => ({ kind: "found", path: "C:\\npm\\codex.cmd" }))).toEqual({
+    kind: "failed",
+    cli: "C:\\npm\\codex.cmd",
+    detail:
+      "C:\\npm\\codex.cmd is an npm-installed copy of codex this build cannot run; npm uninstall -g @openai/codex, then agent shell --clis",
   });
 });
 
@@ -1475,7 +1450,6 @@ test("evaluateAll: each scope yields its own check ids", () => {
     },
     shell: { files: [], integrationWired: true, launchersWired: false },
     clis: [{ command: "claude", name: "Claude", look: { kind: "absent" } }],
-    tools: { node: { kind: "found", path: "/n" }, npm: { kind: "found", path: "/m" } },
     codex: CODEX_UNCONFIGURED,
     codexHost: CODEX_HOST_UNSUPPORTED,
     claude: {

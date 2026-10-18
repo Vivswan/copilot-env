@@ -1,5 +1,64 @@
 # Changelog
 
+## [5.0.2](https://github.com/Vivswan/copilot-env/compare/v5.0.1...v5.0.2) (2026-10-18)
+
+
+### ⚠ BREAKING CHANGES
+
+* the health ids bootstrap.deno and proxy.sidecar are gone: bootstrap.runtime replaces bootstrap.deno, and proxy.resolved's value carries installed; proxy.responses.websocket defaults to false
+
+### Features
+
+* **auth:** every auth surface names the GitHub account ([#468](https://github.com/Vivswan/copilot-env/issues/468)) ([e97553b](https://github.com/Vivswan/copilot-env/commit/e97553bd09d9b596b2f228d235cdbe7974c61068))
+* **claude:** the Claude Desktop entries set only what the app's default does not: high default effort and the built-in browser ([#506](https://github.com/Vivswan/copilot-env/issues/506)) ([9f032fc](https://github.com/Vivswan/copilot-env/commit/9f032fc739464d8656cca1e312acddfad06d6d9e))
+* **shell:** agent shell --clis installs the agent CLIs through their vendors' installers and turns the launchers on ([#520](https://github.com/Vivswan/copilot-env/issues/520)) ([8190a7e](https://github.com/Vivswan/copilot-env/commit/8190a7ef46d3bdc9a755bcc49264fcdc9dbab131))
+* the CLI and the proxy daemon run on bun ([25dc6b3](https://github.com/Vivswan/copilot-env/commit/25dc6b3d4674291e7e3befa24bd23a4b4c2583d8))
+
+
+### Bug Fixes
+
+* **auth:** gh-cli follows gh's active account only when the user picks auto ([#490](https://github.com/Vivswan/copilot-env/issues/490)) ([abc2d75](https://github.com/Vivswan/copilot-env/commit/abc2d755889f58e59eef5ce2fafa439c9bf30804))
+* **auth:** the remaining auth messages take the scannable shape ([#515](https://github.com/Vivswan/copilot-env/issues/515)) ([7dde3f9](https://github.com/Vivswan/copilot-env/commit/7dde3f90a34990b74085f1c326b702bb5d2ca14d))
+* **ci:** the live-probe jobs install the agent CLIs through their vendors' installers ([#521](https://github.com/Vivswan/copilot-env/issues/521)) ([46f3bca](https://github.com/Vivswan/copilot-env/commit/46f3bca0f2aa026cf7005cb2de7796847442f253))
+* **ci:** the PowerShell lint retries the gallery registration, and agent shell --clis names npm's error when its listing fails ([#508](https://github.com/Vivswan/copilot-env/issues/508)) ([5732e3a](https://github.com/Vivswan/copilot-env/commit/5732e3a5d65bf7ec294a4dd7189606d45d66d0d2))
+* **cli:** a scannable message is laid out by the printer at its stream's width ([#519](https://github.com/Vivswan/copilot-env/issues/519)) ([375f91d](https://github.com/Vivswan/copilot-env/commit/375f91d253a9a29ffc68b258039785056344f3fb))
+* **cli:** every yes/no and secret prompt draws through @clack/prompts, imported from one module ([#505](https://github.com/Vivswan/copilot-env/issues/505)) ([8251769](https://github.com/Vivswan/copilot-env/commit/82517692061fb8f2ea8778d5c8ca97d0c3ff1d18))
+* **cli:** one scannable shape for multi-part messages, and the auth refusals use it ([#509](https://github.com/Vivswan/copilot-env/issues/509)) ([d9db232](https://github.com/Vivswan/copilot-env/commit/d9db232ad2041d779037846be5b583dcc3bacb69))
+* **cli:** the 5.0.1 migration names the host's kill command, and the message-shape tests share their helpers ([#516](https://github.com/Vivswan/copilot-env/issues/516)) ([cdbecfe](https://github.com/Vivswan/copilot-env/commit/cdbecfebe3eeebd35d66f888cd8b85a32372d697))
+* **cli:** the agent wiring and config messages take the scannable shape ([#514](https://github.com/Vivswan/copilot-env/issues/514)) ([55498b3](https://github.com/Vivswan/copilot-env/commit/55498b3b234d2349dfffa2a1c4edced9b474cffe))
+* **cli:** the install, update, uninstall, and shell messages take the scannable shape ([#510](https://github.com/Vivswan/copilot-env/issues/510)) ([40924a9](https://github.com/Vivswan/copilot-env/commit/40924a90e72fbafb4fbb5936dd9003562bd786c6))
+* **cli:** the log keeps its fancy format on a piped stderr, as before the bun move ([#500](https://github.com/Vivswan/copilot-env/issues/500)) ([c12cf9a](https://github.com/Vivswan/copilot-env/commit/c12cf9a384bd3acc2e40f3ebc4271599471f93e0))
+* **cli:** the logger prints a scannable command row on one line ([#517](https://github.com/Vivswan/copilot-env/issues/517)) ([e5d1871](https://github.com/Vivswan/copilot-env/commit/e5d18719314cc33633042173f4e5ee6635581c12))
+* **cli:** the profile wiring and cost messages take the scannable shape ([#512](https://github.com/Vivswan/copilot-env/issues/512)) ([58ded7f](https://github.com/Vivswan/copilot-env/commit/58ded7fa31c7abf90a9337f790e12928eec31d17))
+* **cli:** the remaining paragraph messages take the scannable shape, and the cost headlines drop their prefixes ([#518](https://github.com/Vivswan/copilot-env/issues/518)) ([bdd7403](https://github.com/Vivswan/copilot-env/commit/bdd740317ebfadb021cda1fda11930c8c1e08d55))
+* **cli:** the select prompt redraws cleanly on arrow keys under bun ([#489](https://github.com/Vivswan/copilot-env/issues/489)) ([ddff500](https://github.com/Vivswan/copilot-env/commit/ddff50099203061e39c632c1898fe739d8170e3e))
+* **codex:** the dump budget starts once codex is found ([#480](https://github.com/Vivswan/copilot-env/issues/480)) ([545e5ed](https://github.com/Vivswan/copilot-env/commit/545e5edd1f2aa88f094e09e070d57e0a45f481c3))
+* command looks get 30 s before they read as unproven ([#491](https://github.com/Vivswan/copilot-env/issues/491)) ([c5634d9](https://github.com/Vivswan/copilot-env/commit/c5634d993db7514e320d1c53353d8230a4ec5d29))
+* **config:** the proxy floor rises to 2.2.2, the first release that writes config.json atomically, so the reader stops retrying ([4d10a2c](https://github.com/Vivswan/copilot-env/commit/4d10a2c03b247ab2cfc5087efeecac5d5b39ccf0))
+* **cost:** a failed fetch prices from the last cached copy and names its day; no price is built in ([#495](https://github.com/Vivswan/copilot-env/issues/495)) ([f4068d2](https://github.com/Vivswan/copilot-env/commit/f4068d23e046423f090e18fa5fae11b8d97f2c33))
+* **cost:** price from GitHub's rate card first, OpenRouter for the rest, no built-in table ([#456](https://github.com/Vivswan/copilot-env/issues/456)) ([4ff4d47](https://github.com/Vivswan/copilot-env/commit/4ff4d471746c3ebcb4dac3985f9be676264a481c))
+* **daemon:** the start, stop, and float messages take the scannable shape ([#513](https://github.com/Vivswan/copilot-env/issues/513)) ([2c9df27](https://github.com/Vivswan/copilot-env/commit/2c9df276c847c7de85f6e1cfeea9385a58a2a9e6))
+* **deps:** refresh the lock so the transitive advisories clear ([#467](https://github.com/Vivswan/copilot-env/issues/467)) ([25db7e4](https://github.com/Vivswan/copilot-env/commit/25db7e44859c5d0194687dd5070faea0540e9b72))
+* every look or scan the CLI spawns returns within a bound ([#486](https://github.com/Vivswan/copilot-env/issues/486)) ([46d12d3](https://github.com/Vivswan/copilot-env/commit/46d12d30efbe8af73488a981cf17606f910eaf4e))
+* **hooks:** the pre-commit hook installs nothing and names the bootstrap when a tool is missing ([#438](https://github.com/Vivswan/copilot-env/issues/438)) ([d8f6888](https://github.com/Vivswan/copilot-env/commit/d8f6888b27c2c720ddcbdc24442bff7ca9bb8cca))
+* **install:** install.ps1 downloads through PowerShell's web cmdlets when curl.exe is absent ([#492](https://github.com/Vivswan/copilot-env/issues/492)) ([4db8c4e](https://github.com/Vivswan/copilot-env/commit/4db8c4e93ef3ba54389efb6f79aac0d982d87378))
+* **install:** install.sh reads the release tag without the URL's query, fragment, or trailing slash ([#496](https://github.com/Vivswan/copilot-env/issues/496)) ([8ea8135](https://github.com/Vivswan/copilot-env/commit/8ea8135b330b6190f803a3e059938f97ab7d7137))
+* **migrate:** the 5.0.1 step signals the lock's pid only when its command is the deno daemon ([#507](https://github.com/Vivswan/copilot-env/issues/507)) ([718cfd8](https://github.com/Vivswan/copilot-env/commit/718cfd88bfafed65d1cf3105f42489dc57db8858))
+* pre-commit hook only checks, never restages ([#408](https://github.com/Vivswan/copilot-env/issues/408)) ([0c4b871](https://github.com/Vivswan/copilot-env/commit/0c4b8718cb3b967782e2a20fce8c0a2c255d8228))
+* **probe:** the Direct probe settles on the child's exit and stream ends, never on a close event bun can drop ([#497](https://github.com/Vivswan/copilot-env/issues/497)) ([fe83e51](https://github.com/Vivswan/copilot-env/commit/fe83e51bd246aa15c998f3665038a588ca9545d4))
+* **profile:** reserve prototype and constructor as profile names ([#420](https://github.com/Vivswan/copilot-env/issues/420)) ([6acd248](https://github.com/Vivswan/copilot-env/commit/6acd2483417888c3621a9704668d2dc2b9dc5aaf))
+* **proxy:** the responses websocket handshake carries the resolved client identity, websocket on by default again ([#493](https://github.com/Vivswan/copilot-env/issues/493)) ([261cce8](https://github.com/Vivswan/copilot-env/commit/261cce8900a3c92d9dbdeaf38e8ea4cfcb29f3dd))
+* **shell:** the bashrc evals nothing when the startup resolution fails, like the PowerShell twin ([#424](https://github.com/Vivswan/copilot-env/issues/424)) ([94680d7](https://github.com/Vivswan/copilot-env/commit/94680d71bf58b7be1014420c162943a8c516f4a4))
+* **shell:** the PowerShell rc re-enters its own host for the nested agent call ([#426](https://github.com/Vivswan/copilot-env/issues/426)) ([8bcc719](https://github.com/Vivswan/copilot-env/commit/8bcc719f3f2b8346877cc203b1597d79fb8cfd4c))
+* **shell:** the PowerShell spawn recipe owns PSModulePath for a 5.1 child ([#432](https://github.com/Vivswan/copilot-env/issues/432)) ([719e9c0](https://github.com/Vivswan/copilot-env/commit/719e9c06c302f5ce3baa7e80edcdd011dcee0b53))
+* **test:** a test process and its children have no terminal width unless the test sets one ([#504](https://github.com/Vivswan/copilot-env/issues/504)) ([713c9e7](https://github.com/Vivswan/copilot-env/commit/713c9e7217edc38a617ab840aaf07cb963fa5333))
+* **test:** the launcher fails a child that ends before bun:test reports, and the idle watchdog test awaits the exit it stubs ([#502](https://github.com/Vivswan/copilot-env/issues/502)) ([7ff7879](https://github.com/Vivswan/copilot-env/commit/7ff7879046ac1fd36f0cf0a5647c7a524e851242))
+* **test:** the launcher retries a file after any bun panic, not only the main thread's ([#487](https://github.com/Vivswan/copilot-env/issues/487)) ([4966d4e](https://github.com/Vivswan/copilot-env/commit/4966d4e40169cfc4d62573236c9ff8149d900583))
+* **test:** two CI flakes, the pwsh rc deadline and the Windows fail-fast rerun ([#501](https://github.com/Vivswan/copilot-env/issues/501)) ([8ba3a43](https://github.com/Vivswan/copilot-env/commit/8ba3a43c47078e43f80dc4e2fb1d5fdcf673c3d6))
+* **toml:** a leading BOM is encoding noise and a table is any object but a datetime, whatever smol-toml hands back ([#453](https://github.com/Vivswan/copilot-env/issues/453)) ([eb93090](https://github.com/Vivswan/copilot-env/commit/eb93090b35b2f7af66fe2205c37e46c0c32c8ce5))
+* **transfer:** the import confirmation lists the apply's own change set, not a hand-kept mirror ([95aff96](https://github.com/Vivswan/copilot-env/commit/95aff9627299e010f7ea9beff12ba18cf6edc1a5))
+* **windows:** the PowerShell side matches the POSIX side on PATH edits and tokenless release lookup ([#411](https://github.com/Vivswan/copilot-env/issues/411)) ([3f91a4c](https://github.com/Vivswan/copilot-env/commit/3f91a4ce35a4312d709747d96d51e453993917d9))
+
 ## [5.0.1](https://github.com/Vivswan/copilot-env/compare/v5.0.0...v5.0.1) (2026-09-30)
 
 

@@ -149,8 +149,9 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      - name: Install the current Codex CLI release
-        run: npm install -g @openai/codex
+      # Installs Claude Code too: one implementation, with its proof and error annotation, beats a
+      # Codex-only copy of it.
+      - uses: ./.github/actions/install-agent-clis
 
       - name: Generate from the installed Codex's dump and prove it accepts the result (and rejects a broken one)
         env:

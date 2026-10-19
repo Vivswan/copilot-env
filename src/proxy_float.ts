@@ -1,18 +1,12 @@
-// The float installs the proxy into `<rootHome>/proxy/install/`: a package.json naming the proxy
-// at the resolved version (and the preload shims' own npm dependencies), the bun.lock `bun
-// install` resolves from it, and the node_modules it populates; every install is built in a
-// sibling stage, verified, and swapped in, so that directory is only ever a complete install, and
-// the one truth for the version that runs: floatedProxyEntry reads it, and so do the spawn
-// (src/copilot_api/process.ts) and health. <rootHome>/proxy/resolved-version.json records when it
-// was resolved, the freshness oracle every status here reads, and names the version as a cache the
-// tree overrides at every float entry.
+// The proxy float: `<rootHome>/proxy/install/` is built in a sibling stage, verified, and swapped
+// in, so it is only ever a complete install and the one truth for the version that runs (the
+// spawn, src/copilot_api/process.ts, and health read it); resolved-version.json is a cache the
+// installed tree overrides.
 //
-// npm lifecycle scripts never run for the proxy home's install (bun runs none for a dependency it
-// does not trust), so a target declaring them would misbehave silently at runtime: the default
-// float REFUSES it (a recorded in-bounds version is kept; otherwise it fails loud), while an
-// explicit COPILOT_API_VERSION or `daemon.version` pin installs it with a warning. The cooldown is
-// written as the proxy home's bunfig `[install] minimumReleaseAge`, so TRANSITIVE deps get the
-// window too.
+// bun runs no npm lifecycle scripts for a dependency it does not trust, so a target declaring
+// them would misbehave silently at runtime: the default float refuses it, an explicit pin
+// (COPILOT_API_VERSION, `daemon.version`) installs it with a warning. The cooldown is the proxy
+// home's bunfig `[install] minimumReleaseAge`, so transitive deps get the window too.
 
 import "./utils/dotenv.ts";
 import { spawnSync } from "node:child_process";

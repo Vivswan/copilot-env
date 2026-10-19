@@ -363,10 +363,7 @@ export function checkCodex(f: CodexFacts, profile: Profile): CheckResult {
   } else if (!f.providerWired) {
     // Selected + base_url ok, but the managed proxy auth.command (the proxy-token resolver) is
     // missing or foreign.
-    detail = [
-      "provider: proxy",
-      withConfigPath(`copilot-env proxy is not fully wired - run \`${proxyFix}\``),
-    ].join("\n");
+    detail = ["provider: proxy", withConfigPath("copilot-env proxy is not fully wired")].join("\n");
   }
   if (detail !== null) {
     return { ...base, status: "warn", detail, fix: proxyFix };

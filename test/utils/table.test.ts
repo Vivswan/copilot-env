@@ -8,6 +8,7 @@ import {
   terminalWidth,
   wrapLine,
 } from "../../src/utils/table.ts";
+import { withColumns } from "../helpers/columns.ts";
 import { expect, test } from "../helpers/testing.ts";
 
 /** Plain unless a case asks for color: the default is the running terminal's. */
@@ -253,26 +254,23 @@ test("stacked, a header-labeled cell of a wrap false column still wraps: the lab
   ]);
 });
 
-test("terminalWidth takes a TTY's own size over COLUMNS, and COLUMNS only for a pipe", () => {
-  const saved = process.env.COLUMNS;
+test("terminalWidth takes a TTY's own size over COLUMNS, and COLUMNS only for a pipe", async () => {
   const stub = (key: "isTTY" | "columns", value: boolean | number): void => {
     Object.defineProperty(process.stdout, key, { value, configurable: true });
   };
   const isTTY = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
   const columns = Object.getOwnPropertyDescriptor(process.stdout, "columns");
   try {
-    process.env.COLUMNS = "200";
     stub("isTTY", true);
     stub("columns", 100);
-    expect(terminalWidth()).toBe(100);
+    expect(await withColumns(200, () => terminalWidth())).toBe(100);
     stub("isTTY", false);
-    process.env.COLUMNS = "100";
-    expect(terminalWidth()).toBe(100);
-    delete process.env.COLUMNS;
+    expect(await withColumns(100, () => terminalWidth())).toBe(100);
+    // The unset case is the test process's own state: node_env.ts removes COLUMNS, and withColumns
+    // put it back to unset.
+    expect(process.env.COLUMNS).toBeUndefined();
     expect(terminalWidth()).toBeNull();
   } finally {
-    if (saved === undefined) delete process.env.COLUMNS;
-    else process.env.COLUMNS = saved;
     for (const [key, desc] of [
       ["isTTY", isTTY],
       ["columns", columns],

@@ -1,22 +1,7 @@
-// The default profile's writers. The default is a profile: one credential, ONE mode, always both
-// agents. The record (`mode` in the default slot) and the Direct pair land in commitDefaultWiring
-// after BOTH agents' writes succeeded; the one other writer of the record is the default's `add`
-// with no credential yet, which records the mode alone. The file needs BOTH adapters (src/codex/,
-// src/claude/) and the re-render funnel (src/agents/profile_wiring.ts), so it lives in
-// src/agents/, not src/commands/.
-//
-//   `agent init`, an import naming both agents                      -> configureDefaultAgents, the landing
-//   `agent profile sync --codex|--claude`, an import naming one agent, a launcher's proxy wire
-//                                                                   -> runAgentConfig (runCodex, runClaude)
-//
-// runAgentConfig on a recorded mode: a re-render that never moves the record or the pair, and a
-// flag naming another mode is refused before any file is written. On no record, or a Direct record
-// whose pair is still incomplete under the pin and host literal in force: the landing, which wires
-// both agents and says so.
-//
-// An `auto` landing probes EVERY run; when the verdict differs from the recorded mode, the caller's
-// `onVerdict` (the CLI's question) says which one lands. A failed write leaves the previous record,
-// and the guidance names the agent that did not move and the repair.
+// The default profile's writers: one credential, ONE mode, always both agents. The record (`mode`
+// in the default slot) and the Direct pair land only after BOTH agents' writes succeeded, so a
+// half-written default never reads as wired. The one other writer of the record is the default's
+// `add` with no credential yet (src/commands/profile.ts), which records the mode alone.
 
 import { claudeAdapter } from "../claude/config.ts";
 import { codexAdapter } from "../codex/config.ts";

@@ -58,7 +58,7 @@ export async function runAgentConfig(
     );
     if (outcome.failures.length > 0) {
       throw new ScannableError({
-        headline: "could not wire the default profile:",
+        headline: "could not wire the default profile.",
         evidence: outcome.failures,
       });
     }

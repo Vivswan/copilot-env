@@ -239,7 +239,7 @@ test("a failed write that throws a scannable keeps its parts in failures under t
   }
   if (!(landing instanceof ScannableError)) throw new Error("the landing did not refuse as parts");
   const narrow = landing.scannable.fit(20).split("\n");
-  expect(narrow.slice(0, 2)).toEqual(["could not wire the", "  default profile:"]);
+  expect(narrow.slice(0, 2)).toEqual(["could not wire the", "  default profile."]);
   expect(narrow.filter((line) => line.length > 20)).toEqual(["    agent profile <other-name> add"]);
 });
 
@@ -271,7 +271,7 @@ test("a Direct landing with no resolvable credential is refused before any write
   await expect(
     runAgentConfig(claudeAdapter(), { kind: "configure", mode: "auto" }),
   ).rejects.toThrow(
-    /^could not wire the default profile:\n {2}Claude: a Direct wiring needs a credential and none resolves[\s\S]*\n {4}agent auth {2}log in first, then retry\n {2}Codex: /,
+    /^could not wire the default profile\.\n {2}Claude: a Direct wiring needs a credential and none resolves[\s\S]*\n {4}agent auth {2}log in first, then retry\n {2}Codex: /,
   );
   expect({
     codexFile: existsSync(join(homes.codexHome, "config.toml")),

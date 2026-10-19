@@ -170,9 +170,11 @@ function judgeProxyFloor(): RunnableEntry {
   const entry = resolveCopilotApiEntry();
   const version = entryProxyVersion(entry);
   if (entry.kind === "unresolved" || version === null) {
-    throw new Error(
-      `${PROXY_PACKAGE_NAME} is not resolved or installed - run 'agent start' online to float it.`,
-    );
+    throw new ScannableError({
+      headline: `${PROXY_PACKAGE_NAME} is not resolved or installed.`,
+      lead: "Fix:",
+      actions: [["agent start", "re-run online to float it"]],
+    });
   }
   let config: ProjectConfig;
   try {

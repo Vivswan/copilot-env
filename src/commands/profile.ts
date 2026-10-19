@@ -218,10 +218,12 @@ function printGuidance(
     ]);
   } else {
     lines.push("", "Mixed setup - the agents aren't configured the same way.");
-    const steps = ["Anything unconfigured? Re-run `agent init` or check `agent health`"];
-    if (codex === "direct" || claude === "direct") {
-      steps.unshift("The Direct agent needs no proxy - run it directly");
-    }
+    const steps: string[] = [];
+    if (codex === "direct")
+      steps.push("`codex` - the Direct agent needs no proxy; run it directly");
+    if (claude === "direct")
+      steps.push("`claude` - the Direct agent needs no proxy; run it directly");
+    steps.push("Anything unconfigured? Re-run `agent init` or check `agent health`");
     section("Next steps", steps);
   }
 
@@ -599,7 +601,8 @@ async function landNamed(
 /** Dependency order: the daemon holds the credential in memory and an unstoppable one throws before
  *  anything is deleted (a dry run takes the same refusal and otherwise sends no signal); the store
  *  slot goes in one atomic write, credential and mode together. Every removal goes through the
- *  facade, so a dry run names each file and slot key it would take. Shared with `agent uninstall`. */
+ *  facade, so a dry run names each file and slot key it would take. Shared with
+ *  `agent uninstall`. */
 export async function deleteProfileEverywhere(
   name: ProfileName,
   options: RemoveProfileOptions = {},
@@ -855,7 +858,13 @@ function checkSlot(profile: Profile): void {
     case "partial":
       if (profile === null) {
         printKeyValue(profileLabel(profile), slot.mode ?? "none");
-        printWrapped("  the default profile has no complete wiring yet - run `agent init`");
+        printWrapped(
+          scannable({
+            headline: "the default profile has no complete wiring yet.",
+            lead: "Fix:",
+            actions: [["agent init", "wire both agents"]],
+          }),
+        );
       } else {
         printWrapped(partialSlotGap(profile, slot));
       }

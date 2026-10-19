@@ -49,7 +49,7 @@ import { type FileChange, underDryRunMarker, withDryRun } from "../utils/dry_run
 import * as fs from "../utils/fs_facade.ts";
 import { isRecord } from "../utils/json.ts";
 import { withNarrationMuted } from "../utils/logger.ts";
-import { caught, type Message } from "../utils/message.ts";
+import { caught, type Message, scannable } from "../utils/message.ts";
 import { underInternalRoot } from "../utils/report_write.ts";
 import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
 import { reconcileClaudeDesktopWiring } from "./claude_desktop.ts";
@@ -84,7 +84,7 @@ export interface SettingsBundle {
   modes: { codex: AgentProviderMode; claude: AgentProviderMode };
   /** Set by parseSettingsBundle alone, never serialized: the `config` values that cannot apply on
    *  this OS, each as the warning the import prints for leaving it out. */
-  skippedConfig?: readonly string[];
+  skippedConfig?: readonly Message[];
 }
 
 /** Preferences whose VALUE may carry a credential (a price-list URL can hold a token in its
@@ -347,7 +347,7 @@ const BUNDLE_SCHEMA = v.pipe(
  *  reverse) is left out with a warning instead of failing the whole import. Anything else the
  *  domain rejects (a relative path, `~`) is still a rejection, and the domain's own verdict comes
  *  first because `//server/share` is absolute on both families. */
-function liftForeignCodexHome(raw: unknown): { input: unknown; skipped: string[] } {
+function liftForeignCodexHome(raw: unknown): { input: unknown; skipped: Message[] } {
   const kept = { input: raw, skipped: [] };
   if (!isRecord(raw) || !isRecord(raw.config) || !isRecord(raw.config.global)) return kept;
   const { "codex.home": home, ...global } = raw.config.global;
@@ -418,7 +418,7 @@ export interface ImportOutcome {
   /** Named profiles fully restored (credential + mode + both agents wired). */
   wiredProfiles: ProfileName[];
   /** Human-readable reasons for slots/wiring intentionally left alone. */
-  skipped: string[];
+  skipped: Message[];
   /** Wiring failures, default or per-profile (the import continued past them; the command layer
    *  prints each at its stream's width and exits non-zero on any). */
   failures: Message[];
@@ -492,21 +492,28 @@ function importableMode(
   mode: AgentProviderMode,
   label: string,
   defaultUsable: boolean,
-  skipped: string[],
-): ManagedAgentMode | null {
-  if (mode === "none") return null;
+): { mode: ManagedAgentMode | null; skipped: Message | null } {
+  if (mode === "none") return { mode: null, skipped: null };
   if (mode === "other") {
-    skipped.push(`${label} wiring: the bundle recorded an unmanaged provider - left untouched`);
-    return null;
+    return {
+      mode: null,
+      skipped: `${label} wiring: the bundle recorded an unmanaged provider - left untouched`,
+    };
   }
   if (mode === "direct" && !defaultUsable) {
-    skipped.push(
-      `${label} direct wiring: no credential resolves for the default slot - run ` +
-        "`agent auth`, then `agent init --direct`",
-    );
-    return null;
+    return {
+      mode: null,
+      skipped: scannable({
+        headline: `${label} direct wiring: no credential resolves for the default slot.`,
+        lead: "Fix:",
+        actions: [
+          ["agent auth", "log in"],
+          ["agent init --direct", "then wire it"],
+        ],
+      }),
+    };
   }
-  return mode;
+  return { mode, skipped: null };
 }
 
 /** One profile's parsed bundle slot plus its planned landing. */
@@ -524,7 +531,7 @@ export interface ImportPlan {
   modes: { codex: ManagedAgentMode | null; claude: ManagedAgentMode | null };
   profiles: PlannedProfile[];
   /** Skip messages, decided here so the summary and the apply agree. */
-  skipped: string[];
+  skipped: Message[];
 }
 
 /** How far an import reaches. The whole store lands the default's credential and wiring and
@@ -552,7 +559,7 @@ export function planImport(
     }
     return token;
   };
-  const skipped: string[] = [...(bundle.skippedConfig ?? [])];
+  const skipped: Message[] = [...(bundle.skippedConfig ?? [])];
   const defaultSlot = planSlotCredential(bundle.credential, null, gh);
   if (defaultSlot.action === "skip" && bundle.credential.authProvider !== null) {
     // Only a slot the bundle carried is an event; skipped wiring gets its own importableMode
@@ -560,10 +567,10 @@ export function planImport(
     skipped.push(`default credential: ${defaultSlot.reason}; run \`agent auth\``);
   }
   const defaultUsable = defaultSlot.action !== "skip";
-  const modes = {
-    codex: importableMode(bundle.modes.codex, "Codex", defaultUsable, skipped),
-    claude: importableMode(bundle.modes.claude, "Claude", defaultUsable, skipped),
-  };
+  const codexWiring = importableMode(bundle.modes.codex, "Codex", defaultUsable);
+  const claudeWiring = importableMode(bundle.modes.claude, "Claude", defaultUsable);
+  const modes = { codex: codexWiring.mode, claude: claudeWiring.mode };
+  const wiringSkips = { codex: codexWiring.skipped, claude: claudeWiring.skipped };
   const profiles: PlannedProfile[] = [];
   const state = new CopilotEnvState();
   const recorded = state.readProfileSlot(null).mode;
@@ -580,10 +587,10 @@ export function planImport(
    *  write sets the mode both agents share, so the line says what lands instead. A plain `none`
    *  for that agent is no event and gets no line. */
   const landBoth = (mode: ManagedAgentMode, why: string): void => {
-    const other = modes.codex === null ? "Codex" : "Claude";
-    const overridden = skipped.findIndex((line) => line.startsWith(`${other} `));
-    if (overridden !== -1) {
-      skipped.splice(overridden, 1, `${other} wiring: ${why} (one mode for both)`);
+    const other = modes.codex === null ? "codex" : "claude";
+    if (wiringSkips[other] !== null) {
+      const label = other === "codex" ? "Codex" : "Claude";
+      wiringSkips[other] = `${label} wiring: ${why} (one mode for both)`;
     }
     modes.codex = mode;
     modes.claude = mode;
@@ -603,6 +610,9 @@ export function planImport(
     );
   } else if (oneNamed && named === "direct" && pairUnstored) {
     landBoth("direct", "the default's Direct pair is not stored, so both agents are rebaked");
+  }
+  for (const line of [wiringSkips.codex, wiringSkips.claude]) {
+    if (line !== null) skipped.push(line);
   }
   for (const [rawName, slot] of Object.entries(bundle.profiles)) {
     const name = parseProfileName(rawName);

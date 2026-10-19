@@ -19,6 +19,7 @@ import {
 import * as fs from "../utils/fs_facade.ts";
 import { isRecord } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
+import { ScannableError } from "../utils/message.ts";
 import { prompt } from "../utils/prompt.ts";
 import { parseToml, stringify } from "../utils/toml.ts";
 import { inspectCatalogFile } from "./catalog.ts";
@@ -230,7 +231,11 @@ export async function runCodexMobile(): Promise<void> {
     return;
   }
   if (!process.stdin.isTTY) {
-    throw new Error("`agent codex-mobile` is interactive - run it in a terminal.");
+    throw new ScannableError({
+      headline: "`agent codex-mobile` is interactive.",
+      lead: "Fix:",
+      actions: [["agent codex-mobile", "run it in a terminal"]],
+    });
   }
 
   const home = effectiveCodexHome();
@@ -246,9 +251,12 @@ export async function runCodexMobile(): Promise<void> {
 
   const provider = readTopLevelString(original, "model_provider");
   if (provider === null) {
-    throw new Error(
-      "No model_provider is configured in config.toml - run `agent profile sync --codex` first, then retry --mobile.",
-    );
+    throw new ScannableError({
+      headline: "No model_provider is configured in config.toml.",
+      evidence: [`config.toml: ${configPath}`],
+      lead: "Fix:",
+      actions: [["agent profile sync --codex", "wire it, then retry --mobile"]],
+    });
   }
   // Captured alongside the provider so restore() puts BOTH keys back.
   const catalogPath = readTopLevelString(original, "model_catalog_json");

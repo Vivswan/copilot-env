@@ -223,7 +223,7 @@ function uninstallSteps(ctx: UninstallContext): UninstallStep[] {
       if (!looksLikeInstallRoot(installRoot)) {
         consola.warn(
           scannable({
-            headline: "Left in place: the install root does not look like a copilot-env install.",
+            headline: "Left in place: the install root does not look like copilot-env's.",
             evidence: [installRoot],
             lead: "Fix:",
             actions: [[manualRemoveCommand(installRoot), "remove it yourself, if it is one"]],

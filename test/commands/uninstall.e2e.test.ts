@@ -299,7 +299,7 @@ test("uninstall refuses a root that does not look like a copilot-env install", a
       : `rm -rf ${quotePosix(stray)}`;
   expect(stderr).toContain(
     [
-      "Left in place: the install root does not look like a copilot-env install.",
+      "Left in place: the install root does not look like copilot-env's.",
       `  ${stray}`,
       "Fix:",
       `  ${remove}  remove it yourself, if it is one`,

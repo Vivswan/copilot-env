@@ -161,8 +161,7 @@ export function pointCurrentAt(top: string, versionName: string): void {
           // creation failure as if nothing else changed. The `agent` shim dispatches through the
           // missing link, so the installer, aimed at this root, is the way back.
           throw new ScannableError({
-            headline:
-              "could not create the current link, and could not restore its previous target.",
+            headline: "could not create the current link, nor restore its previous target.",
             evidence: [link, caught(error, (message) => message)],
             lead: "Fix:",
             actions: [

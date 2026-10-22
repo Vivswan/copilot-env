@@ -187,7 +187,7 @@ agent profile mcp --remove          # unregister + restore the builtin + remembe
 agent config set claude.wire-mcp true    # opt back in (applies on the next direct wiring)
 ```
 
-The search model follows the [`proxy.message-websearch-model`](configuration.md#proxy) key, shared with the proxy; when a change applies to each is on that page:
+The search model follows the [`proxy.message-websearch-model`](configuration.md#proxy) key, shared with the proxy; when a change applies to each is on that page. With nothing stored, the tool searches with `gpt-5-mini` while the credential's catalog lists it, else with the cheapest Responses model it does list, and says so on stderr.
 
 ```bash
 agent config set proxy.message-websearch-model gpt-5.6-sol   # one override, both surfaces

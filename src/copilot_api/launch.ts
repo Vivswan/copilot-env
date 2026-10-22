@@ -28,17 +28,36 @@ import { rootMode } from "../utils/root.ts";
 import { formatTable, terminalWidth } from "../utils/table.ts";
 import { CopilotAdminClient } from "./admin.ts";
 import { CopilotApiConfig, ensureDict } from "./config.ts";
-import type { ConfigValue, ProxyConfigPath } from "./config_registry.ts";
+import {
+  type CatalogFallback,
+  CONFIG_REGISTRY,
+  type ConfigKey,
+  type ConfigValue,
+  type ProxyConfigPath,
+} from "./config_registry.ts";
 import { Credential } from "./credential.ts";
 import { directOverlay, landDirectPair, renderDirectPair } from "./direct_pair.ts";
-import { CopilotEnvConfig, configSetCommand, projectedProxyConfig } from "./env_config.ts";
+import {
+  CopilotEnvConfig,
+  configSetCommand,
+  isStoredSource,
+  resolveSettingIn,
+  type SettingSource,
+} from "./env_config.ts";
 import { type AuthProvider, assertProfileSlot } from "./env_state.ts";
 import {
   daemonClientHeaders,
   type selectDirectIdentityAndHost,
   usePatPassthrough,
 } from "./integration_identity.ts";
-import { generateAliases } from "./models.ts";
+import {
+  type AvailableModel,
+  type CatalogModel,
+  catalogModelPick,
+  generateAliases,
+  parseAvailableModels,
+  parseCatalogModels,
+} from "./models.ts";
 import { CopilotApiPaths, DAEMON_KEEP_PORT_ENV, ROOT_HOME_ENV, resolveRootHome } from "./paths.ts";
 import {
   checkProxyPort,
@@ -632,11 +651,82 @@ function deleteProxyConfigValue(doc: Record<string, unknown>, path: ProxyConfigP
   delete node[leaf];
 }
 
+/** One projected path, as it lands. */
+export type ProjectedProxyEntry =
+  | {
+      key: ConfigKey;
+      path: ProxyConfigPath;
+      /** undefined = an opt-in key with nothing stored: the path is CLEARED so the proxy's own
+       *  default stands, whatever a previous start wrote there. */
+      value: ConfigValue | undefined;
+      replaced?: undefined;
+    }
+  | {
+      key: ConfigKey;
+      path: ProxyConfigPath;
+      /** The catalog's pick (CatalogFallback) over the built-in model default in `replaced`,
+       *  which the catalog given lacked. */
+      value: string;
+      replaced: string;
+    };
+
+/** The catalog's model for a force-projected key, or null to keep the resolution: no catalog
+ *  known, a stored value (the user's), a key with no fallback, or a default the catalog lists.
+ *  A fallback key's value type is string (CatalogFallback's conditional); the check restates it. */
+function catalogStandIn(
+  fallback: CatalogFallback | undefined,
+  source: SettingSource,
+  value: ConfigValue,
+  catalog: readonly AvailableModel[] | null,
+): { value: string; replaced: string } | null {
+  if (fallback === undefined || catalog === null || source !== "default") return null;
+  if (typeof value !== "string") return null;
+
+  const pick = catalogModelPick(catalog, value, fallback.wire);
+  return pick === value ? null : { value: pick, replaced: value };
+}
+
+/** What `agent start` lands in `profile`'s daemon config.json (applyDefaultConfig below): one
+ *  entry per projected key, each as it resolves FOR THAT PROFILE (resolveSettingIn's precedence).
+ *  Before launch no catalog is known; once the daemon is up its own model list comes as
+ *  `catalog`, and a model default it lacks is replaced (catalogStandIn). Lives here, not in the
+ *  store: the store sits in the daemon shims' import closure and the catalog picks must not. */
+export function projectedProxyConfig(
+  profile: Profile,
+  config: CopilotEnvConfig = new CopilotEnvConfig(),
+  catalog: readonly AvailableModel[] | null = null,
+): ProjectedProxyEntry[] {
+  const data = config.read();
+  const out: ProjectedProxyEntry[] = [];
+  for (const def of CONFIG_REGISTRY) {
+    if (def.proxyDefault !== undefined) {
+      // Force-projected: the built-in default IS proxyDefault, so the resolution always has a value.
+      const resolved = resolveSettingIn(data, def.key, { profile });
+      const value = resolved.value ?? def.proxyDefault;
+      const standIn = catalogStandIn(def.catalogFallback, resolved.source, value, catalog);
+      if (standIn === null) out.push({ key: def.key, path: def.proxyPath, value });
+      else out.push({ key: def.key, path: def.proxyPath, ...standIn });
+    } else if (def.proxyProjected === true) {
+      const resolved = resolveSettingIn(data, def.key, { profile });
+      out.push({
+        key: def.key,
+        path: def.proxyPath,
+        value: isStoredSource(resolved.source) ? resolved.value : undefined,
+      });
+    }
+  }
+  return out;
+}
+
+/** `catalog` is the daemon's own model list once it is up: the post-launch pass renders the same
+ *  projection with the model defaults the catalog lacks replaced (CatalogFallback), and the
+ *  model-mappings POST that follows reloads the daemon's config. Returns what landed. */
 export function applyDefaultConfig(
   profile: Profile,
   paths: CopilotApiPaths,
   envConfig: CopilotEnvConfig = new CopilotEnvConfig(),
-): void {
+  catalog: readonly AvailableModel[] | null = null,
+): ProjectedProxyEntry[] {
   // The projected preferences are static defaults the daemon reads at startup with no admin REST
   // endpoint, so they go into config.json before launch (model aliases are pushed live instead),
   // resolved for THIS daemon's profile. Every projected path lands on every start: set as it
@@ -644,14 +734,29 @@ export function applyDefaultConfig(
   // the proxy's own default. The daemon's config.json is an output: a value at one of our paths is
   // re-rendered from the store whoever wrote it, and the daemon's own keys are never touched.
   const config = new CopilotApiConfig(paths.configFile);
+  const entries = projectedProxyConfig(profile, envConfig, catalog);
   config.update((d) => {
-    for (const entry of projectedProxyConfig(profile, envConfig)) {
+    for (const entry of entries) {
       if (entry.value === undefined) deleteProxyConfigValue(d, entry.path);
       else setProxyConfigValue(d, entry.path, entry.value);
     }
   });
   // Without an admin key the live `/admin/config/model-mappings` route (syncModelAliases) 401s.
   config.ensureAdminApiKey();
+  return entries;
+}
+
+/** Each model default the catalog's pick replaced, said once per start: the key itself stays at
+ *  its default (so `agent config` still shows it), and this line is where the daemon's actual
+ *  model is told. */
+function reportCatalogStandIns(entries: readonly ProjectedProxyEntry[]): void {
+  for (const entry of entries) {
+    if (entry.replaced === undefined) continue;
+    consola.info(
+      `${entry.key}: ${entry.replaced} is not in this daemon's catalog; using ${entry.value} ` +
+        `(the cheapest it lists) until \`${configSetCommand(entry.key, "<model>")}\` names one.`,
+    );
+  }
 }
 
 /**
@@ -675,10 +780,10 @@ function disableExtraPrompts(config: CopilotApiConfig): void {
 }
 
 /** Best-effort: on failure no aliases are set and the proxy still resolves plain dash-form ids via
- *  its own normalizer. */
-async function syncModelAliases(admin: CopilotAdminClient): Promise<void> {
+ *  its own normalizer, and the daemon keeps the config it launched with (the POST is what reloads
+ *  it) until the next start. */
+async function syncModelAliases(admin: CopilotAdminClient, catalog: CatalogModel[]): Promise<void> {
   try {
-    const catalog = await admin.getModels();
     const aliases = generateAliases(catalog);
     await admin.setModelMappings(aliases);
     consola.success(`Synced ${Object.keys(aliases).length} model aliases from catalog.`);
@@ -687,7 +792,7 @@ async function syncModelAliases(admin: CopilotAdminClient): Promise<void> {
       caught(
         e,
         (message) =>
-          `Could not sync model aliases from catalog (${message}); check \`agent health\`.`,
+          `Could not sync model aliases from catalog (${message}); the daemon keeps its launch config until the next start; check \`agent health\`.`,
       ),
     );
   }
@@ -740,12 +845,48 @@ export function renderModelAliases(
 
 /** The extraPrompts blank must precede the alias sync: the setModelMappings POST triggers the daemon's
  *  reloadConfig(), which applies it. */
-export async function syncAliasesAfterStart(config: CopilotApiConfig, port: number): Promise<void> {
-  disableExtraPrompts(config);
+/**
+ * The daemon's catalog, fetched ONCE for the two landings derived from it: the model defaults it
+ * lacks replaced in config.json (applyDefaultConfig with the catalog), then the aliases pushed
+ * live, whose POST reloads the daemon's config and so applies the replacements. Best-effort: on a
+ * failed fetch the pre-launch render (the built-in defaults) stands and the warning says so.
+ */
+export async function syncCatalogAfterStart(
+  ctx: {
+    profile: Profile;
+    paths: CopilotApiPaths;
+    config: CopilotApiConfig;
+    envConfig: CopilotEnvConfig;
+  },
+  port: number,
+): Promise<void> {
+  disableExtraPrompts(ctx.config);
   const admin = new CopilotAdminClient({
     port,
-    apiKey: config.ensureApiKey(),
-    adminKey: config.ensureAdminApiKey(),
+    apiKey: ctx.config.ensureApiKey(),
+    adminKey: ctx.config.ensureAdminApiKey(),
   });
-  await syncModelAliases(admin);
+  let raw: unknown;
+  try {
+    raw = await admin.getRawModels();
+  } catch (e) {
+    consola.warn(
+      caught(
+        e,
+        (message) =>
+          `Could not read the daemon's catalog (${message}); no model aliases synced and the built-in model defaults stand; check \`agent health\`.`,
+      ),
+    );
+    await printModelAliases(admin);
+    return;
+  }
+
+  const landed = applyDefaultConfig(
+    ctx.profile,
+    ctx.paths,
+    ctx.envConfig,
+    parseAvailableModels(raw),
+  );
+  reportCatalogStandIns(landed);
+  await syncModelAliases(admin, parseCatalogModels(raw));
 }

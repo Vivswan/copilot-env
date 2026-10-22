@@ -18,7 +18,7 @@ import {
   resolveLaunchCredential,
   resolveStartPort,
   spawnConfiguredDaemon,
-  syncAliasesAfterStart,
+  syncCatalogAfterStart,
   withStartLock,
 } from "../copilot_api/launch.ts";
 import {
@@ -468,6 +468,6 @@ async function launchUnderLock(
   if (spawned.idleWatchdog) {
     reportManagedLifecycle(ctx.state);
   }
-  await syncAliasesAfterStart(ctx.config, live.port);
+  await syncCatalogAfterStart(ctx, live.port);
   await reportStartSummary(profile, live, paths, ctx.logFile, entry, floatDeps.fetchLike ?? fetch);
 }

@@ -22,7 +22,6 @@ import {
   type GlobalMapKey,
   type ProfileConfigData,
   type ProfileMapKey,
-  type ProxyConfigPath,
   registryEntry,
   type StaticKeyAgent,
   type StaticKeyScope,
@@ -164,37 +163,6 @@ export function resolveSettingIn<K extends ConfigKey>(
 /** What `unset` can revert. */
 export function isStoredSource(source: SettingSource): boolean {
   return source === "profile" || source === "global";
-}
-
-export interface ProjectedProxyEntry {
-  path: ProxyConfigPath;
-  /** undefined = an opt-in key with nothing stored: the path is CLEARED so the proxy's own default
-   *  stands, whatever a previous start wrote there. */
-  value: ConfigValue | undefined;
-}
-
-/** What `agent start` lands in `profile`'s daemon config.json before launch (applyDefaultConfig in
- *  launch.ts): one entry per projected key, each as it resolves FOR THAT PROFILE. */
-export function projectedProxyConfig(
-  profile: Profile,
-  config: CopilotEnvConfig = new CopilotEnvConfig(),
-): ProjectedProxyEntry[] {
-  const data = config.read();
-  const out: ProjectedProxyEntry[] = [];
-  for (const def of CONFIG_REGISTRY) {
-    if (def.proxyDefault !== undefined) {
-      // Force-projected: the built-in default IS proxyDefault, so the resolution always has a value.
-      const resolved = resolveSettingIn(data, def.key, { profile });
-      out.push({ path: def.proxyPath, value: resolved.value ?? def.proxyDefault });
-    } else if (def.proxyProjected === true) {
-      const resolved = resolveSettingIn(data, def.key, { profile });
-      out.push({
-        path: def.proxyPath,
-        value: isStoredSource(resolved.source) ? resolved.value : undefined,
-      });
-    }
-  }
-  return out;
 }
 
 export function formatConfigValue(value: ConfigValue): string {
@@ -437,8 +405,10 @@ export class CopilotEnvConfig {
     return this.value("update.cooldown") ?? null;
   }
 
-  /** The defaults belong to the read sites: the proxy's own on the proxy path, DEFAULT_WEB_SEARCH_MODEL in
-   *  web_search.ts on the MCP path (that module imports this one, so the registry cannot reference it). */
+  /** The stored value alone: the default belongs to the read site, DEFAULT_WEB_SEARCH_MODEL in
+   *  web_search.ts (that module imports this one, so the registry cannot reference it), where it
+   *  gives way to the catalog's pick; the proxy path lands the registry's proxyDefault the same way
+   *  through the launch pipeline's projectedProxyConfig. */
   messageApiWebSearchModel(profile: Profile): string | null {
     const resolved = this.resolve("proxy.message-websearch-model", { profile });
     return isStoredSource(resolved.source) ? (resolved.value ?? null) : null;

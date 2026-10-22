@@ -180,6 +180,19 @@ interface ProjectedKeyFields {
   proxyPath: ProxyConfigPath;
 }
 
+/** The wire a model key's stand-in must serve: `responses` for the proxy's Responses-API paths,
+ *  `any` chat model otherwise. The catalog's spelling of each is models.ts's (RESPONSES_ENDPOINT):
+ *  this module sits in the daemon shims' import closure and models.ts does not. */
+export type CatalogWire = "responses" | "any";
+
+/** A model-id key whose built-in default gives way, on a daemon whose catalog lacks it, to the
+ *  cheapest listed model serving `wire`; a stored value is the user's and never replaced. Applied
+ *  by the projection with a catalog (projectedProxyConfig in launch.ts) and by the MCP web-search tool over
+ *  the same pick (catalogModelPick in models.ts). */
+export interface CatalogFallback {
+  wire: CatalogWire;
+}
+
 /** Our own code reads it; nothing is written into the proxy config.json for it. */
 type InternalConfigKeyDef<K extends ConfigKey = ConfigKey> = ConfigKeyDefCore<K> &
   DefaultSpec<K> &
@@ -187,6 +200,7 @@ type InternalConfigKeyDef<K extends ConfigKey = ConfigKey> = ConfigKeyDefCore<K>
     proxyDefault?: undefined;
     proxyProjected?: undefined;
     proxyPath?: undefined;
+    catalogFallback?: undefined;
   };
 
 /** Always written at `agent start` as `resolved ?? proxyDefault`, for keys copilot-env has an opinion on. */
@@ -196,6 +210,8 @@ type ForceProjectedConfigKeyDef<K extends ConfigKey = ConfigKey> = ConfigKeyDefC
     proxyDefault: ConfigValueTypes[K];
     defaultValue?: undefined;
     proxyProjected?: undefined;
+    /** Only a model-id key can fall back over the catalog. */
+    catalogFallback?: ConfigValueTypes[K] extends string ? CatalogFallback : undefined;
   };
 
 /** Written only while a value is stored for the daemon's profile, so the proxy's own default stands
@@ -206,6 +222,7 @@ type OptInProjectedConfigKeyDef<K extends ConfigKey = ConfigKey> = ConfigKeyDefC
   ProjectedKeyFields & {
     proxyProjected: true;
     proxyDefault?: undefined;
+    catalogFallback?: undefined;
   };
 
 /** Distributed over ConfigKey so each entry's schema, parse, and default must fit ITS key's value type.
@@ -701,9 +718,10 @@ const CONFIG_REGISTRY_LITERAL = [
     scope: "profile-default",
     describe: "/alpha/search fallback model",
     ...MODEL_ID_DOMAIN,
-    defaultValue: "gpt-5-mini",
-    proxyProjected: true,
+    proxyDefault: "gpt-5-mini",
     proxyPath: ["alphaSearchModel"],
+    // The proxy runs the search on its native Responses path, so the stand-in must serve it.
+    catalogFallback: { wire: "responses" },
   },
   {
     key: "proxy.claude-auto-model",
@@ -729,9 +747,10 @@ const CONFIG_REGISTRY_LITERAL = [
     ...MODEL_ID_DOMAIN,
     // Must equal DEFAULT_WEB_SEARCH_MODEL in web_search.ts, which imports the store over this module and
     // so cannot be referenced here; a registry test pins the two.
-    defaultValue: "gpt-5-mini",
-    proxyProjected: true,
+    proxyDefault: "gpt-5-mini",
     proxyPath: ["messageApiWebSearchModel"],
+    // Both surfaces run the search through POST /responses with the web_search tool.
+    catalogFallback: { wire: "responses" },
     applyHint:
       "The MCP web_search tool reads it on every call; the proxy surface at its next start.",
   },
@@ -774,7 +793,11 @@ const CONFIG_REGISTRY_LITERAL = [
     describe: "The proxy's small/fast model",
     ...MODEL_ID_DOMAIN,
     proxyDefault: "gpt-5-mini",
-    proxyPath: ["smallModel"],
+    // The proxy keys its small model per provider; `copilot` is the one every daemon of ours runs.
+    proxyPath: ["smallModels", "copilot"],
+    // Claude Code's warmup request lands on it through the proxy's own translation, so any chat
+    // model serves.
+    catalogFallback: { wire: "any" },
   },
   {
     key: "shell.launchers",

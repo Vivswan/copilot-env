@@ -113,6 +113,7 @@ The [architecture page](architecture.md#identity-and-host-state-in-the-slot-rend
 **The `proxy.*` keys** are projected into the proxy's own `config.json` at `agent start`, resolved for the daemon's profile, so changing one needs that daemon restarted. That file sits in the daemon's profile home, `~/.local/share/copilot-env/profiles/<name>/config.json`, with `default` as the default profile's name.
 
 - One exception: the MCP `web_search` tool reads `proxy.message-websearch-model` fresh on every call ([web search](usage.md#web-search-for-claude-code)).
+- The three model keys at their default follow the daemon's catalog: when it does not list `gpt-5-mini`, `agent start` lands the cheapest model it does list (Copilot's `lightweight` tier first, the first listed on a tie; a Responses model for the two search keys) and says so. A stored value lands as stored, listed or not.
 
 ## codex
 

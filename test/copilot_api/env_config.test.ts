@@ -30,10 +30,10 @@ import {
   CopilotEnvConfig,
   type CopilotEnvConfigData,
   formatConfigValue,
-  type ProjectedProxyEntry,
-  projectedProxyConfig,
 } from "../../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../../src/copilot_api/env_state.ts";
+import { type ProjectedProxyEntry, projectedProxyConfig } from "../../src/copilot_api/launch.ts";
+import { type AvailableModel, RESPONSES_ENDPOINT } from "../../src/copilot_api/models.ts";
 import { CopilotApiPaths } from "../../src/copilot_api/paths.ts";
 import { type Profile, parseProfileName } from "../../src/copilot_api/profile.ts";
 import { DEFAULT_WEB_SEARCH_MODEL } from "../../src/copilot_api/web_search.ts";
@@ -1253,20 +1253,24 @@ test("projectedProxyConfig(): force keys always project (built-in default or sto
   // Empty store: the force-projected keys resolve to their built-in defaults; every opt-in key is
   // an entry WITHOUT a value, the clear that lets the proxy's own default stand.
   const empty = projectedProxyConfig(null);
-  expect(projectedValue(empty, ["smallModel"])).toBe("gpt-5-mini");
+  // The three model keys are force keys: the daemon gets a model id of OURS on every start (the
+  // catalog pass below can only replace a value it owns), under the proxy's per-provider small
+  // model key.
+  expect(projectedValue(empty, ["smallModels", "copilot"])).toBe("gpt-5-mini");
+  expect(projectedValue(empty, ["alphaSearchModel"])).toBe("gpt-5-mini");
+  expect(projectedValue(empty, ["messageApiWebSearchModel"])).toBe("gpt-5-mini");
   expect(projectedValue(empty, ["useResponsesApiWebSocket"])).toBe(true);
   expect(projectedValue(empty, ["useResponsesApiWebSearch"])).toBe(true);
   expect(projectedValue(empty, ["useMessagesApi"])).toBe(true);
-  expect(empty.filter((e) => e.value !== undefined)).toHaveLength(4);
-  for (const path of [
-    ["alphaSearchCodexPriority"],
-    ["alphaSearchModel"],
-    ["claudeAutoModel"],
-    ["claudeTokenMultiplier"],
-    ["messageApiWebSearchModel"],
-    ["contextManagement", "responses"],
-  ]) {
-    expect(projectedEntry(empty, path)).toEqual({ path, value: undefined });
+  expect(empty.filter((e) => e.value !== undefined)).toHaveLength(6);
+  const optIn: [ConfigKey, string[]][] = [
+    ["proxy.alpha-search.codex-priority", ["alphaSearchCodexPriority"]],
+    ["proxy.claude-auto-model", ["claudeAutoModel"]],
+    ["proxy.claude-token-multiplier", ["claudeTokenMultiplier"]],
+    ["proxy.responses.context-management", ["contextManagement", "responses"]],
+  ];
+  for (const [key, path] of optIn) {
+    expect(projectedEntry(empty, path)).toEqual({ key, path, value: undefined });
   }
   expect(empty).toHaveLength(10);
   // A stored override on a force key is honored; a stored opt-in key now appears too, each under
@@ -1297,7 +1301,7 @@ test("projectedProxyConfig(): force keys always project (built-in default or sto
   // for that profile alone; the default profile's projection is unchanged by either.
   cfg.setProfile(WORK, { "proxy.small-model": "gpt-5-codex", "proxy.claude-token-multiplier": 2 });
   const work = projectedProxyConfig(WORK);
-  expect(projectedValue(work, ["smallModel"])).toBe("gpt-5-codex");
+  expect(projectedValue(work, ["smallModels", "copilot"])).toBe("gpt-5-codex");
   expect(projectedValue(work, ["claudeTokenMultiplier"])).toBe(2);
   expect(projectedValue(work, ["messageApiWebSearchModel"])).toBe("gpt-5");
   expect(projectedProxyConfig(null)).toEqual(projected);
@@ -1307,6 +1311,73 @@ test("projectedProxyConfig(): force keys always project (built-in default or sto
     JSON.stringify(d.proxyPath),
   );
   expect(new Set(allProjectedPaths).size).toBe(allProjectedPaths.length);
+});
+
+// The post-launch pass renders the same projection with the daemon's own model list, so a model
+// default a credential cannot use (a catalog with no gpt-5-mini) never reaches the daemon.
+test("projectedProxyConfig() with a catalog: a missing model default becomes the cheapest pick for the key's wire, said in the entry; a stored value, a listed default, nothing usable, and no catalog keep the resolution", () => {
+  tmpHome();
+  const catalog: AvailableModel[] = [
+    { id: "claude-haiku-5.5", category: "lightweight", endpoints: ["/v1/messages"] },
+    { id: "gpt-6-sol", category: "powerful", endpoints: [RESPONSES_ENDPOINT] },
+    { id: "gpt-6-luna", category: "lightweight", endpoints: [RESPONSES_ENDPOINT] },
+  ];
+  const projected = projectedProxyConfig(null, new CopilotEnvConfig(), catalog);
+  // The two search keys need a Responses model: the lightweight luna over the powerful sol. The
+  // small model takes any chat model: the haiku, the first lightweight listed.
+  expect(projectedEntry(projected, ["alphaSearchModel"])).toEqual({
+    key: "proxy.alpha-search.model",
+    path: ["alphaSearchModel"],
+    value: "gpt-6-luna",
+    replaced: "gpt-5-mini",
+  });
+  expect(projectedEntry(projected, ["messageApiWebSearchModel"])).toEqual({
+    key: "proxy.message-websearch-model",
+    path: ["messageApiWebSearchModel"],
+    value: "gpt-6-luna",
+    replaced: "gpt-5-mini",
+  });
+  expect(projectedEntry(projected, ["smallModels", "copilot"])).toEqual({
+    key: "proxy.small-model",
+    path: ["smallModels", "copilot"],
+    value: "claude-haiku-5.5",
+    replaced: "gpt-5-mini",
+  });
+  // Nothing else moves against the catalog-free render.
+  const standIns = projected.filter((e) => e.replaced !== undefined).map((e) => e.key);
+  expect(standIns).toEqual([
+    "proxy.alpha-search.model",
+    "proxy.message-websearch-model",
+    "proxy.small-model",
+  ]);
+  expect(projected.filter((e) => e.replaced === undefined)).toEqual(
+    projectedProxyConfig(null).filter((e) => !standIns.includes(e.key)),
+  );
+
+  // A stored value is the user's, listed or not.
+  const cfg = new CopilotEnvConfig();
+  cfg.set({ "proxy.small-model": "gpt-5-mini" });
+  expect(
+    projectedEntry(projectedProxyConfig(null, cfg, catalog), ["smallModels", "copilot"]),
+  ).toEqual({ key: "proxy.small-model", path: ["smallModels", "copilot"], value: "gpt-5-mini" });
+  cfg.del("proxy.small-model");
+
+  // A listed default stands; before launch (no catalog) the defaults render as they are.
+  const listed = [
+    ...catalog,
+    { id: "gpt-5-mini", category: "lightweight", endpoints: [RESPONSES_ENDPOINT] },
+  ];
+  expect(projectedProxyConfig(null, cfg, listed)).toEqual(projectedProxyConfig(null, cfg));
+  expect(projectedProxyConfig(null, cfg, null)).toEqual(projectedProxyConfig(null, cfg));
+
+  // A catalog with nothing a key can use (Claude only: no Responses model) keeps that key's default.
+  const claudeOnly = projectedProxyConfig(null, cfg, catalog.slice(0, 1));
+  expect(projectedEntry(claudeOnly, ["alphaSearchModel"])).toEqual({
+    key: "proxy.alpha-search.model",
+    path: ["alphaSearchModel"],
+    value: "gpt-5-mini",
+  });
+  expect(projectedEntry(claudeOnly, ["smallModels", "copilot"])?.value).toBe("claude-haiku-5.5");
 });
 
 test("one web-search default for both surfaces, and unset IS the default where the read sites layer their own", () => {

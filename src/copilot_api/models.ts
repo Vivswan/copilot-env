@@ -3,10 +3,19 @@
 // cannot parse: the `[1m]` suffix, reasoning-effort qualifiers, and the friendly shorthands.
 
 import { isRecord } from "../utils/json.ts";
+import type { CatalogWire } from "./config_registry.ts";
 
 export const ONE_M_SUFFIX = "[1m]";
 
+/** Copilot's `/responses` marker in an entry's `supported_endpoints`: the only wire Codex speaks,
+ *  and the one a web-search model must serve. Upstream contract: do not rename. */
+export const RESPONSES_ENDPOINT = "/responses";
+
 const ONE_M_TOKENS = 1_000_000;
+
+/** Copilot's own cost tiers of a picker model (`model_picker_category`), cheapest first; a tier
+ *  outside the list, or none, sorts after them. Upstream contract strings: do not rename. */
+const PICKER_CATEGORY_RANK = ["lightweight", "versatile", "powerful"];
 
 /** `id` has the display-only `[1m]` suffix stripped. */
 export interface CatalogModel {
@@ -30,6 +39,77 @@ export function parseCatalogModels(body: unknown): CatalogModel[] {
     });
   }
   return out;
+}
+
+/** A chat model the credential can pick, in catalog order. */
+export interface AvailableModel {
+  id: string;
+  /** `model_picker_category`, Copilot's cost tier; null when the entry carries none. */
+  category: string | null;
+  /** `supported_endpoints` as listed; empty when the entry carries none. */
+  endpoints: string[];
+}
+
+/**
+ * The models a daemon or a Direct agent can address, as the proxy's own `/models` admits them
+ * (a policy not disabled, picker-enabled) and narrowed to chat: an embeddings model answers no
+ * chat request, and the legacy ids Copilot lists for no picker (`gpt-4o`, `gpt-3.5-turbo`) are
+ * refused by its inference endpoints. Malformed entries and bodies are skipped, never thrown on.
+ */
+export function parseAvailableModels(body: unknown): AvailableModel[] {
+  const data = isRecord(body) && Array.isArray(body.data) ? body.data : [];
+  const out: AvailableModel[] = [];
+  for (const entry of data) {
+    if (!isRecord(entry) || typeof entry.id !== "string" || entry.id === "") continue;
+    if (entry.model_picker_enabled !== true) continue;
+    if (isRecord(entry.policy) && entry.policy.state === "disabled") continue;
+    if (!isRecord(entry.capabilities) || entry.capabilities.type !== "chat") continue;
+
+    const endpoints = Array.isArray(entry.supported_endpoints) ? entry.supported_endpoints : [];
+    out.push({
+      id: entry.id,
+      category: nonEmptyString(entry.model_picker_category),
+      endpoints: endpoints.filter((e): e is string => typeof e === "string"),
+    });
+  }
+  return out;
+}
+
+function pickerCategoryRank(model: AvailableModel): number {
+  const rank = model.category === null ? -1 : PICKER_CATEGORY_RANK.indexOf(model.category);
+  return rank < 0 ? PICKER_CATEGORY_RANK.length : rank;
+}
+
+/** The `supported_endpoints` entry a wire needs; null = any chat model. */
+function wireEndpoint(wire: CatalogWire): string | null {
+  return wire === "responses" ? RESPONSES_ENDPOINT : null;
+}
+
+/** The cheapest available model serving `wire`: Copilot's tiers decide, the first listed wins a
+ *  tie, null when nothing serves it. */
+export function cheapestAvailableModel(
+  models: readonly AvailableModel[],
+  wire: CatalogWire,
+): string | null {
+  const endpoint = wireEndpoint(wire);
+  let best: AvailableModel | undefined;
+  for (const model of models) {
+    if (endpoint !== null && !model.endpoints.includes(endpoint)) continue;
+    if (best === undefined || pickerCategoryRank(model) < pickerCategoryRank(best)) best = model;
+  }
+  return best?.id ?? null;
+}
+
+/** The model a built-in default lands: `preferred` while the catalog lists it, else the cheapest
+ *  listed model serving `wire`, and `preferred` again when nothing does (nothing better is
+ *  known). A stored value never comes here: it is the user's choice. */
+export function catalogModelPick(
+  models: readonly AvailableModel[],
+  preferred: string,
+  wire: CatalogWire,
+): string {
+  if (models.some((m) => m.id === preferred)) return preferred;
+  return cheapestAvailableModel(models, wire) ?? preferred;
 }
 
 interface ParsedModel {

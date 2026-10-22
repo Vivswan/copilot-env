@@ -24,6 +24,7 @@ import {
   v409StaticKeyScope,
 } from "./4.0.9.ts";
 import { v501DenoLeftovers, v501OsLockSidecars } from "./5.0.1.ts";
+import { v502SmallModelKey } from "./5.0.2.ts";
 
 /** One step, named for the release it migrates AWAY FROM (authored against the current release,
  *  with no future number to predict). It runs when an update leaves that version behind:
@@ -65,6 +66,7 @@ const MIGRATIONS: Migration[] = [
   v409ProfileVerbTree,
   v501OsLockSidecars,
   v501DenoLeftovers,
+  v502SmallModelKey,
 ];
 
 // versionLessThan tolerates unparseable input by answering "not less-than", so a

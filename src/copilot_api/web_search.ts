@@ -3,6 +3,7 @@
 // the search on Copilot's backend. This is the plain client behind the `agent profile mcp --serve` server's
 // `web_search` tool; it lives here, not in the MCP server, so that server stays a thin protocol adapter.
 
+import { abortable } from "@std/async/abortable";
 import { defaultFetch } from "../utils/fetch.ts";
 import { isRecord } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
@@ -17,15 +18,23 @@ import {
   type IdentityAndHost,
   type ProbeFetch,
 } from "./integration_identity.ts";
-import { generateAliases, parseCatalogModels } from "./models.ts";
+import {
+  type AvailableModel,
+  catalogModelPick,
+  generateAliases,
+  parseAvailableModels,
+  parseCatalogModels,
+} from "./models.ts";
 import type { Profile } from "./profile.ts";
 
 const logger = createStderrLogger();
 
 /**
- * The same model the proxy defaults to on its Messages-API web-search path, so one stored key and one
- * default drive both surfaces. Must stay a RAW catalog id, never an alias: the default path skips
- * alias resolution so it stays fetch-free.
+ * The same model the proxy defaults to on its Messages-API web-search path (the registry's
+ * proxy.message-websearch-model default; a test pins the two), so one stored key and one default
+ * drive both surfaces. Must stay a RAW catalog id, never an alias: the default is looked up in the
+ * catalog as it is, with no alias resolution, and gives way to the catalog's cheapest Responses
+ * model when the catalog lacks it (catalogModelPick).
  */
 export const DEFAULT_WEB_SEARCH_MODEL = "gpt-5-mini";
 
@@ -34,40 +43,18 @@ const WEB_SEARCH_TIMEOUT_MS = 120_000;
 const SEARCH_INSTRUCTIONS =
   "Search the web to answer the user's query. Answer concisely from the search results and cite the source URLs.";
 
-/** Rejects on abort WITHOUT cancelling the work: the identity probe's memoized result is worth keeping
- *  even when this call stops waiting for it. */
-function raceWithAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+/** Rejects on abort WITHOUT cancelling the work (abortable only races): the identity probe's
+ *  memoized result is worth keeping even when this call stops waiting for it. An MCP cancellation
+ *  carries a plain string as the reason, which the race surfaces as it is; the tool error needs
+ *  an Error. */
+async function raceWithAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
   if (signal === undefined) return promise;
-  return new Promise<T>((resolve, reject) => {
-    const abortError = () => {
-      // MCP cancellations carry a plain string as the reason.
-      if (signal.reason instanceof Error) return signal.reason;
-      if (signal.reason === undefined || signal.reason === null) {
-        return new Error("web_search was cancelled");
-      }
-      return new Error(`web_search was cancelled: ${String(signal.reason)}`);
-    };
-    if (signal.aborted) {
-      promise.catch(() => {});
-      reject(abortError());
-      return;
-    }
-    const onAbort = () => {
-      promise.catch(() => {});
-      reject(abortError());
-    };
-    signal.addEventListener("abort", onAbort, { once: true });
-    promise.then(
-      (value) => {
-        signal.removeEventListener("abort", onAbort);
-        resolve(value);
-      },
-      (e) => {
-        signal.removeEventListener("abort", onAbort);
-        reject(e);
-      },
-    );
-  });
+  try {
+    return await abortable(promise, signal);
+  } catch (e) {
+    if (!signal.aborted || e !== signal.reason || e instanceof Error) throw e;
+    throw new Error(`web_search was cancelled: ${String(signal.reason)}`);
+  }
 }
 
 interface WebSearchOptions {
@@ -81,76 +68,103 @@ interface WebSearchOptions {
   signal?: AbortSignal;
 }
 
+/** One catalog fetch, read two ways: the alias map a configured value resolves through, and the
+ *  model the default lands. */
+interface CatalogView {
+  aliases: Record<string, string>;
+  /** DEFAULT_WEB_SEARCH_MODEL while the catalog lists it, else the cheapest Responses model it does. */
+  defaultModel: string;
+}
+
 // Memoized per host and token so a long-lived MCP server pays the catalog fetch once. An injected
 // fetchImpl bypasses the memo (the memo discipline of integration_identity.ts): test stubs sharing
 // a token must not collide.
-const aliasMemo = new Map<string, Promise<Record<string, string>>>();
+const catalogMemo = new Map<string, Promise<CatalogView>>();
 
-export function resetWebSearchAliasCache(): void {
-  aliasMemo.clear();
+export function resetWebSearchCatalogCache(): void {
+  catalogMemo.clear();
 }
 
-function catalogAliases(
+function viewOf(raw: unknown): CatalogView {
+  const available: AvailableModel[] = parseAvailableModels(raw);
+  return {
+    aliases: generateAliases(parseCatalogModels(raw)),
+    defaultModel: catalogModelPick(available, DEFAULT_WEB_SEARCH_MODEL, "responses"),
+  };
+}
+
+function catalogView(
   profile: Profile,
   token: string,
   pair: IdentityAndHost,
   fetchImpl?: ProbeFetch,
-): Promise<Record<string, string>> {
+): Promise<CatalogView> {
   const { apiBase, integrationId } = pair;
   const build = async () =>
-    generateAliases(
-      parseCatalogModels(
-        await fetchRawModels("direct", {
-          profile,
-          directToken: token,
-          pair,
-          fetchImpl,
-          // The aliases name models for the /responses call below, so the catalog is asked on that
-          // call's host under that call's own identity (the version-free UA it sends).
-          identity: { kind: "agents", userAgent: CODEX_EXEC_USER_AGENT },
-        }),
-      ),
+    viewOf(
+      await fetchRawModels("direct", {
+        profile,
+        directToken: token,
+        pair,
+        fetchImpl,
+        // The catalog names models for the /responses call below, so it is asked on that call's
+        // host under that call's own identity (the version-free UA it sends).
+        identity: { kind: "agents", userAgent: CODEX_EXEC_USER_AGENT },
+      }),
     );
   if (fetchImpl !== undefined) return build();
   // Copilot gates the catalog per identity, so two profiles on one token and host with different
-  // stored identities must not read each other's aliases.
+  // stored identities must not read each other's catalog.
   const key = `${apiBase}|${integrationId ?? ""}|${token}`;
-  let pending = aliasMemo.get(key);
+  let pending = catalogMemo.get(key);
   if (pending === undefined) {
     pending = build();
     // A failed fetch must not poison the memo for a long-lived server.
-    pending.catch(() => aliasMemo.delete(key));
-    aliasMemo.set(key, pending);
+    pending.catch(() => catalogMemo.delete(key));
+    catalogMemo.set(key, pending);
   }
   return pending;
 }
 
 /**
- * Resolves an alias the way the proxy does for the same stored key (start.ts), so ONE
- * `proxy.message-websearch-model` value drives both surfaces.
- *
+ * The model the POST names, from the one `proxy.message-websearch-model` value the proxy reads
+ * too (start.ts), so both surfaces agree:
+ *   a configured value       -> resolved as an alias the way the proxy does; with no alias for it,
+ *                               sent as-is (generateAliases skips identity mappings)
+ *   nothing configured       -> the catalog view's default (DEFAULT_WEB_SEARCH_MODEL while the
+ *                               catalog lists it, else its cheapest Responses model), said on
+ *                               stderr as the daemon says its own pick at `agent start`
  *   the catalog fetch fails  -> warn and send the raw value
- *   no alias for the value   -> sent as-is; generateAliases skips identity mappings
  */
 async function resolveWebSearchModel(
-  model: string,
+  configured: string | null,
   profile: Profile,
   token: string,
   pair: IdentityAndHost,
   fetchImpl?: ProbeFetch,
 ): Promise<string> {
+  const requested = configured ?? DEFAULT_WEB_SEARCH_MODEL;
+  let view: CatalogView;
   try {
-    return (await catalogAliases(profile, token, pair, fetchImpl))[model] ?? model;
+    view = await catalogView(profile, token, pair, fetchImpl);
   } catch (e) {
     logger.warn(
       caught(
         e,
         (message) =>
-          `could not resolve '${model}' against the live catalog (${message}); sending it as-is`,
+          `could not resolve '${requested}' against the live catalog (${message}); sending it as-is`,
       ),
     );
-    return model;
+    return requested;
   }
+
+  if (configured !== null) return view.aliases[configured] ?? configured;
+  if (view.defaultModel !== DEFAULT_WEB_SEARCH_MODEL) {
+    logger.info(
+      `${DEFAULT_WEB_SEARCH_MODEL} is not in this credential's catalog; searching with ${view.defaultModel} (the cheapest Responses model it lists)`,
+    );
+  }
+  return view.defaultModel;
 }
 
 /**
@@ -190,15 +204,10 @@ export async function webSearch(query: string, opts: WebSearchOptions = {}): Pro
   const { integrationId, apiBase } = pair;
   const clientHeaders = directClientHeaders(CODEX_EXEC_USER_AGENT, integrationId);
   const configured = opts.model ?? config.messageApiWebSearchModel(profile);
-  // Only a configured value can be an alias; the built-in default is a raw catalog id, so the default
-  // path stays catalog-free.
-  const model =
-    configured === null
-      ? DEFAULT_WEB_SEARCH_MODEL
-      : await raceWithAbort(
-          resolveWebSearchModel(configured, profile, token, pair, opts.fetchImpl),
-          opts.signal,
-        );
+  const model = await raceWithAbort(
+    resolveWebSearchModel(configured, profile, token, pair, opts.fetchImpl),
+    opts.signal,
+  );
   const headers: Record<string, string> = {
     Authorization: `Bearer ${token}`,
     "Content-Type": "application/json",

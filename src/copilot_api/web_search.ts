@@ -24,7 +24,6 @@ import {
   generateAliases,
   parseAvailableModels,
   parseCatalogModels,
-  RESPONSES_ENDPOINT,
 } from "./models.ts";
 import type { Profile } from "./profile.ts";
 
@@ -90,7 +89,7 @@ function viewOf(raw: unknown): CatalogView {
   const available: AvailableModel[] = parseAvailableModels(raw);
   return {
     aliases: generateAliases(parseCatalogModels(raw)),
-    defaultModel: catalogModelPick(available, DEFAULT_WEB_SEARCH_MODEL, RESPONSES_ENDPOINT),
+    defaultModel: catalogModelPick(available, DEFAULT_WEB_SEARCH_MODEL, "responses"),
   };
 }
 
@@ -130,12 +129,11 @@ function catalogView(
 /**
  * The model the POST names, from the one `proxy.message-websearch-model` value the proxy reads
  * too (start.ts), so both surfaces agree:
- *
  *   a configured value       -> resolved as an alias the way the proxy does; with no alias for it,
  *                               sent as-is (generateAliases skips identity mappings)
- *   nothing configured       -> the catalog view's default: DEFAULT_WEB_SEARCH_MODEL while the
- *                               catalog lists it, else the cheapest Responses model it does, said
- *                               on stderr as the daemon says its own pick at `agent start`
+ *   nothing configured       -> the catalog view's default (DEFAULT_WEB_SEARCH_MODEL while the
+ *                               catalog lists it, else its cheapest Responses model), said on
+ *                               stderr as the daemon says its own pick at `agent start`
  *   the catalog fetch fails  -> warn and send the raw value
  */
 async function resolveWebSearchModel(

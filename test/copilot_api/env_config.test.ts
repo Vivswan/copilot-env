@@ -30,10 +30,9 @@ import {
   CopilotEnvConfig,
   type CopilotEnvConfigData,
   formatConfigValue,
-  type ProjectedProxyEntry,
-  projectedProxyConfig,
 } from "../../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../../src/copilot_api/env_state.ts";
+import { type ProjectedProxyEntry, projectedProxyConfig } from "../../src/copilot_api/launch.ts";
 import { type AvailableModel, RESPONSES_ENDPOINT } from "../../src/copilot_api/models.ts";
 import { CopilotApiPaths } from "../../src/copilot_api/paths.ts";
 import { type Profile, parseProfileName } from "../../src/copilot_api/profile.ts";
@@ -1316,7 +1315,7 @@ test("projectedProxyConfig(): force keys always project (built-in default or sto
 
 // The post-launch pass renders the same projection with the daemon's own model list, so a model
 // default a credential cannot use (a catalog with no gpt-5-mini) never reaches the daemon.
-test("projectedProxyConfig() with a catalog: a model default the catalog lacks becomes the cheapest pick for the key's endpoint, said in the entry; a stored value, a listed default, a catalog with nothing the key can use, and no catalog keep the resolution", () => {
+test("projectedProxyConfig() with a catalog: a missing model default becomes the cheapest pick for the key's wire, said in the entry; a stored value, a listed default, nothing usable, and no catalog keep the resolution", () => {
   tmpHome();
   const catalog: AvailableModel[] = [
     { id: "claude-haiku-5.5", category: "lightweight", endpoints: ["/v1/messages"] },

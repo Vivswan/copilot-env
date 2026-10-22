@@ -28,14 +28,21 @@ import { rootMode } from "../utils/root.ts";
 import { formatTable, terminalWidth } from "../utils/table.ts";
 import { CopilotAdminClient } from "./admin.ts";
 import { CopilotApiConfig, ensureDict } from "./config.ts";
-import type { ConfigValue, ProxyConfigPath } from "./config_registry.ts";
+import {
+  type CatalogFallback,
+  CONFIG_REGISTRY,
+  type ConfigKey,
+  type ConfigValue,
+  type ProxyConfigPath,
+} from "./config_registry.ts";
 import { Credential } from "./credential.ts";
 import { directOverlay, landDirectPair, renderDirectPair } from "./direct_pair.ts";
 import {
   CopilotEnvConfig,
   configSetCommand,
-  type ProjectedProxyEntry,
-  projectedProxyConfig,
+  isStoredSource,
+  resolveSettingIn,
+  type SettingSource,
 } from "./env_config.ts";
 import { type AuthProvider, assertProfileSlot } from "./env_state.ts";
 import {
@@ -46,6 +53,7 @@ import {
 import {
   type AvailableModel,
   type CatalogModel,
+  catalogModelPick,
   generateAliases,
   parseAvailableModels,
   parseCatalogModels,
@@ -641,6 +649,73 @@ function deleteProxyConfigValue(doc: Record<string, unknown>, path: ProxyConfigP
     leaf = key;
   }
   delete node[leaf];
+}
+
+/** One projected path, as it lands. */
+export type ProjectedProxyEntry =
+  | {
+      key: ConfigKey;
+      path: ProxyConfigPath;
+      /** undefined = an opt-in key with nothing stored: the path is CLEARED so the proxy's own
+       *  default stands, whatever a previous start wrote there. */
+      value: ConfigValue | undefined;
+      replaced?: undefined;
+    }
+  | {
+      key: ConfigKey;
+      path: ProxyConfigPath;
+      /** The catalog's pick (CatalogFallback) over the built-in model default in `replaced`,
+       *  which the catalog given lacked. */
+      value: string;
+      replaced: string;
+    };
+
+/** The catalog's model for a force-projected key, or null to keep the resolution: no catalog
+ *  known, a stored value (the user's), a key with no fallback, or a default the catalog lists.
+ *  A fallback key's value type is string (CatalogFallback's conditional); the check restates it. */
+function catalogStandIn(
+  fallback: CatalogFallback | undefined,
+  source: SettingSource,
+  value: ConfigValue,
+  catalog: readonly AvailableModel[] | null,
+): { value: string; replaced: string } | null {
+  if (fallback === undefined || catalog === null || source !== "default") return null;
+  if (typeof value !== "string") return null;
+
+  const pick = catalogModelPick(catalog, value, fallback.wire);
+  return pick === value ? null : { value: pick, replaced: value };
+}
+
+/** What `agent start` lands in `profile`'s daemon config.json (applyDefaultConfig below): one
+ *  entry per projected key, each as it resolves FOR THAT PROFILE (resolveSettingIn's precedence).
+ *  Before launch no catalog is known; once the daemon is up its own model list comes as
+ *  `catalog`, and a model default it lacks is replaced (catalogStandIn). Lives here, not in the
+ *  store: the store sits in the daemon shims' import closure and the catalog picks must not. */
+export function projectedProxyConfig(
+  profile: Profile,
+  config: CopilotEnvConfig = new CopilotEnvConfig(),
+  catalog: readonly AvailableModel[] | null = null,
+): ProjectedProxyEntry[] {
+  const data = config.read();
+  const out: ProjectedProxyEntry[] = [];
+  for (const def of CONFIG_REGISTRY) {
+    if (def.proxyDefault !== undefined) {
+      // Force-projected: the built-in default IS proxyDefault, so the resolution always has a value.
+      const resolved = resolveSettingIn(data, def.key, { profile });
+      const value = resolved.value ?? def.proxyDefault;
+      const standIn = catalogStandIn(def.catalogFallback, resolved.source, value, catalog);
+      if (standIn === null) out.push({ key: def.key, path: def.proxyPath, value });
+      else out.push({ key: def.key, path: def.proxyPath, ...standIn });
+    } else if (def.proxyProjected === true) {
+      const resolved = resolveSettingIn(data, def.key, { profile });
+      out.push({
+        key: def.key,
+        path: def.proxyPath,
+        value: isStoredSource(resolved.source) ? resolved.value : undefined,
+      });
+    }
+  }
+  return out;
 }
 
 /** `catalog` is the daemon's own model list once it is up: the post-launch pass renders the same

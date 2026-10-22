@@ -3,6 +3,7 @@
 // cannot parse: the `[1m]` suffix, reasoning-effort qualifiers, and the friendly shorthands.
 
 import { isRecord } from "../utils/json.ts";
+import type { CatalogWire } from "./config_registry.ts";
 
 export const ONE_M_SUFFIX = "[1m]";
 
@@ -79,12 +80,18 @@ function pickerCategoryRank(model: AvailableModel): number {
   return rank < 0 ? PICKER_CATEGORY_RANK.length : rank;
 }
 
-/** The cheapest available model serving `endpoint` (any when null): Copilot's tiers decide, the
- *  first listed wins a tie, null when nothing serves it. */
+/** The `supported_endpoints` entry a wire needs; null = any chat model. */
+function wireEndpoint(wire: CatalogWire): string | null {
+  return wire === "responses" ? RESPONSES_ENDPOINT : null;
+}
+
+/** The cheapest available model serving `wire`: Copilot's tiers decide, the first listed wins a
+ *  tie, null when nothing serves it. */
 export function cheapestAvailableModel(
   models: readonly AvailableModel[],
-  endpoint: string | null,
+  wire: CatalogWire,
 ): string | null {
+  const endpoint = wireEndpoint(wire);
   let best: AvailableModel | undefined;
   for (const model of models) {
     if (endpoint !== null && !model.endpoints.includes(endpoint)) continue;
@@ -94,15 +101,15 @@ export function cheapestAvailableModel(
 }
 
 /** The model a built-in default lands: `preferred` while the catalog lists it, else the cheapest
- *  listed model serving `endpoint`, and `preferred` again when nothing does (nothing better is
+ *  listed model serving `wire`, and `preferred` again when nothing does (nothing better is
  *  known). A stored value never comes here: it is the user's choice. */
 export function catalogModelPick(
   models: readonly AvailableModel[],
   preferred: string,
-  endpoint: string | null,
+  wire: CatalogWire,
 ): string {
   if (models.some((m) => m.id === preferred)) return preferred;
-  return cheapestAvailableModel(models, endpoint) ?? preferred;
+  return cheapestAvailableModel(models, wire) ?? preferred;
 }
 
 interface ParsedModel {

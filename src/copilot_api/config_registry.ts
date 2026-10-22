@@ -5,7 +5,6 @@
 import * as path from "node:path";
 import * as v from "valibot";
 import { SECONDS_PER_DAY } from "../utils/time.ts";
-import { RESPONSES_ENDPOINT } from "./models.ts";
 
 type PassthroughPref = "auto" | "on" | "off";
 
@@ -181,12 +180,17 @@ interface ProjectedKeyFields {
   proxyPath: ProxyConfigPath;
 }
 
+/** The wire a model key's stand-in must serve: `responses` for the proxy's Responses-API paths,
+ *  `any` chat model otherwise. The catalog's spelling of each is models.ts's (RESPONSES_ENDPOINT):
+ *  this module sits in the daemon shims' import closure and models.ts does not. */
+export type CatalogWire = "responses" | "any";
+
 /** A model-id key whose built-in default gives way, on a daemon whose catalog lacks it, to the
- *  cheapest listed model serving `endpoint` (any chat model when null); a stored value is the
- *  user's and never replaced. Applied by the projection with a catalog (projectedProxyConfig) and
- *  by the MCP web-search tool over the same pick (catalogModelPick in models.ts). */
+ *  cheapest listed model serving `wire`; a stored value is the user's and never replaced. Applied
+ *  by the projection with a catalog (projectedProxyConfig in launch.ts) and by the MCP web-search tool over
+ *  the same pick (catalogModelPick in models.ts). */
 export interface CatalogFallback {
-  endpoint: string | null;
+  wire: CatalogWire;
 }
 
 /** Our own code reads it; nothing is written into the proxy config.json for it. */
@@ -717,7 +721,7 @@ const CONFIG_REGISTRY_LITERAL = [
     proxyDefault: "gpt-5-mini",
     proxyPath: ["alphaSearchModel"],
     // The proxy runs the search on its native Responses path, so the stand-in must serve it.
-    catalogFallback: { endpoint: RESPONSES_ENDPOINT },
+    catalogFallback: { wire: "responses" },
   },
   {
     key: "proxy.claude-auto-model",
@@ -746,7 +750,7 @@ const CONFIG_REGISTRY_LITERAL = [
     proxyDefault: "gpt-5-mini",
     proxyPath: ["messageApiWebSearchModel"],
     // Both surfaces run the search through POST /responses with the web_search tool.
-    catalogFallback: { endpoint: RESPONSES_ENDPOINT },
+    catalogFallback: { wire: "responses" },
     applyHint:
       "The MCP web_search tool reads it on every call; the proxy surface at its next start.",
   },
@@ -793,7 +797,7 @@ const CONFIG_REGISTRY_LITERAL = [
     proxyPath: ["smallModels", "copilot"],
     // Claude Code's warmup request lands on it through the proxy's own translation, so any chat
     // model serves.
-    catalogFallback: { endpoint: null },
+    catalogFallback: { wire: "any" },
   },
   {
     key: "shell.launchers",

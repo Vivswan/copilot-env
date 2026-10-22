@@ -648,7 +648,7 @@ function pickerEntry(id: string, category: string, endpoints: string[]): Record<
   };
 }
 
-test("parseAvailableModels keeps what the proxy's own /models filter keeps, chat only, in catalog order; the picks follow Copilot's picker tiers, the first listed on a tie, within the endpoint the key needs", () => {
+test("parseAvailableModels keeps what the proxy's own /models filter keeps, chat only, in catalog order; the picks follow Copilot's picker tiers, the first listed on a tie, within the wire the key needs", () => {
   const models = parseAvailableModels(AVAILABILITY_BODY);
   expect(models).toEqual([
     {
@@ -665,44 +665,29 @@ test("parseAvailableModels keeps what the proxy's own /models filter keeps, chat
   expect(parseAvailableModels({})).toEqual([]);
   expect(parseAvailableModels(null)).toEqual([]);
 
-  const picks: { name: string; endpoint: string | null; pick: string | null }[] = [
-    {
-      name: "any chat model: the first lightweight listed",
-      endpoint: null,
-      pick: "claude-haiku-5.5",
-    },
-    {
-      name: "a Responses model: the first lightweight one serving it",
-      endpoint: RESPONSES_ENDPOINT,
-      pick: "gpt-5.6-luna",
-    },
-    { name: "a Messages model", endpoint: "/v1/messages", pick: "claude-haiku-5.5" },
-    { name: "an endpoint nothing serves", endpoint: "/nothing", pick: null },
-  ];
-  for (const c of picks) {
-    expect({ name: c.name, pick: cheapestAvailableModel(models, c.endpoint) }).toEqual({
-      name: c.name,
-      pick: c.pick,
-    });
-  }
+  // The wire axis: any chat model takes the first lightweight listed (the haiku); the Responses
+  // wire skips it for the first lightweight model serving /responses.
+  expect(cheapestAvailableModel(models, "any")).toBe("claude-haiku-5.5");
+  expect(cheapestAvailableModel(models, "responses")).toBe("gpt-5.6-luna");
+  expect(cheapestAvailableModel(models.slice(0, 2), "responses")).toBeNull();
   // Without tiers the catalog's order decides; an untiered model loses to any tiered one.
   const untiered: AvailableModel[] = [
     { id: "first", category: null, endpoints: [] },
     { id: "second", category: null, endpoints: [] },
   ];
-  expect(cheapestAvailableModel(untiered, null)).toBe("first");
+  expect(cheapestAvailableModel(untiered, "any")).toBe("first");
   expect(
     cheapestAvailableModel(
       [...untiered, { id: "tiered", category: "powerful", endpoints: [] }],
-      null,
+      "any",
     ),
   ).toBe("tiered");
-  expect(cheapestAvailableModel([], null)).toBeNull();
+  expect(cheapestAvailableModel([], "any")).toBeNull();
 
   // The default stands while listed; a disabled policy is "not listed"; nothing better keeps it.
-  expect(catalogModelPick(models, "gpt-6-sol", RESPONSES_ENDPOINT)).toBe("gpt-6-sol");
-  expect(catalogModelPick(models, "gpt-5-mini", RESPONSES_ENDPOINT)).toBe("gpt-5.6-luna");
-  expect(catalogModelPick(models, "gpt-5-mini", null)).toBe("claude-haiku-5.5");
-  expect(catalogModelPick([], "gpt-5-mini", RESPONSES_ENDPOINT)).toBe("gpt-5-mini");
-  expect(catalogModelPick(models, "gpt-5-mini", "/nothing")).toBe("gpt-5-mini");
+  expect(catalogModelPick(models, "gpt-6-sol", "responses")).toBe("gpt-6-sol");
+  expect(catalogModelPick(models, "gpt-5-mini", "responses")).toBe("gpt-5.6-luna");
+  expect(catalogModelPick(models, "gpt-5-mini", "any")).toBe("claude-haiku-5.5");
+  expect(catalogModelPick([], "gpt-5-mini", "responses")).toBe("gpt-5-mini");
+  expect(catalogModelPick(models.slice(0, 2), "gpt-5-mini", "responses")).toBe("gpt-5-mini");
 });

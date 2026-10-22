@@ -1,5 +1,18 @@
 # Changelog
 
+## [5.0.3](https://github.com/Vivswan/copilot-env/compare/v5.0.2...v5.0.3) (2026-10-22)
+
+
+### Features
+
+* **lint:** a literal message-shape lint holds scannable headlines under 72 columns and a lead to its actions ([#524](https://github.com/Vivswan/copilot-env/issues/524)) ([3461bf1](https://github.com/Vivswan/copilot-env/commit/3461bf17b607ed119433a8e5d800417f7a5b5231))
+* **proxy:** a model default the daemon's catalog lacks gives way to its cheapest listed model, and small-model lands on smallModels.copilot ([#527](https://github.com/Vivswan/copilot-env/issues/527)) ([c710eb1](https://github.com/Vivswan/copilot-env/commit/c710eb18b6ae959227a6f198e1c124f92170d1f2))
+
+
+### Bug Fixes
+
+* **cli:** seven prose instruction tails take the scannable shape, two inherited header comments shrink, and the table test uses withColumns ([#523](https://github.com/Vivswan/copilot-env/issues/523)) ([f465caf](https://github.com/Vivswan/copilot-env/commit/f465caf5ce233b72b955e3f6a1fd29bb7df17379))
+
 ## [5.0.2](https://github.com/Vivswan/copilot-env/compare/v5.0.1...v5.0.2) (2026-10-18)
 
 

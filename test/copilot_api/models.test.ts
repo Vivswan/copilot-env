@@ -1,10 +1,15 @@
 import {
+  type AvailableModel,
   type CatalogModel,
+  catalogModelPick,
+  cheapestAvailableModel,
   claudeCatalogRows,
   generateAliases,
   mergeUnlistedModels,
   newestClaudeModel,
+  parseAvailableModels,
   parseCatalogModels,
+  RESPONSES_ENDPOINT,
 } from "../../src/copilot_api/models.ts";
 import { expect, test } from "../helpers/testing.ts";
 
@@ -595,4 +600,109 @@ test("mergeUnlistedModels appends verified extras as tagged Anthropic rows, id-s
   expect(fable?.unlisted).toBe(true);
   expect(fable?.contextWindow).toBe(1_000_000); // the probed 1m verdict
   expect(merged.find((m) => m.id === "claude-haiku-4.5")?.unlisted).toBeUndefined();
+});
+
+// --- the credential's pickable models and the cheapest pick ------------------------------
+
+/** One entry per rule the availability parse applies (Copilot's own picker fields), in an order
+ *  that lets the picks tell the endpoint axis from the tier axis: the haiku is the first
+ *  lightweight model listed but serves no Responses call. */
+const AVAILABILITY_BODY = {
+  data: [
+    pickerEntry("claude-sonnet-5.5", "versatile", ["/v1/messages", "/chat/completions"]),
+    pickerEntry("claude-haiku-5.5", "lightweight", ["/v1/messages"]),
+    pickerEntry("gpt-6-sol", "powerful", [RESPONSES_ENDPOINT, "ws:/responses"]),
+    pickerEntry("gpt-5.6-luna", "lightweight", [RESPONSES_ENDPOINT]),
+    pickerEntry("gpt-6-luna", "lightweight", [RESPONSES_ENDPOINT]),
+    // No policy and no category, as Copilot lists grok: pickable, sorted after every tier.
+    {
+      id: "grok-4.7",
+      model_picker_enabled: true,
+      capabilities: { type: "chat" },
+      supported_endpoints: [RESPONSES_ENDPOINT],
+    },
+    // Skipped: no picker (the legacy ids), a disabled policy, embeddings, a blank id, junk.
+    { id: "gpt-4o", model_picker_enabled: false, capabilities: { type: "chat" } },
+    {
+      ...pickerEntry("gpt-5-mini", "lightweight", [RESPONSES_ENDPOINT]),
+      policy: { state: "disabled" },
+    },
+    {
+      id: "text-embedding-3-small",
+      model_picker_enabled: true,
+      capabilities: { type: "embeddings" },
+    },
+    { id: "", model_picker_enabled: true, capabilities: { type: "chat" } },
+    "junk",
+  ],
+};
+
+function pickerEntry(id: string, category: string, endpoints: string[]): Record<string, unknown> {
+  return {
+    id,
+    model_picker_enabled: true,
+    model_picker_category: category,
+    policy: { state: "enabled", terms: "" },
+    capabilities: { type: "chat" },
+    supported_endpoints: endpoints,
+  };
+}
+
+test("parseAvailableModels keeps what the proxy's own /models filter keeps, chat only, in catalog order; the picks follow Copilot's picker tiers, the first listed on a tie, within the endpoint the key needs", () => {
+  const models = parseAvailableModels(AVAILABILITY_BODY);
+  expect(models).toEqual([
+    {
+      id: "claude-sonnet-5.5",
+      category: "versatile",
+      endpoints: ["/v1/messages", "/chat/completions"],
+    },
+    { id: "claude-haiku-5.5", category: "lightweight", endpoints: ["/v1/messages"] },
+    { id: "gpt-6-sol", category: "powerful", endpoints: [RESPONSES_ENDPOINT, "ws:/responses"] },
+    { id: "gpt-5.6-luna", category: "lightweight", endpoints: [RESPONSES_ENDPOINT] },
+    { id: "gpt-6-luna", category: "lightweight", endpoints: [RESPONSES_ENDPOINT] },
+    { id: "grok-4.7", category: null, endpoints: [RESPONSES_ENDPOINT] },
+  ]);
+  expect(parseAvailableModels({})).toEqual([]);
+  expect(parseAvailableModels(null)).toEqual([]);
+
+  const picks: { name: string; endpoint: string | null; pick: string | null }[] = [
+    {
+      name: "any chat model: the first lightweight listed",
+      endpoint: null,
+      pick: "claude-haiku-5.5",
+    },
+    {
+      name: "a Responses model: the first lightweight one serving it",
+      endpoint: RESPONSES_ENDPOINT,
+      pick: "gpt-5.6-luna",
+    },
+    { name: "a Messages model", endpoint: "/v1/messages", pick: "claude-haiku-5.5" },
+    { name: "an endpoint nothing serves", endpoint: "/nothing", pick: null },
+  ];
+  for (const c of picks) {
+    expect({ name: c.name, pick: cheapestAvailableModel(models, c.endpoint) }).toEqual({
+      name: c.name,
+      pick: c.pick,
+    });
+  }
+  // Without tiers the catalog's order decides; an untiered model loses to any tiered one.
+  const untiered: AvailableModel[] = [
+    { id: "first", category: null, endpoints: [] },
+    { id: "second", category: null, endpoints: [] },
+  ];
+  expect(cheapestAvailableModel(untiered, null)).toBe("first");
+  expect(
+    cheapestAvailableModel(
+      [...untiered, { id: "tiered", category: "powerful", endpoints: [] }],
+      null,
+    ),
+  ).toBe("tiered");
+  expect(cheapestAvailableModel([], null)).toBeNull();
+
+  // The default stands while listed; a disabled policy is "not listed"; nothing better keeps it.
+  expect(catalogModelPick(models, "gpt-6-sol", RESPONSES_ENDPOINT)).toBe("gpt-6-sol");
+  expect(catalogModelPick(models, "gpt-5-mini", RESPONSES_ENDPOINT)).toBe("gpt-5.6-luna");
+  expect(catalogModelPick(models, "gpt-5-mini", null)).toBe("claude-haiku-5.5");
+  expect(catalogModelPick([], "gpt-5-mini", RESPONSES_ENDPOINT)).toBe("gpt-5-mini");
+  expect(catalogModelPick(models, "gpt-5-mini", "/nothing")).toBe("gpt-5-mini");
 });

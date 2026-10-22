@@ -1,4 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { CopilotApiConfig } from "../../src/copilot_api/config.ts";
 import type { GlobalMapKey } from "../../src/copilot_api/config_registry.ts";
@@ -26,6 +28,7 @@ import {
   awaitReadiness,
   daemonLifecycleEnv,
   previewProxyFloor,
+  syncCatalogAfterStart,
   withStartLock,
 } from "../../src/copilot_api/launch.ts";
 import {
@@ -36,6 +39,7 @@ import {
   planCleanup,
   trackedDaemonPids,
 } from "../../src/copilot_api/launch_cleanup.ts";
+import { type AvailableModel, RESPONSES_ENDPOINT } from "../../src/copilot_api/models.ts";
 import { CopilotApiPaths, profileHome } from "../../src/copilot_api/paths.ts";
 import { classifyOwnedDaemonPid, isCopilotApiPid } from "../../src/copilot_api/process.ts";
 import { type Profile, parseProfileName } from "../../src/copilot_api/profile.ts";
@@ -55,8 +59,8 @@ import {
 } from "../helpers/daemon.ts";
 import { defaultHomeDir, envSnapshot, isolateProxyHome } from "../helpers/env.ts";
 import { writeRunState } from "../helpers/fixtures.ts";
-import { freePort } from "../helpers/net.ts";
-import { captureAllWrites } from "../helpers/output.ts";
+import { closeServer, freePort } from "../helpers/net.ts";
+import { captureAllWrites, captureChannels } from "../helpers/output.ts";
 import {
   bunRunArgs,
   CHILD_VALUES,
@@ -1265,6 +1269,128 @@ test("applyDefaultConfig: a non-record in a nested path's way is replaced, not c
   applyDefaultConfig(null, paths);
 
   expect(config.load().contextManagement).toEqual({ responses: false });
+});
+
+/** The daemon's catalog as the post-launch pass reads it: no gpt-5-mini, a lightweight Responses
+ *  model behind a powerful one. */
+const DAEMON_CATALOG: AvailableModel[] = [
+  { id: "gpt-6-sol", category: "powerful", endpoints: [RESPONSES_ENDPOINT] },
+  { id: "gpt-6-luna", category: "lightweight", endpoints: [RESPONSES_ENDPOINT] },
+];
+
+// The post-launch pass is the SAME projection with the daemon's catalog: the model defaults it
+// lacks land their pick in config.json while the stored keys stay at their defaults, and the
+// entries returned carry what was replaced for `agent start` to tell.
+test("applyDefaultConfig with the daemon's catalog re-renders the model defaults it lacks to the cheapest pick and returns them as replaced; a stored value and the daemon's own sibling under smallModels are untouched", () => {
+  const { paths, config } = projectionFixture();
+  applyDefaultConfig(null, paths);
+  expect(config.load()).toMatchObject({
+    smallModels: { copilot: "gpt-5-mini" },
+    alphaSearchModel: "gpt-5-mini",
+    messageApiWebSearchModel: "gpt-5-mini",
+  });
+
+  const landed = applyDefaultConfig(null, paths, new CopilotEnvConfig(), DAEMON_CATALOG);
+
+  expect(config.load()).toMatchObject({
+    smallModels: { copilot: "gpt-6-luna" },
+    alphaSearchModel: "gpt-6-luna",
+    messageApiWebSearchModel: "gpt-6-luna",
+  });
+  expect(
+    landed.filter((e) => e.replaced !== undefined).map((e) => [e.key, e.value, e.replaced]),
+  ).toEqual([
+    ["proxy.alpha-search.model", "gpt-6-luna", "gpt-5-mini"],
+    ["proxy.message-websearch-model", "gpt-6-luna", "gpt-5-mini"],
+    ["proxy.small-model", "gpt-6-luna", "gpt-5-mini"],
+  ]);
+
+  new CopilotEnvConfig().set({ "proxy.small-model": "gpt-5-mini" });
+  config.update((d) => {
+    d.smallModels = { ...(d.smallModels as Record<string, unknown>), codex: "theirs" };
+  });
+  const stored = applyDefaultConfig(null, paths, new CopilotEnvConfig(), DAEMON_CATALOG);
+  expect(config.load().smallModels).toEqual({ copilot: "gpt-5-mini", codex: "theirs" });
+  expect(stored.find((e) => e.key === "proxy.small-model")?.replaced).toBeUndefined();
+});
+
+// The daemon reloads its config on the model-mappings POST and on nothing else, so the picks
+// must be in config.json when that POST arrives: the fake daemon reads the file as the POST lands.
+test("syncCatalogAfterStart: one catalog read lands the model picks in config.json BEFORE the model-mappings POST that reloads the daemon, says each replacement once, and syncs the aliases from the same read", async () => {
+  const { paths, config } = projectionFixture();
+  applyDefaultConfig(null, paths);
+  const atPost: { config: Record<string, unknown>; body: unknown }[] = [];
+  const catalogReads: string[] = [];
+  const daemon = createServer((req, res) => {
+    const path = (req.url ?? "").split("?")[0];
+    const json = (body: unknown): void => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify(body));
+    };
+    if (path === "/models") {
+      catalogReads.push(req.method ?? "");
+      json({
+        data: DAEMON_CATALOG.map((m) => ({
+          id: m.id,
+          model_picker_enabled: true,
+          model_picker_category: m.category,
+          policy: { state: "enabled" },
+          capabilities: { type: "chat" },
+          supported_endpoints: m.endpoints,
+        })),
+      });
+      return;
+    }
+    if (path === "/admin/config/model-mappings" && req.method === "POST") {
+      const chunks: Buffer[] = [];
+      req.on("data", (chunk: Buffer) => chunks.push(chunk));
+      req.on("end", () => {
+        atPost.push({
+          config: JSON.parse(readFileSync(paths.configFile, "utf8")),
+          body: JSON.parse(Buffer.concat(chunks).toString("utf8")),
+        });
+        json({ modelMappings: {} });
+      });
+      return;
+    }
+    json({ modelMappings: {} });
+  });
+  await new Promise<void>((resolve) => daemon.listen(0, "127.0.0.1", () => resolve()));
+  const port = (daemon.address() as AddressInfo).port;
+  try {
+    const out = await captureChannels(() =>
+      syncCatalogAfterStart(
+        { profile: null, paths, config, envConfig: new CopilotEnvConfig() },
+        port,
+      ),
+    );
+
+    expect(catalogReads).toEqual(["GET"]);
+    expect(atPost).toHaveLength(1);
+    expect(atPost[0]?.config).toMatchObject({
+      smallModels: { copilot: "gpt-6-luna" },
+      alphaSearchModel: "gpt-6-luna",
+      messageApiWebSearchModel: "gpt-6-luna",
+    });
+    for (const key of [
+      "proxy.small-model",
+      "proxy.alpha-search.model",
+      "proxy.message-websearch-model",
+    ]) {
+      expect(
+        out.all.split(`${key}: gpt-5-mini is not in this daemon's catalog; using gpt-6-luna`),
+        key,
+      ).toHaveLength(2);
+    }
+    expect(out.all).toContain(`until \`agent config set proxy.small-model <model>\` names one.`);
+    // The aliases come from the same read: gpt-latest is the newest non-reduced GPT (sol); luna
+    // is a reduced tier.
+    expect(atPost[0]?.body).toEqual({ modelMappings: { "gpt-latest": "gpt-6-sol" } });
+    expect(out.all).toContain("Synced 1 model aliases from catalog.");
+  } finally {
+    daemon.closeAllConnections();
+    await closeServer(daemon);
+  }
 });
 
 // --- withStartLock: the ONE owning scope of the global start lock ------------------------

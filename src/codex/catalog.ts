@@ -19,7 +19,7 @@ import { type AgentCliLook, resolveAgentCli } from "../agents/cli_install.ts";
 import { type CatalogSource, fetchRawModels } from "../copilot_api/catalog.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { CopilotEnvState } from "../copilot_api/env_state.ts";
-import { ONE_M_SUFFIX } from "../copilot_api/models.ts";
+import { ONE_M_SUFFIX, RESPONSES_ENDPOINT } from "../copilot_api/models.ts";
 import { CopilotApiPaths } from "../copilot_api/paths.ts";
 import { childEnv } from "../utils/command.ts";
 import { errMessage } from "../utils/error.ts";
@@ -106,9 +106,6 @@ export interface CopilotCatalogModel {
   /** Codex can drive it: a chat model served on `/responses` and in Copilot's picker. */
   codexServable: boolean;
 }
-
-// Copilot's `/responses` endpoint marker: the only wire Codex speaks.
-const RESPONSES_ENDPOINT = "/responses";
 
 /** The body has the same shape upstream and via the proxy. Entries missing either limit are skipped
  *  (the limits are what the overlay exists for); a display-only `[1m]` id suffix is stripped. */

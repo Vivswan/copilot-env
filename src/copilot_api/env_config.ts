@@ -6,6 +6,7 @@ import * as v from "valibot";
 import { isRecord } from "../utils/json.ts";
 import { type CopilotApiConfig, ensureDict } from "./config.ts";
 import {
+  type CatalogFallback,
   CONFIG_REGISTRY,
   COPILOT_HOST_AUTO,
   type CodexHomePrefs,
@@ -27,6 +28,7 @@ import {
   type StaticKeyAgent,
   type StaticKeyScope,
 } from "./config_registry.ts";
+import { type AvailableModel, catalogModelPick } from "./models.ts";
 import { type Profile, type ProfileName, profileKey } from "./profile.ts";
 import { rootStateStore } from "./state_store.ts";
 
@@ -166,18 +168,49 @@ export function isStoredSource(source: SettingSource): boolean {
   return source === "profile" || source === "global";
 }
 
-export interface ProjectedProxyEntry {
-  path: ProxyConfigPath;
-  /** undefined = an opt-in key with nothing stored: the path is CLEARED so the proxy's own default
-   *  stands, whatever a previous start wrote there. */
-  value: ConfigValue | undefined;
+/** One projected path, as it lands. */
+export type ProjectedProxyEntry =
+  | {
+      key: ConfigKey;
+      path: ProxyConfigPath;
+      /** undefined = an opt-in key with nothing stored: the path is CLEARED so the proxy's own
+       *  default stands, whatever a previous start wrote there. */
+      value: ConfigValue | undefined;
+      replaced?: undefined;
+    }
+  | {
+      key: ConfigKey;
+      path: ProxyConfigPath;
+      /** The catalog's pick (CatalogFallback) over the built-in model default in `replaced`,
+       *  which the catalog given lacked. */
+      value: string;
+      replaced: string;
+    };
+
+/** The catalog's model for a force-projected key, or null to keep the resolution: no catalog
+ *  known, a stored value (the user's), a key with no fallback, or a default the catalog lists.
+ *  A fallback key's value type is string (CatalogFallback's conditional); the check restates it. */
+function catalogStandIn(
+  fallback: CatalogFallback | undefined,
+  source: SettingSource,
+  value: ConfigValue,
+  catalog: readonly AvailableModel[] | null,
+): { value: string; replaced: string } | null {
+  if (fallback === undefined || catalog === null || source !== "default") return null;
+  if (typeof value !== "string") return null;
+
+  const pick = catalogModelPick(catalog, value, fallback.endpoint);
+  return pick === value ? null : { value: pick, replaced: value };
 }
 
-/** What `agent start` lands in `profile`'s daemon config.json before launch (applyDefaultConfig in
- *  launch.ts): one entry per projected key, each as it resolves FOR THAT PROFILE. */
+/** What `agent start` lands in `profile`'s daemon config.json (applyDefaultConfig in launch.ts):
+ *  one entry per projected key, each as it resolves FOR THAT PROFILE. Before launch no catalog is
+ *  known; once the daemon is up its own model list comes as `catalog`, and a model default it
+ *  lacks is replaced (catalogStandIn). */
 export function projectedProxyConfig(
   profile: Profile,
   config: CopilotEnvConfig = new CopilotEnvConfig(),
+  catalog: readonly AvailableModel[] | null = null,
 ): ProjectedProxyEntry[] {
   const data = config.read();
   const out: ProjectedProxyEntry[] = [];
@@ -185,10 +218,14 @@ export function projectedProxyConfig(
     if (def.proxyDefault !== undefined) {
       // Force-projected: the built-in default IS proxyDefault, so the resolution always has a value.
       const resolved = resolveSettingIn(data, def.key, { profile });
-      out.push({ path: def.proxyPath, value: resolved.value ?? def.proxyDefault });
+      const value = resolved.value ?? def.proxyDefault;
+      const standIn = catalogStandIn(def.catalogFallback, resolved.source, value, catalog);
+      if (standIn === null) out.push({ key: def.key, path: def.proxyPath, value });
+      else out.push({ key: def.key, path: def.proxyPath, ...standIn });
     } else if (def.proxyProjected === true) {
       const resolved = resolveSettingIn(data, def.key, { profile });
       out.push({
+        key: def.key,
         path: def.proxyPath,
         value: isStoredSource(resolved.source) ? resolved.value : undefined,
       });
@@ -437,8 +474,10 @@ export class CopilotEnvConfig {
     return this.value("update.cooldown") ?? null;
   }
 
-  /** The defaults belong to the read sites: the proxy's own on the proxy path, DEFAULT_WEB_SEARCH_MODEL in
-   *  web_search.ts on the MCP path (that module imports this one, so the registry cannot reference it). */
+  /** The stored value alone: the default belongs to the read site, DEFAULT_WEB_SEARCH_MODEL in
+   *  web_search.ts (that module imports this one, so the registry cannot reference it), where it
+   *  gives way to the catalog's pick; the proxy path lands the registry's proxyDefault the same way
+   *  through projectedProxyConfig. */
   messageApiWebSearchModel(profile: Profile): string | null {
     const resolved = this.resolve("proxy.message-websearch-model", { profile });
     return isStoredSource(resolved.source) ? (resolved.value ?? null) : null;

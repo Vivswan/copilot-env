@@ -11,7 +11,7 @@ import { type ProfileName, parseProfileName } from "../../src/copilot_api/profil
 import {
   DEFAULT_WEB_SEARCH_MODEL,
   parseResponsesOutput,
-  resetWebSearchAliasCache,
+  resetWebSearchCatalogCache,
   resolveWebSearchCredential,
   webSearch,
 } from "../../src/copilot_api/web_search.ts";
@@ -132,10 +132,24 @@ const RESPONSES_URL = `${GENERIC_HOST}/responses`;
 const ENTERPRISE = "https://api.enterprise.githubcopilot.com";
 const QUERY = "bun release";
 
-/** A raw direct-catalog body for the alias-resolution tests. */
+/** A raw direct-catalog body for the alias-resolution tests: bare ids, so no entry is pickable and
+ *  the default path lands DEFAULT_WEB_SEARCH_MODEL as it is. */
 function catalogFixture(): unknown {
   return {
     data: [{ id: "gpt-6" }, { id: "gpt-6-mini" }, { id: "claude-fable-5" }],
+  };
+}
+
+/** A Copilot catalog entry the availability parse keeps: picker-enabled, a chat model, with the
+ *  tier and the endpoints the pick reads. */
+function pickerEntry(id: string, category: string, endpoints: string[]): Record<string, unknown> {
+  return {
+    id,
+    model_picker_enabled: true,
+    model_picker_category: category,
+    policy: { state: "enabled" },
+    capabilities: { type: "chat" },
+    supported_endpoints: endpoints,
   };
 }
 
@@ -156,8 +170,14 @@ const PAIR_SOURCES: {
       new Credential(undefined, null).store("gh-token", "gho_stored");
       return {};
     },
-    responses: () => [hostProbeOk(), hostProbeOk(), okJson(responsesFixture())],
+    responses: () => [
+      hostProbeOk(),
+      hostProbeOk(),
+      okJson(catalogFixture()),
+      okJson(responsesFixture()),
+    ],
     requests: [
+      [MODELS_URL, null, "Bearer gho_stored"],
       [MODELS_URL, null, "Bearer gho_stored"],
       [MODELS_URL, null, "Bearer gho_stored"],
       [RESPONSES_URL, null, "Bearer gho_stored"],
@@ -171,8 +191,9 @@ const PAIR_SOURCES: {
       new CopilotEnvConfig().setProfile(null, { identity: "copilot-developer-cli" });
       return {};
     },
-    responses: () => [hostProbeOk(), okJson(responsesFixture())],
+    responses: () => [hostProbeOk(), okJson(catalogFixture()), okJson(responsesFixture())],
     requests: [
+      [MODELS_URL, "copilot-developer-cli", "Bearer gho_stored"],
       [MODELS_URL, "copilot-developer-cli", "Bearer gho_stored"],
       [RESPONSES_URL, "copilot-developer-cli", "Bearer gho_stored"],
     ],
@@ -349,6 +370,69 @@ test("webSearch model resolution: the flag beats the stored key, aliases resolve
   }
 });
 
+// A credential whose catalog lacks gpt-5-mini: without the pick every default search would 400.
+test("webSearch with nothing configured: the default while the credential's catalog lists it, else the cheapest Responses model it does (never a Claude one, never a picker-disabled one), and the default as it is when the catalog fetch fails", async () => {
+  const cases: { name: string; catalog: () => Response; model: string }[] = [
+    {
+      name: "the default is listed",
+      catalog: () =>
+        okJson({
+          data: [
+            pickerEntry("gpt-6-sol", "powerful", ["/responses"]),
+            pickerEntry(DEFAULT_WEB_SEARCH_MODEL, "lightweight", ["/responses"]),
+          ],
+        }),
+      model: DEFAULT_WEB_SEARCH_MODEL,
+    },
+    {
+      name: "the default is missing: the cheapest Responses model",
+      catalog: () =>
+        okJson({
+          data: [
+            pickerEntry("claude-haiku-5.5", "lightweight", ["/v1/messages"]),
+            pickerEntry("gpt-6-sol", "powerful", ["/responses"]),
+            pickerEntry("gpt-6-luna", "lightweight", ["/responses"]),
+          ],
+        }),
+      model: "gpt-6-luna",
+    },
+    {
+      name: "the default is listed for no picker: not this credential's",
+      catalog: () =>
+        okJson({
+          data: [
+            {
+              ...pickerEntry(DEFAULT_WEB_SEARCH_MODEL, "lightweight", ["/responses"]),
+              model_picker_enabled: false,
+            },
+            pickerEntry("gpt-6-sol", "powerful", ["/responses"]),
+          ],
+        }),
+      model: "gpt-6-sol",
+    },
+    {
+      name: "a failed catalog fetch sends the default as it is",
+      catalog: () => new Response("nope", { status: 500, statusText: "Internal Server Error" }),
+      model: DEFAULT_WEB_SEARCH_MODEL,
+    },
+  ];
+  for (const c of cases) {
+    dir = removeDir(dir);
+    tmpHome();
+    new Credential(undefined, null).store("gh-token", "gho_stored");
+    const stub = fetchStub([hostProbeOk(), hostProbeOk(), c.catalog(), okJson(responsesFixture())]);
+
+    const answer = await webSearch("q", { fetchImpl: stub.fetchImpl });
+
+    expect(answer, c.name).toContain("Bun 1.3 shipped.");
+    expect(
+      stub.calls.map((call) => call.url),
+      c.name,
+    ).toEqual([MODELS_URL, MODELS_URL, MODELS_URL, RESPONSES_URL]);
+    expect(JSON.parse(String(stub.calls[3]?.init.body)).model, c.name).toBe(c.model);
+  }
+});
+
 test("the alias catalog is memoized per token, and a failed fetch is retried", async () => {
   // The injected-fetchImpl seam bypasses the memo, so this test stubs the GLOBAL
   // fetch to exercise the memo itself: failure eviction (a rejected catalog fetch
@@ -366,7 +450,7 @@ test("the alias catalog is memoized per token, and a failed fetch is retried", a
   ];
   const calls: CapturedRequest[] = [];
   const realFetch = globalThis.fetch;
-  resetWebSearchAliasCache();
+  resetWebSearchCatalogCache();
   resetIntegrationIdentityCache();
   try {
     globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
@@ -380,7 +464,7 @@ test("the alias catalog is memoized per token, and a failed fetch is retried", a
     await webSearch("q");
   } finally {
     globalThis.fetch = realFetch;
-    resetWebSearchAliasCache();
+    resetWebSearchCatalogCache();
     resetIntegrationIdentityCache();
   }
   expect(calls.filter((c) => c.url === MODELS_URL)).toHaveLength(3);
@@ -416,7 +500,7 @@ test("webSearch surfaces a non-2xx as a legible error naming the request, and ca
     dir = removeDir(dir);
     tmpHome();
     new Credential(undefined, null).store("gh-token", "gho_stored");
-    const stub = fetchStub([hostProbeOk(), hostProbeOk(), c.response()]);
+    const stub = fetchStub([hostProbeOk(), hostProbeOk(), okJson(catalogFixture()), c.response()]);
     let message = "";
     try {
       await webSearch("q", { fetchImpl: stub.fetchImpl });
@@ -512,8 +596,8 @@ test("a cancelled call stops waiting for a hanging fetch instead of sitting it o
 });
 
 test("DEFAULT_WEB_SEARCH_MODEL is a raw catalog id, never an alias", () => {
-  // The default path deliberately skips alias resolution (fetch-free), so the
-  // default must never be a value the alias map would remap (e.g. `gpt-latest`).
+  // The default is looked up in the catalog as it is (no alias resolution), so it must be an id a
+  // catalog can list, never a value only the alias map knows (e.g. `gpt-latest`).
   const aliases = generateAliases(
     parseCatalogModels({
       data: [

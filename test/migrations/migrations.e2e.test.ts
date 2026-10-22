@@ -70,6 +70,7 @@ import {
   retireDenoDaemon,
   stopPreviousDaemons,
 } from "../../src/migrations/5.0.1.ts";
+import { removeRetiredSmallModelKey } from "../../src/migrations/5.0.2.ts";
 import { dueMigrations, type Migration, runMigrations } from "../../src/migrations/index.ts";
 import {
   foreignHolderWarning,
@@ -1865,6 +1866,37 @@ test("5.0.1 sweeps every .oslock sidecar under the root home and the install's .
     ).toBe(true);
   // A second run has nothing to do and says nothing: the step is idempotent.
   expect(warningsDuring(() => removeOsLockSidecars([home, autoupdateHome]), "info")).toEqual([]);
+});
+
+test("5.0.2 drops the retired smallModel key from every daemon config.json and names each file; the rest of a file, a file without the key, and a home without a file are left alone; idempotent", () => {
+  // The floating proxy reads smallModels.copilot (the registry's path now) and keeps every key it
+  // does not know, so the old key would ride in the file forever without this step.
+  const home = isolateProxyHome("copilot-mig-small-model-");
+  dir = home;
+  const homes = ["default", "work", "fresh"].map((name) => join(home, "profiles", name));
+  for (const daemonHome of homes) mkdirSync(daemonHome, { recursive: true });
+  const [withKey, without] = [
+    join(homes[0] ?? "", "config.json"),
+    join(homes[1] ?? "", "config.json"),
+  ];
+  writeStore(withKey, {
+    smallModel: "gpt-5-mini",
+    smallModels: { copilot: "gpt-6-luna" },
+    auth: { apiKeys: ["k"] },
+  });
+  writeStore(without, { useMessagesApi: true });
+
+  const said = warningsDuring(() => removeRetiredSmallModelKey(homes), "info");
+
+  expect(readStore(withKey)).toEqual({
+    smallModels: { copilot: "gpt-6-luna" },
+    auth: { apiKeys: ["k"] },
+  });
+  expect(readStore(without)).toEqual({ useMessagesApi: true });
+  expect(existsSync(join(homes[2] ?? "", "config.json"))).toBe(false);
+  expect(said).toHaveLength(1);
+  expect(said[0]).toContain(withKey);
+  expect(warningsDuring(() => removeRetiredSmallModelKey(homes), "info")).toEqual([]);
 });
 
 test("5.0.1 deno leftovers: the sidecar dir, the float's deno files, and OUR .npmrc go; the user's .npmrc and the record stay", () => {

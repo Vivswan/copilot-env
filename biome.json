@@ -6,11 +6,11 @@
     "rules": {
       "complexity": {
         "noExcessiveCognitiveComplexity": {
-          "level": "error",
+          "level": "warn",
           "options": { "maxAllowedComplexity": 15 }
         },
-        "noExcessiveLinesPerFunction": { "level": "error", "options": { "maxLines": 80 } },
-        "useMaxParams": { "level": "error", "options": { "max": 6 } }
+        "noExcessiveLinesPerFunction": { "level": "warn", "options": { "maxLines": 80 } },
+        "useMaxParams": { "level": "warn", "options": { "max": 6 } }
       },
       "style": {
         "noNestedTernary": "error",

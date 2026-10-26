@@ -1,0 +1,12 @@
+# Trivy findings copilot-env accepts for a while; each entry expires on its own (docs: repo-platform security-scans.md).
+vulnerabilities:
+  - id: CVE-2026-111181
+    paths:
+      - bun.lock
+    statement: body-parser 2.4.0 (published 2026-10-22) is younger than bunfig.toml's 7-day minimumReleaseAge until 2026-10-29, so bun refuses to select it before then; the entry ends the day after, when `bun update body-parser` can move the lock
+    expired_at: 2026-10-30
+  - id: CVE-2026-109461
+    paths:
+      - bun.lock
+    statement: "@azure/msal-node is reached only through @azure/identity (via @jeffreycao/copilot-api), whose latest 4.14.0 still requires ^6.0.0; copilot-env never takes the Azure credential path, and no release in the graph can select 7.x yet"
+    expired_at: 2026-12-31

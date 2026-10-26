@@ -1,5 +1,6 @@
 // Every profile write must leave the default path byte-identical.
 
+import { afterEach, beforeEach } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "smol-toml";
@@ -35,6 +36,7 @@ import { CopilotEnvState } from "../../src/copilot_api/env_state.ts";
 import { setGithubLoginFetch } from "../../src/copilot_api/github_login.ts";
 import {
   DEFAULT_COPILOT_API_BASE,
+  type ProbeFetch,
   resetIntegrationIdentityCache,
   setIntegrationProbeFetch,
 } from "../../src/copilot_api/integration_identity.ts";
@@ -55,9 +57,10 @@ import { isRecord } from "../../src/utils/json.ts";
 import { ScannableError, ScannableMessage } from "../../src/utils/message.ts";
 import { stageRefusedStop } from "../helpers/daemon.ts";
 import { envSnapshot, isolateAgentHomes, resetExitCode } from "../helpers/env.ts";
+import { requestUrl } from "../helpers/fetch_input.ts";
 import { stubGithubLogins } from "../helpers/fixtures.ts";
 import { captureAllWrites } from "../helpers/output.ts";
-import { afterEach, beforeEach, expect, removeDir, test } from "../helpers/testing.ts";
+import { expect, removeDir, test } from "../helpers/testing.ts";
 
 // Branded fixture names: parseProfileName is the only mint for ProfileName.
 const WORK = parseProfileName("work");
@@ -120,6 +123,22 @@ function tmpClaudeHome(): string {
 
 function tmpCodexHome(): string {
   return join(dir, ".codex");
+}
+
+/** A probe stub accepting one identity: 200 for `accepted()`'s id, the PAT rejection for every
+ *  other, and an account lookup naming no host; `onProbe` sees each /models round. */
+function acceptOnly(accepted: () => string, onProbe: () => void = () => {}): ProbeFetch {
+  return (input, init) => {
+    if (requestUrl(input).includes("/copilot_internal/user")) {
+      return Promise.resolve(new Response("{}", { status: 200 }));
+    }
+    onProbe();
+    const id = new Headers(init?.headers).get("Copilot-Integration-Id");
+    if (id === accepted()) {
+      return Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 }));
+    }
+    return Promise.resolve(new Response("PATs not supported", { status: 400 }));
+  };
 }
 
 // --- profile names ------------------------------------------------------------
@@ -747,43 +766,48 @@ test("stop/record-event against a never-existing profile fabricate NOTHING", asy
   expect(profileHomeNames()).toEqual([]);
 });
 
+/** The Direct pair both agents bake for the work profile. */
+interface BakedDirectPair {
+  /** Claude's ANTHROPIC_CUSTOM_HEADERS. */
+  claude: string;
+
+  /** Claude's ANTHROPIC_BASE_URL. */
+  claudeHost: string;
+
+  /** Codex's Copilot-Integration-Id header; absent for the codex identity. */
+  codex: string | undefined;
+
+  /** Codex's provider base_url. */
+  codexHost: unknown;
+}
+
+function bakedDirectPair(claudeHome: string, codexHome: string): BakedDirectPair {
+  const settings = JSON.parse(readFileSync(settingsPathFor(claudeHome, WORK), "utf8"));
+  const doc = readToml(join(codexHome, "config.toml"));
+  const providers = doc.model_providers as Record<string, Record<string, unknown>>;
+  const table = providers[codexProviderId(WORK)];
+  const headers = table?.http_headers as Record<string, string>;
+  return {
+    claude: settings.env.ANTHROPIC_CUSTOM_HEADERS,
+    claudeHost: settings.env.ANTHROPIC_BASE_URL,
+    codex: headers["Copilot-Integration-Id"],
+    codexHost: table?.base_url,
+  };
+}
+
 test("a direct profile probes ONCE and bakes the accepted identity into BOTH agents; a rewire re-renders the baked pair with no probe", async () => {
   tmpProxyHome();
   const claudeHome = tmpClaudeHome();
   const codexHome = tmpCodexHome();
   // Only copilot-developer-cli is accepted -- the PAT case this feature exists for.
   let probes = 0;
-  setIntegrationProbeFetch((input, init) => {
-    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-    if (url.includes("/copilot_internal/user")) {
-      return Promise.resolve(new Response("{}", { status: 200 }));
-    }
-    probes++;
-    const id = new Headers(init?.headers).get("Copilot-Integration-Id");
-    return Promise.resolve(
-      id === "copilot-developer-cli"
-        ? new Response(JSON.stringify({ data: [] }), { status: 200 })
-        : new Response("PATs not supported", { status: 400 }),
-    );
-  });
-  const baked = (): {
-    claude: string;
-    claudeHost: string;
-    codex: string | undefined;
-    codexHost: unknown;
-  } => {
-    const settings = JSON.parse(readFileSync(settingsPathFor(claudeHome, WORK), "utf8"));
-    const doc = readToml(join(codexHome, "config.toml"));
-    const providers = doc.model_providers as Record<string, Record<string, unknown>>;
-    const table = providers[codexProviderId(WORK)];
-    const headers = table?.http_headers as Record<string, string>;
-    return {
-      claude: settings.env.ANTHROPIC_CUSTOM_HEADERS,
-      claudeHost: settings.env.ANTHROPIC_BASE_URL,
-      codex: headers["Copilot-Integration-Id"],
-      codexHost: table?.base_url,
-    };
-  };
+  setIntegrationProbeFetch(
+    acceptOnly(
+      () => "copilot-developer-cli",
+      () => probes++,
+    ),
+  );
+  const baked = (): BakedDirectPair => bakedDirectPair(claudeHome, codexHome);
 
   await addWork("direct", "github_pat_worktoken");
   const first = baked();
@@ -845,30 +869,10 @@ test("a named `add --auto` lands the pair its probe accepted: the slot and both 
   tmpProxyHome();
   const claudeHome = tmpClaudeHome();
   const codexHome = tmpCodexHome();
-  const baked = (): { claude: string; codex: string | undefined } => {
-    const settings = JSON.parse(readFileSync(settingsPathFor(claudeHome, WORK), "utf8"));
-    const doc = readToml(join(codexHome, "config.toml"));
-    const providers = doc.model_providers as Record<string, Record<string, unknown>>;
-    const headers = providers[codexProviderId(WORK)]?.http_headers as Record<string, string>;
-    return {
-      claude: settings.env.ANTHROPIC_CUSTOM_HEADERS,
-      codex: headers["Copilot-Integration-Id"],
-    };
-  };
+  const baked = (): BakedDirectPair => bakedDirectPair(claudeHome, codexHome);
   // The one identity Copilot accepts; it moves after the first landing stored the other.
   let accepted = "copilot-developer-cli";
-  setIntegrationProbeFetch((input, init) => {
-    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-    if (url.includes("/copilot_internal/user")) {
-      return Promise.resolve(new Response("{}", { status: 200 }));
-    }
-    const id = new Headers(init?.headers).get("Copilot-Integration-Id");
-    return Promise.resolve(
-      id === accepted
-        ? new Response(JSON.stringify({ data: [] }), { status: 200 })
-        : new Response("PATs not supported", { status: 400 }),
-    );
-  });
+  setIntegrationProbeFetch(acceptOnly(() => accepted));
   await addWork("direct", "github_pat_worktoken");
   expect(new CopilotEnvState().readProfileDirectPair(WORK).integrationId).toBe(
     "copilot-developer-cli",

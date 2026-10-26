@@ -1,5 +1,6 @@
 // The record's store-level semantics are pinned in test/copilot_api/env_state.test.ts.
 
+import { afterEach, beforeEach } from "bun:test";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "smol-toml";
@@ -24,7 +25,7 @@ import { proxyTokenCommand } from "../../src/utils/root.ts";
 import { agentHomeEnv, envSnapshot, isolateAgentHomes, isolateProxyHome } from "../helpers/env.ts";
 import { captureAllWrites } from "../helpers/output.ts";
 import { runCli } from "../helpers/run.ts";
-import { afterEach, beforeEach, expect, removeDir, test } from "../helpers/testing.ts";
+import { expect, removeDir, test } from "../helpers/testing.ts";
 
 const restoreEnv = envSnapshot(["PATH"]);
 let dir = "";

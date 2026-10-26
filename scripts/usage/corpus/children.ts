@@ -82,6 +82,21 @@ interface TurnResult {
   stuck: boolean;
 }
 
+/** One scripted turn: `command` with `args` then the prompt, under `home` and `cwd`, `extraEnv`
+ *  over the allowlisted environment (the real-backend keys too under `real`), its output kept
+ *  under `turnsDir`. */
+interface Turn {
+  label: string;
+  command: string;
+  args: string[];
+  prompt: string;
+  home: string;
+  cwd: string;
+  extraEnv: Record<string, string>;
+  real: boolean;
+  turnsDir: string;
+}
+
 /** Every CLI child, so a deadline, a failure or a signal can take them all down. A POSIX child
  *  leads its own process group, which outlives it: a turn-end group kill reaches a descendant
  *  left behind by a normal exit. Windows' `taskkill /t` reaches descendants only via a live leader. */
@@ -190,17 +205,8 @@ export const registry = new ChildRegistry();
  *  claude with a silent exit 1), stdout/stderr captured to files under `turnsDir` (the
  *  kept home is un-scrubbed by contract; the log gets the label only). Never throws, and the
  *  child is dead by the time this returns, whatever happened. */
-export async function runTurn(
-  label: string,
-  command: string,
-  args: string[],
-  prompt: string,
-  home: string,
-  cwd: string,
-  extraEnv: Record<string, string>,
-  real: boolean,
-  turnsDir: string,
-): Promise<TurnResult> {
+export async function runTurn(turn: Turn): Promise<TurnResult> {
+  const { label, command, args, prompt, home, cwd, extraEnv, real, turnsDir } = turn;
   if (registry.stopping) return { ok: false, stdout: "", stuck: false };
   log(`${label}: running`);
   const file = resolveCommand(command) ?? command;
@@ -250,11 +256,11 @@ export async function runTurn(
         }s`,
       );
       result = { ok: false, stdout, stuck };
-    } else if (outcome !== 0) {
+    } else if (outcome === 0) {
+      result = { ok: true, stdout, stuck };
+    } else {
       log(`${label}: exit ${outcome} (output kept under home/turns)`);
       result = { ok: false, stdout, stuck };
-    } else {
-      result = { ok: true, stdout, stuck };
     }
   } catch (e) {
     log(`${label}: could not run (${e instanceof Error ? e.name : "error"})`);

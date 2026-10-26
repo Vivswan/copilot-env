@@ -6,7 +6,7 @@ import { isRecord, parseJsonRecord } from "../../../src/utils/json.ts";
 import { registry, runTurn } from "./children.ts";
 import { ledger, writeFile } from "./cli.ts";
 import type { MinuteStraddle } from "./fake.ts";
-import { filesFor } from "./transcripts.ts";
+import { filesFor, type RecordsByFile, sessionRecords } from "./transcripts.ts";
 
 /** Written to the fake home's config.toml as `model`; the scrub's enum vocabulary lists it. */
 const CODEX_MODEL = "gpt-5.4";
@@ -57,14 +57,14 @@ export async function recordCodex(
   const ids: CodexIds = { first: null, resumed: null, tool: null, afterTool: null, fork: null };
   const codexHome = join(home, ".codex");
   mkdirSync(codexHome, { recursive: true });
-  if (baseUrl !== null) {
-    writeFile(join(codexHome, "config.toml"), codexConfigToml(baseUrl));
-  } else {
+  if (baseUrl === null) {
     const auth = join(process.env.CODEX_HOME ?? join(homedir(), ".codex"), "auth.json");
     if (existsSync(auth)) {
       copyFileSync(auth, join(codexHome, "auth.json"));
       ledger.written.push("home/.codex/auth.json");
     }
+  } else {
+    writeFile(join(codexHome, "config.toml"), codexConfigToml(baseUrl));
   }
   const extra = { CODEX_HOME: codexHome };
   // No -C (resume/fork lack it; the cwd is the spawn's); the prompt is positional (runTurn); plugins
@@ -72,17 +72,17 @@ export async function recordCodex(
   // outlives the turn.
   const base = ["--disable", "plugins", "--skip-git-repo-check", "--json"];
   const turn = async (label: string, args: string[], prompt: string) => {
-    const result = await runTurn(
+    const result = await runTurn({
       label,
-      "codex",
+      command: "codex",
       args,
       prompt,
       home,
-      work,
-      extra,
-      baseUrl === null,
+      cwd: work,
+      extraEnv: extra,
+      real: baseUrl === null,
       turnsDir,
-    );
+    });
     const id = result.ok ? codexThreadId(result.stdout) : null;
     if (result.stuck) {
       stop(`${label}: the CLI did not exit after the kill (${registry.lastKillError})`);
@@ -124,13 +124,60 @@ export async function recordCodex(
   return ids;
 }
 
+/** How many token_count events session `id`'s rollout holds. */
+function tokenCountEvents(recordsByFile: RecordsByFile, id: string): number {
+  let count = 0;
+  for (const record of sessionRecords(recordsByFile, id, "codex")) {
+    if (
+      record.type === "event_msg" &&
+      isRecord(record.payload) &&
+      record.payload.type === "token_count"
+    ) {
+      count++;
+    }
+  }
+  return count;
+}
+
+/** The fork is a new rollout naming session 1 in `forked_from_id`. */
+function codexForkFailures(recordsByFile: RecordsByFile, first: string, fork: string): string[] {
+  const forkMeta = sessionRecords(recordsByFile, fork, "codex").find(
+    (record) => record.type === "session_meta",
+  );
+  if (
+    fork === first ||
+    forkMeta === undefined ||
+    !isRecord(forkMeta.payload) ||
+    forkMeta.payload.forked_from_id !== first
+  ) {
+    return ["codex: the fork's rollout does not name session 1 in forked_from_id"];
+  }
+  return [];
+}
+
+/** The tool turn holds a function_call AND its function_call_output. */
+function codexToolFailures(recordsByFile: RecordsByFile, tool: string): string[] {
+  const calls = new Set<string>();
+  const outputs = new Set<string>();
+  for (const record of sessionRecords(recordsByFile, tool, "codex")) {
+    if (record.type !== "response_item" || !isRecord(record.payload)) continue;
+    const payload = record.payload;
+    if (payload.type === "function_call" && typeof payload.call_id === "string") {
+      calls.add(payload.call_id);
+    }
+    if (payload.type === "function_call_output" && typeof payload.call_id === "string") {
+      outputs.add(payload.call_id);
+    }
+  }
+  if (calls.size === 0) return ["codex: the tool turn holds no function_call"];
+  if ([...calls].some((id) => outputs.has(id))) return [];
+  return ["codex: the tool turn's function_call has no function_call_output"];
+}
+
 /** What the Codex rollouts must show: the resume appended to session 1's rollout (same id, two
  *  token_count events), the tool turn holds a function_call AND its function_call_output, and
  *  the fork is a new rollout naming session 1 in `forked_from_id`. */
-export function codexEvidenceFailures(
-  ids: CodexIds,
-  recordsByFile: Map<string, Record<string, unknown>[]>,
-): string[] {
+export function codexEvidenceFailures(ids: CodexIds, recordsByFile: RecordsByFile): string[] {
   const failures: string[] = [];
   const files = [...recordsByFile.keys()];
   if (
@@ -146,7 +193,6 @@ export function codexEvidenceFailures(
   if (ids.afterTool !== ids.tool) {
     failures.push("codex: the resume after the tool turn did not continue the tool session");
   }
-  const firstFiles = filesFor(files, ids.first, "codex");
   const sessions: [label: string, id: string][] = [
     ["session 1", ids.first],
     ["the tool session", ids.tool],
@@ -156,49 +202,10 @@ export function codexEvidenceFailures(
     const count = filesFor(files, id, "codex").length;
     if (count !== 1) failures.push(`codex: ${label} has ${count} rollouts, expected 1`);
   }
-  let tokenCounts = 0;
-  for (const file of firstFiles) {
-    for (const record of recordsByFile.get(file) ?? []) {
-      if (
-        record.type === "event_msg" &&
-        isRecord(record.payload) &&
-        record.payload.type === "token_count"
-      )
-        tokenCounts++;
-    }
-  }
-  if (tokenCounts < 2) {
+  if (tokenCountEvents(recordsByFile, ids.first) < 2) {
     failures.push("codex: session 1's rollout does not hold the resumed turn's token_count");
   }
-  const forkFiles = filesFor(files, ids.fork, "codex");
-  const forkMeta = forkFiles
-    .flatMap((file) => recordsByFile.get(file) ?? [])
-    .find((record) => record.type === "session_meta");
-  if (
-    ids.fork === ids.first ||
-    forkMeta === undefined ||
-    !isRecord(forkMeta.payload) ||
-    forkMeta.payload.forked_from_id !== ids.first
-  ) {
-    failures.push("codex: the fork's rollout does not name session 1 in forked_from_id");
-  }
-  const calls = new Set<string>();
-  const outputs = new Set<string>();
-  for (const file of filesFor(files, ids.tool, "codex")) {
-    for (const record of recordsByFile.get(file) ?? []) {
-      if (record.type !== "response_item" || !isRecord(record.payload)) continue;
-      const payload = record.payload;
-      if (payload.type === "function_call" && typeof payload.call_id === "string") {
-        calls.add(payload.call_id);
-      }
-      if (payload.type === "function_call_output" && typeof payload.call_id === "string") {
-        outputs.add(payload.call_id);
-      }
-    }
-  }
-  if (calls.size === 0) failures.push("codex: the tool turn holds no function_call");
-  else if (![...calls].some((id) => outputs.has(id))) {
-    failures.push("codex: the tool turn's function_call has no function_call_output");
-  }
+  failures.push(...codexForkFailures(recordsByFile, ids.first, ids.fork));
+  failures.push(...codexToolFailures(recordsByFile, ids.tool));
   return failures;
 }

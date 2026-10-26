@@ -6,7 +6,7 @@ import { isRecord, parseJsonRecord } from "../../../src/utils/json.ts";
 import { registry, runTurn } from "./children.ts";
 import { ledger } from "./cli.ts";
 import type { MinuteStraddle } from "./fake.ts";
-import { filesFor } from "./transcripts.ts";
+import { filesFor, type RecordsByFile, sessionRecords } from "./transcripts.ts";
 
 const CLAUDE_MODEL = "claude-sonnet-4-6";
 
@@ -41,12 +41,7 @@ export async function recordClaude(
     DISABLE_ERROR_REPORTING: "1",
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
   };
-  if (baseUrl !== null) {
-    extra.ANTHROPIC_BASE_URL = baseUrl;
-    // A bearer token: an API key needs an interactive approval that print mode reports as
-    // "Not logged in", while a token is accepted as-is.
-    extra.ANTHROPIC_AUTH_TOKEN = "corpus-fake-token";
-  } else {
+  if (baseUrl === null) {
     // --real: a file-backed login lives in the (possibly overridden) config dir, so carry it
     // into the throwaway one.
     const credentials = join(
@@ -58,21 +53,26 @@ export async function recordClaude(
       copyFileSync(credentials, join(claudeHome, ".credentials.json"));
       ledger.written.push("home/.claude/.credentials.json");
     }
+  } else {
+    extra.ANTHROPIC_BASE_URL = baseUrl;
+    // A bearer token: an API key needs an interactive approval that print mode reports as
+    // "Not logged in", while a token is accepted as-is.
+    extra.ANTHROPIC_AUTH_TOKEN = "corpus-fake-token";
   }
   // The prompt is the positional argument (runTurn appends it): print mode takes it verbatim.
   const base = ["-p", "--output-format", "json", "--model", CLAUDE_MODEL];
   const turn = async (label: string, args: string[], prompt: string) => {
-    const result = await runTurn(
+    const result = await runTurn({
       label,
-      "claude",
-      [...base, ...args],
+      command: "claude",
+      args: [...base, ...args],
       prompt,
       home,
-      work,
-      extra,
-      baseUrl === null,
+      cwd: work,
+      extraEnv: extra,
+      real: baseUrl === null,
       turnsDir,
-    );
+    });
     const id = result.ok ? claudeSessionId(result.stdout) : null;
     if (result.stuck) {
       stop(`${label}: the CLI did not exit after the kill (${registry.lastKillError})`);
@@ -115,13 +115,67 @@ export async function recordClaude(
   return ids;
 }
 
+/** The stable id of one record, or null: a user line's `uuid`, an assistant line's `message.id`
+ *  (a fork copies both verbatim); under `only`, an assistant line's alone. */
+function claudeRecordId(record: Record<string, unknown>, only?: "assistant"): string | null {
+  if (record.type === "assistant") {
+    if (!isRecord(record.message) || typeof record.message.id !== "string") return null;
+    return record.message.id;
+  }
+  if (only !== undefined || record.type !== "user") return null;
+  return typeof record.uuid === "string" ? record.uuid : null;
+}
+
+function claudeRecordIds(
+  recordsByFile: RecordsByFile,
+  id: string,
+  only?: "assistant",
+): Set<string> {
+  const out = new Set<string>();
+  for (const record of sessionRecords(recordsByFile, id, "claude")) {
+    const recordId = claudeRecordId(record, only);
+    if (recordId !== null) out.add(recordId);
+  }
+  return out;
+}
+
+/** The fork is a new session carrying EVERY record of session 1 plus its own reply. */
+function claudeForkFailures(recordsByFile: RecordsByFile, first: string, fork: string): string[] {
+  if (fork === first) return ["claude: the fork did not open a new session"];
+  const firstMessages = claudeRecordIds(recordsByFile, first);
+  const forkMessages = claudeRecordIds(recordsByFile, fork);
+  const wholeHistory = [...firstMessages].every((id) => forkMessages.has(id));
+  const forkReplies = claudeRecordIds(recordsByFile, fork, "assistant");
+  const ownReply = [...forkReplies].some((id) => !firstMessages.has(id));
+  if (wholeHistory && ownReply) return [];
+  return ["claude: the fork's transcript does not carry session 1's history plus its own"];
+}
+
+/** The content blocks of a record's message; none when it carries no array content. */
+function contentBlocks(record: Record<string, unknown>): Record<string, unknown>[] {
+  if (!isRecord(record.message) || !Array.isArray(record.message.content)) return [];
+  return record.message.content.filter(isRecord);
+}
+
+/** The tool turn holds a tool_use AND its tool_result. */
+function claudeToolFailures(recordsByFile: RecordsByFile, tool: string): string[] {
+  const toolUses = new Set<string>();
+  const toolResults = new Set<string>();
+  for (const block of sessionRecords(recordsByFile, tool, "claude").flatMap(contentBlocks)) {
+    if (block.type === "tool_use" && typeof block.id === "string") toolUses.add(block.id);
+    if (block.type === "tool_result" && typeof block.tool_use_id === "string") {
+      toolResults.add(block.tool_use_id);
+    }
+  }
+  if (toolUses.size === 0) return ["claude: the tool turn holds no tool_use block"];
+  if ([...toolUses].some((id) => toolResults.has(id))) return [];
+  return ["claude: the tool turn's tool_use has no matching tool_result"];
+}
+
 /** What the Claude transcripts must show: both resumes continued their sessions (same ids, a
  *  second assistant message in session 1's file), the tool turn holds a tool_use AND its
  *  tool_result, and the fork is a new session carrying EVERY record of session 1 plus its own. */
-export function claudeEvidenceFailures(
-  ids: ClaudeIds,
-  recordsByFile: Map<string, Record<string, unknown>[]>,
-): string[] {
+export function claudeEvidenceFailures(ids: ClaudeIds, recordsByFile: RecordsByFile): string[] {
   const failures: string[] = [];
   const files = [...recordsByFile.keys()];
   if (
@@ -146,57 +200,10 @@ export function claudeEvidenceFailures(
     const count = filesFor(files, id, "claude").length;
     if (count !== 1) failures.push(`claude: ${label} has ${count} transcripts, expected 1`);
   }
-  // Stable ids of a session's records: a user line's `uuid`, an assistant line's `message.id`
-  // (a fork copies both verbatim).
-  const recordIds = (id: string, only?: "assistant"): Set<string> => {
-    const out = new Set<string>();
-    for (const file of filesFor(files, id, "claude")) {
-      for (const record of recordsByFile.get(file) ?? []) {
-        if (record.type === "assistant" && isRecord(record.message)) {
-          if (typeof record.message.id === "string") out.add(record.message.id);
-        } else if (
-          only === undefined &&
-          record.type === "user" &&
-          typeof record.uuid === "string"
-        ) {
-          out.add(record.uuid);
-        }
-      }
-    }
-    return out;
-  };
-  if (recordIds(ids.first, "assistant").size < 2) {
+  if (claudeRecordIds(recordsByFile, ids.first, "assistant").size < 2) {
     failures.push("claude: session 1's transcript does not hold a second assistant message");
   }
-  if (ids.fork === ids.first) failures.push("claude: the fork did not open a new session");
-  else {
-    const firstMessages = recordIds(ids.first);
-    const forkMessages = recordIds(ids.fork);
-    const wholeHistory = [...firstMessages].every((id) => forkMessages.has(id));
-    const ownReply = [...recordIds(ids.fork, "assistant")].some((id) => !firstMessages.has(id));
-    if (!wholeHistory || !ownReply) {
-      failures.push(
-        "claude: the fork's transcript does not carry session 1's history plus its own",
-      );
-    }
-  }
-  const toolUses = new Set<string>();
-  const toolResults = new Set<string>();
-  for (const file of filesFor(files, ids.tool, "claude")) {
-    for (const record of recordsByFile.get(file) ?? []) {
-      if (!isRecord(record.message) || !Array.isArray(record.message.content)) continue;
-      for (const block of record.message.content) {
-        if (!isRecord(block)) continue;
-        if (block.type === "tool_use" && typeof block.id === "string") toolUses.add(block.id);
-        if (block.type === "tool_result" && typeof block.tool_use_id === "string") {
-          toolResults.add(block.tool_use_id);
-        }
-      }
-    }
-  }
-  if (toolUses.size === 0) failures.push("claude: the tool turn holds no tool_use block");
-  else if (![...toolUses].some((id) => toolResults.has(id))) {
-    failures.push("claude: the tool turn's tool_use has no matching tool_result");
-  }
+  failures.push(...claudeForkFailures(recordsByFile, ids.first, ids.fork));
+  failures.push(...claudeToolFailures(recordsByFile, ids.tool));
   return failures;
 }

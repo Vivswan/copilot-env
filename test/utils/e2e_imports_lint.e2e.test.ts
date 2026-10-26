@@ -7,7 +7,7 @@ import {
 import { expect, test } from "../helpers/testing.ts";
 
 // A no-op rule passes `biome ci` exactly as quietly as a clean tree does, so the rule's teeth
-// and the scope biome.json gives it (every test/ source but the *.e2e.test.ts files and the
+// and the scope biome.local.jsonc gives it (every test/ source but the *.e2e.test.ts files and the
 // banned helpers themselves) are pinned here rather than assumed. The sources cover every import
 // form of the helper modules that spawn or listen, the listener and process modules and Bun APIs
 // reached directly, every route to env.ts's two home-sandbox entry points, and beside them the
@@ -123,7 +123,7 @@ test("no-e2e-helper-imports: every import of a spawning or listening helper is r
   expect(SOURCES.map(([source], i) => [source, counts[i]])).toEqual(SOURCES);
 });
 
-test("biome.json scopes the rule to every test/ source but the *.e2e.test.ts files, the banned helpers, and testing.ts", () => {
+test("biome.local.jsonc scopes the rule to every test/ source but the *.e2e.test.ts files, the banned helpers, and testing.ts", () => {
   // Under the repository's own overrides: a typo in a glob would turn the rule off for the files
   // it exists for, and `biome ci` would pass vacuously. A helper that re-exports a banned one is
   // the case the scope exists for: left unlinted, it would hand a unit test the spawn unseen.

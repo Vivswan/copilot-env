@@ -19,8 +19,13 @@ import type {
   Argument,
   ArrayExpressionElement,
   BindingPattern,
+  BindingProperty,
+  CallExpression,
   Expression,
+  ImportDeclaration,
+  MemberExpression,
   ModuleExportName,
+  ObjectPattern,
   PropertyKey,
   VisitorObject,
 } from "oxc-parser";
@@ -458,6 +463,84 @@ function report(scan: Scan, at: { start: number }, message = scan.direction.mess
   scan.findings.push({ rule: scan.rule, start: at.start, message });
 }
 
+/** The child_process names a write scan tracks: each spawn and exec entry point under its local
+ *  name, and the whole module under a namespace or default import. */
+function collectChildProcessImport(scan: Scan, node: ImportDeclaration): void {
+  for (const specifier of node.specifiers) {
+    if (specifier.type !== "ImportSpecifier") {
+      scan.childProcessNamespaces.add(specifier.local.name);
+      continue;
+    }
+    if (specifier.importKind === "type") continue;
+    const imported = nameOf(specifier.imported);
+    if (imported === null) continue;
+    if (SPAWN_NAMES.has(imported)) scan.spawns.add(specifier.local.name);
+    if (EXEC_NAMES.has(imported)) scan.execs.add(specifier.local.name);
+  }
+}
+
+/** A node:fs import: a guarded API name is reported where it is imported, an open is tracked
+ *  under its local name, and `promises`, a default, or a namespace import binds the whole module. */
+function collectFsImport(scan: Scan, node: ImportDeclaration): void {
+  for (const specifier of node.specifiers) {
+    if (specifier.type !== "ImportSpecifier") {
+      scan.fsNamespaces.add(specifier.local.name);
+      continue;
+    }
+    if (specifier.importKind === "type") continue; // erased: no runtime binding
+    const imported = nameOf(specifier.imported);
+    if (imported === null) continue;
+    if (scan.direction.fs.has(imported)) report(scan, specifier);
+    if (FS_OPEN_NAMES.has(imported)) scan.fsOpens.add(specifier.local.name);
+    // `import { promises as fsp }`: a whole namespace.
+    if (imported === "promises") scan.fsNamespaces.add(specifier.local.name);
+  }
+}
+
+/** `const fsp = fs.promises;` / `const bun = Bun;` / `const o = fs.openSync;`: a namespace, an
+ *  alias, or an open under another name. */
+function collectAlias(scan: Scan, local: string, init: Expression): void {
+  if (isFsNamespace(init, scan.fsNamespaces)) scan.fsNamespaces.add(local);
+  if (isBunNamespace(init, scan.bunAliases)) scan.bunAliases.add(local);
+  if (init.type !== "MemberExpression") return;
+  const name = memberName(init);
+  if (name !== null && FS_OPEN_NAMES.has(name) && isFsNamespace(init.object, scan.fsNamespaces)) {
+    scan.fsOpens.add(local);
+  }
+}
+
+/** One destructured property off a module namespace: a guarded name is reported at the property;
+ *  under node:fs, `promises` and an open are tracked under the local name. */
+function collectDestructuredName(
+  scan: Scan,
+  property: BindingProperty,
+  names: ReadonlySet<string>,
+  fromFs: boolean,
+): void {
+  const key = nameOf(property.key);
+  if (key === null) return;
+  if (names.has(key)) {
+    report(scan, property);
+    return;
+  }
+  if (!fromFs || property.value.type !== "Identifier") return;
+  const local = property.value.name;
+  if (key === "promises") scan.fsNamespaces.add(local);
+  if (FS_OPEN_NAMES.has(key)) scan.fsOpens.add(local);
+}
+
+/** `const { rmSync } = fs;` / `const { promises: fsp } = fs;` / `const { write } = Bun;`. */
+function collectDestructure(scan: Scan, pattern: ObjectPattern, init: Expression): void {
+  const fromFs = isFsNamespace(init, scan.fsNamespaces);
+  const fromBun = isBunNamespace(init, scan.bunAliases);
+  if (!fromFs && !fromBun) return;
+  const names = fromFs ? scan.direction.fs : scan.direction.bun;
+  for (const property of pattern.properties) {
+    if (property.type !== "Property") continue;
+    collectDestructuredName(scan, property, names, fromFs);
+  }
+}
+
 /** Every way of reaching a node:fs or Bun filesystem API by name: a named import, a member
  *  read off a module or global namespace (and any alias of either), a destructure, a re-export, a
  *  dynamic import of the whole module. */
@@ -468,32 +551,9 @@ function reachVisitor(scan: Scan): VisitorObject {
       if (node.importKind === "type") return;
       const source = node.source.value;
       if (source === CHILD_PROCESS_MODULE && scan.rule === WRITES_RULE) {
-        for (const specifier of node.specifiers) {
-          if (specifier.type !== "ImportSpecifier") {
-            scan.childProcessNamespaces.add(specifier.local.name);
-            continue;
-          }
-          if (specifier.importKind === "type") continue;
-          const imported = nameOf(specifier.imported);
-          if (imported !== null && SPAWN_NAMES.has(imported)) scan.spawns.add(specifier.local.name);
-          if (imported !== null && EXEC_NAMES.has(imported)) scan.execs.add(specifier.local.name);
-        }
-        return;
+        collectChildProcessImport(scan, node);
       }
-      if (!FS_MODULES.has(source)) return;
-      for (const specifier of node.specifiers) {
-        if (specifier.type === "ImportSpecifier") {
-          if (specifier.importKind === "type") continue; // erased: no runtime binding
-          const imported = nameOf(specifier.imported);
-          if (imported === null) continue;
-          if (direction.fs.has(imported)) report(scan, specifier);
-          if (FS_OPEN_NAMES.has(imported)) scan.fsOpens.add(specifier.local.name);
-          // `import { promises as fsp }`: a whole namespace.
-          if (imported === "promises") scan.fsNamespaces.add(specifier.local.name);
-        } else {
-          scan.fsNamespaces.add(specifier.local.name);
-        }
-      }
+      if (FS_MODULES.has(source)) collectFsImport(scan, node);
     },
     // `await import("node:fs")`: a whole module object the rule cannot follow.
     ImportExpression(node) {
@@ -543,48 +603,86 @@ function reachVisitor(scan: Scan): VisitorObject {
       if (!isBunNamespace(handle.callee.object, scan.bunAliases)) return;
       scan.bunFileReadChains.add(handle.callee.start);
     },
-    // `const { rmSync } = fs;` / `const fsp = fs.promises;` / `const { promises: fsp } = fs;`
-    // / `const bun = Bun;`
     VariableDeclarator(node) {
       const { id, init } = node;
       if (init === null) return;
-      if (id.type === "Identifier") {
-        const local = id.name;
-        if (isFsNamespace(init, scan.fsNamespaces)) scan.fsNamespaces.add(local);
-        if (isBunNamespace(init, scan.bunAliases)) scan.bunAliases.add(local);
-        // `const o = fs.openSync;`: an open under another name.
-        if (init.type === "MemberExpression") {
-          const name = memberName(init);
-          if (
-            name !== null &&
-            FS_OPEN_NAMES.has(name) &&
-            isFsNamespace(init.object, scan.fsNamespaces)
-          ) {
-            scan.fsOpens.add(local);
-          }
-        }
-        return;
-      }
-      if (id.type !== "ObjectPattern") return;
-      const fromFs = isFsNamespace(init, scan.fsNamespaces);
-      const fromBun = isBunNamespace(init, scan.bunAliases);
-      if (!fromFs && !fromBun) return;
-      const names = fromFs ? direction.fs : direction.bun;
-      for (const property of id.properties) {
-        if (property.type !== "Property") continue;
-        const key = nameOf(property.key);
-        const local = property.value.type === "Identifier" ? property.value.name : null;
-        if (key === null) continue;
-        if (names.has(key)) {
-          report(scan, property);
-        } else if (fromFs && key === "promises" && local !== null) {
-          scan.fsNamespaces.add(local);
-        } else if (fromFs && FS_OPEN_NAMES.has(key) && local !== null) {
-          scan.fsOpens.add(local);
-        }
-      }
+      if (id.type === "Identifier") collectAlias(scan, id.name, init);
+      if (id.type === "ObjectPattern") collectDestructure(scan, id, init);
     },
   };
+}
+
+/** Whether a literal command line handed to exec names a mutating command. */
+function execLineMutates(first: Argument): boolean {
+  const line = literalText(first);
+  return line !== null && commandLineMutates(line);
+}
+
+/** A call by a bare name: a tracked open with a write flag, or a tracked spawn or exec of a
+ *  mutating command. */
+function judgeNamedCall(
+  scan: Scan,
+  node: CallExpression,
+  name: string,
+  first: Argument,
+  second: Argument | undefined,
+): void {
+  if (scan.fsOpens.has(name) && fsFlagWrites(second)) {
+    report(scan, node, HANDLE_MESSAGE);
+    return;
+  }
+  if (scan.spawns.has(name) && spawnMutates(first, second)) {
+    report(scan, node, SPAWN_MESSAGE);
+    return;
+  }
+  if (scan.execs.has(name) && execLineMutates(first)) report(scan, node, SPAWN_MESSAGE);
+}
+
+/** `Bun.spawn(...)` / `Bun.spawnSync(...)` of a literal argv naming a mutating command. */
+function judgeBunSpawn(scan: Scan, node: CallExpression, name: string, first: Argument): void {
+  if (name !== "spawn" && name !== "spawnSync") return;
+  const argv = bunSpawnArgv(first);
+  if (argv !== null && argvMutates(argv)) report(scan, node, SPAWN_MESSAGE);
+}
+
+/** A spawn or exec through the child_process module's namespace, of a mutating command. */
+function judgeChildProcessCall(
+  scan: Scan,
+  node: CallExpression,
+  name: string,
+  first: Argument,
+  second: Argument | undefined,
+): void {
+  if (SPAWN_NAMES.has(name) && spawnMutates(first, second)) {
+    report(scan, node, SPAWN_MESSAGE);
+    return;
+  }
+  if (EXEC_NAMES.has(name) && execLineMutates(first)) report(scan, node, SPAWN_MESSAGE);
+}
+
+/** A call on a member: a namespace open with a write flag, a Bun spawn, or a child_process
+ *  module's spawn or exec. */
+function judgeMemberCall(
+  scan: Scan,
+  node: CallExpression,
+  callee: MemberExpression,
+  first: Argument,
+  second: Argument | undefined,
+): void {
+  const name = memberName(callee);
+  if (name === null) return;
+  if (isFsNamespace(callee.object, scan.fsNamespaces)) {
+    if (FS_OPEN_NAMES.has(name) && fsFlagWrites(second)) report(scan, node, HANDLE_MESSAGE);
+    return;
+  }
+  if (isBunNamespace(callee.object, scan.bunAliases)) {
+    judgeBunSpawn(scan, node, name, first);
+    return;
+  }
+  if (callee.object.type !== "Identifier") return;
+  if (scan.childProcessNamespaces.has(callee.object.name)) {
+    judgeChildProcessCall(scan, node, name, first, second);
+  }
 }
 
 /** The write rule's own visitors: a write-capable open, and a child process running a
@@ -595,41 +693,8 @@ function writeVisitor(scan: Scan): VisitorObject {
       const { callee } = node;
       const [first, second] = node.arguments;
       if (first === undefined) return;
-      if (callee.type === "Identifier") {
-        const { name } = callee;
-        if (scan.fsOpens.has(name) && fsFlagWrites(second)) report(scan, node, HANDLE_MESSAGE);
-        else if (scan.spawns.has(name) && spawnMutates(first, second))
-          report(scan, node, SPAWN_MESSAGE);
-        else if (scan.execs.has(name)) {
-          const line = literalText(first);
-          if (line !== null && commandLineMutates(line)) report(scan, node, SPAWN_MESSAGE);
-        }
-        return;
-      }
-      if (callee.type !== "MemberExpression") return;
-      const name = memberName(callee);
-      if (name === null) return;
-      if (isFsNamespace(callee.object, scan.fsNamespaces)) {
-        if (FS_OPEN_NAMES.has(name) && fsFlagWrites(second)) report(scan, node, HANDLE_MESSAGE);
-        return;
-      }
-      if (isBunNamespace(callee.object, scan.bunAliases)) {
-        if (name !== "spawn" && name !== "spawnSync") return;
-        const argv = bunSpawnArgv(first);
-        if (argv !== null && argvMutates(argv)) report(scan, node, SPAWN_MESSAGE);
-        return;
-      }
-      if (
-        callee.object.type !== "Identifier" ||
-        !scan.childProcessNamespaces.has(callee.object.name)
-      ) {
-        return;
-      }
-      if (SPAWN_NAMES.has(name) && spawnMutates(first, second)) report(scan, node, SPAWN_MESSAGE);
-      else if (EXEC_NAMES.has(name)) {
-        const line = literalText(first);
-        if (line !== null && commandLineMutates(line)) report(scan, node, SPAWN_MESSAGE);
-      }
+      if (callee.type === "Identifier") judgeNamedCall(scan, node, callee.name, first, second);
+      if (callee.type === "MemberExpression") judgeMemberCall(scan, node, callee, first, second);
     },
   };
 }

@@ -1,3 +1,4 @@
+import { afterEach, beforeEach, describe } from "bun:test";
 import {
   chmodSync,
   existsSync,
@@ -43,7 +44,7 @@ import { installedBinaryName } from "../../src/utils/targets.ts";
 import { packageVersion } from "../../src/utils/version.ts";
 import { envSnapshot } from "../helpers/env.ts";
 import { runSync } from "../helpers/run.ts";
-import { afterEach, beforeEach, describe, expect, tempDir, test } from "../helpers/testing.ts";
+import { expect, tempDir, test } from "../helpers/testing.ts";
 
 /** A user's plain `agent install`, wiring on: a release spawns the installed binary, a checkout wires in place. */
 const OPTIONS: InstallOptions = { noShellIntegration: false, allHosts: false, assetsOnly: false };
@@ -213,7 +214,9 @@ describe("the versioned full-install plan", () => {
     applyInstallPlan(versionedPlan(QUIET, throughLink));
     expect(readFileSync(inVersion, "utf8")).toBe("LIVE"); // never truncated
   });
+});
 
+describe("applying the versioned plan lays the layout", () => {
   test("applying builds the layout: version root, link, top shims, per-version manifest", () => {
     const binarySource = writeFakeBinary(join(dest, "bin", installedBinaryName()), "BINARY");
     applyInstallPlan(versionedPlan(QUIET, binarySource));
@@ -278,7 +281,9 @@ describe("the versioned full-install plan", () => {
       expect(readCurrentVersionName(dest), name).toBe(current);
     }
   });
+});
 
+describe("applying the versioned plan names its writes and wires the shell", () => {
   test("applying a plan names exactly the plan's paths: no live write without a plan entry", () => {
     // The bootstrap binary sits at <top>/bin, where install.sh put it, and is relocated.
     const binarySource = writeFakeBinary(join(dest, "bin", installedBinaryName()), "BINARY");
@@ -330,7 +335,9 @@ echo "\${${INSTALL_ROOT_ENV}:-} $@" >> "$(dirname "$0")/../../../wires.log"
     const log = readFileSync(join(dest, "wires.log"), "utf8").trim();
     expect(log).toBe(`${join(dest, CURRENT_LINK)} shell`);
   });
+});
 
+describe("applying the versioned plan over a prior version", () => {
   skipWin("an install over a prior version runs the migrations it leaves behind", () => {
     // The same post-flip step `agent update` runs: `migrate <from> <to>` on the installed
     // binary aimed at the current link. The fake binary records every invocation.
@@ -545,36 +552,59 @@ describe("the unsafe-target canonical guard", () => {
   });
 });
 
+/** A checkout's shape at `dir`: the marker file, and `.git` as a directory or as a worktree's
+ *  gitdir pointer file. */
+function writeCheckoutShape(dir: string, marker: string, git: "dir" | "file"): void {
+  writeFileSync(join(dir, marker), "{}");
+  if (git === "dir") mkdirSync(join(dir, ".git"));
+  else writeFileSync(join(dir, ".git"), "gitdir: /elsewhere");
+}
+
+/** The plan refuses `dest`, naming the root, the marker, and .git. */
+function expectCheckoutRefusal(opts: InstallOptions, marker: string, name: string): void {
+  expect(() => buildInstallPlan(opts, dest, source), name).toThrow(
+    `refusing to install into ${dest}`,
+  );
+  expect(() => buildInstallPlan(opts, dest, source), name).toThrow(marker);
+  expect(() => buildInstallPlan(opts, dest, source), name).toThrow(".git");
+}
+
+/** A checkout-guard case: how `.git` is spelled, whether a real install's manifest sits in the
+ *  root too, and the plan kinds that must refuse. */
+interface CheckoutCase {
+  git: "dir" | "file";
+  manifest: boolean;
+  options: InstallOptions[];
+}
+
+/** Every marker, in the shape of the case, refuses each plan kind and reads as checkout-shaped;
+ *  the shape is cleared after each marker. */
+function expectEveryMarkerRefused({ git, manifest, options }: CheckoutCase): void {
+  for (const marker of CHECKOUT_MARKERS) {
+    const name = `${marker} + .git ${git}${manifest ? " + manifest" : ""}`;
+    writeCheckoutShape(dest, marker, git);
+    for (const opts of options) expectCheckoutRefusal(opts, marker, name);
+    expect(isCheckoutShapedRoot(dest), name).toBe(true);
+    rmSync(join(dest, ".git"), { recursive: true });
+    rmSync(join(dest, marker));
+  }
+}
+
 describe("the checkout guard and the install manifest sentinel", () => {
   // An installed-mode plan can be aimed at a dev checkout through COPILOT_ENV_INSTALL_ROOT, and
   // its writes would replace the checkout's bin/agent and src/scripts.
   //   .git present (dir or file)  -> a checkout: refuse
   test("refuses a root with a checkout marker and .git, as a dir or a worktree file, manifest or not", () => {
     // Order matters: the manifest row leaves a real install in dest, so it runs last.
-    const rows: { git: "dir" | "file"; manifest: boolean; options: InstallOptions[] }[] = [
+    const rows: CheckoutCase[] = [
       { git: "dir", manifest: false, options: [OPTIONS, ASSETS_ONLY] },
       { git: "file", manifest: false, options: [OPTIONS] },
       // Even a valid manifest does not override .git: a live checkout always refuses.
       { git: "dir", manifest: true, options: [OPTIONS] },
     ];
-    for (const { git, manifest, options } of rows) {
-      if (manifest) applyInstallPlan(assetsOnlyPlan());
-      for (const marker of CHECKOUT_MARKERS) {
-        const name = `${marker} + .git ${git}${manifest ? " + manifest" : ""}`;
-        writeFileSync(join(dest, marker), "{}");
-        if (git === "dir") mkdirSync(join(dest, ".git"));
-        else writeFileSync(join(dest, ".git"), "gitdir: /elsewhere");
-        for (const opts of options) {
-          expect(() => buildInstallPlan(opts, dest, source), name).toThrow(
-            `refusing to install into ${dest}`,
-          );
-          expect(() => buildInstallPlan(opts, dest, source), name).toThrow(marker);
-          expect(() => buildInstallPlan(opts, dest, source), name).toThrow(".git");
-        }
-        expect(isCheckoutShapedRoot(dest), name).toBe(true);
-        rmSync(join(dest, ".git"), { recursive: true });
-        rmSync(join(dest, marker));
-      }
+    for (const row of rows) {
+      if (row.manifest) applyInstallPlan(assetsOnlyPlan());
+      expectEveryMarkerRefused(row);
     }
   });
 

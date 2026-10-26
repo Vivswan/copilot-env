@@ -165,12 +165,201 @@ function agentFlag(opts: Opts): ManagedAgentId | null {
 /** Every profile verb's help group: `agent profile --help`, and `profile [<name>] <verb>` rows in `agent --help`. */
 const PROFILE_VERB_GROUP = "Profile:";
 
+/** What a verb's registration needs: the name as the word position gave it, the mint that
+ *  validates it, and the verb factory on the `profile` tree. */
+interface ProfileVerbContext {
+  rawProfile: string | null;
+  minted(): Profile;
+  verb(name: ProfileVerb, summary: string, description: string): Command;
+}
+
+function registerAddVerb({ rawProfile, minted, verb }: ProfileVerbContext): void {
+  verb(
+    "add",
+    "Create or re-wire the profile, both agents",
+    "Create or re-wire this profile: one mode for both Codex and Claude, plus the sign-in step " +
+      "if needed (a mode change asks first). A fresh named profile needs --direct, --proxy, or --auto; " +
+      "with no flag a named profile keeps its recorded mode and the default profile probes.",
+  )
+    .option("--direct", "Wire to GitHub Copilot Direct.")
+    .option("--proxy", "Wire to the local proxy (a named profile: its own daemon).")
+    .option("--auto", AUTO_HELP)
+    .option("--yes", "Switch a recorded mode without asking.")
+    .option("--no-auth", "Skip the sign-in; with no credential pass --direct or --proxy.")
+    .option("--gh-user <login|auto>", GH_USER_HELP)
+    .option("--dry-run", DRY_RUN_HELP)
+    .action(async (opts: Opts, cmd: Command) => {
+      refuseStrayWords(cmd, "add", rawProfile);
+      if (rawProfile !== null && isReservedProfileWord(rawProfile)) {
+        throw reservedWordError(rawProfile);
+      }
+      await confirmModeChange(opts, rawProfile);
+      return addProfile(minted(), addArgs(opts));
+    });
+}
+
+function registerDelVerb({ rawProfile, verb }: ProfileVerbContext): void {
+  verb(
+    "del",
+    "Delete the named profile everywhere",
+    "Delete the named profile everywhere: its daemon, credential, both agents' wiring, and " +
+      "daemon home. Asks first; the default profile cannot be deleted.",
+  )
+    .option("--yes", "Delete without asking.")
+    .option("--dry-run", DRY_RUN_HELP)
+    .action(async (opts: Opts, cmd: Command) => {
+      refuseStrayWords(cmd, "del", rawProfile);
+      if (rawProfile === null) {
+        throw new Error(
+          "the default profile cannot be deleted; `agent uninstall` removes everything " +
+            "(`agent profile auth --del` clears its credential)",
+        );
+      }
+      await confirmOrRefuse(
+        `Delete profile '${rawProfile}' everywhere (its daemon, credential, both agents' ` +
+          "wiring, and daemon home)?",
+        opts,
+        "delete the profile",
+      );
+      return delProfile(parseProfileName(rawProfile), Boolean(opts.dryRun));
+    });
+}
+
+function registerShowVerb({ rawProfile, minted, verb }: ProfileVerbContext): void {
+  verb(
+    "show",
+    "Show its mode, provider, and daemon status",
+    "Show this profile's mode, provider, and daemon status.",
+  ).action((_opts: Opts, cmd: Command) => {
+    refuseStrayWords(cmd, "show", rawProfile);
+    return showProfile(minted());
+  });
+}
+
+function registerAuthVerb({ rawProfile, verb }: ProfileVerbContext): void {
+  addAuthOptions(
+    verb(
+      "auth",
+      "Sign in, or manage its Copilot credential",
+      "Sign this profile in to GitHub Copilot, or manage its credential; both agents use it. " +
+        "Default profile: `agent auth`.",
+    ),
+  ).action((opts: Opts, cmd: Command) => {
+    refuseStrayWords(cmd, "auth", rawProfile);
+    return runAuth({ ...authArgs(opts), profile: rawProfile ?? undefined });
+  });
+}
+
+function registerSetVerb({ rawProfile, minted, verb }: ProfileVerbContext): void {
+  verb(
+    "set",
+    "Set one of its preferences",
+    "Set one of this profile's preferences: a profile key, or a named profile's override of a " +
+      "proxy.* / probe.* key. With no name a proxy.* / probe.* key sets the shared default, as " +
+      "`agent config set` does.",
+  )
+    .argument("<key>", "A key of `agent profile get`, or `<key>=<value>`.")
+    .argument("[value]", "The value; omit it with `<key>=<value>`.")
+    .option("--dry-run", DRY_RUN_HELP)
+    .action((rawKey: string, rawValue: string | undefined, opts: Opts, cmd: Command) => {
+      refuseStrayWords(cmd, "set", rawProfile);
+      const { key, value } = resolveSetPair(
+        rawKey,
+        rawValue,
+        `agent profile${rawProfile === null ? "" : ` ${rawProfile}`} set`,
+      );
+      refuseGlobalKey(key);
+      if (configKeyDef(key)?.key === "identity") {
+        return setIdentity(rawProfile, value, Boolean(opts.dryRun));
+      }
+      const view: ConfigView = { kind: "profile", profile: minted() };
+      return runConfig({ kind: "set", key, value, view, dryRun: Boolean(opts.dryRun) });
+    });
+}
+
+function registerUnsetVerb({ rawProfile, minted, verb }: ProfileVerbContext): void {
+  verb(
+    "unset",
+    "Drop one of its preferences",
+    "Drop one of this profile's preferences, back to the shared or built-in default. " +
+      "With no name a proxy.* / probe.* key's shared default is dropped.",
+  )
+    .argument("<key>", "A key of `agent profile get`.")
+    .option("--dry-run", DRY_RUN_HELP)
+    .action((key: string, opts: Opts, cmd: Command) => {
+      refuseStrayWords(cmd, "unset", rawProfile);
+      refuseGlobalKey(key);
+      const view: ConfigView = { kind: "profile", profile: minted() };
+      return runConfig({ kind: "unset", key, view, dryRun: Boolean(opts.dryRun) });
+    });
+}
+
+function registerGetVerb({ rawProfile, minted, verb }: ProfileVerbContext): void {
+  verb(
+    "get",
+    "Show a preference in effect, and its origin",
+    "Show a preference as it resolves: the value on stdout, its origin on stderr. " +
+      "No key: every key of the profile.",
+  )
+    .argument("[key]", "A key of the profile.")
+    .action((key: string | undefined, _opts: Opts, cmd: Command) => {
+      refuseStrayWords(cmd, "get", rawProfile);
+      if (key !== undefined) refuseGlobalKey(key);
+      const view: ConfigView = { kind: "profile", profile: minted() };
+      return runConfig({ kind: "get", key, view });
+    });
+}
+
+function registerIdentityVerb({ rawProfile, verb }: ProfileVerbContext): void {
+  addIdentityOptions(
+    verb(
+      "identity",
+      "Show or pin the Copilot client identity",
+      "Show the Copilot client identities this profile's credential is accepted under (* marks " +
+        "the one in effect). A read, unless a flag pins, prints, or drops the pin.",
+    ),
+  ).action((opts: Opts, cmd: Command) => {
+    refuseStrayWords(cmd, "identity", rawProfile);
+    return identityAction(opts, rawProfile);
+  });
+}
+
+function registerSyncVerb({ rawProfile, minted, verb }: ProfileVerbContext): void {
+  verb(
+    "sync",
+    "Rewrite its Codex and Claude config files",
+    "Rewrite this profile's Codex and Claude files from its recorded mode, both agents or one. " +
+      "Every profile: `agent sync`.",
+  )
+    .option("--claude", "Re-render Claude Code alone.")
+    .option("--codex", "Re-render Codex alone.")
+    .option("--dry-run", DRY_RUN_HELP)
+    .action((opts: Opts, cmd: Command) => {
+      refuseStrayWords(cmd, "sync", rawProfile);
+      const profile = minted();
+      return syncProfile(profile, agentFlag(opts), Boolean(opts.dryRun));
+    });
+}
+
+function registerCheckVerb({ rawProfile, minted, verb }: ProfileVerbContext): void {
+  verb(
+    "check",
+    "Report its recorded mode by exit code",
+    "Report this profile's recorded mode by exit code: 0 Direct, 2 proxy, 1 none or partial.",
+  )
+    .option("--claude", "Claude Code's settings file: 0 Direct, 2 proxy or none, 1 other.")
+    .option("--codex", "Codex's config: 0 Direct, 2 proxy or none, 1 other.")
+    .action((opts: Opts, cmd: Command) => {
+      refuseStrayWords(cmd, "check", rawProfile);
+      const agent = agentFlag(opts);
+      return checkProfile(minted(), agent);
+    });
+}
+
 /** The name from the word position is passed on as the string the owning function takes, so both
  *  it and the verb validate the name in one order; a verb that owns its own read mints it. The
  *  root `agent --help` (src/cli.ts) lists the verbs under PROFILE_VERB_GROUP. */
 export function registerProfileCommand(program: Command, rawProfile: string | null): Command {
-  const minted = (): Profile => (rawProfile === null ? null : parseProfileName(rawProfile));
-
   const profile = program
     .command("profile")
     .helpGroup("Settings:")
@@ -205,182 +394,34 @@ export function registerProfileCommand(program: Command, rawProfile: string | nu
       return listProfiles();
     });
 
-  // The summary is the one-line row of the verb listings; the description is the verb's own help.
-  const verb = (name: ProfileVerb, summary: string, description: string): Command =>
-    profile
-      .command(name)
-      .helpGroup(PROFILE_VERB_GROUP)
-      .summary(summary)
-      .description(description)
-      .allowExcessArguments();
-
-  verb(
-    "add",
-    "Create or re-wire the profile, both agents",
-    "Create or re-wire this profile: one mode for both Codex and Claude, plus the sign-in step " +
-      "if needed (a mode change asks first). A fresh named profile needs --direct, --proxy, or --auto; " +
-      "with no flag a named profile keeps its recorded mode and the default profile probes.",
-  )
-    .option("--direct", "Wire to GitHub Copilot Direct.")
-    .option("--proxy", "Wire to the local proxy (a named profile: its own daemon).")
-    .option("--auto", AUTO_HELP)
-    .option("--yes", "Switch a recorded mode without asking.")
-    .option("--no-auth", "Skip the sign-in; with no credential pass --direct or --proxy.")
-    .option("--gh-user <login|auto>", GH_USER_HELP)
-    .option("--dry-run", DRY_RUN_HELP)
-    .action(async (opts: Opts, cmd: Command) => {
-      refuseStrayWords(cmd, "add", rawProfile);
-      if (rawProfile !== null && isReservedProfileWord(rawProfile)) {
-        throw reservedWordError(rawProfile);
-      }
-      await confirmModeChange(opts, rawProfile);
-      return addProfile(minted(), addArgs(opts));
-    });
-
-  verb(
-    "del",
-    "Delete the named profile everywhere",
-    "Delete the named profile everywhere: its daemon, credential, both agents' wiring, and " +
-      "daemon home. Asks first; the default profile cannot be deleted.",
-  )
-    .option("--yes", "Delete without asking.")
-    .option("--dry-run", DRY_RUN_HELP)
-    .action(async (opts: Opts, cmd: Command) => {
-      refuseStrayWords(cmd, "del", rawProfile);
-      if (rawProfile === null) {
-        throw new Error(
-          "the default profile cannot be deleted; `agent uninstall` removes everything " +
-            "(`agent profile auth --del` clears its credential)",
-        );
-      }
-      await confirmOrRefuse(
-        `Delete profile '${rawProfile}' everywhere (its daemon, credential, both agents' ` +
-          "wiring, and daemon home)?",
-        opts,
-        "delete the profile",
-      );
-      return delProfile(parseProfileName(rawProfile), Boolean(opts.dryRun));
-    });
-
-  verb(
-    "show",
-    "Show its mode, provider, and daemon status",
-    "Show this profile's mode, provider, and daemon status.",
-  ).action((_opts: Opts, cmd: Command) => {
-    refuseStrayWords(cmd, "show", rawProfile);
-    return showProfile(minted());
-  });
-
-  addAuthOptions(
-    verb(
-      "auth",
-      "Sign in, or manage its Copilot credential",
-      "Sign this profile in to GitHub Copilot, or manage its credential; both agents use it. " +
-        "Default profile: `agent auth`.",
-    ),
-  ).action((opts: Opts, cmd: Command) => {
-    refuseStrayWords(cmd, "auth", rawProfile);
-    return runAuth({ ...authArgs(opts), profile: rawProfile ?? undefined });
-  });
-
-  const view = (): ConfigView => ({ kind: "profile", profile: minted() });
-
-  verb(
-    "set",
-    "Set one of its preferences",
-    "Set one of this profile's preferences: a profile key, or a named profile's override of a " +
-      "proxy.* / probe.* key. With no name a proxy.* / probe.* key sets the shared default, as " +
-      "`agent config set` does.",
-  )
-    .argument("<key>", "A key of `agent profile get`, or `<key>=<value>`.")
-    .argument("[value]", "The value; omit it with `<key>=<value>`.")
-    .option("--dry-run", DRY_RUN_HELP)
-    .action((rawKey: string, rawValue: string | undefined, opts: Opts, cmd: Command) => {
-      refuseStrayWords(cmd, "set", rawProfile);
-      const { key, value } = resolveSetPair(
-        rawKey,
-        rawValue,
-        `agent profile${rawProfile === null ? "" : ` ${rawProfile}`} set`,
-      );
-      refuseGlobalKey(key);
-      if (configKeyDef(key)?.key === "identity") {
-        return setIdentity(rawProfile, value, Boolean(opts.dryRun));
-      }
-      return runConfig({ kind: "set", key, value, view: view(), dryRun: Boolean(opts.dryRun) });
-    });
-
-  verb(
-    "unset",
-    "Drop one of its preferences",
-    "Drop one of this profile's preferences, back to the shared or built-in default. " +
-      "With no name a proxy.* / probe.* key's shared default is dropped.",
-  )
-    .argument("<key>", "A key of `agent profile get`.")
-    .option("--dry-run", DRY_RUN_HELP)
-    .action((key: string, opts: Opts, cmd: Command) => {
-      refuseStrayWords(cmd, "unset", rawProfile);
-      refuseGlobalKey(key);
-      return runConfig({ kind: "unset", key, view: view(), dryRun: Boolean(opts.dryRun) });
-    });
-
-  verb(
-    "get",
-    "Show a preference in effect, and its origin",
-    "Show a preference as it resolves: the value on stdout, its origin on stderr. " +
-      "No key: every key of the profile.",
-  )
-    .argument("[key]", "A key of the profile.")
-    .action((key: string | undefined, _opts: Opts, cmd: Command) => {
-      refuseStrayWords(cmd, "get", rawProfile);
-      if (key !== undefined) refuseGlobalKey(key);
-      return runConfig({ kind: "get", key, view: view() });
-    });
-
-  addIdentityOptions(
-    verb(
-      "identity",
-      "Show or pin the Copilot client identity",
-      "Show the Copilot client identities this profile's credential is accepted under (* marks " +
-        "the one in effect). A read, unless a flag pins, prints, or drops the pin.",
-    ),
-  ).action((opts: Opts, cmd: Command) => {
-    refuseStrayWords(cmd, "identity", rawProfile);
-    return identityAction(opts, rawProfile);
-  });
-
-  verb(
-    "sync",
-    "Rewrite its Codex and Claude config files",
-    "Rewrite this profile's Codex and Claude files from its recorded mode, both agents or one. " +
-      "Every profile: `agent sync`.",
-  )
-    .option("--claude", "Re-render Claude Code alone.")
-    .option("--codex", "Re-render Codex alone.")
-    .option("--dry-run", DRY_RUN_HELP)
-    .action((opts: Opts, cmd: Command) => {
-      refuseStrayWords(cmd, "sync", rawProfile);
-      const profile = minted();
-      return syncProfile(profile, agentFlag(opts), Boolean(opts.dryRun));
-    });
-
-  verb(
-    "check",
-    "Report its recorded mode by exit code",
-    "Report this profile's recorded mode by exit code: 0 Direct, 2 proxy, 1 none or partial.",
-  )
-    .option("--claude", "Claude Code's settings file: 0 Direct, 2 proxy or none, 1 other.")
-    .option("--codex", "Codex's config: 0 Direct, 2 proxy or none, 1 other.")
-    .action((opts: Opts, cmd: Command) => {
-      refuseStrayWords(cmd, "check", rawProfile);
-      const agent = agentFlag(opts);
-      return checkProfile(minted(), agent);
-    });
+  const ctx: ProfileVerbContext = {
+    rawProfile,
+    minted: () => (rawProfile === null ? null : parseProfileName(rawProfile)),
+    // The summary is the one-line row of the verb listings; the description is the verb's own help.
+    verb: (name, summary, description) =>
+      profile
+        .command(name)
+        .helpGroup(PROFILE_VERB_GROUP)
+        .summary(summary)
+        .description(description)
+        .allowExcessArguments(),
+  };
+  registerAddVerb(ctx);
+  registerDelVerb(ctx);
+  registerShowVerb(ctx);
+  registerAuthVerb(ctx);
+  registerSetVerb(ctx);
+  registerUnsetVerb(ctx);
+  registerGetVerb(ctx);
+  registerIdentityVerb(ctx);
+  registerSyncVerb(ctx);
+  registerCheckVerb(ctx);
 
   // The runtime verbs (launch env proxy-token mcp start stop health models credits settings) are
   // profile_ops.ts's, routed onto their command functions with this name.
   registerProfileOps({
     rawProfile,
-    verb,
+    verb: ctx.verb,
     refuseStrayWords: (cmd, name) => refuseStrayWords(cmd, name, rawProfile),
   });
   return profile;

@@ -111,21 +111,33 @@ function responsesLastUser(body) {
   return { text: "", isToolResult: false };
 }
 
+/** A tool's parameter schema, Anthropic `input_schema` or Responses `parameters`, else null. */
+function toolSchema(tool) {
+  if (isRecord(tool.input_schema)) return tool.input_schema;
+  if (isRecord(tool.parameters)) return tool.parameters;
+  return null;
+}
+
 /** Callable tools as `{name, schema}`: Anthropic `input_schema` or Responses `parameters`. */
 function callableTools(body) {
   const tools = Array.isArray(body.tools) ? body.tools : [];
   const out = [];
   for (const tool of tools) {
     if (!isRecord(tool) || typeof tool.name !== "string") continue;
-    const schema = isRecord(tool.input_schema)
-      ? tool.input_schema
-      : isRecord(tool.parameters)
-        ? tool.parameters
-        : null;
+    const schema = toolSchema(tool);
     if (schema === null && tool.type !== undefined && tool.type !== "function") continue;
     out.push({ name: tool.name, schema: schema ?? {} });
   }
   return out;
+}
+
+/** A placeholder value of a JSON schema type; a string for any other. */
+function placeholderValue(type) {
+  if (type === "number" || type === "integer") return 1;
+  if (type === "boolean") return false;
+  if (type === "array") return [];
+  if (type === "object") return {};
+  return "corpus";
 }
 
 /** Arguments satisfying a JSON schema's `required` list with placeholder values. */
@@ -136,14 +148,26 @@ function fillFromSchema(schema) {
   for (const key of required) {
     if (typeof key !== "string") continue;
     const property = properties[key];
-    const type = isRecord(property) ? property.type : undefined;
-    if (type === "number" || type === "integer") args[key] = 1;
-    else if (type === "boolean") args[key] = false;
-    else if (type === "array") args[key] = [];
-    else if (type === "object") args[key] = {};
-    else args[key] = "corpus";
+    args[key] = placeholderValue(isRecord(property) ? property.type : undefined);
   }
   return args;
+}
+
+/** The arguments a `tool-args:` or `tool-args64:` marker pins, or null (absent, or not a JSON
+ *  object: the caller falls back to the schema fill). */
+function pinnedToolArgs(text) {
+  const pinned64 = TOOL_ARGS64_MARKER.exec(text)?.[1];
+  const argsText =
+    pinned64 === undefined
+      ? TOOL_ARGS_MARKER.exec(text)?.[1]
+      : Buffer.from(pinned64, "base64").toString("utf8");
+  if (argsText === undefined) return null;
+  try {
+    const parsed = JSON.parse(argsText);
+    return isRecord(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
 /** The tool call the request asks for (tools offered AND the whole word "tool" in the last user
@@ -151,21 +175,8 @@ function fillFromSchema(schema) {
  *  first preferred tool offered, else the first tool offered. */
 function selectToolCall(text, tools) {
   if (tools.length === 0 || !TOOL_WORD.test(text)) return null;
+  const pinnedArgs = pinnedToolArgs(text);
   const pinnedName = TOOL_NAME_MARKER.exec(text)?.[1];
-  const pinned64 = TOOL_ARGS64_MARKER.exec(text)?.[1];
-  const pinnedArgsText =
-    pinned64 !== undefined
-      ? Buffer.from(pinned64, "base64").toString("utf8")
-      : TOOL_ARGS_MARKER.exec(text)?.[1];
-  let pinnedArgs = null;
-  if (pinnedArgsText !== undefined) {
-    try {
-      const parsed = JSON.parse(pinnedArgsText);
-      if (isRecord(parsed)) pinnedArgs = parsed;
-    } catch {
-      // not JSON: fall through to the schema fill
-    }
-  }
   const pinned = pinnedName === undefined ? undefined : tools.find((t) => t.name === pinnedName);
   if (pinned !== undefined) {
     return { name: pinned.name, args: pinnedArgs ?? fillFromSchema(pinned.schema) };
@@ -579,6 +590,86 @@ function route(url) {
   return path;
 }
 
+function notFound(res) {
+  json(res, 404, {
+    type: "error",
+    error: { type: "not_found_error", message: "Not found" },
+  });
+}
+
+/** The handler of an inference route, or undefined for any other path. */
+function inferenceHandler(path) {
+  if (path === "/messages") return handleMessages;
+  if (path === "/responses") return handleResponses;
+  if (path === "/chat/completions") return handleChatCompletions;
+  return undefined;
+}
+
+/** The log line of an answered inference request, its input buckets as the client's API books
+ *  them: Anthropic's three, OpenAI's two with the creation share inside the uncached input. */
+function answeredLine(url, path, result) {
+  const { d, model, stream, toolCall } = result;
+  const buckets =
+    path === "/messages"
+      ? `in=${d.input} cache_read=${d.cacheRead} cache_creation=${d.cacheCreation}`
+      : `in=${openaiInputTokens(d) - d.cacheRead} cache_read=${d.cacheRead}`;
+  return (
+    `POST ${url} 200 ${stream ? "stream" : "json"} model=${model} ${buckets}` +
+    ` out=${d.output} tool=${toolCall === null ? "none" : toolCall.name}`
+  );
+}
+
+/** The answered request as `onRequest` sees it (InferenceFakeRequest). */
+function tracedRequest(path, result) {
+  const { d, model, stream, toolCall } = result;
+  return {
+    path,
+    model,
+    stream,
+    tool: toolCall === null ? null : toolCall.name,
+    usage: {
+      input: d.input,
+      cacheRead: d.cacheRead,
+      cacheCreation: d.cacheCreation,
+      output: d.output,
+    },
+  };
+}
+
+/** A POST: the body parsed and judged, then count_tokens or one of the three inference routes. */
+async function handlePost(req, res, path, log, hooks) {
+  const rawBody = await readBody(req);
+  let body;
+  try {
+    body = JSON.parse(rawBody);
+  } catch {
+    apiError(res, 400, "invalid_request_error", "body is not JSON");
+    log(`POST ${req.url} 400 invalid json`);
+    return;
+  }
+  if (!isRecord(body)) {
+    apiError(res, 400, "invalid_request_error", "body is not an object");
+    log(`POST ${req.url} 400 not an object`);
+    return;
+  }
+  if (path === "/messages/count_tokens") {
+    const d = derive(rawBody, 0);
+    json(res, 200, { input_tokens: d.input + d.cacheRead + d.cacheCreation });
+    log(`POST ${req.url} 200 count_tokens`);
+    return;
+  }
+  const handler = inferenceHandler(path);
+  if (handler === undefined) {
+    notFound(res);
+    log(`POST ${req.url} 404`);
+    return;
+  }
+  if (hooks.beforeReply !== undefined) await hooks.beforeReply(path);
+  const result = handler(body, rawBody, res);
+  log(answeredLine(req.url, path, result));
+  hooks.onRequest?.(tracedRequest(path, result));
+}
+
 /** Handle one request: catalog, the three inference routes, 404 for everything else. */
 async function handle(req, res, log, hooks) {
   const method = req.method ?? "GET";
@@ -596,67 +687,11 @@ async function handle(req, res, log, hooks) {
     return;
   }
   if (method !== "POST") {
-    json(res, 404, {
-      type: "error",
-      error: { type: "not_found_error", message: "Not found" },
-    });
+    notFound(res);
     log(`${method} ${req.url} 404`);
     return;
   }
-  const rawBody = await readBody(req);
-  let body;
-  try {
-    body = JSON.parse(rawBody);
-  } catch {
-    apiError(res, 400, "invalid_request_error", "body is not JSON");
-    log(`POST ${req.url} 400 invalid json`);
-    return;
-  }
-  if (!isRecord(body)) {
-    apiError(res, 400, "invalid_request_error", "body is not an object");
-    log(`POST ${req.url} 400 not an object`);
-    return;
-  }
-  const isInference = path === "/messages" || path === "/responses" || path === "/chat/completions";
-  if (isInference && hooks.beforeReply !== undefined) await hooks.beforeReply(path);
-  let result;
-  if (path === "/messages") result = handleMessages(body, rawBody, res);
-  else if (path === "/messages/count_tokens") {
-    const d = derive(rawBody, 0);
-    json(res, 200, { input_tokens: d.input + d.cacheRead + d.cacheCreation });
-    log(`POST ${req.url} 200 count_tokens`);
-    return;
-  } else if (path === "/responses") result = handleResponses(body, rawBody, res);
-  else if (path === "/chat/completions") result = handleChatCompletions(body, rawBody, res);
-  else {
-    json(res, 404, {
-      type: "error",
-      error: { type: "not_found_error", message: "Not found" },
-    });
-    log(`POST ${req.url} 404`);
-    return;
-  }
-  const { d, model, stream, toolCall } = result;
-  const buckets =
-    path === "/messages"
-      ? `in=${d.input} cache_read=${d.cacheRead} cache_creation=${d.cacheCreation}`
-      : `in=${openaiInputTokens(d) - d.cacheRead} cache_read=${d.cacheRead}`;
-  log(
-    `POST ${req.url} 200 ${stream ? "stream" : "json"} model=${model} ${buckets}` +
-      ` out=${d.output} tool=${toolCall === null ? "none" : toolCall.name}`,
-  );
-  hooks.onRequest?.({
-    path,
-    model,
-    stream,
-    tool: toolCall === null ? null : toolCall.name,
-    usage: {
-      input: d.input,
-      cacheRead: d.cacheRead,
-      cacheCreation: d.cacheCreation,
-      output: d.output,
-    },
-  });
+  await handlePost(req, res, path, log, hooks);
 }
 
 /** One answered inference request, as `onRequest` sees it.
@@ -686,8 +721,8 @@ export function startInferenceFake(
     res.sendDate = false;
     handle(req, res, log, hooks).catch((e) => {
       log(`${req.method} ${req.url} 500 ${e instanceof Error ? e.message : String(e)}`);
-      if (!res.headersSent) apiError(res, 500, "api_error", "internal error");
-      else res.end();
+      if (res.headersSent) res.end();
+      else apiError(res, 500, "api_error", "internal error");
     });
   });
   return new Promise((resolve, reject) => {
@@ -722,9 +757,9 @@ function isMain() {
 if (isMain()) {
   const portIdx = process.argv.indexOf("--port");
   const requested =
-    portIdx !== -1
-      ? Number(process.argv[portIdx + 1])
-      : Number(process.env.INFERENCE_FAKE_PORT ?? "0");
+    portIdx === -1
+      ? Number(process.env.INFERENCE_FAKE_PORT ?? "0")
+      : Number(process.argv[portIdx + 1]);
   const { port } = await startInferenceFake(Number.isFinite(requested) ? requested : 0);
   console.log(JSON.stringify({ port: port }));
   process.on("SIGTERM", () => process.exit(0));

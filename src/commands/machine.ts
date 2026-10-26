@@ -15,6 +15,8 @@ import { DEFAULT_CLI_COOLDOWN_DAYS, runShell } from "./setup.ts";
 import { runUninstall } from "./uninstall.ts";
 import { runUpdate } from "./update.ts";
 
+const CONFIG_VIEW = { kind: "config" } as const;
+
 function parseNonNegativeDays(raw: string, flag: string): number {
   if (!/^\d+$/.test(raw)) {
     throw new Error(`${flag} expects a non-negative whole number of days (got '${raw}')`);
@@ -34,13 +36,12 @@ function resolveCooldown(value: unknown, defaultDays: number): number | null {
   return value as number;
 }
 
-export function registerMachineCommands(program: Command): void {
-  // `agent config <verb>`: the machine's preferences (daemon.*, codex.*, claude.*, shell.*, update.*,
-  // cost.*) and the shared default every profile follows for proxy.* / probe.*. A key that follows
-  // the credential (identity, host, passthrough, static-key) is a profile's own: `agent profile
-  // [<name>] set|get|unset`, which for a proxy.* / probe.* key with no name writes the same store
-  // bytes as this command (the default profile never carries its own override).
-  const CONFIG_VIEW = { kind: "config" } as const;
+/** `agent config <verb>`: the machine's preferences (daemon.*, codex.*, claude.*, shell.*, update.*,
+ *  cost.*) and the shared default every profile follows for proxy.* / probe.*. A key that follows
+ *  the credential (identity, host, passthrough, static-key) is a profile's own: `agent profile
+ *  [<name>] set|get|unset`, which for a proxy.* / probe.* key with no name writes the same store
+ *  bytes as this command (the default profile never carries its own override). */
+function registerConfigCommand(program: Command): void {
   const config = program
     .command("config")
     .helpGroup("Settings:")
@@ -91,7 +92,9 @@ export function registerMachineCommands(program: Command): void {
       refuseProfileKey(key);
       return runConfig({ kind: "unset", key, view: CONFIG_VIEW, dryRun: Boolean(opts.dryRun) });
     });
+}
 
+function registerCostCommand(program: Command): void {
   program
     .command("cost")
     .helpGroup("Daemon:")
@@ -123,7 +126,9 @@ export function registerMachineCommands(program: Command): void {
         noIndex: opts.index === false,
       });
     });
+}
 
+function registerCodexMobileCommand(program: Command): void {
   program
     .command("codex-mobile")
     .helpGroup("Setup:")
@@ -133,7 +138,9 @@ export function registerMachineCommands(program: Command): void {
         "Windows only.",
     )
     .action(() => runCodexMobile());
+}
 
+function registerUpdateCommand(program: Command): void {
   program
     .command("update")
     .helpGroup("Maintenance:")
@@ -157,7 +164,9 @@ export function registerMachineCommands(program: Command): void {
         dryRun: Boolean(opts.dryRun),
       }),
     );
+}
 
+function registerShellCommand(program: Command): void {
   program
     .command("shell")
     .helpGroup("Setup:")
@@ -197,7 +206,9 @@ export function registerMachineCommands(program: Command): void {
         dryRun: Boolean(opts.dryRun),
       }),
     );
+}
 
+function registerInstallCommand(program: Command): void {
   program
     .command("install")
     .helpGroup("Maintenance:")
@@ -223,7 +234,9 @@ export function registerMachineCommands(program: Command): void {
         ? runDryRun(() => Promise.resolve(runInstall(options)))
         : runInstall(options);
     });
+}
 
+function registerUninstallCommand(program: Command): void {
   program
     .command("uninstall")
     .helpGroup("Maintenance:")
@@ -242,10 +255,12 @@ export function registerMachineCommands(program: Command): void {
         force: Boolean(opts.force),
       }),
     );
+}
 
-  // `agent update` and an `agent install` over a prior version invoke this on the NEW install after
-  // swapping it in, so the migrations run from the new code. A compiled binary has no
-  // `src/migrations/index.ts` on disk, hence a subcommand rather than a script path.
+/** `agent update` and an `agent install` over a prior version invoke this on the NEW install after
+ *  swapping it in, so the migrations run from the new code. A compiled binary has no
+ *  `src/migrations/index.ts` on disk, hence a subcommand rather than a script path. */
+function registerMigrateCommand(program: Command): void {
   program
     .command("migrate")
     .helpGroup("Maintenance:")
@@ -260,4 +275,15 @@ export function registerMachineCommands(program: Command): void {
     .action((from: string, to: string, opts: Opts) =>
       opts.dryRun ? runDryRun(() => runMigrations(from, to)) : runMigrations(from, to),
     );
+}
+
+export function registerMachineCommands(program: Command): void {
+  registerConfigCommand(program);
+  registerCostCommand(program);
+  registerCodexMobileCommand(program);
+  registerUpdateCommand(program);
+  registerShellCommand(program);
+  registerInstallCommand(program);
+  registerUninstallCommand(program);
+  registerMigrateCommand(program);
 }

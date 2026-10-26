@@ -42,7 +42,7 @@ import {
 } from "../../src/health/facts.ts";
 import { codexLiveLaunch } from "../../src/health/live_launch.ts";
 import { gatherFacts } from "../../src/health/probe.ts";
-import { runLiveCli } from "../../src/health/probe_deps.ts";
+import { type ProbeDeps, runLiveCli } from "../../src/health/probe_deps.ts";
 import { renderReport } from "../../src/health/report.ts";
 import type { CheckId, CheckResult, CheckStatus, HealthScope } from "../../src/health/types.ts";
 import type { CommandLook } from "../../src/utils/command.ts";
@@ -201,143 +201,150 @@ test("buildHealthJson exposes scope/ok/status/exitCode/checks with ok === no-fai
 
 // --- proxy version checks -------------------------------------------------
 
+/** checkProxyPackage over in-bounds facts with `facts` laid over them. */
+function proxyPackageWith(facts: Partial<ProxyFacts>): CheckResult {
+  return checkProxyPackage({
+    version: "1.10.5",
+    bounds: { ok: true, version: "1.10.5" },
+    configError: null,
+    cooldownSeconds: 604800,
+    floatSkips: false,
+    resolved: null,
+    standalone: false,
+    ...facts,
+  });
+}
+
+const PROXY_MISSING: Partial<ProxyFacts> = {
+  version: null,
+  bounds: { ok: false, reason: "missing", version: null },
+};
+
+interface ProxyPackageRow {
+  name: string;
+  facts: Partial<ProxyFacts>;
+  status: CheckStatus;
+  fix?: string;
+  noFix?: true;
+  detail?: string;
+  detailNot?: string;
+  value?: Record<string, unknown>;
+}
+
+/** `value` leaves for --json consumers, asserted key by key (undefined pins an absent stamp). */
+const PROXY_PACKAGE_ROWS: ProxyPackageRow[] = [
+  { name: "missing", facts: PROXY_MISSING, status: "fail" },
+  {
+    name: "below the floor",
+    facts: {
+      version: "1.0.0",
+      bounds: { ok: false, reason: "belowFloor", version: "1.0.0", floor: "1.10.0" },
+    },
+    status: "fail",
+  },
+  {
+    name: "above the ceiling",
+    facts: {
+      version: "2.0.0",
+      bounds: { ok: false, reason: "aboveCeiling", version: "2.0.0", ceiling: "1.99.0" },
+    },
+    status: "warn",
+    fix: "agent update",
+  },
+  { name: "in bounds, 7d cooldown", facts: {}, status: "ok", detail: "cooldown 7d" },
+  {
+    name: "in bounds, no cooldown",
+    facts: { cooldownSeconds: 0 },
+    status: "ok",
+    detail: "no cooldown",
+  },
+  {
+    name: "in bounds, 3d cooldown",
+    facts: { cooldownSeconds: 259200 },
+    status: "ok",
+    detail: "cooldown 3d",
+  },
+  {
+    name: "in bounds, 90s cooldown",
+    facts: { cooldownSeconds: 90 },
+    status: "ok",
+    detail: "cooldown 90s",
+  },
+  {
+    name: "in bounds, unknown cooldown",
+    facts: { cooldownSeconds: null },
+    status: "ok",
+    detail: "cooldown: unknown",
+  },
+  // Both default agents wired Direct (Claude's base URL exactly the Direct host) and no profile
+  // home: the float skips, so an out-of-bounds version reads ok with a note (the suggested fixes
+  // could not move the version anyway). The phrasing is human copy; only the stable "not
+  // enforced" token is pinned, and the floatSkips stamp mirrors the runtime checks' bothDirect.
+  {
+    name: "below the floor, both agents direct",
+    facts: {
+      version: "1.0.0",
+      bounds: { ok: false, reason: "belowFloor", version: "1.0.0", floor: "1.10.0" },
+      floatSkips: true,
+    },
+    status: "ok",
+    detail: "not enforced",
+    noFix: true,
+    value: { floatSkips: true },
+  },
+  {
+    name: "above the ceiling, both agents direct",
+    facts: {
+      version: "2.0.0",
+      bounds: { ok: false, reason: "aboveCeiling", version: "2.0.0", ceiling: "1.99.0" },
+      floatSkips: true,
+    },
+    status: "ok",
+    noFix: true,
+  },
+  {
+    // A missing package is a broken CHECKOUT in any mode: a reinstall fixes it, float or no float.
+    name: "missing, both agents direct",
+    facts: { ...PROXY_MISSING, floatSkips: true },
+    status: "fail",
+    fix: "bun install --frozen-lockfile",
+  },
+  {
+    name: "in bounds, both agents direct",
+    facts: { floatSkips: true },
+    status: "ok",
+    detailNot: "not enforced",
+    value: { floatSkips: undefined },
+  },
+  {
+    // An unreadable copilot-env.config fails in any mode: the early return fires before the exemption.
+    name: "unreadable config, both agents direct",
+    facts: { bounds: null, configError: "bad config", floatSkips: true },
+    status: "fail",
+    detail: "copilot-env.config",
+  },
+  // A compiled binary ships no node_modules; the float resolves the proxy at `agent start`,
+  // so "missing" is the normal pre-start state of a binary install, not a broken one.
+  {
+    name: "missing, compiled install, both agents direct",
+    facts: { ...PROXY_MISSING, floatSkips: true, standalone: true },
+    status: "ok",
+    detail: "not required",
+    noFix: true,
+    value: { standalone: true },
+  },
+  {
+    name: "missing, compiled install, proxy expected",
+    facts: { ...PROXY_MISSING, standalone: true },
+    status: "ok",
+    detail: "agent start",
+    noFix: true,
+  },
+];
+
 test("proxy package: the version bounds decide status and fix, the cooldown the detail", () => {
-  const check = (facts: Partial<ProxyFacts>) =>
-    checkProxyPackage({
-      version: "1.10.5",
-      bounds: { ok: true, version: "1.10.5" },
-      configError: null,
-      cooldownSeconds: 604800,
-      floatSkips: false,
-      resolved: null,
-      standalone: false,
-      ...facts,
-    });
-  const missing: Partial<ProxyFacts> = {
-    version: null,
-    bounds: { ok: false, reason: "missing", version: null },
-  };
-  // `value` leaves for --json consumers, asserted key by key (undefined pins an absent stamp).
-  const rows: {
-    name: string;
-    facts: Partial<ProxyFacts>;
-    status: CheckStatus;
-    fix?: string;
-    noFix?: true;
-    detail?: string;
-    detailNot?: string;
-    value?: Record<string, unknown>;
-  }[] = [
-    { name: "missing", facts: missing, status: "fail" },
-    {
-      name: "below the floor",
-      facts: {
-        version: "1.0.0",
-        bounds: { ok: false, reason: "belowFloor", version: "1.0.0", floor: "1.10.0" },
-      },
-      status: "fail",
-    },
-    {
-      name: "above the ceiling",
-      facts: {
-        version: "2.0.0",
-        bounds: { ok: false, reason: "aboveCeiling", version: "2.0.0", ceiling: "1.99.0" },
-      },
-      status: "warn",
-      fix: "agent update",
-    },
-    { name: "in bounds, 7d cooldown", facts: {}, status: "ok", detail: "cooldown 7d" },
-    {
-      name: "in bounds, no cooldown",
-      facts: { cooldownSeconds: 0 },
-      status: "ok",
-      detail: "no cooldown",
-    },
-    {
-      name: "in bounds, 3d cooldown",
-      facts: { cooldownSeconds: 259200 },
-      status: "ok",
-      detail: "cooldown 3d",
-    },
-    {
-      name: "in bounds, 90s cooldown",
-      facts: { cooldownSeconds: 90 },
-      status: "ok",
-      detail: "cooldown 90s",
-    },
-    {
-      name: "in bounds, unknown cooldown",
-      facts: { cooldownSeconds: null },
-      status: "ok",
-      detail: "cooldown: unknown",
-    },
-    // Both default agents wired Direct (Claude's base URL exactly the Direct host) and no profile
-    // home: the float skips, so an out-of-bounds version reads ok with a note (the suggested fixes
-    // could not move the version anyway). The phrasing is human copy; only the stable "not
-    // enforced" token is pinned, and the floatSkips stamp mirrors the runtime checks' bothDirect.
-    {
-      name: "below the floor, both agents direct",
-      facts: {
-        version: "1.0.0",
-        bounds: { ok: false, reason: "belowFloor", version: "1.0.0", floor: "1.10.0" },
-        floatSkips: true,
-      },
-      status: "ok",
-      detail: "not enforced",
-      noFix: true,
-      value: { floatSkips: true },
-    },
-    {
-      name: "above the ceiling, both agents direct",
-      facts: {
-        version: "2.0.0",
-        bounds: { ok: false, reason: "aboveCeiling", version: "2.0.0", ceiling: "1.99.0" },
-        floatSkips: true,
-      },
-      status: "ok",
-      noFix: true,
-    },
-    {
-      // A missing package is a broken CHECKOUT in any mode: a reinstall fixes it, float or no float.
-      name: "missing, both agents direct",
-      facts: { ...missing, floatSkips: true },
-      status: "fail",
-      fix: "bun install --frozen-lockfile",
-    },
-    {
-      name: "in bounds, both agents direct",
-      facts: { floatSkips: true },
-      status: "ok",
-      detailNot: "not enforced",
-      value: { floatSkips: undefined },
-    },
-    {
-      // An unreadable copilot-env.config fails in any mode: the early return fires before the exemption.
-      name: "unreadable config, both agents direct",
-      facts: { bounds: null, configError: "bad config", floatSkips: true },
-      status: "fail",
-      detail: "copilot-env.config",
-    },
-    // A compiled binary ships no node_modules; the float resolves the proxy at `agent start`,
-    // so "missing" is the normal pre-start state of a binary install, not a broken one.
-    {
-      name: "missing, compiled install, both agents direct",
-      facts: { ...missing, floatSkips: true, standalone: true },
-      status: "ok",
-      detail: "not required",
-      noFix: true,
-      value: { standalone: true },
-    },
-    {
-      name: "missing, compiled install, proxy expected",
-      facts: { ...missing, standalone: true },
-      status: "ok",
-      detail: "agent start",
-      noFix: true,
-    },
-  ];
-  for (const row of rows) {
-    const r = check(row.facts);
+  for (const row of PROXY_PACKAGE_ROWS) {
+    const r = proxyPackageWith(row.facts);
     expect(r.status, row.name).toBe(row.status);
     if (row.fix !== undefined) expect(r.fix, row.name).toBe(row.fix);
     if (row.noFix) expect(r.fix, row.name).toBeUndefined();
@@ -405,105 +412,111 @@ test("gatherFacts probes the proxy at 127.0.0.1, never localhost (Windows IPv6 s
   }
 });
 
+const DOWN = { reachable: false, trackedPid: null, pidTracked: false };
+const AUTO_START = { ...defaultTarget().watchdog, autoStart: true };
+const ON_DEMAND = {
+  status: "ok",
+  detail: "starts on demand (daemon.auto-start on)",
+  noFix: true,
+  value: { autoStart: true },
+} as const;
+
+interface Verdict {
+  status: CheckStatus;
+  fix?: string;
+  noFix?: true;
+  detail?: string;
+  value?: Record<string, unknown>;
+}
+
+/** `exitCode` is exitCodeFor over the runtime scope, `fullExitCode` over the full one when it
+ *  should agree. */
+interface RuntimeVerdictRow {
+  name: string;
+  target: DefaultRuntimeTarget;
+  port?: Verdict;
+  pid?: Verdict;
+  exitCode?: number;
+  fullExitCode?: number;
+}
+
+const RUNTIME_VERDICT_ROWS: RuntimeVerdictRow[] = [
+  {
+    name: "tracked and reachable",
+    target: defaultTarget(),
+    port: { status: "ok" },
+    pid: { status: "ok" },
+  },
+  { name: "unreachable", target: defaultTarget({ reachable: false }), port: { status: "fail" } },
+  {
+    name: "down, nothing tracked",
+    target: defaultTarget(DOWN),
+    port: { status: "fail" },
+    pid: { status: "fail" },
+    exitCode: 1,
+  },
+  {
+    name: "down while both Codex and Claude are direct",
+    target: defaultTarget({ ...DOWN, proxyExpected: false }),
+    port: { status: "ok", detail: "both direct" },
+    pid: { status: "ok" },
+    exitCode: 0,
+  },
+  {
+    // The fixture's watchdog has autoStart off, so nothing would relaunch the daemon.
+    name: "down with auto-start off",
+    target: defaultTarget({ ...DOWN, identityConfirmed: null }),
+    port: { status: "fail", fix: "agent start" },
+    pid: { status: "fail", fix: "agent start" },
+    exitCode: 1,
+  },
+  {
+    name: "reachable but the tracked pid is stale or foreign",
+    target: defaultTarget({ pidTracked: false }),
+    port: { status: "ok" },
+    pid: { status: "fail" },
+  },
+  {
+    name: "reachable with no tracked pid",
+    target: defaultTarget({ trackedPid: null, pidTracked: false, pidAlive: false }),
+    pid: { status: "fail" },
+  },
+  {
+    // With auto-start on the resolver launches the daemon on demand, so "down between sessions"
+    // is normal.
+    name: "down with auto-start on",
+    target: defaultTarget({
+      ...DOWN,
+      pidAlive: false,
+      identityConfirmed: null,
+      watchdog: AUTO_START,
+    }),
+    port: ON_DEMAND,
+    pid: ON_DEMAND,
+    exitCode: 0,
+    fullExitCode: 0,
+  },
+  {
+    // Auto-start never excuses an orphan or foreign occupant: the resolver would not relaunch
+    // over a busy port.
+    name: "occupied port with auto-start on",
+    target: defaultTarget({ trackedPid: null, pidTracked: false, watchdog: AUTO_START }),
+    pid: { status: "fail" },
+  },
+];
+
+function assertVerdict(name: string, actual: CheckResult, want: Verdict): void {
+  expect(actual.status, name).toBe(want.status);
+  if (want.fix !== undefined) expect(actual.fix, name).toBe(want.fix);
+  if (want.noFix) expect(actual.fix, name).toBeUndefined();
+  if (want.detail !== undefined) expect(actual.detail, name).toContain(want.detail);
+  for (const [key, value] of Object.entries(want.value ?? {})) {
+    expect((actual.value as Record<string, unknown>)[key], `${name}: ${key}`).toBe(value);
+  }
+}
+
 test("runtime port + pid verdicts over the probe states of a default target", () => {
-  const down = { reachable: false, trackedPid: null, pidTracked: false };
-  const autoStart = { ...defaultTarget().watchdog, autoStart: true };
-  const onDemand = {
-    status: "ok",
-    detail: "starts on demand (daemon.auto-start on)",
-    noFix: true,
-    value: { autoStart: true },
-  } as const;
-  type Verdict = {
-    status: CheckStatus;
-    fix?: string;
-    noFix?: true;
-    detail?: string;
-    value?: Record<string, unknown>;
-  };
-  // `exitCode` is exitCodeFor over the runtime scope, `fullExitCode` the full one when it should
-  // agree.
-  const rows: {
-    name: string;
-    target: DefaultRuntimeTarget;
-    port?: Verdict;
-    pid?: Verdict;
-    exitCode?: number;
-    fullExitCode?: number;
-  }[] = [
-    {
-      name: "tracked and reachable",
-      target: defaultTarget(),
-      port: { status: "ok" },
-      pid: { status: "ok" },
-    },
-    { name: "unreachable", target: defaultTarget({ reachable: false }), port: { status: "fail" } },
-    {
-      name: "down, nothing tracked",
-      target: defaultTarget(down),
-      port: { status: "fail" },
-      pid: { status: "fail" },
-      exitCode: 1,
-    },
-    {
-      name: "down while both Codex and Claude are direct",
-      target: defaultTarget({ ...down, proxyExpected: false }),
-      port: { status: "ok", detail: "both direct" },
-      pid: { status: "ok" },
-      exitCode: 0,
-    },
-    {
-      // The fixture's watchdog has autoStart off, so nothing would relaunch the daemon.
-      name: "down with auto-start off",
-      target: defaultTarget({ ...down, identityConfirmed: null }),
-      port: { status: "fail", fix: "agent start" },
-      pid: { status: "fail", fix: "agent start" },
-      exitCode: 1,
-    },
-    {
-      name: "reachable but the tracked pid is stale or foreign",
-      target: defaultTarget({ pidTracked: false }),
-      port: { status: "ok" },
-      pid: { status: "fail" },
-    },
-    {
-      name: "reachable with no tracked pid",
-      target: defaultTarget({ trackedPid: null, pidTracked: false, pidAlive: false }),
-      pid: { status: "fail" },
-    },
-    {
-      // With auto-start on the resolver launches the daemon on demand, so "down between sessions"
-      // is normal.
-      name: "down with auto-start on",
-      target: defaultTarget({
-        ...down,
-        pidAlive: false,
-        identityConfirmed: null,
-        watchdog: autoStart,
-      }),
-      port: onDemand,
-      pid: onDemand,
-      exitCode: 0,
-      fullExitCode: 0,
-    },
-    {
-      // Auto-start never excuses an orphan or foreign occupant: the resolver would not relaunch
-      // over a busy port.
-      name: "occupied port with auto-start on",
-      target: defaultTarget({ trackedPid: null, pidTracked: false, watchdog: autoStart }),
-      pid: { status: "fail" },
-    },
-  ];
-  const assertVerdict = (name: string, actual: CheckResult, want: Verdict) => {
-    expect(actual.status, name).toBe(want.status);
-    if (want.fix !== undefined) expect(actual.fix, name).toBe(want.fix);
-    if (want.noFix) expect(actual.fix, name).toBeUndefined();
-    if (want.detail !== undefined) expect(actual.detail, name).toContain(want.detail);
-    for (const [key, value] of Object.entries(want.value ?? {})) {
-      expect((actual.value as Record<string, unknown>)[key], `${name}: ${key}`).toBe(value);
-    }
-  };
-  for (const row of rows) {
+  for (const row of RUNTIME_VERDICT_ROWS) {
     if (row.port) assertVerdict(`${row.name} port`, runPort(row.target), row.port);
     if (row.pid) assertVerdict(`${row.name} pid`, runPid(row.target), row.pid);
     if (row.exitCode !== undefined) {
@@ -780,134 +793,149 @@ test("runtime orphan: untracked-but-ours warns, foreign defers to identity, trac
   expect(runOrphan(defaultTarget({ pidTracked: false, proxyExpected: false })).status).toBe("ok");
 });
 
-test("gatherFacts probes identity only in an identity-probing scope and only when an agent routes through the proxy", async () => {
-  // Nothing routes to a both-direct port, so the identity probe must not fire and the misroute
-  // warning is structurally unreachable there, not merely suppressed; one proxy-wired agent brings
-  // the probe back and a foreign responder earns the warning. The fast `runtime` scope never
-  // spends the extra request.
-  const directHost = "https://api.githubcopilot.com";
-  // `proxyAnswers` is what the identity probe answers when it fires: ours (true) or a foreign
-  // service (false). `whenDown` is the same wiring with the daemon down: the port and pid verdicts
-  // (auto-start defaults off).
-  const rows: {
-    name: string;
-    scope: HealthScope;
-    codex: CodexConfigTomlOptions | null;
-    claude: ClaudeSettingsOptions | null;
-    identityCalls: number;
-    proxyExpected: boolean;
-    proxyAnswers: boolean;
-    identityConfirmed: boolean | null;
-    identity: { status: CheckStatus; detail?: string };
-    sweep?: CheckStatus;
-    whenDown?: { port: { status: CheckStatus; fix: string }; pid: CheckStatus };
-  }[] = [
-    {
-      name: "both direct",
-      scope: "proxy",
-      codex: { baseUrl: directHost },
-      claude: { apiKeyHelper: directHelperCommand(), baseUrl: directHost },
-      identityCalls: 0,
-      proxyExpected: false,
-      proxyAnswers: false,
-      identityConfirmed: null,
-      identity: { status: "ok" },
-      sweep: "ok",
-    },
-    {
-      name: "Codex through the proxy, Claude unconfigured",
-      scope: "proxy",
-      codex: { baseUrl: "http://127.0.0.1:4141/v1", envKey: "OPENAI_API_KEY" },
-      claude: null,
-      identityCalls: 1,
-      proxyExpected: true,
-      proxyAnswers: false,
-      identityConfirmed: false,
-      identity: { status: "warn", detail: "misroute" },
-    },
-    {
-      // Claude's MODE keys off apiKeyHelper alone, so this config reads both-direct while
-      // ANTHROPIC_BASE_URL sends Claude's traffic to the local daemon. Health once trusted the modes
-      // and reported "not required" with the daemon down; the base-URL fact must bring back the
-      // full runtime treatment, the identity probe included, and our own daemon answering it
-      // is confirmed.
-      name: "mixed default Claude config (direct helper, proxy base URL)",
-      scope: "proxy",
-      codex: { baseUrl: directHost },
-      claude: { apiKeyHelper: directHelperCommand(), baseUrl: "http://127.0.0.1:4141" },
-      identityCalls: 1,
-      proxyExpected: true,
-      proxyAnswers: true,
-      identityConfirmed: true,
-      identity: { status: "ok" },
-      whenDown: { port: { status: "fail", fix: "agent start" }, pid: "fail" },
-    },
-    {
-      name: "the fast runtime scope, nothing configured",
-      scope: "runtime",
-      codex: null,
-      claude: null,
-      identityCalls: 0,
-      proxyExpected: true,
-      proxyAnswers: false,
-      identityConfirmed: null,
-      identity: { status: "ok" },
-    },
-  ];
-  for (const row of rows) {
-    const root = tempDir("copilot-health-identity-");
-    const restoreEnv = envSnapshot();
-    process.env.COPILOT_API_HOME = join(root, "api-home"); // isolated: no profile homes
-    try {
-      writeRunState({ port: 4141 });
-      const codexHome = join(root, "codex-home");
-      if (row.codex) writeCodexConfigToml(codexHome, row.codex);
-      const claudeHome = join(root, "claude-home");
-      if (row.claude) writeClaudeSettings(claudeHome, row.claude);
-      const homes = { codexHome: () => codexHome, claudeHome: () => claudeHome };
-      let identityCalls = 0;
-      const facts = await gatherFacts(
-        row.scope,
-        {},
-        {
-          ...homes,
-          reach: async () => true, // a listener answers on the port
-          proxyIdentity: async () => {
-            identityCalls++;
-            return row.proxyAnswers; // false: no x-trace-id, a foreign service
-          },
+const DIRECT_HOST = "https://api.githubcopilot.com";
+
+/** `proxyAnswers` is what the identity probe answers when it fires: ours (true) or a foreign
+ *  service (false). `whenDown` is the same wiring with the daemon down: the port and pid verdicts
+ *  (auto-start defaults off). */
+interface IdentityRow {
+  name: string;
+  scope: HealthScope;
+  codex: CodexConfigTomlOptions | null;
+  claude: ClaudeSettingsOptions | null;
+  identityCalls: number;
+  proxyExpected: boolean;
+  proxyAnswers: boolean;
+  identityConfirmed: boolean | null;
+  identity: { status: CheckStatus; detail?: string };
+  sweep?: CheckStatus;
+  whenDown?: { port: { status: CheckStatus; fix: string }; pid: CheckStatus };
+}
+
+// Nothing routes to a both-direct port, so the identity probe must not fire and the misroute
+// warning is structurally unreachable there, not merely suppressed; one proxy-wired agent brings
+// the probe back and a foreign responder earns the warning. The fast `runtime` scope never
+// spends the extra request.
+
+const IDENTITY_ROWS: IdentityRow[] = [
+  {
+    name: "both direct",
+    scope: "proxy",
+    codex: { baseUrl: DIRECT_HOST },
+    claude: { apiKeyHelper: directHelperCommand(), baseUrl: DIRECT_HOST },
+    identityCalls: 0,
+    proxyExpected: false,
+    proxyAnswers: false,
+    identityConfirmed: null,
+    identity: { status: "ok" },
+    sweep: "ok",
+  },
+  {
+    name: "Codex through the proxy, Claude unconfigured",
+    scope: "proxy",
+    codex: { baseUrl: "http://127.0.0.1:4141/v1", envKey: "OPENAI_API_KEY" },
+    claude: null,
+    identityCalls: 1,
+    proxyExpected: true,
+    proxyAnswers: false,
+    identityConfirmed: false,
+    identity: { status: "warn", detail: "misroute" },
+  },
+  {
+    // Claude's MODE keys off apiKeyHelper alone, so this config reads both-direct while
+    // ANTHROPIC_BASE_URL sends Claude's traffic to the local daemon. Health once trusted the modes
+    // and reported "not required" with the daemon down; the base-URL fact must bring back the
+    // full runtime treatment, the identity probe included, and our own daemon answering it
+    // is confirmed.
+    name: "mixed default Claude config (direct helper, proxy base URL)",
+    scope: "proxy",
+    codex: { baseUrl: DIRECT_HOST },
+    claude: { apiKeyHelper: directHelperCommand(), baseUrl: "http://127.0.0.1:4141" },
+    identityCalls: 1,
+    proxyExpected: true,
+    proxyAnswers: true,
+    identityConfirmed: true,
+    identity: { status: "ok" },
+    whenDown: { port: { status: "fail", fix: "agent start" }, pid: "fail" },
+  },
+  {
+    name: "the fast runtime scope, nothing configured",
+    scope: "runtime",
+    codex: null,
+    claude: null,
+    identityCalls: 0,
+    proxyExpected: true,
+    proxyAnswers: false,
+    identityConfirmed: null,
+    identity: { status: "ok" },
+  },
+];
+
+async function assertDownVerdicts(
+  row: IdentityRow,
+  want: NonNullable<IdentityRow["whenDown"]>,
+  homes: Pick<ProbeDeps, "codexHome" | "claudeHome">,
+): Promise<void> {
+  const down = await gatherFacts(row.scope, {}, { ...homes, reach: async () => false });
+  const downTarget = down.runtimes?.[0];
+  if (!downTarget) throw new Error(`${row.name}: expected the default runtime target`);
+  expect(downTarget.proxyExpected, row.name).toBe(row.proxyExpected);
+  const port = runPort(downTarget);
+  expect(port.status, row.name).toBe(want.port.status);
+  expect(port.fix, row.name).toContain(want.port.fix);
+  expect(runPid(downTarget).status, row.name).toBe(want.pid);
+}
+
+/** Gathers the row's wiring in its own isolated root (no profile homes) and asserts its identity
+ *  verdicts. */
+async function assertIdentityRow(row: IdentityRow): Promise<void> {
+  const root = tempDir("copilot-health-identity-");
+  const restoreEnv = envSnapshot();
+  process.env.COPILOT_API_HOME = join(root, "api-home");
+  try {
+    writeRunState({ port: 4141 });
+    const codexHome = join(root, "codex-home");
+    if (row.codex) writeCodexConfigToml(codexHome, row.codex);
+    const claudeHome = join(root, "claude-home");
+    if (row.claude) writeClaudeSettings(claudeHome, row.claude);
+    const homes = { codexHome: () => codexHome, claudeHome: () => claudeHome };
+    let identityCalls = 0;
+    const facts = await gatherFacts(
+      row.scope,
+      {},
+      {
+        ...homes,
+        reach: async () => true, // a listener answers on the port
+        proxyIdentity: async () => {
+          identityCalls++;
+          return row.proxyAnswers; // false: no x-trace-id, a foreign service
         },
-      );
-      const target = facts.runtimes?.[0];
-      if (!target) throw new Error(`${row.name}: expected the default runtime target`);
-      expect(identityCalls, row.name).toBe(row.identityCalls);
-      expect(target.proxyExpected, row.name).toBe(row.proxyExpected);
-      expect(probeOf(target).identityConfirmed, row.name).toBe(row.identityConfirmed);
-      const identity = runIdentity(target);
-      expect(identity.status, row.name).toBe(row.identity.status);
-      if (row.identity.detail !== undefined) {
-        expect(identity.detail, row.name).toContain(row.identity.detail);
-      }
-      if (row.sweep !== undefined) {
-        expect(worstStatus(evaluateAll(row.scope, { runtimes: facts.runtimes })), row.name).toBe(
-          row.sweep,
-        );
-      }
-      if (row.whenDown !== undefined) {
-        const down = await gatherFacts(row.scope, {}, { ...homes, reach: async () => false });
-        const downTarget = down.runtimes?.[0];
-        if (!downTarget) throw new Error(`${row.name}: expected the default runtime target`);
-        expect(downTarget.proxyExpected, row.name).toBe(row.proxyExpected);
-        const port = runPort(downTarget);
-        expect(port.status, row.name).toBe(row.whenDown.port.status);
-        expect(port.fix, row.name).toContain(row.whenDown.port.fix);
-        expect(runPid(downTarget).status, row.name).toBe(row.whenDown.pid);
-      }
-    } finally {
-      restoreEnv();
-      rmSync(root, { recursive: true, force: true });
+      },
+    );
+    const target = facts.runtimes?.[0];
+    if (!target) throw new Error(`${row.name}: expected the default runtime target`);
+    expect(identityCalls, row.name).toBe(row.identityCalls);
+    expect(target.proxyExpected, row.name).toBe(row.proxyExpected);
+    expect(probeOf(target).identityConfirmed, row.name).toBe(row.identityConfirmed);
+    const identity = runIdentity(target);
+    expect(identity.status, row.name).toBe(row.identity.status);
+    if (row.identity.detail !== undefined) {
+      expect(identity.detail, row.name).toContain(row.identity.detail);
     }
+    if (row.sweep !== undefined) {
+      expect(worstStatus(evaluateAll(row.scope, { runtimes: facts.runtimes })), row.name).toBe(
+        row.sweep,
+      );
+    }
+    if (row.whenDown !== undefined) await assertDownVerdicts(row, row.whenDown, homes);
+  } finally {
+    restoreEnv();
+    rmSync(root, { recursive: true, force: true });
   }
+}
+
+test("gatherFacts probes identity only in an identity-probing scope and only when an agent routes through the proxy", async () => {
+  for (const row of IDENTITY_ROWS) await assertIdentityRow(row);
 });
 
 test("an unreadable agent config reaches health as other/read-error, never as none", async () => {
@@ -1225,16 +1253,28 @@ test("renderReport prints a credential miss as bullets and one fix row at 80 col
   );
 });
 
-test("checkAuth: gh-cli with an UNPROVEN gh probe warns could-not-check, never `gh auth login` advice", () => {
-  const unproven = checkAuth({
+/** The gh probe's reading on the default target's gh-cli provider. */
+type GhLook = Partial<
+  Pick<
+    AuthFacts,
+    "ghAuthenticated" | "ghUser" | "ghActiveLogin" | "ghCommand" | "ghDetail" | "ghAuthUnproven"
+  >
+>;
+
+function ghCliAuth(look: GhLook): CheckResult {
+  return checkAuth({
     storedToken: false,
     ghAuthenticated: false,
-    ghAuthUnproven: true,
     profile: null,
     provider: "gh-cli",
     profiles: {},
     pinnedIntegrationId: null,
+    ...look,
   });
+}
+
+test("checkAuth: gh-cli with an UNPROVEN gh probe warns could-not-check, never `gh auth login` advice", () => {
+  const unproven = ghCliAuth({ ghAuthUnproven: true });
   expect(unproven.status).toBe("warn");
   expect(unproven.detail).toBe(
     [
@@ -1250,29 +1290,16 @@ test("checkAuth: gh-cli with an UNPROVEN gh probe warns could-not-check, never `
   const pinnedDetail =
     "`gh auth token --user work-bot --hostname github.com` exited 1: no oauth token " +
     "found; `gh auth status --hostname github.com` did not complete";
-  const unprovenPinned = checkAuth({
-    storedToken: false,
-    ghAuthenticated: false,
+  const unprovenPinned = ghCliAuth({
     ghAuthUnproven: true,
     ghUser: "work-bot",
     ghDetail: pinnedDetail,
-    profile: null,
-    provider: "gh-cli",
-    profiles: {},
-    pinnedIntegrationId: null,
   });
   expect(unprovenPinned.status).toBe("warn");
   expect(unprovenPinned.detail).toContain(`could not check gh authentication (${pinnedDetail}; `);
   expect(unprovenPinned.detail).not.toContain("`gh auth token` did not run to completion");
   // A PROVEN miss keeps the confident wording and advice.
-  const proven = checkAuth({
-    storedToken: false,
-    ghAuthenticated: false,
-    profile: null,
-    provider: "gh-cli",
-    profiles: {},
-    pinnedIntegrationId: null,
-  });
+  const proven = ghCliAuth({});
   // The detail states the fact; both ways out (gh's login, or another provider) are the fix.
   expect([proven.detail, proven.fix]).toEqual([
     [
@@ -1281,30 +1308,17 @@ test("checkAuth: gh-cli with an UNPROVEN gh probe warns could-not-check, never `
     ].join("\n"),
     "`gh auth login`, or `agent auth` to switch provider",
   ]);
+});
+
+test("checkAuth: a gh-cli verdict names the account it is about and the gh call that served it", () => {
   // A failing AUTO slot names the account it follows: the failure is about octocat's credential.
-  const provenNamed = checkAuth({
-    storedToken: false,
-    ghAuthenticated: false,
-    ghActiveLogin: "octocat",
-    profile: null,
-    provider: "gh-cli",
-    profiles: {},
-    pinnedIntegrationId: null,
-  });
+  const provenNamed = ghCliAuth({ ghActiveLogin: "octocat" });
   expect(provenNamed.detail).toContain(
     "`gh` is unauthenticated (AUTO - currently account octocat)",
   );
   expect(provenNamed.fix).toBe("`gh auth login`, or `agent auth` to switch provider");
   // A PINNED slot's verdict names its account (the probe ran `gh auth token --user`); gh's active one may be fine.
-  const pinned = checkAuth({
-    storedToken: false,
-    ghAuthenticated: false,
-    ghUser: "work-bot",
-    profile: null,
-    provider: "gh-cli",
-    profiles: {},
-    pinnedIntegrationId: null,
-  });
+  const pinned = ghCliAuth({ ghUser: "work-bot" });
   expect([pinned.detail, pinned.fix]).toEqual([
     [
       "provider 'gh-cli' is selected but no credential resolves",
@@ -1312,42 +1326,21 @@ test("checkAuth: gh-cli with an UNPROVEN gh probe warns could-not-check, never `
     ].join("\n"),
     "`gh auth login` for that account, or `agent auth` to switch",
   ]);
-  const pinnedOk = checkAuth({
-    storedToken: false,
-    ghAuthenticated: true,
-    ghUser: "work-bot",
-    profile: null,
-    provider: "gh-cli",
-    profiles: {},
-    pinnedIntegrationId: null,
-  });
+  const pinnedOk = ghCliAuth({ ghAuthenticated: true, ghUser: "work-bot" });
   expect(pinnedOk.status).toBe("ok");
   expect(pinnedOk.detail).toContain("gh CLI (`gh auth token --user work-bot`)");
   // A pin gh could not answer with `--user` was served by the plain host-scoped call: the report
   // names the call that ran, never the one it assumed.
-  const pinnedServedPlain = checkAuth({
-    storedToken: false,
+  const pinnedServedPlain = ghCliAuth({
     ghAuthenticated: true,
     ghUser: "work-bot",
     ghCommand: "gh auth token --hostname github.com",
-    profile: null,
-    provider: "gh-cli",
-    profiles: {},
-    pinnedIntegrationId: null,
   });
   expect(pinnedServedPlain.detail).toContain(
     "gh CLI (`gh auth token --hostname github.com`, account work-bot)",
   );
   // An AUTO slot names the account it follows right now (no hidden information).
-  const autoNamed = checkAuth({
-    storedToken: false,
-    ghAuthenticated: true,
-    ghActiveLogin: "octocat",
-    profile: null,
-    provider: "gh-cli",
-    profiles: {},
-    pinnedIntegrationId: null,
-  });
+  const autoNamed = ghCliAuth({ ghAuthenticated: true, ghActiveLogin: "octocat" });
   expect(autoNamed.status).toBe("ok");
   expect(autoNamed.detail).toContain("gh CLI (`gh auth token`, AUTO - currently account octocat)");
 });

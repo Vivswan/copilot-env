@@ -2,6 +2,8 @@
 // not say: where its truncation lands on a codex-shaped stream, that a child which dies before
 // listening fails the start at once with its own words, and that aimock dies with the process
 // that started it.
+
+import { afterEach, beforeEach } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
 import { join } from "node:path";
@@ -19,7 +21,7 @@ import {
   ROOT,
   spawnChild,
 } from "../helpers/run.ts";
-import { afterEach, beforeEach, expect, tempDir, test } from "../helpers/testing.ts";
+import { expect, tempDir, test } from "../helpers/testing.ts";
 
 let fake: FakeModelEndpoint;
 let dir = "";

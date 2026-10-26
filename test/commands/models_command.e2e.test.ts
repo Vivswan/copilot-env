@@ -1,3 +1,4 @@
+import { afterEach } from "bun:test";
 import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { formatTokens, renderModelTable, runModels } from "../../src/commands/models.ts";
@@ -9,7 +10,7 @@ import { defaultHomeDir, envSnapshot, isolateProxyHome } from "../helpers/env.ts
 import { writeRunState } from "../helpers/fixtures.ts";
 import { closeServer, listenEphemeral } from "../helpers/net.ts";
 import { runCli } from "../helpers/run.ts";
-import { afterEach, expect, removeDir, tempDir, test } from "../helpers/testing.ts";
+import { expect, removeDir, tempDir, test } from "../helpers/testing.ts";
 
 // --- parseModelList (pure) ----------------------------------------------------
 

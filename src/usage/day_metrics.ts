@@ -24,10 +24,16 @@ const DECIMAL_DAYS = /^(\d+\.\d*|\.\d+)$/;
 /** Date represents 8.64e15 ms either side of the epoch, which is exactly this many 24-hour days. */
 const MAX_DAYS = 8.64e15 / MILLISECONDS_PER_DAY;
 
+function daysKind(raw: string): "calendar" | "exact" | null {
+  if (WHOLE_DAYS.test(raw)) return "calendar";
+  if (DECIMAL_DAYS.test(raw)) return "exact";
+  return null;
+}
+
 /** The one mint, so a window's `days` is always positive, finite, and small enough to yield a real
  *  cutoff. */
 export function parseDaysWindow(raw: string): DaysWindow {
-  const kind = WHOLE_DAYS.test(raw) ? "calendar" : DECIMAL_DAYS.test(raw) ? "exact" : null;
+  const kind = daysKind(raw);
   const days = Number(raw);
   if (kind === null || !(days > 0)) {
     throw new Error(

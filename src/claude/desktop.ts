@@ -107,174 +107,234 @@ function labelLookup(body: unknown): (id: string) => string | null {
   return (id) => names.get(id) ?? null;
 }
 
-/**
- * Undefined when no live data exists: the caller then leaves an existing entry's rows untouched and
- * refuses to create a fresh direct one. Each mode shows what its own backend will actually serve.
- *   direct -> the full discovery pipeline (src/copilot_api/discovery.ts) under the wiring's own
- *             identity, so unadvertised-but-servable models get a PROBED 1m verdict
- *   proxy  -> what the daemon's /v1/models will discover: its catalog first, Copilot when down
- */
+/** The Direct credential the catalog fetch uses: the caller's token, else a static key's, else
+ *  the slot's own resolution. Throws with the slot's reason when none resolves. */
+function directWiringToken(opts: DesktopWireOptions): string {
+  if (typeof opts.directToken === "string") return opts.directToken;
+  if (opts.credential.kind === "static") return opts.credential.token;
+  const resolved = new Credential(undefined, opts.profile).resolveWithReason();
+  if (resolved.token === null) throw new Error(resolved.reason);
+  return resolved.token;
+}
+
+/** The direct arm: the full discovery pipeline (src/copilot_api/discovery.ts) under the wiring's
+ *  own identity, so unadvertised-but-servable models get a PROBED 1m verdict. */
+async function directWiringModels(
+  opts: DesktopWireOptions,
+): Promise<readonly DesktopModelSpec[] | undefined> {
+  try {
+    const discovered = await discoverServableClaudeModels(
+      directWiringToken(opts),
+      codexUserAgent(),
+      opts.direct?.directIntegrationId ?? null,
+      opts.direct?.directBaseUrl ?? DEFAULT_COPILOT_API_BASE,
+      { fetchImpl: opts.fetchImpl },
+    );
+    const rows = claudeCatalogRows(discovered.models);
+    if (rows.length === 0) return undefined;
+    return desktopModelsFromPicks(rows, labelLookup(discovered.catalogBody));
+  } catch (e) {
+    logger.warn(caught(e, (message) => `  Claude Desktop: model discovery failed (${message}).`));
+    return undefined;
+  }
+}
+
+/** The proxy arm: what the daemon's /v1/models will discover, its catalog first, Copilot when
+ *  down. */
+async function proxyWiringModels(
+  opts: DesktopWireOptions,
+): Promise<readonly DesktopModelSpec[] | undefined> {
+  for (const source of ["proxy", "direct"] as const) {
+    try {
+      const body = await fetchRawModels(source, {
+        directToken: opts.directToken ?? undefined,
+        profile: opts.profile,
+        fetchImpl: opts.fetchImpl,
+      });
+      const rows = claudeCatalogRows(parseCatalogModels(body));
+      if (rows.length > 0) return desktopModelsFromPicks(rows, labelLookup(body));
+    } catch (e) {
+      logger.warn(
+        caught(
+          e,
+          (message) =>
+            `  Claude Desktop: could not fetch the ${source} model catalog (${message}).`,
+        ),
+      );
+    }
+  }
+  return undefined;
+}
+
+/** Undefined when no live data exists: the caller then leaves an existing entry's rows untouched
+ *  and refuses to create a fresh direct one. Each mode shows what its own backend will actually
+ *  serve. */
 async function wiringModels(
   opts: DesktopWireOptions,
 ): Promise<readonly DesktopModelSpec[] | undefined> {
-  if (opts.mode === "direct") {
-    try {
-      const resolved =
-        typeof opts.directToken === "string"
-          ? { token: opts.directToken, reason: null }
-          : opts.credential.kind === "static"
-            ? { token: opts.credential.token, reason: null }
-            : new Credential(undefined, opts.profile).resolveWithReason();
-      if (resolved.token === null) throw new Error(resolved.reason);
-      const token = resolved.token;
-      const discovered = await discoverServableClaudeModels(
-        token,
-        codexUserAgent(),
-        opts.direct?.directIntegrationId ?? null,
-        opts.direct?.directBaseUrl ?? DEFAULT_COPILOT_API_BASE,
-        { fetchImpl: opts.fetchImpl },
-      );
-      const rows = claudeCatalogRows(discovered.models);
-      if (rows.length > 0) {
-        return desktopModelsFromPicks(rows, labelLookup(discovered.catalogBody));
-      }
-    } catch (e) {
-      logger.warn(caught(e, (message) => `  Claude Desktop: model discovery failed (${message}).`));
-    }
-  } else {
-    for (const source of ["proxy", "direct"] as const) {
-      try {
-        const body = await fetchRawModels(source, {
-          directToken: opts.directToken ?? undefined,
-          profile: opts.profile,
-          fetchImpl: opts.fetchImpl,
-        });
-        const rows = claudeCatalogRows(parseCatalogModels(body));
-        if (rows.length > 0) return desktopModelsFromPicks(rows, labelLookup(body));
-      } catch (e) {
-        logger.warn(
-          caught(
-            e,
-            (message) =>
-              `  Claude Desktop: could not fetch the ${source} model catalog (${message}).`,
-          ),
-        );
-      }
-    }
+  const models =
+    opts.mode === "direct" ? await directWiringModels(opts) : await proxyWiringModels(opts);
+  if (models === undefined) {
+    logger.warn(
+      "  Claude Desktop: no live model data; leaving the entry's model rows as they are.",
+    );
   }
-  logger.warn("  Claude Desktop: no live model data; leaving the entry's model rows as they are.");
+  return models;
+}
+
+/** The gateway the entry names. The text PEEKS a proxy port; the write reserves it
+ *  (reservePlannedPort), so the peeked port rides along. */
+function plannedGateway(opts: DesktopWireOptions): { plannedPort: string | null; baseUrl: string } {
+  if (opts.mode === "proxy") {
+    const plannedPort = copilotApiResolvePort(opts.profile);
+    return { plannedPort, baseUrl: proxyLoopbackOrigin(plannedPort) };
+  }
+  return { plannedPort: null, baseUrl: opts.direct?.directBaseUrl ?? DEFAULT_COPILOT_API_BASE };
+}
+
+/** `<id>.json`: the one entry file an index row names. */
+function entryConfigPath(dir: string, id: string): string {
+  return join(dir, `${id}.json`);
+}
+
+/** The library index, parsed; null after the warning when it cannot be judged, so the caller
+ *  leaves the library alone. A missing file is an empty library. */
+function readDesktopMetaOrWarn(dir: string): { raw: string | null; meta: DesktopMeta } | null {
+  const metaPath = join(dir, META_FILENAME);
+  const raw = readFileOrNull(metaPath);
+  const meta = parseDesktopMeta(raw);
+  if (meta === null) {
+    logger.warn(
+      `  Claude Desktop: ${metaPath} has an unexpected shape; leaving the config library alone.`,
+    );
+    return null;
+  }
+  return { raw, meta };
+}
+
+/** The library a wire lands in, judged once per pass; `baseUrl` is the gateway the entry names,
+ *  so a foreign entry at the same one is adoptable. */
+interface WireLibrary {
+  dir: string;
+  meta: DesktopMeta;
+  ledger: OwnershipLedger;
+  baseUrl: string;
+}
+
+/** The entry a wire lands on: `owned` when the ledger already claims it (a re-render records no
+ *  new claim), `created` when minted now (its index row is added once the wire is sure to land). */
+interface LocatedEntry {
+  entry: DesktopMetaEntry;
+  owned: boolean;
+  created: boolean;
+}
+
+/** A foreign entry at the same gateway, taken over under its uuid and name; undefined when there
+ *  is none. */
+function adoptableEntry(
+  library: WireLibrary,
+  opts: DesktopWireOptions,
+): DesktopMetaEntry | undefined {
+  for (const candidate of library.meta.entries) {
+    const path = entryConfigPath(library.dir, candidate.id);
+    if (library.ledger.owns("claudeDesktop", path)) continue;
+    const raw = readFileOrNull(path);
+    if (raw === null) continue;
+    // Malformed is foreign, never adopted.
+    const doc = parseJsonRecord(raw);
+    if (doc === null || !sameBaseUrl(doc.inferenceGatewayBaseUrl, library.baseUrl)) continue;
+    if (!opts.quiet) {
+      logger.info(
+        `  Claude Desktop: adopting the existing "${candidate.id}" entry (same gateway).`,
+      );
+    }
+    return candidate;
+  }
   return undefined;
 }
 
 /**
- * The entry wire. Throws on real read failures; syncClaudeDesktopWiring is the best-effort face.
- * `appliedId` is only ever SET when the library had none: an applied user config is never
- * displaced.
+ * The entry a wire lands on, in this order:
  *   ours (an owned path whose document names `profile`)
  *   -> adoptable (a foreign entry at the same gateway, taken over under its uuid and name)
  *   -> a foreign namesake (warn, never clobber)
  *   -> a fresh uuid
+ * A foreign namesake at a DIFFERENT gateway (a same-gateway one was adopted above) is never
+ * clobbered or twinned, so the wire returns null there. An owned namesake is the user's rename of
+ * another wiring's entry.
  */
-export async function wireClaudeDesktopEntry(opts: DesktopWireOptions): Promise<void> {
-  const dir = resolveDesktopLibraryDir();
-  if (dir === null || !claudeDesktopInstalled()) return;
-
-  // The text PEEKS a proxy port; the write reserves it (reservePlannedPort).
-  const plannedPort = opts.mode === "proxy" ? copilotApiResolvePort(opts.profile) : null;
-  const baseUrl =
-    plannedPort === null
-      ? (opts.direct?.directBaseUrl ?? DEFAULT_COPILOT_API_BASE)
-      : proxyLoopbackOrigin(plannedPort);
-
-  const metaRaw = readFileOrNull(join(dir, META_FILENAME));
-  const meta = parseDesktopMeta(metaRaw);
-  if (meta === null) {
-    logger.warn(
-      `  Claude Desktop: ${join(
-        dir,
-        META_FILENAME,
-      )} has an unexpected shape; leaving the config library alone.`,
-    );
-    return;
-  }
-
-  const ledger = new OwnershipLedger();
+function locateDesktopEntry(library: WireLibrary, opts: DesktopWireOptions): LocatedEntry | null {
+  const { dir, meta, ledger } = library;
   const name = desktopEntryName(opts.profile);
-  const configPathOf = (id: string) => join(dir, `${id}.json`);
 
-  let entry = meta.entries.find(
+  const ours = meta.entries.find(
     (e) =>
-      ledger.owns("claudeDesktop", configPathOf(e.id)) &&
-      entryProfileAt(configPathOf(e.id)) === opts.profile,
+      ledger.owns("claudeDesktop", entryConfigPath(dir, e.id)) &&
+      entryProfileAt(entryConfigPath(dir, e.id)) === opts.profile,
   );
-  if (entry === undefined) {
-    for (const candidate of meta.entries) {
-      const path = configPathOf(candidate.id);
-      if (ledger.owns("claudeDesktop", path)) continue;
-      const raw = readFileOrNull(path);
-      if (raw === null) continue;
-      let doc: unknown;
-      try {
-        doc = JSON.parse(raw);
-      } catch {
-        continue; // malformed is foreign, never adopted
-      }
-      if (!isRecord(doc) || !sameBaseUrl(doc.inferenceGatewayBaseUrl, baseUrl)) continue;
-      entry = candidate;
-      if (!opts.quiet) {
-        logger.info(
-          `  Claude Desktop: adopting the existing "${candidate.id}" entry (same gateway).`,
-        );
-      }
-      break;
-    }
-  }
-  // A foreign namesake at a DIFFERENT gateway (a same-gateway one was adopted above) is never
-  // clobbered or twinned. An owned namesake is the user's rename of another wiring's entry.
+  if (ours !== undefined) return { entry: ours, owned: true, created: false };
+
+  const adopted = adoptableEntry(library, opts);
+  if (adopted !== undefined) return { entry: adopted, owned: false, created: false };
+
   const foreignNamesake = meta.entries.some(
-    (e) => e.name === name && !ledger.owns("claudeDesktop", configPathOf(e.id)),
+    (e) => e.name === name && !ledger.owns("claudeDesktop", entryConfigPath(dir, e.id)),
   );
-  if (entry === undefined && foreignNamesake) {
+  if (foreignNamesake) {
     logger.warn(
       `  Claude Desktop: a config entry named "${name}" already exists and is not ours; leaving it alone.`,
     );
-    return;
-  }
-  const owned = entry !== undefined && ledger.owns("claudeDesktop", configPathOf(entry.id));
-  const created = entry === undefined;
-  if (entry === undefined) {
-    const id = mintedEntryId(
-      dir,
-      opts.profile,
-      (id) => !meta.entries.some((e) => e.id === id) && fs.entryAbsent(configPathOf(id)),
-    );
-    entry = { id, name, extra: {} };
+    return null;
   }
 
-  const configPath = configPathOf(entry.id);
-  const existingRaw = readFileOrNull(configPath);
-  // Unparseable content under our path (an in-app edit racing us) is rebuilt.
-  const existing: Record<string, unknown> =
-    existingRaw === null ? {} : (parseJsonRecord(existingRaw) ?? {});
+  const id = mintedEntryId(
+    dir,
+    opts.profile,
+    (id) => !meta.entries.some((e) => e.id === id) && fs.entryAbsent(entryConfigPath(dir, id)),
+  );
+  return { entry: { id, name, extra: {} }, owned: false, created: true };
+}
 
-  // The launcher hot path (quiet) must NEVER run discovery: its probes are billed requests. It
-  // reuses the recorded rows; `agent init`, `agent profile <name> add`, and `agent profile sync --claude` refresh live.
-  const models = opts.quiet
-    ? owned
-      ? (recordedModelRows(existing) ?? undefined)
-      : undefined
-    : await wiringModels(opts);
+/** The entry's current document; unparseable content under our path (an in-app edit racing us)
+ *  is rebuilt. */
+function existingEntryDocument(configPath: string): {
+  raw: string | null;
+  doc: Record<string, unknown>;
+} {
+  const raw = readFileOrNull(configPath);
+  if (raw === null) return { raw, doc: {} };
+  return { raw, doc: parseJsonRecord(raw) ?? {} };
+}
 
-  // A FRESH direct entry without model data would have neither discovery (Copilot 404s /v1/models)
-  // nor a picker, so it is not created at all; an existing entry keeps its recorded rows.
-  if (created && opts.mode === "direct" && models === undefined) {
-    logger.warn(
-      "  Claude Desktop: no model data available; not creating an unusable direct entry (re-run online).",
-    );
-    return;
-  }
-  if (created) meta.entries.push(entry);
+/** The launcher hot path (quiet) must NEVER run discovery: its probes are billed requests. It
+ *  reuses the recorded rows; `agent init`, `agent profile <name> add`, and `agent profile sync
+ *  --claude` refresh live. */
+async function entryModels(
+  opts: DesktopWireOptions,
+  owned: boolean,
+  existing: Record<string, unknown>,
+): Promise<readonly DesktopModelSpec[] | undefined> {
+  if (!opts.quiet) return await wiringModels(opts);
+  if (!owned) return undefined;
+  return recordedModelRows(existing) ?? undefined;
+}
 
+/** What one wire writes: the entry document, the line announcing the wiring, and, for the command
+ *  shape, the helper script that lands first (null for the static shape, which names none). */
+interface DesktopEntryWrite {
+  credential: DesktopCredential;
+  helper: ReturnType<typeof readDesktopHelperScript> | null;
+  wiring: string;
+  payload: Record<string, unknown>;
+}
+
+function plannedEntryWrite(
+  opts: DesktopWireOptions,
+  entry: DesktopMetaEntry,
+  baseUrl: string,
+  models: readonly DesktopModelSpec[] | undefined,
+  existing: Record<string, unknown>,
+): DesktopEntryWrite {
   // The helper script exists only for the command shape; a static entry names none. Read now, so
   // an unreadable helper refuses the wire before anything is reserved or written.
   const credential: DesktopCredential =
@@ -289,8 +349,7 @@ export async function wireClaudeDesktopEntry(opts: DesktopWireOptions): Promise<
   // Re-extracted so the payload receives the Direct facts only alongside a direct mode.
   const write: ManagedMode =
     opts.mode === "direct" ? { mode: "direct", direct: opts.direct } : { mode: "proxy" };
-  // The write's own line announces the wiring; a byte-identical no-op states it instead, unless
-  // quiet (the launcher hot path).
+  // The write's own line announces the wiring.
   const staticClause =
     credential.kind === "command" ? "" : `; ${staticKeyDetail(opts.mode, opts.profile)}`;
   const wiring = `${ENTRY} "${entry.name}" (${opts.mode}) wired${staticClause}`;
@@ -303,13 +362,54 @@ export async function wireClaudeDesktopEntry(opts: DesktopWireOptions): Promise<
     models,
     existing,
   });
-  // An applied slot that is empty, or names a row the library no longer lists, is ours to fill;
-  // a slot naming a live entry (a user's own config) is never displaced.
-  if (!meta.entries.some((e) => e.id === meta.appliedId)) meta.appliedId = entry.id;
+  return { credential, helper, wiring, payload };
+}
+
+/** An applied slot that is empty, or names a row the library no longer lists, is ours to fill; a
+ *  slot naming a live entry (a user's own config) is never displaced. */
+function fillAppliedSlot(meta: DesktopMeta, entry: DesktopMetaEntry): void {
+  if (meta.entries.some((e) => e.id === meta.appliedId)) return;
+  meta.appliedId = entry.id;
+}
+
+/**
+ * The entry wire. Throws on real read failures; syncClaudeDesktopWiring is the best-effort face.
+ * `appliedId` is only ever SET when the library had none: an applied user config is never
+ * displaced.
+ */
+export async function wireClaudeDesktopEntry(opts: DesktopWireOptions): Promise<void> {
+  const dir = resolveDesktopLibraryDir();
+  if (dir === null || !claudeDesktopInstalled()) return;
+
+  const { plannedPort, baseUrl } = plannedGateway(opts);
+  const index = readDesktopMetaOrWarn(dir);
+  if (index === null) return;
+  const { raw: metaRaw, meta } = index;
+  const ledger = new OwnershipLedger();
+  const located = locateDesktopEntry({ dir, meta, ledger, baseUrl }, opts);
+  if (located === null) return;
+  const { entry, owned, created } = located;
+
+  const configPath = entryConfigPath(dir, entry.id);
+  const { raw: existingRaw, doc: existing } = existingEntryDocument(configPath);
+  const models = await entryModels(opts, owned, existing);
+
+  // A FRESH direct entry without model data would have neither discovery (Copilot 404s /v1/models)
+  // nor a picker, so it is not created at all; an existing entry keeps its recorded rows.
+  if (created && opts.mode === "direct" && models === undefined) {
+    logger.warn(
+      "  Claude Desktop: no model data available; not creating an unusable direct entry (re-run online).",
+    );
+    return;
+  }
+  if (created) meta.entries.push(entry);
+
+  const write = plannedEntryWrite(opts, entry, baseUrl, models, existing);
+  fillAppliedSlot(meta, entry);
 
   // The post-save steps take their looks before the first wiring write.
   const retire =
-    credential.kind === "command"
+    write.credential.kind === "command"
       ? planRemoveHelperScripts(opts.profile, opts.mode)
       : planRemoveHelperScripts(opts.profile);
   const appFiles = prepareClaudeDesktopAppFiles();
@@ -321,16 +421,17 @@ export async function wireClaudeDesktopEntry(opts: DesktopWireOptions): Promise<
   //   meta row without its config  -> a broken picker row
   //   claim before the save        -> a claim on an entry that was never written
   //   retirement before the claim  -> a saved entry left unclaimed when the retirement fails
-  if (helper !== null) landDesktopHelperScript(helper);
+  if (write.helper !== null) landDesktopHelperScript(write.helper);
   const configWritten = writeJson(
     configPath,
     existingRaw,
-    payload,
-    `${wiring}; restart Claude Desktop to pick it up`,
+    write.payload,
+    `${write.wiring}; restart Claude Desktop to pick it up`,
     DESKTOP_SECRETS,
   );
+  // A byte-identical no-op states the wiring instead, unless quiet (the launcher hot path).
   if (!configWritten && !opts.quiet) {
-    logger.success(`  ${wiring} at ${configPath} already.`);
+    logger.success(`  ${write.wiring} at ${configPath} already.`);
   }
   writeDesktopMeta(dir, metaRaw, meta);
   // Only a NEW claim is recorded, so the ledger write is a real change, never a byte-identical
@@ -620,7 +721,7 @@ export function readOwnedLibrary(dir: string): OwnedLibrary | null {
   const claims = claimsUnder(new OwnershipLedger(), dir);
   const owned: OwnedDesktopEntry[] = [];
   for (const entry of meta.entries) {
-    const path = join(dir, `${entry.id}.json`);
+    const path = entryConfigPath(dir, entry.id);
     if (claims.has(path)) owned.push({ entry, path });
   }
   const listed = new Set(owned.map((e) => e.path));
@@ -653,6 +754,19 @@ export function removeUnlistedClaudeDesktopClaims(
   return "swept";
 }
 
+/** The applied slot is handed to a remaining entry of ours (the default's first), never left
+ *  empty: an empty slot boots the app into claude.ai sign-in, and only the non-quiet wire could
+ *  refill it. */
+function nextAppliedId(
+  dir: string,
+  kept: readonly DesktopMetaEntry[],
+  claims: ReadonlySet<string>,
+): string | null {
+  const ours = kept.filter((e) => claims.has(entryConfigPath(dir, e.id)));
+  const next = ours.find((e) => entryProfileAt(entryConfigPath(dir, e.id)) === null) ?? ours[0];
+  return next?.id ?? null;
+}
+
 /** A foreign row is never a candidate. Meta FIRST, config files second; the caller releases the
  *  ownership of `removed` LAST, once everything that must go with them went: a failure mid-way can
  *  leave an orphaned (invisible) config file, never a picker row whose config is gone, and never a
@@ -664,39 +778,26 @@ function sweepOwnedEntries(
   const swept = (removed: string[]) => ({ kind: "swept" as const, removed });
   const dir = resolveDesktopLibraryDir();
   if (dir === null) return swept([]);
-  const metaPath = join(dir, META_FILENAME);
-  const raw = readFileOrNull(metaPath);
-  if (raw === null) return swept([]); // no library, nothing recorded here to remove
-  const meta = parseDesktopMeta(raw);
-  if (meta === null) {
-    logger.warn(
-      `  Claude Desktop: ${metaPath} has an unexpected shape; leaving the config library alone.`,
-    );
-    return { kind: "blocked" };
-  }
+  const index = readDesktopMetaOrWarn(dir);
+  if (index === null) return { kind: "blocked" };
+  if (index.raw === null) return swept([]); // no library, nothing recorded here to remove
+  const { raw, meta } = index;
   const ledger = new OwnershipLedger();
   const claims = claimsUnder(ledger, dir);
   const removedPaths: string[] = [];
   const kept: DesktopMetaEntry[] = [];
   let removedApplied = false;
   for (const entry of meta.entries) {
-    const configPath = join(dir, `${entry.id}.json`);
-    if (claims.has(configPath) && selects({ entry, path: configPath })) {
-      removedPaths.push(configPath);
-      if (meta.appliedId === entry.id) removedApplied = true;
-    } else {
+    const configPath = entryConfigPath(dir, entry.id);
+    if (!claims.has(configPath) || !selects({ entry, path: configPath })) {
       kept.push(entry);
+      continue;
     }
+    removedPaths.push(configPath);
+    if (meta.appliedId === entry.id) removedApplied = true;
   }
   if (removedPaths.length === 0) return swept([]);
-  // The applied slot is handed to a remaining entry of ours (the default's first), never left
-  // empty: an empty slot boots the app into claude.ai sign-in, and only the non-quiet wire could
-  // refill it.
-  if (removedApplied) {
-    const ours = kept.filter((e) => claims.has(join(dir, `${e.id}.json`)));
-    const next = ours.find((e) => entryProfileAt(join(dir, `${e.id}.json`)) === null) ?? ours[0];
-    meta.appliedId = next?.id ?? null;
-  }
+  if (removedApplied) meta.appliedId = nextAppliedId(dir, kept, claims);
   meta.entries = kept;
   writeDesktopMeta(dir, raw, meta);
   for (const path of removedPaths) removeFile(path, ENTRY);

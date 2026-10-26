@@ -1,3 +1,4 @@
+import { describe } from "bun:test";
 import { existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { BASE_URL_ENV, proxyHelperCommand } from "../../src/claude/config.ts";
@@ -19,6 +20,7 @@ import {
   type ClaudeFacts,
   type CodexFacts,
   classifyPortState,
+  type HealthFacts,
   type NamedRuntimeTarget,
   type ProfileSlotFacts,
   type RuntimeTarget,
@@ -39,7 +41,7 @@ import { dryRunChanges } from "../helpers/dry_run.ts";
 import { envSnapshot, isolateAgentHomes, isolateProxyHome } from "../helpers/env.ts";
 import { writeRunState } from "../helpers/fixtures.ts";
 import { probeOf, runIdentity, runOrphan, runPid, runPort } from "../helpers/health.ts";
-import { describe, expect, removeDir, tempDir, test } from "../helpers/testing.ts";
+import { expect, removeDir, tempDir, test } from "../helpers/testing.ts";
 
 // --- fixtures -----------------------------------------------------------------
 
@@ -90,14 +92,14 @@ function namedTarget(name: string, overrides: NamedOverrides = {}): NamedRuntime
     port: overrides.port ?? 4242,
     portPersisted: overrides.portPersisted ?? true,
     probe:
-      overrides.skipped !== undefined
-        ? { kind: "skipped", why: overrides.skipped }
-        : {
+      overrides.skipped === undefined
+        ? {
             kind: "probed",
             ...raw,
             ...(overrides.pidScanUnproven ? { pidScanUnproven: true as const } : {}),
             portState: classifyPortState({ proxyExpected, ...raw }),
-          },
+          }
+        : { kind: "skipped", why: overrides.skipped },
     paths: {
       home: "/h/profiles/p",
       configFile: "/h/profiles/p/config.json",
@@ -341,136 +343,141 @@ test("evaluateAll gates the daemon rows on a probed proxy target", () => {
 
 const RESOLVES = { storedToken: true, ghAuthenticated: false };
 
+const NONE_RESOLVES = { storedToken: false, ghAuthenticated: false };
+const GH_SLOT = { provider: "gh-cli" as const, mode: "direct" as const };
+
+type NamedAuthFacts = Extract<AuthFacts, { profile: ProfileName }>;
+
+interface NamedAuthRow {
+  name: string;
+  slot: NamedAuthFacts["slot"];
+  resolves: Omit<NamedAuthFacts, "profile" | "slot">;
+  status: CheckStatus;
+  detail?: string[];
+  exactDetail?: string;
+  notDetail?: string;
+  fix?: string;
+  value?: Record<string, unknown>;
+}
+
+const NAMED_AUTH_ROWS: NamedAuthRow[] = [
+  {
+    name: "provisioned proxy slot",
+    slot: { provider: "gh-token", mode: "proxy" },
+    resolves: RESOLVES,
+    status: "ok",
+    detail: ["gh-token", "agent profile p auth --get", "agent profile p start"],
+  },
+  {
+    name: "provisioned direct slot",
+    slot: { provider: "gh-token", mode: "direct" },
+    resolves: RESOLVES,
+    status: "ok",
+    detail: ["for Direct"],
+    notDetail: "daemon",
+  },
+  {
+    // A missing credential never falls back to the default's.
+    name: "no provider recorded",
+    slot: { provider: null, mode: "proxy" },
+    resolves: NONE_RESOLVES,
+    status: "warn",
+    detail: ["never fall back"],
+    fix: "agent profile p add",
+  },
+  {
+    name: "no slot at all",
+    slot: null,
+    resolves: NONE_RESOLVES,
+    status: "warn",
+    fix: "agent profile p add --direct|--proxy",
+  },
+  {
+    // A bare `add` has no previous mode to stick to, so the re-add names the mode.
+    name: "no provider and no mode recorded",
+    slot: { provider: null, mode: null },
+    resolves: NONE_RESOLVES,
+    status: "warn",
+    fix: "agent profile p add --direct|--proxy",
+  },
+  {
+    // Token provider with no stored token: the slot is provisioned on paper only. The detail
+    // states the gap; the command is the fix row's alone.
+    name: "gh-token slot whose token is gone",
+    slot: { provider: "gh-token", mode: "proxy" },
+    resolves: NONE_RESOLVES,
+    status: "warn",
+    exactDetail: [
+      "provider 'gh-token' is recorded for profile 'p' but no credential resolves",
+      "the slot's stored token is missing",
+    ].join("\n"),
+    fix: "agent profile p auth",
+  },
+  // gh-cli resolves via a live gh login, not a stored token; the wording names the account.
+  {
+    name: "gh-cli AUTO, authenticated",
+    slot: GH_SLOT,
+    resolves: { ...NONE_RESOLVES, ghAuthenticated: true },
+    status: "ok",
+  },
+  {
+    // A proven miss: gh's login and the slot's re-provision are both the fix row's.
+    name: "gh-cli AUTO, unauthenticated",
+    slot: GH_SLOT,
+    resolves: NONE_RESOLVES,
+    status: "warn",
+    detail: ["`gh` is unauthenticated (AUTO - follows gh's active account)"],
+    fix: "`gh auth login`, or `agent profile p auth` to re-provision the profile",
+  },
+  {
+    name: "gh-cli AUTO following octocat, unauthenticated",
+    slot: GH_SLOT,
+    resolves: { ...NONE_RESOLVES, ghActiveLogin: "octocat" },
+    status: "warn",
+    detail: ["`gh` is unauthenticated (AUTO - currently account octocat)"],
+    fix: "`gh auth login`, or `agent profile p auth` to re-provision the profile",
+  },
+  {
+    // A PINNED slot's proven miss names its account; gh's active login may be fine.
+    name: "gh-cli pinned to work-bot, unauthenticated",
+    slot: GH_SLOT,
+    resolves: { ...NONE_RESOLVES, ghUser: "work-bot" },
+    status: "warn",
+    detail: ["`gh` is not authenticated as account 'work-bot'"],
+    fix: "`gh auth login` for that account, or `agent profile p auth` to re-provision the profile",
+  },
+  {
+    name: "gh-cli pinned to work-bot, authenticated",
+    slot: GH_SLOT,
+    resolves: { ...NONE_RESOLVES, ghAuthenticated: true, ghUser: "work-bot" },
+    status: "ok",
+    detail: ["gh CLI (`gh auth token --user work-bot`)"],
+  },
+  {
+    name: "gh-cli AUTO following octocat, authenticated",
+    slot: GH_SLOT,
+    resolves: { ...NONE_RESOLVES, ghAuthenticated: true, ghActiveLogin: "octocat" },
+    status: "ok",
+    detail: ["gh CLI (`gh auth token`, AUTO - currently account octocat)"],
+  },
+  {
+    // gh was never actually asked, so the confident wording and its advice never render.
+    name: "gh-cli with an UNPROVEN gh probe",
+    slot: GH_SLOT,
+    resolves: { ...NONE_RESOLVES, ghAuthUnproven: true },
+    status: "warn",
+    exactDetail: [
+      "provider 'gh-cli' is recorded for profile 'p' but its credential could not be checked",
+      "could not check gh authentication " +
+        "(`gh auth token` did not run to completion; AUTO - follows gh's active account)",
+    ].join("\n"),
+    fix: "agent profile p auth",
+    value: { ghAuthUnproven: true },
+  },
+];
+
 test("checkAuth (named): the slot and its credential resolution decide status, detail, and fix", () => {
-  const none = { storedToken: false, ghAuthenticated: false };
-  const ghSlot = { provider: "gh-cli" as const, mode: "direct" as const };
-  type Named = Extract<AuthFacts, { profile: ProfileName }>;
-  const rows: {
-    name: string;
-    slot: Named["slot"];
-    resolves: Omit<Named, "profile" | "slot">;
-    status: CheckStatus;
-    detail?: string[];
-    exactDetail?: string;
-    notDetail?: string;
-    fix?: string;
-    value?: Record<string, unknown>;
-  }[] = [
-    {
-      name: "provisioned proxy slot",
-      slot: { provider: "gh-token", mode: "proxy" },
-      resolves: RESOLVES,
-      status: "ok",
-      detail: ["gh-token", "agent profile p auth --get", "agent profile p start"],
-    },
-    {
-      name: "provisioned direct slot",
-      slot: { provider: "gh-token", mode: "direct" },
-      resolves: RESOLVES,
-      status: "ok",
-      detail: ["for Direct"],
-      notDetail: "daemon",
-    },
-    {
-      // A missing credential never falls back to the default's.
-      name: "no provider recorded",
-      slot: { provider: null, mode: "proxy" },
-      resolves: none,
-      status: "warn",
-      detail: ["never fall back"],
-      fix: "agent profile p add",
-    },
-    {
-      name: "no slot at all",
-      slot: null,
-      resolves: none,
-      status: "warn",
-      fix: "agent profile p add --direct|--proxy",
-    },
-    {
-      // A bare `add` has no previous mode to stick to, so the re-add names the mode.
-      name: "no provider and no mode recorded",
-      slot: { provider: null, mode: null },
-      resolves: none,
-      status: "warn",
-      fix: "agent profile p add --direct|--proxy",
-    },
-    {
-      // Token provider with no stored token: the slot is provisioned on paper only. The detail
-      // states the gap; the command is the fix row's alone.
-      name: "gh-token slot whose token is gone",
-      slot: { provider: "gh-token", mode: "proxy" },
-      resolves: none,
-      status: "warn",
-      exactDetail: [
-        "provider 'gh-token' is recorded for profile 'p' but no credential resolves",
-        "the slot's stored token is missing",
-      ].join("\n"),
-      fix: "agent profile p auth",
-    },
-    // gh-cli resolves via a live gh login, not a stored token; the wording names the account.
-    {
-      name: "gh-cli AUTO, authenticated",
-      slot: ghSlot,
-      resolves: { ...none, ghAuthenticated: true },
-      status: "ok",
-    },
-    {
-      // A proven miss: gh's login and the slot's re-provision are both the fix row's.
-      name: "gh-cli AUTO, unauthenticated",
-      slot: ghSlot,
-      resolves: none,
-      status: "warn",
-      detail: ["`gh` is unauthenticated (AUTO - follows gh's active account)"],
-      fix: "`gh auth login`, or `agent profile p auth` to re-provision the profile",
-    },
-    {
-      name: "gh-cli AUTO following octocat, unauthenticated",
-      slot: ghSlot,
-      resolves: { ...none, ghActiveLogin: "octocat" },
-      status: "warn",
-      detail: ["`gh` is unauthenticated (AUTO - currently account octocat)"],
-      fix: "`gh auth login`, or `agent profile p auth` to re-provision the profile",
-    },
-    {
-      // A PINNED slot's proven miss names its account; gh's active login may be fine.
-      name: "gh-cli pinned to work-bot, unauthenticated",
-      slot: ghSlot,
-      resolves: { ...none, ghUser: "work-bot" },
-      status: "warn",
-      detail: ["`gh` is not authenticated as account 'work-bot'"],
-      fix: "`gh auth login` for that account, or `agent profile p auth` to re-provision the profile",
-    },
-    {
-      name: "gh-cli pinned to work-bot, authenticated",
-      slot: ghSlot,
-      resolves: { ...none, ghAuthenticated: true, ghUser: "work-bot" },
-      status: "ok",
-      detail: ["gh CLI (`gh auth token --user work-bot`)"],
-    },
-    {
-      name: "gh-cli AUTO following octocat, authenticated",
-      slot: ghSlot,
-      resolves: { ...none, ghAuthenticated: true, ghActiveLogin: "octocat" },
-      status: "ok",
-      detail: ["gh CLI (`gh auth token`, AUTO - currently account octocat)"],
-    },
-    {
-      // gh was never actually asked, so the confident wording and its advice never render.
-      name: "gh-cli with an UNPROVEN gh probe",
-      slot: ghSlot,
-      resolves: { ...none, ghAuthUnproven: true },
-      status: "warn",
-      exactDetail: [
-        "provider 'gh-cli' is recorded for profile 'p' but its credential could not be checked",
-        "could not check gh authentication " +
-          "(`gh auth token` did not run to completion; AUTO - follows gh's active account)",
-      ].join("\n"),
-      fix: "agent profile p auth",
-      value: { ghAuthUnproven: true },
-    },
-  ];
-  for (const row of rows) {
+  for (const row of NAMED_AUTH_ROWS) {
     const r = checkAuth({ profile: P, slot: row.slot, ...row.resolves });
     expect(r.status, row.name).toBe(row.status);
     expect(r.profile, row.name).toBe(P);
@@ -1031,6 +1038,85 @@ test("health gathering does zero writes over a home with seeded profiles, and cr
   }
 });
 
+/** The store contract of a static wiring, with the command shape as the control: the slot is never
+ *  asked for a credential and no gh probe runs, in either mode; freshness is the ONE store question
+ *  it asks. */
+async function expectStaticWiringAsksStoreForFreshnessOnly(
+  store: CopilotEnvState,
+  home: string,
+  codexHome: string,
+): Promise<void> {
+  // A gh-cli slot makes the command shape probe gh (the control); the static shape carries the
+  // value in the config, so the same slot is never asked and no gh probe runs.
+  store.commitProfile(P, { credential: { kind: "gh-cli", ghUser: null }, mode: "direct" });
+  let ghProbes = 0;
+  const ghCounting = offlineDeps({
+    codexHome: () => codexHome,
+    claudeHome: () => join(home, "no-claude"),
+    codexDirectAuth: () => {
+      ghProbes += 1;
+      return Promise.resolve({ kind: "absent", command: null });
+    },
+  });
+  const commandShape = await gatherFacts("codex", { profile: P }, ghCounting);
+  expect(commandShape.codex?.credential).toBe("command");
+  expect(commandShape.codex?.directNeedsNoGh).toBe(false);
+  expect(ghProbes).toBe(1);
+
+  configureCodexConfig(codexHome, {
+    mode: "direct",
+    direct: null,
+    profile: P,
+    credential: { kind: "static", token: "tok-p" },
+  });
+  const staticShape = await gatherFacts("codex", { profile: P }, ghCounting);
+  expect(staticShape.codex?.providerMode).toBe("direct");
+  expect(staticShape.codex?.credential).toBe("static");
+  expect(staticShape.codex?.directNeedsNoGh).toBe(true);
+  expect(ghProbes).toBe(1);
+  // The store is not consulted for a static wiring: no provider fact, and a gh-cli slot has no
+  // stored value to compare the baked one against.
+  expect(staticShape.codex?.provider).toBeUndefined();
+  expect(staticShape.codex?.bakedCredential).toBe("unchecked");
+  expect(evaluateAll("codex", staticShape)[0]?.status).toBe("ok");
+
+  // Freshness is the ONE store question a static wiring asks: equal to the stored token is
+  // fresh; a rotated store (agent auth after the wire) is stale and names the profile's rewire.
+  store.commitProfile(P, {
+    credential: { kind: "stored", provider: "gh-token", token: "tok-p" },
+    mode: "direct",
+  });
+  const fresh = await gatherFacts("codex", { profile: P }, ghCounting);
+  expect(fresh.codex?.bakedCredential).toBe("fresh");
+  expect(evaluateAll("codex", fresh)[0]?.status).toBe("ok");
+  store.commitProfile(P, {
+    credential: { kind: "stored", provider: "gh-token", token: "tok-rotated" },
+    mode: "direct",
+  });
+  const stale = await gatherFacts("codex", { profile: P }, ghCounting);
+  expect(stale.codex?.bakedCredential).toBe("stale");
+  const staleResult = evaluateAll("codex", stale)[0];
+  expect(staleResult?.status).toBe("warn");
+  expect(staleResult?.detail).toContain("out of step with the store");
+  expect(staleResult?.detail).not.toContain("tok-");
+  expect(staleResult?.fix).toBe(`agent profile ${P} add`);
+  expect(ghProbes).toBe(1);
+
+  // A PROXY static wiring skips gh the same way, but the direct-only JSON field stays false:
+  // "needs no gh" is a Direct verdict, never a proxy one.
+  configureCodexConfig(codexHome, {
+    mode: "proxy",
+    profile: P,
+    baseUrl: openaiBaseUrl("4555"),
+    credential: { kind: "static", token: "proxy-key" },
+  });
+  const proxyStatic = await gatherFacts("codex", { profile: P }, ghCounting);
+  expect(proxyStatic.codex?.providerMode).toBe("proxy");
+  expect(proxyStatic.codex?.credential).toBe("static");
+  expect(proxyStatic.codex?.directNeedsNoGh).toBe(false);
+  expect(ghProbes).toBe(1);
+}
+
 test("gatherFacts narrowed to a DIRECT profile inspects direct wiring with the profile's credential", async () => {
   const home = isolateProxyHome("copilot-health-narrowdirect-");
   try {
@@ -1066,75 +1152,7 @@ test("gatherFacts narrowed to a DIRECT profile inspects direct wiring with the p
     expect(results[0]?.status).toBe("ok");
     expect(results[0]?.profile).toBe(P);
 
-    // A gh-cli slot makes the command shape probe gh (the control); the static shape carries the
-    // value in the config, so the same slot is never asked and no gh probe runs.
-    store.commitProfile(P, { credential: { kind: "gh-cli", ghUser: null }, mode: "direct" });
-    let ghProbes = 0;
-    const ghCounting = offlineDeps({
-      codexHome: () => codexHome,
-      claudeHome: () => join(home, "no-claude"),
-      codexDirectAuth: () => {
-        ghProbes += 1;
-        return Promise.resolve({ kind: "absent", command: null });
-      },
-    });
-    const commandShape = await gatherFacts("codex", { profile: P }, ghCounting);
-    expect(commandShape.codex?.credential).toBe("command");
-    expect(commandShape.codex?.directNeedsNoGh).toBe(false);
-    expect(ghProbes).toBe(1);
-
-    configureCodexConfig(codexHome, {
-      mode: "direct",
-      direct: null,
-      profile: P,
-      credential: { kind: "static", token: "tok-p" },
-    });
-    const staticShape = await gatherFacts("codex", { profile: P }, ghCounting);
-    expect(staticShape.codex?.providerMode).toBe("direct");
-    expect(staticShape.codex?.credential).toBe("static");
-    expect(staticShape.codex?.directNeedsNoGh).toBe(true);
-    expect(ghProbes).toBe(1);
-    // The store is not consulted for a static wiring: no provider fact, and a gh-cli slot has no
-    // stored value to compare the baked one against.
-    expect(staticShape.codex?.provider).toBeUndefined();
-    expect(staticShape.codex?.bakedCredential).toBe("unchecked");
-    expect(evaluateAll("codex", staticShape)[0]?.status).toBe("ok");
-
-    // Freshness is the ONE store question a static wiring asks: equal to the stored token is
-    // fresh; a rotated store (agent auth after the wire) is stale and names the profile's rewire.
-    store.commitProfile(P, {
-      credential: { kind: "stored", provider: "gh-token", token: "tok-p" },
-      mode: "direct",
-    });
-    const fresh = await gatherFacts("codex", { profile: P }, ghCounting);
-    expect(fresh.codex?.bakedCredential).toBe("fresh");
-    expect(evaluateAll("codex", fresh)[0]?.status).toBe("ok");
-    store.commitProfile(P, {
-      credential: { kind: "stored", provider: "gh-token", token: "tok-rotated" },
-      mode: "direct",
-    });
-    const stale = await gatherFacts("codex", { profile: P }, ghCounting);
-    expect(stale.codex?.bakedCredential).toBe("stale");
-    const staleResult = evaluateAll("codex", stale)[0];
-    expect(staleResult?.status).toBe("warn");
-    expect(staleResult?.detail).toContain("out of step with the store");
-    expect(staleResult?.detail).not.toContain("tok-");
-    expect(staleResult?.fix).toBe(`agent profile ${P} add`);
-    expect(ghProbes).toBe(1);
-
-    // A PROXY static wiring skips gh the same way, but the direct-only JSON field stays false:
-    // "needs no gh" is a Direct verdict, never a proxy one.
-    configureCodexConfig(codexHome, {
-      mode: "proxy",
-      profile: P,
-      baseUrl: openaiBaseUrl("4555"),
-      credential: { kind: "static", token: "proxy-key" },
-    });
-    const proxyStatic = await gatherFacts("codex", { profile: P }, ghCounting);
-    expect(proxyStatic.codex?.providerMode).toBe("proxy");
-    expect(proxyStatic.codex?.credential).toBe("static");
-    expect(proxyStatic.codex?.directNeedsNoGh).toBe(false);
-    expect(ghProbes).toBe(1);
+    await expectStaticWiringAsksStoreForFreshnessOnly(store, home, codexHome);
   } finally {
     restoreEnv();
     removeDir(home);
@@ -1320,6 +1338,70 @@ test("profile.consistency and setup.auth reuse ids across the runs `agent health
   expect(auth.map((r) => `${r.profile}:${r.status}`)).toEqual(["null:ok", "p:ok"]);
 });
 
+/** The named proxy target's runtime gather with the tracked-pid scan answering `cls`. */
+function gatherWithScan(cls: "yes" | "no" | "unknown"): Promise<HealthFacts> {
+  return gatherFacts(
+    "runtime",
+    { profile: P },
+    offlineDeps({
+      reach: async () => true,
+      proxyIdentity: async () => true,
+      classifyTrackedPid: async () => cls,
+    }),
+  );
+}
+
+interface UnprovenPidRow {
+  name: string;
+  overrides: NamedOverrides;
+  status: CheckStatus;
+  detail: string[];
+  exactDetail?: string;
+  scanUnproven: true | undefined;
+}
+
+const UNPROVEN_PID_ROWS: UnprovenPidRow[] = [
+  {
+    name: "unproven scan, nothing excuses",
+    overrides: { pidTracked: false, pidScanUnproven: true },
+    status: "warn",
+    detail: [],
+    exactDetail: "tracked pid 4321 could not be verified (the process scan failed)",
+    scanUnproven: true,
+  },
+  {
+    // Control: the same facts WITHOUT the unproven mark keep the confident fail.
+    name: "completed scan",
+    overrides: { pidTracked: false },
+    status: "fail",
+    detail: [],
+    exactDetail: "tracked pid 4321 is stale or foreign",
+    scanUnproven: undefined,
+  },
+  {
+    // A tracked pid would also read ok here, so the unknown decides nothing; the detail and value
+    // still carry the failed look.
+    name: "unproven scan, both agents direct",
+    overrides: { pidTracked: false, pidScanUnproven: true, proxyExpected: false },
+    status: "ok",
+    detail: ["could not be verified"],
+    scanUnproven: true,
+  },
+  {
+    name: "unproven scan, down with auto-start on",
+    overrides: {
+      pidTracked: false,
+      pidScanUnproven: true,
+      reachable: false,
+      identityConfirmed: null,
+      watchdog: { ...namedTarget("p").watchdog, autoStart: true },
+    },
+    status: "ok",
+    detail: ["could not be verified", "starts on demand"],
+    scanUnproven: true,
+  },
+];
+
 // A FAILED identity scan (classifyDaemonPid "unknown") used to flatten into pidTracked:false, rendering
 // a confident "orphaned" warn and "stale or foreign" fail for a daemon health never looked at. The
 // probe now carries pidScanUnproven and the renderers say "could not be verified".
@@ -1334,30 +1416,20 @@ describe("unproven tracked-pid scans", () => {
       });
       mkdirSync(profileHome(P), { recursive: true });
       writeRunState({ pid: 4321, port: 4555 }, P);
-      const gather = (cls: "yes" | "no" | "unknown") =>
-        gatherFacts(
-          "runtime",
-          { profile: P },
-          offlineDeps({
-            reach: async () => true,
-            proxyIdentity: async () => true,
-            classifyTrackedPid: async () => cls,
-          }),
-        );
 
       // pidTracked stays the fail-closed false, but the probe SAYS the reading is unproven. Restoring
       // the boolean flatten (unknown -> plain false) turns exactly these assertions red.
-      const unknown = probeOf((await gather("unknown")).runtimes?.[0]);
+      const unknown = probeOf((await gatherWithScan("unknown")).runtimes?.[0]);
       expect(unknown.pidTracked).toBe(false);
       expect(unknown.pidScanUnproven).toBe(true);
       expect(unknown.portState.kind).toBe("orphan");
 
       // Controls: completed scans keep their confident verdicts, with NO unproven mark.
-      const yes = probeOf((await gather("yes")).runtimes?.[0]);
+      const yes = probeOf((await gatherWithScan("yes")).runtimes?.[0]);
       expect(yes.pidTracked).toBe(true);
       expect(yes.pidScanUnproven).toBeUndefined();
       expect(yes.portState).toEqual({ kind: "tracked" });
-      const no = probeOf((await gather("no")).runtimes?.[0]);
+      const no = probeOf((await gatherWithScan("no")).runtimes?.[0]);
       expect(no.pidTracked).toBe(false);
       expect(no.pidScanUnproven).toBeUndefined();
       expect(no.portState.kind).toBe("orphan");
@@ -1368,55 +1440,7 @@ describe("unproven tracked-pid scans", () => {
   });
 
   test("runtime.pid under an unproven scan: could-not-verify replaces the confident fail, the excused arms stay ok", () => {
-    const rows: {
-      name: string;
-      overrides: NamedOverrides;
-      status: CheckStatus;
-      detail: string[];
-      exactDetail?: string;
-      scanUnproven: true | undefined;
-    }[] = [
-      {
-        name: "unproven scan, nothing excuses",
-        overrides: { pidTracked: false, pidScanUnproven: true },
-        status: "warn",
-        detail: [],
-        exactDetail: "tracked pid 4321 could not be verified (the process scan failed)",
-        scanUnproven: true,
-      },
-      {
-        // Control: the same facts WITHOUT the unproven mark keep the confident fail.
-        name: "completed scan",
-        overrides: { pidTracked: false },
-        status: "fail",
-        detail: [],
-        exactDetail: "tracked pid 4321 is stale or foreign",
-        scanUnproven: undefined,
-      },
-      {
-        // A tracked pid would also read ok here, so the unknown decides nothing; the detail and value
-        // still carry the failed look.
-        name: "unproven scan, both agents direct",
-        overrides: { pidTracked: false, pidScanUnproven: true, proxyExpected: false },
-        status: "ok",
-        detail: ["could not be verified"],
-        scanUnproven: true,
-      },
-      {
-        name: "unproven scan, down with auto-start on",
-        overrides: {
-          pidTracked: false,
-          pidScanUnproven: true,
-          reachable: false,
-          identityConfirmed: null,
-          watchdog: { ...namedTarget("p").watchdog, autoStart: true },
-        },
-        status: "ok",
-        detail: ["could not be verified", "starts on demand"],
-        scanUnproven: true,
-      },
-    ];
-    for (const row of rows) {
+    for (const row of UNPROVEN_PID_ROWS) {
       const pid = runPid(namedTarget("p", row.overrides));
       expect(pid.status, row.name).toBe(row.status);
       if (row.exactDetail !== undefined) expect(pid.detail, row.name).toBe(row.exactDetail);

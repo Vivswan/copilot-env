@@ -15,6 +15,7 @@ import { usageIndexDir } from "../copilot_api/paths.ts";
 import { errMessage } from "../utils/error.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { isRecord, parseJsonRecord } from "../utils/json.ts";
+import { byCodeUnit } from "../utils/order.ts";
 import { MILLISECONDS_PER_DAY } from "../utils/time.ts";
 import { COPILOT_ENV_USER_AGENT } from "../utils/user_agent.ts";
 import type { GitHubRateCard, RateCardSource } from "./github_rate_card.ts";
@@ -182,7 +183,7 @@ function tierOf(pricing: Record<string, unknown>): PricingTier | null {
 }
 
 /** `cacheWriteError`: a fetched list could not be persisted, so the next run fetches again. */
-type LoadedPricing =
+export type LoadedPricing =
   | { source: "cache"; pricing: Map<string, PricingTier>; fetchedAtMs: number }
   | {
       source: "fetched";
@@ -370,11 +371,9 @@ export function canonicalModelNames(): (model: string) => string {
   };
 }
 
-export function resolvePricingId(model: string, catalogIds: Set<string>): string | null {
-  const normalized = normalizeModelName(model);
+/** The id's own provider first, then the ones its bare slug implies, without repeats. */
+function providersFor(normalized: string, bare: string): string[] {
   const slash = normalized.indexOf("/");
-  const bare = slash === -1 ? normalized : normalized.slice(slash + 1);
-
   const providers: string[] = [];
   if (slash !== -1) {
     providers.push(normalized.slice(0, slash));
@@ -384,13 +383,14 @@ export function resolvePricingId(model: string, catalogIds: Set<string>): string
       providers.push(provider);
     }
   }
+  return providers;
+}
 
-  if (normalized.includes("/") && catalogIds.has(normalized)) {
-    return normalized;
-  }
-
-  const candidates = ANTHROPIC_FAMILY_SLUGS.has(bare) ? [`claude-${bare}`] : [bare];
-
+function exactCatalogId(
+  catalogIds: Set<string>,
+  providers: readonly string[],
+  candidates: readonly string[],
+): string | null {
   for (const provider of providers) {
     for (const candidate of candidates) {
       const id = `${provider}/${candidate}`;
@@ -399,15 +399,27 @@ export function resolvePricingId(model: string, catalogIds: Set<string>): string
       }
     }
   }
+  return null;
+}
 
+/** The candidates and, for a `-preview` or `-1m` id, the slug without the suffix; longest first. */
+function stemsOf(bare: string, candidates: readonly string[]): string[] {
   const stems = new Set(candidates);
   for (const suffix of ["-preview", "-1m"]) {
     if (bare.endsWith(suffix)) {
       stems.add(bare.slice(0, -suffix.length));
     }
   }
+  return [...stems].sort((a, b) => b.length - a.length);
+}
+
+function bestPrefixMatch(
+  catalogIds: Set<string>,
+  providers: readonly string[],
+  stems: readonly string[],
+): string | null {
   for (const provider of providers) {
-    for (const stem of [...stems].sort((a, b) => b.length - a.length)) {
+    for (const stem of stems) {
       const prefix = `${provider}/${stem}`;
       const matches = [...catalogIds].filter((id) => id.startsWith(prefix));
       const best = chooseBestMatch(matches, stem);
@@ -416,8 +428,26 @@ export function resolvePricingId(model: string, catalogIds: Set<string>): string
       }
     }
   }
-
   return null;
+}
+
+export function resolvePricingId(model: string, catalogIds: Set<string>): string | null {
+  const normalized = normalizeModelName(model);
+  const slash = normalized.indexOf("/");
+  const bare = slash === -1 ? normalized : normalized.slice(slash + 1);
+  const providers = providersFor(normalized, bare);
+
+  if (normalized.includes("/") && catalogIds.has(normalized)) {
+    return normalized;
+  }
+
+  const candidates = ANTHROPIC_FAMILY_SLUGS.has(bare) ? [`claude-${bare}`] : [bare];
+  const exact = exactCatalogId(catalogIds, providers, candidates);
+  if (exact !== null) {
+    return exact;
+  }
+
+  return bestPrefixMatch(catalogIds, providers, stemsOf(bare, candidates));
 }
 
 /** What estimateCost prices: a roll-up and, of it, the share from requests whose prompt exceeded
@@ -444,14 +474,7 @@ export function estimateCost(usage: UsageToPrice, pricing: Map<string, PricingTi
     }
     const over = longContextTierFor(book, reference);
     const long = over === undefined ? undefined : usage.longContext?.byModel.get(model);
-    const parts: [UsageTokens, PricingTier][] =
-      over === undefined || long === undefined
-        ? [[total, tier]]
-        : [
-            [tokensMinus(total, long), tier],
-            [long, overTier(tier, over)],
-          ];
-    const cost = blendedCost(reference, parts);
+    const cost = blendedCost(reference, pricedParts(total, tier, long, over));
     totalUsd += cost.estimatedCostUsd;
     perModel[model] = cost;
     if (book?.githubRated.has(reference) || (long !== undefined && hasTokens(long))) {
@@ -467,6 +490,22 @@ function longContextTierFor(book: PriceList | null, reference: string): PricingT
   return long !== undefined && long.promptTokens <= LONG_CONTEXT_PROMPT_TOKENS
     ? long.tier
     : undefined;
+}
+
+/** The usage at the base tier, and the long-context share at its own tier when there is one. */
+function pricedParts(
+  total: UsageTokens,
+  tier: PricingTier,
+  long: UsageTokens | undefined,
+  over: PricingTier | undefined,
+): [UsageTokens, PricingTier][] {
+  if (over === undefined || long === undefined) {
+    return [[total, tier]];
+  }
+  return [
+    [tokensMinus(total, long), tier],
+    [long, overTier(tier, over)],
+  ];
 }
 
 function overTier(tier: PricingTier, over: PricingTier): PricingTier {
@@ -572,33 +611,40 @@ function inferProviders(slug: string): string[] {
   return hit === undefined ? [] : [hit[1]];
 }
 
+/** Smaller sorts first: the exact slug, then no variant tag, then no word the request lacks (a
+ *  fast, image, mini, or nano edition), then a prefix of the request, the newest version, the
+ *  shortest. */
+function matchSortKey(modelId: string, requestedSlug: string): Array<number | number[]> {
+  const slug = modelId.split("/").slice(1).join("/");
+  const versionParts = [...slug.matchAll(/\d+/g)].map((m) => Number(m[0]));
+  const inverseVersion = versionParts.map((p) => -p);
+  const unwanted = (word: string): number =>
+    slug.includes(word) && !requestedSlug.includes(word) ? 1 : 0;
+  return [
+    slug === requestedSlug ? 0 : 1,
+    slug.includes(":") ? 1 : 0,
+    unwanted("fast"),
+    unwanted("image"),
+    unwanted("mini"),
+    unwanted("nano"),
+    slug.startsWith(requestedSlug) ? 0 : 1,
+    inverseVersion,
+    slug.length,
+  ];
+}
+
 function chooseBestMatch(matches: string[], requestedSlug: string): string | null {
   if (matches.length === 0) {
     return null;
   }
-  const sortKey = (modelId: string): Array<number | number[]> => {
-    const slug = modelId.split("/").slice(1).join("/");
-    const versionParts = [...slug.matchAll(/\d+/g)].map((m) => Number(m[0]));
-    const inverseVersion = versionParts.map((p) => -p);
-    return [
-      slug === requestedSlug ? 0 : 1,
-      slug.includes(":") ? 1 : 0,
-      slug.includes("fast") && !requestedSlug.includes("fast") ? 1 : 0,
-      slug.includes("image") && !requestedSlug.includes("image") ? 1 : 0,
-      slug.includes("mini") && !requestedSlug.includes("mini") ? 1 : 0,
-      slug.includes("nano") && !requestedSlug.includes("nano") ? 1 : 0,
-      slug.startsWith(requestedSlug) ? 0 : 1,
-      inverseVersion,
-      slug.length,
-    ];
-  };
   // The id itself breaks any remaining tie, so the pick is a function of the catalog's key SET
   // alone, never its insertion order; the memoized lookup in estimateCost relies on that.
-  return (
-    [...matches].sort(
-      (a, b) => compareKeys(sortKey(a), sortKey(b)) || (a < b ? -1 : a > b ? 1 : 0),
-    )[0] ?? null
+  const ranked = [...matches].sort(
+    (a, b) =>
+      compareKeys(matchSortKey(a, requestedSlug), matchSortKey(b, requestedSlug)) ||
+      byCodeUnit(a, b),
   );
+  return ranked[0] ?? null;
 }
 
 function compareKeys(a: Array<number | number[]>, b: Array<number | number[]>): number {

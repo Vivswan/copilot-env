@@ -72,6 +72,18 @@ export type CreditsFetch = (input: string, init?: RequestInit) => Promise<Respon
 /** The same env the owner's ghco script reads, so one setting drives both. */
 export const CREDITS_TARGET_ENV = "COPILOT_CREDITS_TARGET";
 
+/** The flag over the env, each under the name its error message carries; null when neither is
+ *  set. */
+function explicitTarget(
+  flag: string | undefined,
+  env: Record<string, string | undefined>,
+): { raw: string; source: string } | null {
+  if (flag !== undefined) return { raw: flag, source: "--target" };
+  const fromEnv = env[CREDITS_TARGET_ENV];
+  if (fromEnv !== undefined) return { raw: fromEnv, source: CREDITS_TARGET_ENV };
+  return null;
+}
+
 /** Flag > env > stored `cost.credits-target` > none; an explicit value is parsed by the
  *  registry's own rule, so the flag and the key share one range and one message. */
 export function resolveCreditsTarget(
@@ -79,12 +91,7 @@ export function resolveCreditsTarget(
   config: CopilotEnvConfig = new CopilotEnvConfig(),
   env: Record<string, string | undefined> = process.env,
 ): number | null {
-  const explicit =
-    flag !== undefined
-      ? { raw: flag, source: "--target" }
-      : env[CREDITS_TARGET_ENV] !== undefined
-        ? { raw: env[CREDITS_TARGET_ENV] as string, source: CREDITS_TARGET_ENV }
-        : null;
+  const explicit = explicitTarget(flag, env);
   if (explicit === null) return config.creditsTarget();
   const parse = configKeyDef("cost.credits-target")?.parse;
   if (parse === undefined) throw new Error("config key 'cost.credits-target' is not registered");
@@ -247,34 +254,50 @@ const delta = (n: number): string => (n > 0 ? `${BAD} +${commas(n)}` : `${OK} ${
 
 const paintBar = (bar: string): string =>
   bar.replace(/#+/g, blue).replace(/\++/g, cyan).replace(/>$/, red);
+const paintDelta = (cell: string): string => {
+  if (cell.includes(BAD)) return red(cell);
+  if (cell.includes(OK)) return green(cell);
+  return cell;
+};
 
-const paintDelta = (cell: string): string =>
-  cell.includes(BAD) ? red(cell) : cell.includes(OK) ? green(cell) : cell;
+/** The widths the bars and the table share, each from the widest cell it will hold. */
+interface CreditsWidths {
+  /** The ceiling column: the target and the entitlement. */
+  end: number;
 
-/** ghco's layout, kept cell for cell so the two read the same. A share past 100%
- *  closes the bar with `>`: an overrun must never look like a full month. Without a
- *  target the target bar, row, and marker are absent and the projection is judged
- *  against the entitlement. Colour goes on after every width is settled, so padding
- *  never counts an escape. */
-export function renderCredits(pace: CreditsPace): string[] {
+  /** The now column: the spend and the projection. */
+  now: number;
+
+  /** Their dollars. */
+  usd: number;
+
+  /** The even-spend marks and the elapsed share. */
+  mark: number;
+
+  /** The delta column. */
+  delta: number;
+
+  /** The share after a bar. */
+  pct: number;
+
+  /** The projected share after the arrow; 0 without a projection. */
+  proj: number;
+
+  /** The bar between its brackets: the table's width less the label and the shares. */
+  bar: number;
+}
+
+function creditsWidths(pace: CreditsPace): CreditsWidths {
   const { used, target, entitlement: total, projected } = pace;
   const reach = projected ?? used;
-  const goal = target ?? total;
-  const start = new Date(pace.periodStartMs);
-  const reset = new Date(pace.resetMs);
-  const header = `Copilot credits  ${pace.login === null ? "" : `${pace.login} ${DOT} `}${
-    MONTHS[start.getUTCMonth()]
-  } ${start.getUTCFullYear()} ${DOT} resets ${
-    MONTHS[reset.getUTCMonth()]
-  } ${reset.getUTCDate()} ${DOT} day ${pace.day}/${pace.daysTotal}`;
-
   const ceilings = target === null ? [total] : [target, total];
   const marks = pace.targetMark === null ? [pace.totalMark] : [pace.targetMark, pace.totalMark];
+  const deltas = marks.map((m) => used - m);
+  if (projected !== null) deltas.push(projected - (target ?? total));
   const wEnd = Math.max(...ceilings.map((n) => commas(n).length));
   const wNow = Math.max(3, ...[used, reach].map((n) => commas(n).length));
   const wUsd = Math.max(1, ...[used, reach].map((n) => usd(n).length));
   const wMark = Math.max(pct(pace.elapsed).length, ...marks.map((n) => commas(n).length));
-  const deltas = [...marks.map((m) => used - m), ...(projected === null ? [] : [projected - goal])];
   const wDelta = Math.max(5, ...deltas.map((n) => delta(n).length));
   const wPct = Math.max(
     4,
@@ -283,23 +306,65 @@ export function renderCredits(pace: CreditsPace): string[] {
   const wProj = projected === null ? 0 : Math.max(...ceilings.map((c) => pct(reach / c).length));
   const wTable = 2 + 9 + 2 + wEnd + 8 + wNow + 5 + wUsd + 5 + wMark + 5 + wDelta;
   const wTail = 1 + wPct + (projected === null ? 0 : 2 + ARROW.length + wProj);
-  const wBar = clamp(wTable - 11 - 1 - wTail, 10, 200);
+  return {
+    end: wEnd,
+    now: wNow,
+    usd: wUsd,
+    mark: wMark,
+    delta: wDelta,
+    pct: wPct,
+    proj: wProj,
+    bar: clamp(wTable - 11 - 1 - wTail, 10, 200),
+  };
+}
 
-  const cells = (share: number): number => clamp(Math.floor(share * wBar), 0, wBar);
+/** The time, target (with one), and total bars, the total bar marked at the target, and the
+ *  legend. A share past 100% closes the bar with `>`: an overrun must never look like a full
+ *  month. */
+function renderBars(pace: CreditsPace, w: CreditsWidths): string[] {
+  const { used, target, entitlement: total, projected } = pace;
+  const reach = projected ?? used;
+  const cells = (share: number): number => clamp(Math.floor(share * w.bar), 0, w.bar);
   const bar = (usedShare: number, projShare: number): string => {
     const u = cells(usedShare);
     const p = cells(projShare);
-    return `[${"#".repeat(u)}${"+".repeat(p - u)}${DOT.repeat(wBar - p)}${
-      projShare > 1 ? ">" : "]"
-    }`;
+    const close = projShare > 1 ? ">" : "]";
+    return `[${"#".repeat(u)}${"+".repeat(p - u)}${DOT.repeat(w.bar - p)}${close}`;
   };
   const mark = (line: string, at: number): string => {
-    const m = clamp(Math.floor(at * wBar), 0, wBar - 1);
+    const m = clamp(Math.floor(at * w.bar), 0, w.bar - 1);
     return `${line.slice(0, m + 1)}|${line.slice(m + 2)}`;
   };
-  const shares = (usedShare: number, projShare: number): string =>
-    pct(usedShare).padStart(wPct) +
-    (projected === null ? "" : ` ${ARROW} ${pct(projShare).padStart(wProj)}`);
+  const shares = (usedShare: number, projShare: number): string => {
+    const now = pct(usedShare).padStart(w.pct);
+    if (projected === null) return now;
+    return `${now} ${ARROW} ${pct(projShare).padStart(w.proj)}`;
+  };
+
+  const legend = ["# used"];
+  if (projected !== null) legend.push("+ projected");
+  if (target !== null) {
+    const above = target > total ? ` (above the ${commas(total)} entitlement)` : "";
+    legend.push(`| target${above}`);
+  }
+
+  const lines = [
+    `  time    ${paintBar(bar(pace.elapsed, pace.elapsed))} ${pct(pace.elapsed).padStart(w.pct)}`,
+  ];
+  if (target !== null) {
+    const targetBar = bar(used / target, reach / target);
+    lines.push(`  target  ${paintBar(targetBar)} ${shares(used / target, reach / target)}`);
+  }
+  const totalBar = bar(used / total, reach / total);
+  const marked = target === null ? totalBar : mark(totalBar, target / total);
+  lines.push(`  total   ${paintBar(marked)} ${shares(used / total, reach / total)}`);
+  lines.push(`           ${legend.join("   ")}`);
+  return lines;
+}
+
+/** The table under the bars: its header, the target row (with one), the total, the projection. */
+function renderRows(pace: CreditsPace, w: CreditsWidths): string[] {
+  const { used, target, entitlement: total, projected } = pace;
   const row = (
     name: string,
     ceiling: string,
@@ -308,49 +373,24 @@ export function renderCredits(pace: CreditsPace): string[] {
     at: string,
     d: string,
   ): string =>
-    `  ${name.padEnd(9)}  ${ceiling.padStart(wEnd)}        ${now.padStart(wNow)}     ${dollars.padStart(
-      wUsd,
-    )}     ${at.padStart(wMark)}     ${paintDelta(d.padStart(wDelta))}`;
-  const legend = [
-    "# used",
-    ...(projected === null ? [] : ["+ projected"]),
-    ...(target === null
-      ? []
-      : [`| target${target > total ? ` (above the ${commas(total)} entitlement)` : ""}`]),
-  ].join("   ");
-  const totalBar = bar(used / total, reach / total);
+    `  ${name.padEnd(9)}  ${ceiling.padStart(w.end)}        ${now.padStart(w.now)}     ${dollars.padStart(
+      w.usd,
+    )}     ${at.padStart(w.mark)}     ${paintDelta(d.padStart(w.delta))}`;
 
-  return [
-    header,
-    "",
-    `  time    ${paintBar(bar(pace.elapsed, pace.elapsed))} ${pct(pace.elapsed).padStart(wPct)}`,
-    ...(target === null
-      ? []
-      : [
-          `  target  ${paintBar(bar(used / target, reach / target))} ${shares(
-            used / target,
-            reach / target,
-          )}`,
-        ]),
-    `  total   ${paintBar(target === null ? totalBar : mark(totalBar, target / total))} ${shares(
-      used / total,
-      reach / total,
-    )}`,
-    `           ${legend}`,
-    "",
-    row("", "", "now", "$", pct(pace.elapsed), "delta"),
-    ...(target === null || pace.targetMark === null
-      ? []
-      : [
-          row(
-            "target",
-            commas(target),
-            commas(used),
-            usd(used),
-            commas(pace.targetMark),
-            delta(used - pace.targetMark),
-          ),
-        ]),
+  const rows = [row("", "", "now", "$", pct(pace.elapsed), "delta")];
+  if (target !== null && pace.targetMark !== null) {
+    rows.push(
+      row(
+        "target",
+        commas(target),
+        commas(used),
+        usd(used),
+        commas(pace.targetMark),
+        delta(used - pace.targetMark),
+      ),
+    );
+  }
+  rows.push(
     row(
       "total",
       commas(total),
@@ -359,8 +399,28 @@ export function renderCredits(pace: CreditsPace): string[] {
       commas(pace.totalMark),
       delta(used - pace.totalMark),
     ),
-    projected === null
-      ? row("projected", "", "-", "-", "", "-")
-      : row("projected", "", commas(projected), usd(projected), "", delta(projected - goal)),
-  ];
+  );
+  if (projected === null) {
+    rows.push(row("projected", "", "-", "-", "", "-"));
+  } else {
+    const goal = target ?? total;
+    rows.push(row("projected", "", commas(projected), usd(projected), "", delta(projected - goal)));
+  }
+  return rows;
+}
+
+/** ghco's layout, kept cell for cell so the two read the same. Without a target the target bar,
+ *  row, and marker are absent and the projection is judged against the entitlement. Colour goes
+ *  on after every width is settled, so padding never counts an escape. */
+export function renderCredits(pace: CreditsPace): string[] {
+  const start = new Date(pace.periodStartMs);
+  const reset = new Date(pace.resetMs);
+  const login = pace.login === null ? "" : `${pace.login} ${DOT} `;
+  const period = `${MONTHS[start.getUTCMonth()]} ${start.getUTCFullYear()}`;
+  const resets = `resets ${MONTHS[reset.getUTCMonth()]} ${reset.getUTCDate()}`;
+  const day = `day ${pace.day}/${pace.daysTotal}`;
+  const header = `Copilot credits  ${login}${period} ${DOT} ${resets} ${DOT} ${day}`;
+  const widths = creditsWidths(pace);
+
+  return [header, "", ...renderBars(pace, widths), "", ...renderRows(pace, widths)];
 }

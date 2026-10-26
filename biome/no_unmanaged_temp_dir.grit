@@ -2,7 +2,7 @@
 // test file's process, removed when that process ends, and `tempDir` there is the only way to a
 // temp directory. A path made anywhere else sits directly in the OS tmpdir, where nothing removes
 // it once the test that made it fails, times out, or forgets: an interrupted run once left every
-// fixture home behind, each with its own module cache. biome.json scopes the rule to test/ minus
+// fixture home behind, each with its own module cache. biome.local.jsonc scopes the rule to test/ minus
 // testing.ts.
 //
 // The ban is on REACHING a temp-path API at all, under any spelling: node's mkdtemp family

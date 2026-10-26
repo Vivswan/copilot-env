@@ -1,3 +1,4 @@
+import { afterEach, beforeEach, describe } from "bun:test";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -21,7 +22,7 @@ import {
   RELEASE_TARGETS,
   releaseAssetName,
 } from "../../src/utils/targets.ts";
-import { afterEach, beforeEach, describe, expect, tempDir, test } from "../helpers/testing.ts";
+import { expect, tempDir, test } from "../helpers/testing.ts";
 
 // The update is prepare-then-commit, so a pre-flip failure leaves the old version fully live:
 //   download -> verify against the manifest -> attest (injected verifier) -> STAGE into its
@@ -96,6 +97,12 @@ fi
 exit 0
 `;
 
+/** The release every applyUpdate case moves to. */
+const TARGET = { tag: "v9.9.9", dateSeconds: 0 };
+
+/** A logger that drops everything, for the cases that judge files and verdicts alone. */
+const QUIET = { info: () => {}, warn: () => {}, success: () => {} };
+
 /** Seed one version dir (with a stand-in binary) inside the install root. */
 function seedVersion(name: string, contents = name): string {
   const dir = join(installDir, VERSIONS_DIR, name);
@@ -106,6 +113,36 @@ function seedVersion(name: string, contents = name): string {
 
 function invocations(): string[] {
   return readFileSync(join(installDir, "invocations.log"), "utf8").trim().split("\n");
+}
+
+/** Accepts everything: the default here, so the existing cases run the full stage order unchanged. */
+const acceptAll: ProvenanceVerifier = () => Promise.resolve({ signerIdentity: "test" });
+
+function apply(
+  current: string,
+  opts: Omit<ApplyUpdateOptions, "provenance"> & Partial<Pick<ApplyUpdateOptions, "provenance">>,
+): Promise<void> {
+  return applyUpdate(current, TARGET, {
+    provenance: { kind: "verify", verifier: acceptAll },
+    ...opts,
+  });
+}
+
+/** A logger that records what it was told. */
+function recordingLogger() {
+  const infos: string[] = [];
+  const warns: string[] = [];
+  const successes: string[] = [];
+  return {
+    infos,
+    warns,
+    successes,
+    logger: {
+      info: (m: string) => infos.push(m),
+      warn: (m: string) => warns.push(m),
+      success: (m: string) => successes.push(m),
+    },
+  };
 }
 
 beforeEach(() => {
@@ -225,40 +262,7 @@ test("release targets: each shipped (platform, arch) maps to its distinct triple
   expect(currentReleaseTarget()).not.toBeNull();
 });
 
-describe("applyUpdate", () => {
-  const target = { tag: "v9.9.9", dateSeconds: 0 };
-  const quiet = { info: () => {}, warn: () => {}, success: () => {} };
-  /** A verifier that accepts everything: the default here, so the existing cases
-   *  run the full stage order (download -> verify -> attest -> ...) unchanged. */
-  const acceptAll: ProvenanceVerifier = () => Promise.resolve({ signerIdentity: "test" });
-
-  function apply(
-    current: string,
-    opts: Omit<ApplyUpdateOptions, "provenance"> & Partial<Pick<ApplyUpdateOptions, "provenance">>,
-  ): Promise<void> {
-    return applyUpdate(current, target, {
-      provenance: { kind: "verify", verifier: acceptAll },
-      ...opts,
-    });
-  }
-
-  /** A logger that records what it was told. */
-  function recordingLogger() {
-    const infos: string[] = [];
-    const warns: string[] = [];
-    const successes: string[] = [];
-    return {
-      infos,
-      warns,
-      successes,
-      logger: {
-        info: (m: string) => infos.push(m),
-        warn: (m: string) => warns.push(m),
-        success: (m: string) => successes.push(m),
-      },
-    };
-  }
-
+describe("applyUpdate verifies provenance before staging", () => {
   skipWin("hands the verifier the binary AND the manifest digests, then commits", async () => {
     const asset = writeRelease(RECORDING_BINARY);
     seedVersion("v9.9.8", "OLD");
@@ -307,7 +311,7 @@ describe("applyUpdate", () => {
     await expect(
       apply("v9.9.8", {
         root: installDir,
-        logger: quiet,
+        logger: QUIET,
         provenance: {
           kind: "verify",
           verifier: () =>
@@ -321,7 +325,9 @@ describe("applyUpdate", () => {
     expect(existsSync(join(installDir, "invocations.log"))).toBe(false);
     expect(stagingDirs()).toEqual([]);
   });
+});
 
+describe("applyUpdate judges the download and the attestation before any verifier runs", () => {
   test("a corrupt download is an integrity failure, never a provenance verdict", async () => {
     // The manifest disowns the binary. With the attestation ALSO missing, the checksum stage
     // must still win, so the message is the actionable SHA256 one and the opt-outs (which only
@@ -332,7 +338,7 @@ describe("applyUpdate", () => {
       seedVersion("v9.9.8", "OLD");
       pointCurrentAt(installDir, "v9.9.8");
 
-      const err = await apply("v9.9.8", { root: installDir, logger: quiet }).catch(
+      const err = await apply("v9.9.8", { root: installDir, logger: QUIET }).catch(
         (e: unknown) => e as Error,
       );
       expect((err as Error).message, attestation).toContain("SHA256 verification failed");
@@ -352,7 +358,7 @@ describe("applyUpdate", () => {
 
     const err = await apply("v9.9.8", {
       root: installDir,
-      logger: quiet,
+      logger: QUIET,
       provenance: {
         kind: "verify",
         verifier: () => {
@@ -370,7 +376,9 @@ describe("applyUpdate", () => {
     expect(readCurrentVersionName(installDir)).toBe("v9.9.8");
     expect(stagingDirs()).toEqual([]);
   });
+});
 
+describe("applyUpdate skips verification on request", () => {
   skipWin(
     "a skipped verification says so on the logger, naming the opt-out and its way back",
     async () => {
@@ -417,7 +425,9 @@ describe("applyUpdate", () => {
       }
     },
   );
+});
 
+describe("applyUpdate stages, provisions, and commits", () => {
   skipWin("stages, provisions inside the version root, then commits the flip", async () => {
     writeRelease(RECORDING_BINARY);
     seedVersion("v9.9.8", "OLD");
@@ -466,7 +476,7 @@ describe("applyUpdate", () => {
     async () => {
       writeRelease(RECORDING_BINARY);
 
-      await apply("v9.9.8", { root: installDir, logger: quiet, childStdoutToStderr: true });
+      await apply("v9.9.8", { root: installDir, logger: QUIET, childStdoutToStderr: true });
 
       expect(readCurrentVersionName(installDir)).toBe("v9.9.9");
       expect(
@@ -475,7 +485,9 @@ describe("applyUpdate", () => {
       expect(stagingDirs()).toEqual([]);
     },
   );
+});
 
+describe("applyUpdate keeps one previous version and never flips a failed provision", () => {
   skipWin("keeps exactly one previous version and GCs everything older", async () => {
     writeRelease(RECORDING_BINARY);
     seedVersion("v9.9.6");
@@ -483,7 +495,7 @@ describe("applyUpdate", () => {
     seedVersion("v9.9.8", "OLD");
     pointCurrentAt(installDir, "v9.9.8");
 
-    await apply("v9.9.8", { root: installDir, logger: quiet, childStdoutToStderr: true });
+    await apply("v9.9.8", { root: installDir, logger: QUIET, childStdoutToStderr: true });
 
     expect(existsSync(join(installDir, VERSIONS_DIR, "v9.9.9"))).toBe(true);
     expect(existsSync(join(installDir, VERSIONS_DIR, "v9.9.8"))).toBe(true); // the rollback keep
@@ -533,7 +545,7 @@ describe("applyUpdate", () => {
         pointCurrentAt(installDir, "v9.9.8");
 
         await expect(
-          apply("v9.9.8", { root: installDir, logger: quiet, childStdoutToStderr: true }),
+          apply("v9.9.8", { root: installDir, logger: QUIET, childStdoutToStderr: true }),
           name,
         ).rejects.toThrow(error);
 
@@ -544,7 +556,9 @@ describe("applyUpdate", () => {
       }
     },
   );
+});
 
+describe("applyUpdate refuses before any download", () => {
   test("refuses when current already points at the target version, before any download", async () => {
     // Releases only move forward; `current` naming the target while the version
     // check said "behind" means a corrupt layout -- refuse rather than guess.
@@ -554,7 +568,7 @@ describe("applyUpdate", () => {
     seedVersion("v9.9.9", "ALREADY");
     pointCurrentAt(installDir, "v9.9.9");
 
-    await expect(apply("v9.9.8", { root: installDir, logger: quiet })).rejects.toThrow(
+    await expect(apply("v9.9.8", { root: installDir, logger: QUIET })).rejects.toThrow(
       "already points at v9.9.9; to refresh this version in place, re-run `agent install`",
     );
     // The live version dir was NOT clobbered by staging.
@@ -568,7 +582,7 @@ describe("applyUpdate", () => {
     writeFileSync(join(releaseDir, "checksums.txt"), `${"a".repeat(64)}  agent-other\n`);
     writeFileSync(join(releaseDir, releaseAssetName(hostTarget())), "x");
 
-    await expect(apply("v9.9.8", { root: installDir, logger: quiet })).rejects.toThrow(
+    await expect(apply("v9.9.8", { root: installDir, logger: QUIET })).rejects.toThrow(
       `checksums.txt has no entry for ${releaseAssetName(hostTarget())}`,
     );
   });

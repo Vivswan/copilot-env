@@ -1,3 +1,4 @@
+import { afterEach } from "bun:test";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -38,7 +39,7 @@ import {
   ROOT,
   spawnChild,
 } from "../helpers/run.ts";
-import { afterEach, expect, tempDir, test } from "../helpers/testing.ts";
+import { expect, tempDir, test } from "../helpers/testing.ts";
 
 // The daemon holds `<home>/daemon.lock` for life (acquired by daemon_lock_preload), and the
 // liveness consults judge it BEFORE the pid table. The lock is the marker file naming the

@@ -1,3 +1,4 @@
+import { describe } from "bun:test";
 import { createHash } from "node:crypto";
 import {
   copyFileSync,
@@ -30,7 +31,7 @@ import {
 import { pathLedBy } from "../helpers/env.ts";
 import { ROOT, runScript, runSync, spawnChild } from "../helpers/run.ts";
 import { moduleSpecifiers, parseModule, resolveRelative, visit } from "../helpers/syntax.ts";
-import { describe, expect, removeDir, tempDir, test } from "../helpers/testing.ts";
+import { expect, removeDir, tempDir, test } from "../helpers/testing.ts";
 import { tsFilesUnder as srcFiles } from "../helpers/tree.ts";
 
 // Shell cannot import TS, so the installers hand-roll lists TypeScript modules own; each guard
@@ -276,542 +277,541 @@ describe("installers mirror the binary's checkout refusal markers", () => {
   });
 });
 
-describe("installer checkout guard refuses before mutating, proceeds on legacy roots", () => {
-  // The real installer scripts against throwaway roots, fed by a directory download source:
-  // the guard's point is ordering, so it must fire before the bin write touches the root.
-  const skipWin = test.skipIf(process.platform === "win32");
-  /** What a marker-only root (no .git) carries: the first marker the binary refuses on. */
-  const MARKER = CHECKOUT_MARKERS[0];
+// --- the installer scripts against throwaway roots ---------------------------------------------
+//
+// The real install.sh / install.ps1, fed by a directory download source. The checkout guard's
+// point is ordering, so it must fire before the bin write touches the root; the other cases ride
+// the same stand-in release.
 
-  /** Sorted relative paths + content hashes: byte-level proof a root was not touched. */
-  function snapshotTree(dir: string, prefix = ""): string[] {
-    const out: string[] = [];
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      const rel = posix.join(prefix, entry.name);
-      if (entry.isDirectory()) {
-        out.push(`${rel}/`, ...snapshotTree(join(dir, entry.name), rel));
-      } else {
-        const hash = createHash("sha256")
-          .update(readFileSync(join(dir, entry.name)))
-          .digest("hex");
-        out.push(`${rel} ${hash}`);
-      }
+/** POSIX only: install.sh's own behaviour, or a handoff the inert Windows stand-in cannot make. */
+const skipWin = test.skipIf(process.platform === "win32");
+
+/** What a marker-only root (no .git) carries: the first marker the binary refuses on. */
+const MARKER = CHECKOUT_MARKERS[0];
+
+/** Sorted relative paths + content hashes: byte-level proof a root was not touched. */
+function snapshotTree(dir: string, prefix = ""): string[] {
+  const out: string[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const rel = posix.join(prefix, entry.name);
+    if (entry.isDirectory()) {
+      out.push(`${rel}/`, ...snapshotTree(join(dir, entry.name), rel));
+    } else {
+      const hash = createHash("sha256")
+        .update(readFileSync(join(dir, entry.name)))
+        .digest("hex");
+      out.push(`${rel} ${hash}`);
     }
-    return out.sort();
   }
+  return out.sort();
+}
 
-  /** This platform's asset plus checksums.txt; the POSIX stand-in records its own invocation
-   *  so a test can prove the handoff ran. */
-  function makeDownloadDir(): string {
-    const target = currentReleaseTarget();
-    if (target === null) throw new Error("no release target for this platform");
-    const dir = tempDir("ce-guard-dl-");
-    const asset = releaseAssetName(target);
-    const body =
-      process.platform === "win32"
-        ? "not a real executable\n"
-        : '#!/usr/bin/env bash\ntouch "$0.invoked"\nexit 0\n';
-    writeFileSync(join(dir, asset), body);
-    const sha = createHash("sha256").update(body).digest("hex");
-    writeFileSync(join(dir, "checksums.txt"), `${sha}  ${asset}\n`);
-    return dir;
+/** This platform's asset plus checksums.txt; the POSIX stand-in records its own invocation
+ *  so a test can prove the handoff ran. */
+function makeDownloadDir(): string {
+  const target = currentReleaseTarget();
+  if (target === null) throw new Error("no release target for this platform");
+  const dir = tempDir("ce-guard-dl-");
+  const asset = releaseAssetName(target);
+  const body =
+    process.platform === "win32"
+      ? "not a real executable\n"
+      : '#!/usr/bin/env bash\ntouch "$0.invoked"\nexit 0\n';
+  writeFileSync(join(dir, asset), body);
+  const sha = createHash("sha256").update(body).digest("hex");
+  writeFileSync(join(dir, "checksums.txt"), `${sha}  ${asset}\n`);
+  return dir;
+}
+
+/** `git: "file"` is the worktree-style .git (a gitdir pointer), refused like the directory. */
+function makeRoot(marker: string, git: "dir" | "file" | "none"): string {
+  const root = tempDir("ce-guard-root-");
+  writeFileSync(join(root, marker), "{}\n");
+  mkdirSync(join(root, "node_modules"));
+  writeFileSync(join(root, "node_modules", "keep.txt"), "keep\n");
+  if (git === "dir") {
+    mkdirSync(join(root, ".git"));
+    writeFileSync(join(root, ".git", "HEAD"), "ref: refs/heads/main\n");
+  } else if (git === "file") {
+    writeFileSync(join(root, ".git"), "gitdir: /elsewhere\n");
   }
+  return root;
+}
 
-  /** `git: "file"` is the worktree-style .git (a gitdir pointer), refused like the directory. */
-  function makeRoot(marker: string, git: "dir" | "file" | "none"): string {
-    const root = tempDir("ce-guard-root-");
-    writeFileSync(join(root, marker), "{}\n");
-    mkdirSync(join(root, "node_modules"));
-    writeFileSync(join(root, "node_modules", "keep.txt"), "keep\n");
-    if (git === "dir") {
-      mkdirSync(join(root, ".git"));
-      writeFileSync(join(root, ".git", "HEAD"), "ref: refs/heads/main\n");
-    } else if (git === "file") {
-      writeFileSync(join(root, ".git"), "gitdir: /elsewhere\n");
-    }
-    return root;
+/** The installer's argv and environment for this platform. The Windows side runs under the
+ *  real Windows PowerShell 5.1, by its fixed path so a PATH a test strips still finds it. */
+function installerCommand(
+  root: string,
+  downloadBase: string,
+  extraEnv: Record<string, string> = {},
+  extraArgs: string[] = [],
+): { cmd: string; args: string[]; env: Record<string, string | undefined> } {
+  const extra = { COPILOT_ENV_DOWNLOAD_BASE: downloadBase, CI: "1", ...extraEnv };
+  if (process.platform === "win32") {
+    return withPowershellChildEnv("powershell", (env) => ({
+      cmd: join(
+        process.env.SystemRoot ?? "C:\\Windows",
+        "System32",
+        "WindowsPowerShell",
+        "v1.0",
+        "powershell.exe",
+      ),
+      args: [
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        join(ROOT, "install.ps1"),
+        "-InstallDir",
+        root,
+        ...extraArgs,
+      ],
+      env: { ...env, ...extra },
+    }));
   }
+  return {
+    cmd: "bash",
+    args: [join(ROOT, "install.sh"), "--dir", root, ...extraArgs],
+    env: { ...process.env, ...extra },
+  };
+}
 
-  /** The installer's argv and environment for this platform. The Windows side runs under the
-   *  real Windows PowerShell 5.1, by its fixed path so a PATH a test strips still finds it. */
-  function installerCommand(
-    root: string,
-    downloadBase: string,
-    extraEnv: Record<string, string> = {},
-    extraArgs: string[] = [],
-  ): { cmd: string; args: string[]; env: Record<string, string | undefined> } {
-    const extra = { COPILOT_ENV_DOWNLOAD_BASE: downloadBase, CI: "1", ...extraEnv };
-    if (process.platform === "win32") {
-      return withPowershellChildEnv("powershell", (env) => ({
-        cmd: join(
-          process.env.SystemRoot ?? "C:\\Windows",
-          "System32",
-          "WindowsPowerShell",
-          "v1.0",
-          "powershell.exe",
-        ),
-        args: [
-          "-NoProfile",
-          "-NonInteractive",
-          "-ExecutionPolicy",
-          "Bypass",
-          "-File",
-          join(ROOT, "install.ps1"),
-          "-InstallDir",
-          root,
-          ...extraArgs,
-        ],
-        env: { ...env, ...extra },
-      }));
-    }
-    return {
-      cmd: "bash",
-      args: [join(ROOT, "install.sh"), "--dir", root, ...extraArgs],
-      env: { ...process.env, ...extra },
-    };
-  }
+function runInstaller(
+  root: string,
+  downloadDir: string,
+  extraEnv: Record<string, string> = {},
+  extraArgs: string[] = [],
+): ReturnType<typeof runSync> {
+  const { cmd, args, env } = installerCommand(root, downloadDir, extraEnv, extraArgs);
+  return runSync(cmd, args, { env });
+}
 
-  function runInstaller(
-    root: string,
-    downloadDir: string,
-    extraEnv: Record<string, string> = {},
-    extraArgs: string[] = [],
-  ): ReturnType<typeof runSync> {
-    const { cmd, args, env } = installerCommand(root, downloadDir, extraEnv, extraArgs);
-    return runSync(cmd, args, { env });
-  }
+/** install.sh on a pseudo-terminal (`script`), CI unset, so the shell-reload offer at the end
+ *  is reachable; $SHELL is a stand-in that records `$0.ran` when the reload execs it. Stdin is
+ *  at EOF, so an offer that IS made reads no answer and declines. */
+function runInstallerOnTty(
+  root: string,
+  downloadDir: string,
+  extraArgs: string[],
+): { res: ReturnType<typeof runSync>; reloaded: boolean } {
+  const shell = join(downloadDir, "reload-shell.sh");
+  writeFileSync(shell, '#!/usr/bin/env bash\ntouch "$0.ran"\nexit 0\n', { mode: 0o755 });
+  // $SHELL rides the command, not script's environment: util-linux script runs its -c string
+  // through $SHELL, which would exec the stand-in in place of the installer.
+  const command = [
+    "env",
+    `SHELL=${shell}`,
+    "bash",
+    join(ROOT, "install.sh"),
+    "--dir",
+    root,
+    ...extraArgs,
+  ];
+  const env: Record<string, string | undefined> = {
+    ...process.env,
+    COPILOT_ENV_DOWNLOAD_BASE: downloadDir,
+    CI: undefined,
+    COPILOT_ENV_NO_EXEC_SHELL: undefined,
+  };
+  // BSD script (macOS) takes the command as trailing argv; util-linux takes one -c string.
+  const res =
+    process.platform === "darwin"
+      ? runSync("script", ["-q", "/dev/null", ...command], { env })
+      : runSync("script", ["-qec", command.map((a) => `'${a}'`).join(" "), "/dev/null"], { env });
+  return { res, reloaded: existsSync(`${shell}.ran`) };
+}
 
-  /** install.sh on a pseudo-terminal (`script`), CI unset, so the shell-reload offer at the end
-   *  is reachable; $SHELL is a stand-in that records `$0.ran` when the reload execs it. Stdin is
-   *  at EOF, so an offer that IS made reads no answer and declines. */
-  function runInstallerOnTty(
-    root: string,
-    downloadDir: string,
-    extraArgs: string[],
-  ): { res: ReturnType<typeof runSync>; reloaded: boolean } {
-    const shell = join(downloadDir, "reload-shell.sh");
-    writeFileSync(shell, '#!/usr/bin/env bash\ntouch "$0.ran"\nexit 0\n', { mode: 0o755 });
-    // $SHELL rides the command, not script's environment: util-linux script runs its -c string
-    // through $SHELL, which would exec the stand-in in place of the installer.
-    const command = [
-      "env",
-      `SHELL=${shell}`,
-      "bash",
-      join(ROOT, "install.sh"),
-      "--dir",
-      root,
-      ...extraArgs,
-    ];
-    const env: Record<string, string | undefined> = {
-      ...process.env,
-      COPILOT_ENV_DOWNLOAD_BASE: downloadDir,
-      CI: undefined,
-      COPILOT_ENV_NO_EXEC_SHELL: undefined,
-    };
-    // BSD script (macOS) takes the command as trailing argv; util-linux takes one -c string.
-    const res =
-      process.platform === "darwin"
-        ? runSync("script", ["-q", "/dev/null", ...command], { env })
-        : runSync("script", ["-qec", command.map((a) => `'${a}'`).join(" "), "/dev/null"], { env });
-    return { res, reloaded: existsSync(`${shell}.ran`) };
-  }
+function cleanup(...dirs: string[]): void {
+  for (const dir of dirs) removeDir(dir);
+}
 
-  function cleanup(...dirs: string[]): void {
-    for (const dir of dirs) removeDir(dir);
-  }
+/** Attached to every assertion so a red on a remote-only platform is diagnosable without a
+ *  rerun. The root's existence is reported too, so a vanished root never reads as a clean sweep. */
+function evidence(res: ReturnType<typeof runSync>, root: string): string {
+  const at = (...parts: string[]) => existsSync(join(root, ...parts));
+  return [
+    `installer exit=${res.exitCode}`,
+    `root exists=${existsSync(root)}; mutations: node_modules=${at(
+      "node_modules",
+    )} bin/${installedBinaryName()}=${at("bin", installedBinaryName())}`,
+    "--- installer stdout ---",
+    res.stdout,
+    "--- installer stderr ---",
+    res.stderr,
+  ].join("\n");
+}
 
-  /** Attached to every assertion so a red on a remote-only platform is diagnosable without a
-   *  rerun. The root's existence is reported too, so a vanished root never reads as a clean sweep. */
-  function evidence(res: ReturnType<typeof runSync>, root: string): string {
-    const at = (...parts: string[]) => existsSync(join(root, ...parts));
-    return [
-      `installer exit=${res.exitCode}`,
-      `root exists=${existsSync(root)}; mutations: node_modules=${at(
-        "node_modules",
-      )} bin/${installedBinaryName()}=${at("bin", installedBinaryName())}`,
-      "--- installer stdout ---",
-      res.stdout,
-      "--- installer stderr ---",
-      res.stderr,
-    ].join("\n");
-  }
+/** install.sh exits 2 on a refusal; install.ps1's exit code is only known to be non-zero. */
+function expectRefused(res: ReturnType<typeof runSync>, why: string): void {
+  if (process.platform === "win32") expect(res.exitCode, why).not.toBe(0);
+  else expect(res.exitCode, why).toBe(2);
+}
 
-  /** install.sh exits 2 on a refusal; install.ps1's exit code is only known to be non-zero. */
-  function expectRefused(res: ReturnType<typeof runSync>, why: string): void {
-    if (process.platform === "win32") expect(res.exitCode, why).not.toBe(0);
-    else expect(res.exitCode, why).toBe(2);
-  }
-
-  test("the installer refuses a checkout root and leaves it byte-identical", () => {
-    const downloadDir = makeDownloadDir();
-    try {
-      for (const git of ["dir", "file"] as const) {
-        const root = makeRoot("package.json", git);
-        try {
-          const before = snapshotTree(root);
-          const res = runInstaller(root, downloadDir);
-          const why = evidence(res, root);
-          expectRefused(res, why);
-          expect(res.stderr, why).toContain("source checkout");
-          expect(snapshotTree(root), why).toEqual(before);
-        } finally {
-          cleanup(root);
-        }
-      }
-    } finally {
-      cleanup(downloadDir);
-    }
-  });
-
-  test("the installer proceeds on a marker-only root (no .git) and hands off to the binary", () => {
-    const downloadDir = makeDownloadDir();
-    const root = makeRoot(MARKER, "none");
-    try {
-      const res = runInstaller(root, downloadDir);
-      const why = evidence(res, root);
-      // The installer sweeps nothing itself (it hands off to `agent install`), so the root's own
-      // files must survive the handoff.
-      expect(existsSync(join(root, "node_modules")), why).toBe(true);
-      expect(existsSync(join(root, MARKER)), why).toBe(true);
-      expect(existsSync(join(root, "bin", installedBinaryName())), why).toBe(true);
-      if (process.platform === "win32") {
-        // The stand-in .exe cannot run, so the non-zero exit proves the handoff was attempted
-        // and the mutations above prove the guard let the marker-only root through.
-        expect(res.exitCode, why).not.toBe(0);
-      } else {
-        expect(res.exitCode, why).toBe(0);
-        // An installer that never invoked the binary would pass the assertions above while
-        // installing nothing.
-        expect(existsSync(join(root, "bin", `${installedBinaryName()}.invoked`)), why).toBe(true);
-      }
-    } finally {
-      cleanup(root, downloadDir);
-    }
-  });
-
-  // The one run that fetches over HTTP: the smokes and every other case here hand the installer
-  // a directory, so the transport (curl on POSIX; on Windows the web cmdlets once curl.exe is off
-  // PATH) runs against a real server nowhere else before a release. curl is install.sh's only
-  // transport, and the container image (Dockerfile) ships none: there the POSIX run skips.
-  const posixWithCurl = test.skipIf(process.platform !== "win32" && Bun.which("curl") === null);
-  posixWithCurl(
-    "the installer downloads from a URL base, on Windows with no curl.exe on PATH",
-    async () => {
-      const win = process.platform === "win32";
-      const downloadDir = makeDownloadDir();
-      const served = Bun.serve({
-        hostname: "127.0.0.1",
-        port: 0,
-        fetch(req) {
-          const file = join(downloadDir, basename(new URL(req.url).pathname));
-          return existsSync(file)
-            ? new Response(Bun.file(file))
-            : new Response("not here", { status: 404 });
-        },
-      });
-      const root = makeRoot(MARKER, "none");
-      // POSIX keeps its PATH: curl IS install.sh's transport, and the fallback under test is
-      // install.ps1's. The key is spelled as this process's environment spells it, so the override
-      // replaces the entry instead of adding a second one.
-      const barePath = tempDir("ce-guard-bare-path-");
-      const pathKey = Object.keys(process.env).find((k) => k.toUpperCase() === "PATH") ?? "PATH";
+test("the installer refuses a checkout root and leaves it byte-identical", () => {
+  const downloadDir = makeDownloadDir();
+  try {
+    for (const git of ["dir", "file"] as const) {
+      const root = makeRoot("package.json", git);
       try {
-        const { cmd, args, env } = installerCommand(
-          root,
-          `http://127.0.0.1:${served.port}`,
-          win ? { [pathKey]: barePath } : {},
-        );
-        const child = spawnChild(cmd, { args, env, stdout: "pipe", stderr: "pipe" });
-        const [stdout, stderr, exitCode] = await Promise.all([
-          new Response(child.stdout).text(),
-          new Response(child.stderr).text(),
-          child.exited,
-        ]);
-        const res = { exitCode, stdout, stderr };
-        const why = evidence(res, root);
-        const installed = join(root, "bin", installedBinaryName());
-        const target = currentReleaseTarget();
-        if (target === null) throw new Error("no release target for this platform");
-        const asset = releaseAssetName(target);
-        // The bytes that reached bin/ are the served asset's: a run that skipped the fetch, or
-        // fetched the wrong thing, fails the installer's own SHA256 check before this.
-        expect(existsSync(installed), why).toBe(true);
-        expect(readFileSync(installed, "utf8"), why).toBe(
-          readFileSync(join(downloadDir, asset), "utf8"),
-        );
-        if (win) {
-          // The stand-in .exe cannot run, so the handoff's non-zero exit is the only exit on offer.
-          expect(exitCode, why).not.toBe(0);
-        } else {
-          expect(exitCode, why).toBe(0);
-          expect(existsSync(`${installed}.invoked`), why).toBe(true);
-        }
-      } finally {
-        served.stop(true);
-        cleanup(root, downloadDir, barePath);
-      }
-    },
-  );
-
-  // POSIX only: the Windows stand-in asset is deliberately not executable (the refusal
-  // tests never reach the handoff), and this case needs the handoff to succeed.
-  skipWin(
-    "a fresh install names the root it creates, in the seam's shape, before the handoff",
-    () => {
-      // The root does not exist yet, so the shell creates it before the binary (which
-      // names its own writes) can: the installer must say so itself, on stderr.
-      const downloadDir = makeDownloadDir();
-      const parent = tempDir("ce-guard-fresh-");
-      // Two levels deep: the missing ancestor is created too, and named before the root.
-      const root = join(parent, "nested", "copilot-env");
-      try {
+        const before = snapshotTree(root);
         const res = runInstaller(root, downloadDir);
         const why = evidence(res, root);
-        expect(res.exitCode, why).toBe(0);
-        const created = res.stderr.split(/\r?\n/).filter((l) => l.startsWith("created -> "));
-        expect(created, why).toEqual([
-          `created -> ${join(parent, "nested")}`,
-          `created -> ${root}`,
-        ]);
-        // Control: a pre-existing root is not announced as created.
-        const again = runInstaller(root, downloadDir);
-        expect(again.exitCode, evidence(again, root)).toBe(0);
-        expect(again.stderr, evidence(again, root)).not.toContain(`created -> ${root}`);
+        expectRefused(res, why);
+        expect(res.stderr, why).toContain("source checkout");
+        expect(snapshotTree(root), why).toEqual(before);
       } finally {
-        cleanup(parent, downloadDir);
+        cleanup(root);
       }
-    },
-  );
+    }
+  } finally {
+    cleanup(downloadDir);
+  }
+});
 
-  // POSIX only: the tokenless `latest` lookup is install.sh's. GitHub answers /releases/latest
-  // with a redirect to the tag page; the tag is that final URL's last path segment, whatever
-  // query, fragment, or trailing slash rides along. The tag is pinned where it leaves the
-  // installer: the download URLs a curl stand-in on PATH logs.
-  skipWin(
-    "install.sh takes the release tag from the redirect's final URL without its query, fragment, or trailing slash",
-    () => {
+test("the installer proceeds on a marker-only root (no .git) and hands off to the binary", () => {
+  const downloadDir = makeDownloadDir();
+  const root = makeRoot(MARKER, "none");
+  try {
+    const res = runInstaller(root, downloadDir);
+    const why = evidence(res, root);
+    // The installer sweeps nothing itself (it hands off to `agent install`), so the root's own
+    // files must survive the handoff.
+    expect(existsSync(join(root, "node_modules")), why).toBe(true);
+    expect(existsSync(join(root, MARKER)), why).toBe(true);
+    expect(existsSync(join(root, "bin", installedBinaryName())), why).toBe(true);
+    if (process.platform === "win32") {
+      // The stand-in .exe cannot run, so the non-zero exit proves the handoff was attempted
+      // and the mutations above prove the guard let the marker-only root through.
+      expect(res.exitCode, why).not.toBe(0);
+    } else {
+      expect(res.exitCode, why).toBe(0);
+      // An installer that never invoked the binary would pass the assertions above while
+      // installing nothing.
+      expect(existsSync(join(root, "bin", `${installedBinaryName()}.invoked`)), why).toBe(true);
+    }
+  } finally {
+    cleanup(root, downloadDir);
+  }
+});
+
+/** install.sh's one transport is curl; the container image (Dockerfile) has none, so it skips there. */
+const posixWithCurl = test.skipIf(process.platform !== "win32" && Bun.which("curl") === null);
+
+// The one run that fetches over HTTP: the smokes and every other case here hand the installer
+// a directory, so the transport (curl on POSIX; on Windows the web cmdlets once curl.exe is off
+// PATH) runs against a real server nowhere else before a release.
+posixWithCurl(
+  "the installer downloads from a URL base, on Windows with no curl.exe on PATH",
+  async () => {
+    const win = process.platform === "win32";
+    const downloadDir = makeDownloadDir();
+    const served = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch(req) {
+        const file = join(downloadDir, basename(new URL(req.url).pathname));
+        return existsSync(file)
+          ? new Response(Bun.file(file))
+          : new Response("not here", { status: 404 });
+      },
+    });
+    const root = makeRoot(MARKER, "none");
+    // POSIX keeps its PATH: curl IS install.sh's transport, and the fallback under test is
+    // install.ps1's. The key is spelled as this process's environment spells it, so the override
+    // replaces the entry instead of adding a second one.
+    const barePath = tempDir("ce-guard-bare-path-");
+    const pathKey = Object.keys(process.env).find((k) => k.toUpperCase() === "PATH") ?? "PATH";
+    try {
+      const { cmd, args, env } = installerCommand(
+        root,
+        `http://127.0.0.1:${served.port}`,
+        win ? { [pathKey]: barePath } : {},
+      );
+      const child = spawnChild(cmd, { args, env, stdout: "pipe", stderr: "pipe" });
+      const [stdout, stderr, exitCode] = await Promise.all([
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+        child.exited,
+      ]);
+      const res = { exitCode, stdout, stderr };
+      const why = evidence(res, root);
+      const installed = join(root, "bin", installedBinaryName());
       const target = currentReleaseTarget();
       if (target === null) throw new Error("no release target for this platform");
       const asset = releaseAssetName(target);
-      const tagPage = "https://github.com/Vivswan/copilot-env/releases/tag/v1.2.3";
-      const finalUrls = [tagPage, `${tagPage}?view=1`, `${tagPage}#notes`, `${tagPage}/`];
-      const downloadDir = makeDownloadDir();
-      const binDir = tempDir("ce-guard-curl-");
-      const log = join(binDir, "urls.log");
-      writeFileSync(
-        join(binDir, "curl"),
-        [
-          "#!/usr/bin/env bash",
-          "set -eu",
-          'dest=""; url=""; probe=false',
-          "while [ $# -gt 0 ]; do",
-          '  case "$1" in',
-          '    -o) shift; dest="$1" ;;',
-          "    -w) shift; probe=true ;;",
-          "    -H) shift ;;",
-          "    -*) ;;",
-          '    *) url="$1" ;;',
-          "  esac",
-          "  shift",
-          "done",
-          `printf '%s\\n' "$url" >> "$CE_TEST_CURL_LOG"`,
-          `if [ "$probe" = true ]; then printf '%s' "$CE_TEST_FINAL_URL"; exit 0; fi`,
-          'cp -- "$CE_TEST_ASSET_DIR/$(basename "$url")" "$dest"',
-          "",
-        ].join("\n"),
-        { mode: 0o755 },
+      // The bytes that reached bin/ are the served asset's: a run that skipped the fetch, or
+      // fetched the wrong thing, fails the installer's own SHA256 check before this.
+      expect(existsSync(installed), why).toBe(true);
+      expect(readFileSync(installed, "utf8"), why).toBe(
+        readFileSync(join(downloadDir, asset), "utf8"),
       );
-      try {
-        for (const finalUrl of finalUrls) {
-          const root = makeRoot(MARKER, "none");
-          rmSync(log, { force: true });
-          try {
-            const res = runSync("bash", [join(ROOT, "install.sh"), "--dir", root], {
-              env: {
-                ...process.env,
-                PATH: pathLedBy(binDir),
-                CI: "1",
-                CE_TEST_FINAL_URL: finalUrl,
-                CE_TEST_CURL_LOG: log,
-                CE_TEST_ASSET_DIR: downloadDir,
-                COPILOT_ENV_DOWNLOAD_BASE: undefined,
-                COPILOT_ENV_INSTALL_REF: undefined,
-                GH_TOKEN: undefined,
-                GITHUB_TOKEN: undefined,
-              },
-            });
-            const why = `final URL ${finalUrl}\n${evidence(res, root)}`;
-            expect(res.exitCode, why).toBe(0);
-            expect(existsSync(join(root, "bin", `${installedBinaryName()}.invoked`)), why).toBe(
-              true,
-            );
-            expect(readFileSync(log, "utf8").split("\n"), why).toEqual([
-              "https://github.com/Vivswan/copilot-env/releases/latest",
-              `https://github.com/Vivswan/copilot-env/releases/download/v1.2.3/${asset}`,
-              "https://github.com/Vivswan/copilot-env/releases/download/v1.2.3/checksums.txt",
-              "",
-            ]);
-          } finally {
-            cleanup(root);
-          }
-        }
-      } finally {
-        cleanup(binDir, downloadDir);
+      if (win) {
+        // The stand-in .exe cannot run, so the handoff's non-zero exit is the only exit on offer.
+        expect(exitCode, why).not.toBe(0);
+      } else {
+        expect(exitCode, why).toBe(0);
+        expect(existsSync(`${installed}.invoked`), why).toBe(true);
       }
-    },
-  );
-
-  test("the installer refuses a bad argument before any other work", () => {
-    // An empty download directory keeps a regressed run off the network: it fails at the local copy.
-    const win = process.platform === "win32";
-    const refused: { args: string[]; reason: string }[] = [
-      { args: win ? ["-Yes", "-No"] : ["--yes", "--no"], reason: "conflict" },
-      // A flag where --dir's value should be is a missing value, not a path named "--yes";
-      // install.ps1 refuses the missing argument natively.
-      ...(win ? [] : [{ args: ["--dir", "--yes"], reason: "--dir needs a directory argument" }]),
-    ];
-    for (const { args, reason } of refused) {
-      const root = tempDir("ce-guard-refused-");
-      const downloadDir = tempDir("ce-guard-dl-empty-");
-      try {
-        const res = runInstaller(root, downloadDir, {}, args);
-        const why = `${args.join(" ")}\n${evidence(res, root)}`;
-        expectRefused(res, why);
-        expect(res.stderr, why).toContain(reason);
-        expect(existsSync(join(root, "bin")), why).toBe(false);
-      } finally {
-        cleanup(root, downloadDir);
-      }
+    } finally {
+      served.stop(true);
+      cleanup(root, downloadDir, barePath);
     }
-  });
+  },
+);
 
-  skipWin("on a terminal, --no skips the reload offer and --yes takes it without asking", () => {
+// POSIX only: the Windows stand-in asset is deliberately not executable (the refusal
+// tests never reach the handoff), and this case needs the handoff to succeed.
+skipWin(
+  "a fresh install names the root it creates, in the seam's shape, before the handoff",
+  () => {
+    // The root does not exist yet, so the shell creates it before the binary (which
+    // names its own writes) can: the installer must say so itself, on stderr.
     const downloadDir = makeDownloadDir();
-    const prompt = "Reload your shell now to activate copilot-env?";
-    const rows: { args: string[]; prompted: boolean; reloaded: boolean }[] = [
-      // Control: the offer is made here, so an absence below is the flag's doing.
-      { args: [], prompted: true, reloaded: false },
-      { args: ["--no"], prompted: false, reloaded: false },
-      { args: ["--yes"], prompted: false, reloaded: true },
-    ];
+    const parent = tempDir("ce-guard-fresh-");
+    // Two levels deep: the missing ancestor is created too, and named before the root.
+    const root = join(parent, "nested", "copilot-env");
     try {
-      for (const row of rows) {
+      const res = runInstaller(root, downloadDir);
+      const why = evidence(res, root);
+      expect(res.exitCode, why).toBe(0);
+      const created = res.stderr.split(/\r?\n/).filter((l) => l.startsWith("created -> "));
+      expect(created, why).toEqual([`created -> ${join(parent, "nested")}`, `created -> ${root}`]);
+      // Control: a pre-existing root is not announced as created.
+      const again = runInstaller(root, downloadDir);
+      expect(again.exitCode, evidence(again, root)).toBe(0);
+      expect(again.stderr, evidence(again, root)).not.toContain(`created -> ${root}`);
+    } finally {
+      cleanup(parent, downloadDir);
+    }
+  },
+);
+
+// POSIX only: the tokenless `latest` lookup is install.sh's. GitHub answers /releases/latest
+// with a redirect to the tag page; the tag is that final URL's last path segment, whatever
+// query, fragment, or trailing slash rides along. The tag is pinned where it leaves the
+// installer: the download URLs a curl stand-in on PATH logs.
+skipWin(
+  "install.sh takes the release tag from the redirect's final URL without its query, fragment, or trailing slash",
+  () => {
+    const target = currentReleaseTarget();
+    if (target === null) throw new Error("no release target for this platform");
+    const asset = releaseAssetName(target);
+    const tagPage = "https://github.com/Vivswan/copilot-env/releases/tag/v1.2.3";
+    const finalUrls = [tagPage, `${tagPage}?view=1`, `${tagPage}#notes`, `${tagPage}/`];
+    const downloadDir = makeDownloadDir();
+    const binDir = tempDir("ce-guard-curl-");
+    const log = join(binDir, "urls.log");
+    writeFileSync(
+      join(binDir, "curl"),
+      [
+        "#!/usr/bin/env bash",
+        "set -eu",
+        'dest=""; url=""; probe=false',
+        "while [ $# -gt 0 ]; do",
+        '  case "$1" in',
+        '    -o) shift; dest="$1" ;;',
+        "    -w) shift; probe=true ;;",
+        "    -H) shift ;;",
+        "    -*) ;;",
+        '    *) url="$1" ;;',
+        "  esac",
+        "  shift",
+        "done",
+        `printf '%s\\n' "$url" >> "$CE_TEST_CURL_LOG"`,
+        `if [ "$probe" = true ]; then printf '%s' "$CE_TEST_FINAL_URL"; exit 0; fi`,
+        'cp -- "$CE_TEST_ASSET_DIR/$(basename "$url")" "$dest"',
+        "",
+      ].join("\n"),
+      { mode: 0o755 },
+    );
+    try {
+      for (const finalUrl of finalUrls) {
         const root = makeRoot(MARKER, "none");
+        rmSync(log, { force: true });
         try {
-          const { res, reloaded } = runInstallerOnTty(root, downloadDir, row.args);
-          const why = `${row.args.join(" ") || "(no flag)"}\n${evidence(res, root)}`;
+          const res = runSync("bash", [join(ROOT, "install.sh"), "--dir", root], {
+            env: {
+              ...process.env,
+              PATH: pathLedBy(binDir),
+              CI: "1",
+              CE_TEST_FINAL_URL: finalUrl,
+              CE_TEST_CURL_LOG: log,
+              CE_TEST_ASSET_DIR: downloadDir,
+              COPILOT_ENV_DOWNLOAD_BASE: undefined,
+              COPILOT_ENV_INSTALL_REF: undefined,
+              GH_TOKEN: undefined,
+              GITHUB_TOKEN: undefined,
+            },
+          });
+          const why = `final URL ${finalUrl}\n${evidence(res, root)}`;
           expect(res.exitCode, why).toBe(0);
-          // The handoff ran, so the offer at the end was reached rather than skipped by a refusal.
           expect(existsSync(join(root, "bin", `${installedBinaryName()}.invoked`)), why).toBe(true);
-          expect(res.stdout.includes(prompt), why).toBe(row.prompted);
-          expect(reloaded, why).toBe(row.reloaded);
+          expect(readFileSync(log, "utf8").split("\n"), why).toEqual([
+            "https://github.com/Vivswan/copilot-env/releases/latest",
+            `https://github.com/Vivswan/copilot-env/releases/download/v1.2.3/${asset}`,
+            "https://github.com/Vivswan/copilot-env/releases/download/v1.2.3/checksums.txt",
+            "",
+          ]);
         } finally {
           cleanup(root);
-          rmSync(join(downloadDir, "reload-shell.sh.ran"), { force: true });
         }
       }
     } finally {
-      cleanup(downloadDir);
+      cleanup(binDir, downloadDir);
     }
-  });
+  },
+);
 
-  test("the installer refuses the lexically unsafe targets before any other work", () => {
-    // The installer keeps only a lexical pre-check (the canonical one is in the binary); it
-    // must still stop the worst spellings before the first network call or write. The empty
-    // download source keeps a regressed run off the network: it fails at the local copy.
-    const win = process.platform === "win32";
-    const home = (win ? process.env.USERPROFILE : process.env.HOME) ?? "";
-    expect(home.length).toBeGreaterThan(0);
-    const unsafe = win
-      ? // The ps1 guard collapses separators and dot components via GetFullPath, so those
-        // spellings land on the same refusals.
-        [
-          parse(home).root, // the filesystem root, e.g. C:\
-          home,
-          `${home}\\`, // trailing separator must not defeat the compare
-          `${home}/`, // the alt separator spelling of the same
-          home.replaceAll("\\", "\\\\"), // internal doubled separators
-          `${home}\\.`, // GetFullPath collapses the dot component back to home
-          `${home}\\*`, // wildcard rejection
-        ]
-      : //   "/Users//me"                  -> distinct from home unless separators collapse first
-        //   internal-only doubled slash   -> pinned apart, or a leading-"//" rejection alone passes
-        [
-          "/",
-          "//",
-          home,
-          `${home}/`,
-          home.replaceAll("/", "//"),
-          home.replace(/\/(?=[^/]*$)/, "//"), // internal-only: double just the last slash
-          "/tmp/..",
-          `${home}/.`,
-          ".",
-        ];
-    const emptyDownloadDir = tempDir("ce-lexical-dl-");
+test("the installer refuses a bad argument before any other work", () => {
+  // An empty download directory keeps a regressed run off the network: it fails at the local copy.
+  const win = process.platform === "win32";
+  const refused: { args: string[]; reason: string }[] = [
+    { args: win ? ["-Yes", "-No"] : ["--yes", "--no"], reason: "conflict" },
+    // A flag where --dir's value should be is a missing value, not a path named "--yes";
+    // install.ps1 refuses the missing argument natively.
+    ...(win ? [] : [{ args: ["--dir", "--yes"], reason: "--dir needs a directory argument" }]),
+  ];
+  for (const { args, reason } of refused) {
+    const root = tempDir("ce-guard-refused-");
+    const downloadDir = tempDir("ce-guard-dl-empty-");
     try {
-      for (const dir of unsafe) {
-        const res = runInstaller(dir, emptyDownloadDir);
-        const why = `target '${dir}' exit=${res.exitCode}:\n${res.stderr}`;
-        expectRefused(res, why);
-        expect(res.stderr, why).toContain("unsafe install directory");
-      }
-    } finally {
-      removeDir(emptyDownloadDir);
-    }
-  });
-
-  // PowerShell 7's own module directory: prepended onto a 5.1 child's
-  // PSModulePath (what a pwsh parent does), its Core-edition in-box modules
-  // shadow 5.1's and cannot load there, so autoload of Get-FileHash dies.
-  const ps7Modules =
-    process.platform === "win32"
-      ? join(process.env.ProgramFiles ?? "C:\\Program Files", "PowerShell", "7", "Modules")
-      : "";
-  // Off CI a machine without pwsh 7 genuinely cannot host the poison; on CI a
-  // missing directory must fail the test below instead, or a runner-image
-  // change would silently retire this coverage.
-  const winWithPwsh7 = test.skipIf(
-    process.platform !== "win32" || (!existsSync(ps7Modules) && !process.env.CI),
-  );
-
-  winWithPwsh7("install.ps1 shields itself from a pwsh-poisoned PSModulePath", () => {
-    // Regression guard for install.ps1's own PSModulePath reset: without it,
-    // this exact environment killed the install at checksum verification.
-    expect(existsSync(ps7Modules), `pwsh 7 module dir vanished: ${ps7Modules}`).toBe(true);
-    const poisoned = `${ps7Modules};${process.env.PSModulePath ?? ""}`;
-    // Negative control: the poison must bite on this machine, or the run below
-    // proves nothing about the reset. Pin the failure to the Get-FileHash
-    // autoload itself, so a timeout or an unrelated error cannot stand in.
-    const probe = runSync(
-      "powershell",
-      [
-        "-NoProfile",
-        "-NonInteractive",
-        "-Command",
-        "Get-FileHash -LiteralPath $PSHOME\\powershell.exe -Algorithm SHA256",
-      ],
-      { env: { ...process.env, PSModulePath: poisoned } },
-    );
-    const probeWhy = `unshielded probe exit=${probe.exitCode}:\n${probe.stderr}`;
-    expect(probe.exitCode, probeWhy).not.toBe(0);
-    expect(probe.stderr, probeWhy).toContain("Get-FileHash");
-
-    const downloadDir = makeDownloadDir();
-    const root = makeRoot(MARKER, "none");
-    try {
-      const res = runInstaller(root, downloadDir, { PSModulePath: poisoned });
-      const why = evidence(res, root);
-      expect(existsSync(join(root, "bin", installedBinaryName())), why).toBe(true);
+      const res = runInstaller(root, downloadDir, {}, args);
+      const why = `${args.join(" ")}\n${evidence(res, root)}`;
+      expectRefused(res, why);
+      expect(res.stderr, why).toContain(reason);
+      expect(existsSync(join(root, "bin")), why).toBe(false);
     } finally {
       cleanup(root, downloadDir);
     }
-  });
+  }
+});
+
+skipWin("on a terminal, --no skips the reload offer and --yes takes it without asking", () => {
+  const downloadDir = makeDownloadDir();
+  const prompt = "Reload your shell now to activate copilot-env?";
+  const rows: { args: string[]; prompted: boolean; reloaded: boolean }[] = [
+    // Control: the offer is made here, so an absence below is the flag's doing.
+    { args: [], prompted: true, reloaded: false },
+    { args: ["--no"], prompted: false, reloaded: false },
+    { args: ["--yes"], prompted: false, reloaded: true },
+  ];
+  try {
+    for (const row of rows) {
+      const root = makeRoot(MARKER, "none");
+      try {
+        const { res, reloaded } = runInstallerOnTty(root, downloadDir, row.args);
+        const why = `${row.args.join(" ") || "(no flag)"}\n${evidence(res, root)}`;
+        expect(res.exitCode, why).toBe(0);
+        // The handoff ran, so the offer at the end was reached rather than skipped by a refusal.
+        expect(existsSync(join(root, "bin", `${installedBinaryName()}.invoked`)), why).toBe(true);
+        expect(res.stdout.includes(prompt), why).toBe(row.prompted);
+        expect(reloaded, why).toBe(row.reloaded);
+      } finally {
+        cleanup(root);
+        rmSync(join(downloadDir, "reload-shell.sh.ran"), { force: true });
+      }
+    }
+  } finally {
+    cleanup(downloadDir);
+  }
+});
+
+test("the installer refuses the lexically unsafe targets before any other work", () => {
+  // The installer keeps only a lexical pre-check (the canonical one is in the binary); it
+  // must still stop the worst spellings before the first network call or write. The empty
+  // download source keeps a regressed run off the network: it fails at the local copy.
+  const win = process.platform === "win32";
+  const home = (win ? process.env.USERPROFILE : process.env.HOME) ?? "";
+  expect(home.length).toBeGreaterThan(0);
+  const unsafe = win
+    ? // The ps1 guard collapses separators and dot components via GetFullPath, so those
+      // spellings land on the same refusals.
+      [
+        parse(home).root, // the filesystem root, e.g. C:\
+        home,
+        `${home}\\`, // trailing separator must not defeat the compare
+        `${home}/`, // the alt separator spelling of the same
+        home.replaceAll("\\", "\\\\"), // internal doubled separators
+        `${home}\\.`, // GetFullPath collapses the dot component back to home
+        `${home}\\*`, // wildcard rejection
+      ]
+    : //   "/Users//me"                  -> distinct from home unless separators collapse first
+      //   internal-only doubled slash   -> pinned apart, or a leading-"//" rejection alone passes
+      [
+        "/",
+        "//",
+        home,
+        `${home}/`,
+        home.replaceAll("/", "//"),
+        home.replace(/\/(?=[^/]*$)/, "//"), // internal-only: double just the last slash
+        "/tmp/..",
+        `${home}/.`,
+        ".",
+      ];
+  const emptyDownloadDir = tempDir("ce-lexical-dl-");
+  try {
+    for (const dir of unsafe) {
+      const res = runInstaller(dir, emptyDownloadDir);
+      const why = `target '${dir}' exit=${res.exitCode}:\n${res.stderr}`;
+      expectRefused(res, why);
+      expect(res.stderr, why).toContain("unsafe install directory");
+    }
+  } finally {
+    removeDir(emptyDownloadDir);
+  }
+});
+
+/** PowerShell 7's own module directory, which a pwsh parent prepends onto a 5.1 child's PSModulePath. */
+const ps7Modules =
+  process.platform === "win32"
+    ? join(process.env.ProgramFiles ?? "C:\\Program Files", "PowerShell", "7", "Modules")
+    : "";
+
+/** Off CI a machine without pwsh 7 cannot host the poison; on CI a missing directory fails the test. */
+const winWithPwsh7 = test.skipIf(
+  process.platform !== "win32" || (!existsSync(ps7Modules) && !process.env.CI),
+);
+
+// PowerShell 7's Core-edition in-box modules shadow 5.1's and cannot load there, so autoload of
+// Get-FileHash dies. On CI a missing module directory fails this test instead of skipping it, or
+// a runner-image change would silently retire the coverage.
+winWithPwsh7("install.ps1 shields itself from a pwsh-poisoned PSModulePath", () => {
+  // Regression guard for install.ps1's own PSModulePath reset: without it,
+  // this exact environment killed the install at checksum verification.
+  expect(existsSync(ps7Modules), `pwsh 7 module dir vanished: ${ps7Modules}`).toBe(true);
+  const poisoned = `${ps7Modules};${process.env.PSModulePath ?? ""}`;
+  // Negative control: the poison must bite on this machine, or the run below
+  // proves nothing about the reset. Pin the failure to the Get-FileHash
+  // autoload itself, so a timeout or an unrelated error cannot stand in.
+  const probe = runSync(
+    "powershell",
+    [
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "Get-FileHash -LiteralPath $PSHOME\\powershell.exe -Algorithm SHA256",
+    ],
+    { env: { ...process.env, PSModulePath: poisoned } },
+  );
+  const probeWhy = `unshielded probe exit=${probe.exitCode}:\n${probe.stderr}`;
+  expect(probe.exitCode, probeWhy).not.toBe(0);
+  expect(probe.stderr, probeWhy).toContain("Get-FileHash");
+
+  const downloadDir = makeDownloadDir();
+  const root = makeRoot(MARKER, "none");
+  try {
+    const res = runInstaller(root, downloadDir, { PSModulePath: poisoned });
+    const why = evidence(res, root);
+    expect(existsSync(join(root, "bin", installedBinaryName())), why).toBe(true);
+  } finally {
+    cleanup(root, downloadDir);
+  }
 });
 
 // POSIX only: the stand-ins are shell scripts found through PATH, which Windows' spawn does not
 // honour for `bun` and `powershell`.
 describe("the install script's arguments", () => {
-  const skipWin = test.skipIf(process.platform === "win32");
   const task = join(ROOT, "scripts", "install_local.ts");
 
   /** Stand-ins for the script's two spawns, first on PATH: `bun` (the build) and `bash` (the

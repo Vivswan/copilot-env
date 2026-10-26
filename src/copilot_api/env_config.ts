@@ -204,6 +204,38 @@ function applyPatch(map: Record<string, unknown>, patch: Record<string, unknown>
   }
 }
 
+/** The global map's setting keys replaced by `patch`, nothing merged; the state keys sharing the
+ *  map stay, and a map left with nothing is dropped. */
+function replaceGlobalSettings(
+  doc: Record<string, unknown>,
+  patch: CopilotEnvConfigData["global"],
+): void {
+  const global = ensureDict(doc, "global");
+  for (const key of GLOBAL_SETTING_KEYS) delete global[key];
+  applyPatch(global, patch);
+  if (Object.keys(global).length === 0) delete doc.global;
+}
+
+/** Every profile section's setting keys replaced by `sections`: a section it lacks keeps its state
+ *  keys alone, and a section (or the map) left with nothing is dropped. */
+function replaceProfileSettings(
+  doc: Record<string, unknown>,
+  sections: CopilotEnvConfigData["profiles"],
+): void {
+  const profiles = ensureDict(doc, "profiles");
+  for (const [name, section] of Object.entries(profiles)) {
+    if (!isRecord(section)) continue;
+    for (const key of PROFILE_SETTING_KEYS) delete section[key];
+    if (Object.keys(section).length === 0) delete profiles[name];
+  }
+  for (const [name, section] of Object.entries(sections)) {
+    const out = ensureDict(profiles, name);
+    applyPatch(out, section);
+    if (Object.keys(out).length === 0) delete profiles[name];
+  }
+  if (Object.keys(profiles).length === 0) delete doc.profiles;
+}
+
 /** The `host` literal in force for `profile` in one read of the store (`auto` and unset read as
  *  null), so a caller judging a not-yet-stored document (an import's plan) applies the same rule as
  *  the live store. */
@@ -465,22 +497,8 @@ export class CopilotEnvConfig {
    *  nothing merged; the state keys sharing the maps are untouched. */
   replace(data: CopilotEnvConfigData): void {
     this.store.update((d) => {
-      const global = ensureDict(d, "global");
-      for (const key of GLOBAL_SETTING_KEYS) delete global[key];
-      applyPatch(global, data.global);
-      if (Object.keys(global).length === 0) delete d.global;
-      const profiles = ensureDict(d, "profiles");
-      for (const [name, section] of Object.entries(profiles)) {
-        if (!isRecord(section)) continue;
-        for (const key of PROFILE_SETTING_KEYS) delete section[key];
-        if (Object.keys(section).length === 0) delete profiles[name];
-      }
-      for (const [name, section] of Object.entries(data.profiles)) {
-        const out = ensureDict(profiles, name);
-        applyPatch(out, section);
-        if (Object.keys(out).length === 0) delete profiles[name];
-      }
-      if (Object.keys(profiles).length === 0) delete d.profiles;
+      replaceGlobalSettings(d, data.global);
+      replaceProfileSettings(d, data.profiles);
     });
   }
 

@@ -48,6 +48,10 @@ export type LaunchAction =
   | { kind: "codex"; profile: Profile; relaxed: boolean; args: string[] }
   | { kind: "copilot"; relaxed: boolean; args: string[] };
 
+type ClaudeLaunch = Extract<LaunchAction, { kind: "claude" }>;
+type CodexLaunch = Extract<LaunchAction, { kind: "codex" }>;
+type CopilotLaunch = Extract<LaunchAction, { kind: "copilot" }>;
+
 export function parseLaunchAction(flags: LaunchFlags): LaunchAction {
   if (!(LAUNCH_CLIS as readonly string[]).includes(flags.cli)) {
     throw new Error(`unknown agent CLI '${flags.cli}' (expected claude | codex | copilot)`);
@@ -153,92 +157,98 @@ export async function writeProfileSettings(name: ProfileName, mode: ProfileMode)
   return settingsPathFor(resolveClaudeHome(), name);
 }
 
+async function prepareClaudeLaunch(action: ClaudeLaunch): Promise<LaunchPlan | null> {
+  const { relaxed } = action;
+  const plan: LaunchPlan = {
+    command: "claude",
+    args: [],
+    env: { CLAUDE_CODE_NO_FLICKER: "1" },
+    scrub: [],
+  };
+  // IS_SANDBOX tells Claude it runs sandboxed, so skipping permission prompts is acceptable.
+  if (relaxed) plan.env.IS_SANDBOX = "1";
+  const flags = [...CLAUDE_MANAGED_FLAGS, ...(relaxed ? ["--dangerously-skip-permissions"] : [])];
+  if (action.profile !== null) {
+    const mode = await ensureProfileReady(action.profile);
+    if (mode === null) return null;
+    const settings = await writeProfileSettings(action.profile, mode);
+    // The shell may carry the DEFAULT proxy's URL (from `agent profile env`), which would
+    // override the profile's own env block.
+    plan.scrub.push(BASE_URL_ENV);
+    plan.args = ["--settings", settings, ...flags, ...action.args];
+    return plan;
+  }
+  if ((await wireDefaultProvider("claude")) === null) return null;
+  // Read AFTER the wiring step so a fresh proxy port is what gets exported.
+  applyManagedEnv(plan, BASE_URL_ENV, managedClaudeBaseUrl(null));
+  plan.args = [...flags, ...action.args];
+  return plan;
+}
+
+async function prepareCodexLaunch(action: CodexLaunch): Promise<LaunchPlan | null> {
+  const plan: LaunchPlan = { command: "codex", args: [], env: {}, scrub: [] };
+  const flags = action.relaxed
+    ? ["--dangerously-bypass-approvals-and-sandbox", "--dangerously-bypass-hook-trust"]
+    : [];
+  if (action.profile !== null) {
+    const mode = await ensureProfileReady(action.profile);
+    if (mode === null) return null;
+    // After the daemon was ensured (a cold start may move its port), so this refresh bakes the
+    // port the daemon actually bound. A failed refresh warns and launches with the existing
+    // config.
+    try {
+      await wireBothAgents(action.profile, mode, true, "stored");
+    } catch (e) {
+      printWrappedToStderr(
+        caught(
+          e,
+          (message) =>
+            "agent profile launch: could not refresh the profile wiring; launching with the " +
+            `existing config (${message}).`,
+        ),
+      );
+    }
+    // Read AFTER the sync: the home its write resolved is the one the child must open.
+    pinCodexHome(plan);
+    plan.args = ["--profile", action.profile, ...flags, ...action.args];
+    return plan;
+  }
+  const mode = await wireDefaultProvider("codex");
+  if (mode === null) return null;
+  // Read AFTER the wiring step: a proxy re-wire may have just built the farm.
+  pinCodexHome(plan);
+  // Codex parses `model_catalog_json` at startup, so a catalog an upgraded codex rejects must be
+  // regenerated BEFORE it starts: a direct launch refreshes here first. The proxy launch
+  // refreshed inside ensureProxyUp's print step.
+  if (mode === "direct") await refreshCodexCatalogAndSync("direct");
+  plan.args = [...flags, ...action.args];
+  return plan;
+}
+
+function copilotLaunchPlan(action: CopilotLaunch): LaunchPlan {
+  return {
+    command: "copilot",
+    args: [
+      "--autopilot",
+      "--enable-reasoning-summaries",
+      "--experimental",
+      ...(action.relaxed ? ["--allow-all"] : []),
+      ...action.args,
+    ],
+    env: {},
+    scrub: [],
+  };
+}
+
 /** Null = abort with exit 1; the failing step already narrated on stderr. */
 export async function prepareLaunch(action: LaunchAction): Promise<LaunchPlan | null> {
-  const relaxed = action.relaxed;
   switch (action.kind) {
-    case "claude": {
-      const plan: LaunchPlan = {
-        command: "claude",
-        args: [],
-        env: { CLAUDE_CODE_NO_FLICKER: "1" },
-        scrub: [],
-      };
-      // IS_SANDBOX tells Claude it runs sandboxed, so skipping permission prompts is acceptable.
-      if (relaxed) plan.env.IS_SANDBOX = "1";
-      const flags = [
-        ...CLAUDE_MANAGED_FLAGS,
-        ...(relaxed ? ["--dangerously-skip-permissions"] : []),
-      ];
-      if (action.profile !== null) {
-        const mode = await ensureProfileReady(action.profile);
-        if (mode === null) return null;
-        const settings = await writeProfileSettings(action.profile, mode);
-        // The shell may carry the DEFAULT proxy's URL (from `agent profile env`), which would
-        // override the profile's own env block.
-        plan.scrub.push(BASE_URL_ENV);
-        plan.args = ["--settings", settings, ...flags, ...action.args];
-        return plan;
-      }
-      if ((await wireDefaultProvider("claude")) === null) return null;
-      // Read AFTER the wiring step so a fresh proxy port is what gets exported.
-      applyManagedEnv(plan, BASE_URL_ENV, managedClaudeBaseUrl(null));
-      plan.args = [...flags, ...action.args];
-      return plan;
-    }
-    case "codex": {
-      const plan: LaunchPlan = { command: "codex", args: [], env: {}, scrub: [] };
-      const flags = relaxed
-        ? ["--dangerously-bypass-approvals-and-sandbox", "--dangerously-bypass-hook-trust"]
-        : [];
-      if (action.profile !== null) {
-        const mode = await ensureProfileReady(action.profile);
-        if (mode === null) return null;
-        // After the daemon was ensured (a cold start may move its port), so this refresh bakes the
-        // port the daemon actually bound. A failed refresh warns and launches with the existing
-        // config.
-        try {
-          await wireBothAgents(action.profile, mode, true, "stored");
-        } catch (e) {
-          printWrappedToStderr(
-            caught(
-              e,
-              (message) =>
-                "agent profile launch: could not refresh the profile wiring; launching with the " +
-                `existing config (${message}).`,
-            ),
-          );
-        }
-        // Read AFTER the sync: the home its write resolved is the one the child must open.
-        pinCodexHome(plan);
-        plan.args = ["--profile", action.profile, ...flags, ...action.args];
-        return plan;
-      }
-      const mode = await wireDefaultProvider("codex");
-      if (mode === null) return null;
-      // Read AFTER the wiring step: a proxy re-wire may have just built the farm.
-      pinCodexHome(plan);
-      // Codex parses `model_catalog_json` at startup, so a catalog an upgraded codex rejects must be
-      // regenerated BEFORE it starts: a direct launch refreshes here first. The proxy launch
-      // refreshed inside ensureProxyUp's print step.
-      if (mode === "direct") await refreshCodexCatalogAndSync("direct");
-      plan.args = [...flags, ...action.args];
-      return plan;
-    }
-    case "copilot": {
-      return {
-        command: "copilot",
-        args: [
-          "--autopilot",
-          "--enable-reasoning-summaries",
-          "--experimental",
-          ...(relaxed ? ["--allow-all"] : []),
-          ...action.args,
-        ],
-        env: {},
-        scrub: [],
-      };
-    }
+    case "claude":
+      return prepareClaudeLaunch(action);
+    case "codex":
+      return prepareCodexLaunch(action);
+    case "copilot":
+      return copilotLaunchPlan(action);
   }
 }
 

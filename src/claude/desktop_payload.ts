@@ -108,6 +108,63 @@ type DesktopPayloadOptions = ManagedMode & {
 /** The one Desktop value a preview must redact. */
 export const DESKTOP_SECRETS: readonly string[] = ["inferenceGatewayApiKey"];
 
+/** The credential kind names the ONE source the app may use (a recorded helper would otherwise win
+ *  over static fields), so each shape sets its own kind and deletes the other's keys. */
+function writeCredentialKeys(
+  doc: Doc,
+  credential: DesktopCredential,
+  mode: ManagedMode["mode"],
+): void {
+  if (credential.kind === "command") {
+    doc.inferenceCredentialKind = "helper-script";
+    doc.inferenceCredentialHelper = credential.helperPath;
+    // The proxy helper may float and launch the daemon on first call, so it gets headroom.
+    doc.inferenceCredentialHelperTimeoutSec = mode === "direct" ? 30 : 120;
+    delete doc.inferenceGatewayApiKey;
+    delete doc.inferenceGatewayAuthScheme;
+    return;
+  }
+  delete doc.inferenceCredentialHelper;
+  delete doc.inferenceCredentialHelperTimeoutSec;
+  doc.inferenceCredentialKind = "static";
+  doc.inferenceGatewayApiKey = credential.token;
+  doc.inferenceGatewayAuthScheme = "bearer";
+}
+
+/** The Direct client headers, written over the managed names; user-added headers survive. */
+function writeDirectKeys(doc: Doc, integrationId: string | null): void {
+  // directClientHeaders OMITS the integration id when null, so a rotation to a null identity must
+  // drop the stale header rather than inherit it.
+  if (isRecord(doc.inferenceCustomHeaders)) {
+    for (const name of MANAGED_HEADER_NAMES) delete doc.inferenceCustomHeaders[name];
+  }
+  const table = tableAt(doc, "inferenceCustomHeaders");
+  for (const [name, value] of Object.entries(
+    directClientHeaders(codexUserAgent(), integrationId),
+  )) {
+    table[name] = value;
+  }
+  // Copilot Direct 404s /v1/models -- discovery must stay off; the list is the picker.
+  delete doc.modelDiscoveryEnabled;
+}
+
+/** Discovery on, and the managed Direct headers stripped from `existingHeaders` (the whole table
+ *  goes when nothing foreign is left). */
+function writeProxyKeys(doc: Doc, existingHeaders: unknown): void {
+  // Discovery alone carries no capability metadata (anthropics/claude-code#88345: 1m models
+  // silently cap at 200k), so the inferenceModels list stays as ANNOTATIONS marking 1m support.
+  doc.modelDiscoveryEnabled = true;
+  if (!isRecord(existingHeaders) || !isRecord(doc.inferenceCustomHeaders)) return;
+  const foreign = Object.keys(existingHeaders).filter(
+    (name) => !MANAGED_HEADER_NAMES.includes(name),
+  );
+  if (foreign.length === 0) {
+    delete doc.inferenceCustomHeaders;
+    return;
+  }
+  for (const name of MANAGED_HEADER_NAMES) delete doc.inferenceCustomHeaders[name];
+}
+
 /** Every key below is an external contract (Desktop's documented flat config vocabulary): never
  *  rename. The entry's current document with the managed keys written over it; foreign keys
  *  survive. MANAGED_HEADER_NAMES is names only (any placeholder value yields the same key set), so
@@ -116,25 +173,10 @@ export function desktopConfigPayload(opts: DesktopPayloadOptions): Record<string
   const existing = opts.existing ?? {};
   const doc: Doc = structuredClone(existing);
   // inferenceProvider is what activates third-party mode: without it the app treats the entry as
-  // incomplete and boots into claude.ai sign-in. The credential kind names the ONE source the app
-  // may use (a recorded helper would otherwise win over static fields), so each shape sets its own
-  // kind and deletes the other's keys.
+  // incomplete and boots into claude.ai sign-in.
   doc.inferenceProvider = "gateway";
   doc.inferenceGatewayBaseUrl = opts.baseUrl;
-  if (opts.credential.kind === "command") {
-    doc.inferenceCredentialKind = "helper-script";
-    doc.inferenceCredentialHelper = opts.credential.helperPath;
-    // The proxy helper may float and launch the daemon on first call, so it gets headroom.
-    doc.inferenceCredentialHelperTimeoutSec = opts.mode === "direct" ? 30 : 120;
-    delete doc.inferenceGatewayApiKey;
-    delete doc.inferenceGatewayAuthScheme;
-  } else {
-    delete doc.inferenceCredentialHelper;
-    delete doc.inferenceCredentialHelperTimeoutSec;
-    doc.inferenceCredentialKind = "static";
-    doc.inferenceGatewayApiKey = opts.credential.token;
-    doc.inferenceGatewayAuthScheme = "bearer";
-  }
+  writeCredentialKeys(doc, opts.credential, opts.mode);
   doc.deploymentDisplayName = DESKTOP_DISPLAY_NAME;
   doc.managedMcpServers = managedMcpServers(opts.profile, existing.managedMcpServers);
   // Every capability the app ships OFF is turned on (user decision). A switch the app already
@@ -163,30 +205,10 @@ export function desktopConfigPayload(opts: DesktopPayloadOptions): Record<string
   doc.disableEssentialTelemetry = true;
   doc.disableNonessentialTelemetry = true;
   doc.disableNonessentialServices = true;
-  const headers = existing.inferenceCustomHeaders;
   if (opts.mode === "direct") {
-    // directClientHeaders OMITS the integration id when null, so a rotation to a null identity must
-    // drop the stale header rather than inherit it; user-added headers survive.
-    if (isRecord(doc.inferenceCustomHeaders)) {
-      for (const name of MANAGED_HEADER_NAMES) delete doc.inferenceCustomHeaders[name];
-    }
-    const table = tableAt(doc, "inferenceCustomHeaders");
-    for (const [name, value] of Object.entries(
-      directClientHeaders(codexUserAgent(), opts.direct?.directIntegrationId ?? null),
-    )) {
-      table[name] = value;
-    }
-    // Copilot Direct 404s /v1/models -- discovery must stay off; the list is the picker.
-    delete doc.modelDiscoveryEnabled;
+    writeDirectKeys(doc, opts.direct?.directIntegrationId ?? null);
   } else {
-    // Discovery alone carries no capability metadata (anthropics/claude-code#88345: 1m models
-    // silently cap at 200k), so the inferenceModels list stays as ANNOTATIONS marking 1m support.
-    doc.modelDiscoveryEnabled = true;
-    if (isRecord(headers) && isRecord(doc.inferenceCustomHeaders)) {
-      const foreign = Object.keys(headers).filter((name) => !MANAGED_HEADER_NAMES.includes(name));
-      if (foreign.length === 0) delete doc.inferenceCustomHeaders;
-      else for (const name of MANAGED_HEADER_NAMES) delete doc.inferenceCustomHeaders[name];
-    }
+    writeProxyKeys(doc, existing.inferenceCustomHeaders);
   }
   // No live rows (an offline wire): the entry keeps whatever it carries; a fresh offline entry has
   // none until the first online wire.

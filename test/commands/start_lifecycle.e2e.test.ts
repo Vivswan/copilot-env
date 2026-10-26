@@ -1,3 +1,4 @@
+import { afterEach } from "bun:test";
 import { createHash } from "node:crypto";
 import {
   chmodSync,
@@ -60,7 +61,7 @@ import {
   registryDoc,
 } from "../helpers/proxy_float.ts";
 import { ROOT } from "../helpers/run.ts";
-import { afterEach, expect, step, test } from "../helpers/testing.ts";
+import { expect, step, test } from "../helpers/testing.ts";
 
 // `start --record-event` (the heartbeat) and `start --check` (the is-it-up probe) are the
 // primitives the proxy-token resolver orchestrates.
@@ -503,39 +504,9 @@ test("start --dry-run plans the corroborated holder stop and the dead-pid tracki
   }
 }, 60_000);
 
-// A fake daemon holds the home's lock AND listens on the tracked port, so the launch resolves
-// as the managed-lifecycle no-op and spawns nothing. Both are awaited: the lock is taken at
-// boot before the server listens, and a lock without a listener reads as a stale holder to stop.
-//
-//   release listing            -> a stubbed fetch whose newest release is the running version
-//   preflight's state and lock -> runStart's seam, so the checkout's own are untouched
-test("start runs the self-update preflight after a live launch's outcome, gated on the auto-update key", async () => {
-  const home = tmpHome();
-  const port = await freePort();
-  const daemonPid = launchFakeDaemon(home, port);
-  const stateFile = join(dir, "autoupdate-state.json");
-  const lockHolders: (number | null)[] = [];
-  // The order of the launch outcome ("[start:noop]" on stdout) and the preflight call.
-  const events: string[] = [];
-  const onStdout = (chunk: string) => {
-    if (chunk.includes("[start:noop]")) events.push("noop");
-  };
-  const preflight = (opts: PreflightOptions) => {
-    events.push("preflight");
-    // Runs INSIDE the start lock: the marker names this process now, and is gone after.
-    const lock = probeFileLock(startLockPath());
-    lockHolders.push(lock.kind === "held" ? lock.markerPid : null);
-    // One line through the SHARED consola, the way the installer's shim writer does from
-    // inside an applied update: it must reach stderr, while start's own narration (which
-    // precedes it) is on stdout.
-    consola.info("shared-consola narration from inside the preflight");
-    return runPreflight({
-      ...opts,
-      state: new AutoupdateState(stateFile),
-      lock: (nowMs, fn) =>
-        withFileLock(join(dir, "update.lock"), { ...UPDATE_LOCK_POLICY, nowMs }, fn),
-    });
-  };
+/** A release listing whose newest release is the running version, in the global fetch's place;
+ *  `urls` records every request. */
+function stubReleaseListing(): { urls: string[]; restore: () => void } {
   const urls: string[] = [];
   const realFetch = globalThis.fetch;
   globalThis.fetch = ((input: string | URL | Request) => {
@@ -554,6 +525,65 @@ test("start runs the self-update preflight after a live launch's outcome, gated 
       ),
     );
   }) as typeof fetch;
+  return {
+    urls,
+    restore: () => {
+      globalThis.fetch = realFetch;
+    },
+  };
+}
+
+/** What a start is watched for: the launch outcome ("[start:noop]" on stdout) and the preflight
+ *  call, in order, and the start lock's holder at each preflight. */
+interface StartWatch {
+  events: string[];
+  lockHolders: (number | null)[];
+  onStdout: (chunk: string) => void;
+  preflight: (opts: PreflightOptions) => ReturnType<typeof runPreflight>;
+}
+
+/** runStart's preflight seam, recording. It runs INSIDE the start lock (the marker names this
+ *  process now, and is gone after), writes one line through the SHARED consola the way the
+ *  installer's shim writer does from inside an applied update (it must reach stderr, while
+ *  start's own narration, which precedes it, is on stdout), then runs the real preflight on its
+ *  own state file and lock, so the checkout's own are untouched. */
+function watchStart(stateFile: string): StartWatch {
+  const events: string[] = [];
+  const lockHolders: (number | null)[] = [];
+  return {
+    events,
+    lockHolders,
+    onStdout: (chunk) => {
+      if (chunk.includes("[start:noop]")) events.push("noop");
+    },
+    preflight: (opts) => {
+      events.push("preflight");
+      const lock = probeFileLock(startLockPath());
+      lockHolders.push(lock.kind === "held" ? lock.markerPid : null);
+      consola.info("shared-consola narration from inside the preflight");
+      return runPreflight({
+        ...opts,
+        state: new AutoupdateState(stateFile),
+        lock: (nowMs, fn) =>
+          withFileLock(join(dir, "update.lock"), { ...UPDATE_LOCK_POLICY, nowMs }, fn),
+      });
+    },
+  };
+}
+
+// A fake daemon holds the home's lock AND listens on the tracked port, so the launch resolves
+// as the managed-lifecycle no-op and spawns nothing. Both are awaited: the lock is taken at
+// boot before the server listens, and a lock without a listener reads as a stale holder to stop.
+//
+//   release listing            -> a stubbed fetch whose newest release is the running version
+//   preflight's state and lock -> runStart's seam, so the checkout's own are untouched
+test("start runs the self-update preflight after a live launch's outcome, gated on the auto-update key", async () => {
+  const home = tmpHome();
+  const port = await freePort();
+  const daemonPid = launchFakeDaemon(home, port);
+  const stateFile = join(dir, "autoupdate-state.json");
+  const { events, lockHolders, onStdout, preflight } = watchStart(stateFile);
+  const listing = stubReleaseListing();
   try {
     await until(() => daemonLockHolderPid(home) === daemonPid);
     await until(() => portListening(port));
@@ -577,7 +607,7 @@ test("start runs the self-update preflight after a live launch's outcome, gated 
     writeFileSync(stateFile, JSON.stringify({ lastCheckMs: 1, lastResult: "old" }));
     await captureChannels(() => runStart(launch, preflight), { onStdout });
     expect(events).toEqual(["noop", "preflight"]);
-    expect(urls).toEqual([]);
+    expect(listing.urls).toEqual([]);
     expect(JSON.parse(readFileSync(stateFile, "utf8"))).toEqual({
       lastCheckMs: 1,
       lastResult: "old",
@@ -598,14 +628,14 @@ test("start runs the self-update preflight after a live launch's outcome, gated 
     expect(stdout).not.toContain("shared-consola narration");
     expect(lockHolders).toEqual([process.pid, process.pid]); // both starts, under the lock
     expect(existsSync(startLockPath())).toBe(false); // released after the preflight
-    expect(urls).toHaveLength(1);
-    expect(urls[0]).toContain("/repos/Vivswan/copilot-env/releases");
+    expect(listing.urls).toHaveLength(1);
+    expect(listing.urls[0]).toContain("/repos/Vivswan/copilot-env/releases");
     expect(JSON.parse(readFileSync(stateFile, "utf8")).lastResult).toBe("up to date");
     // Left up, never relaunched: the tracked daemon is still the fake.
     expect(new CopilotEnvRunState().read().pid).toBe(daemonPid);
     expect(pidAlive(daemonPid)).toBe(true);
   } finally {
-    globalThis.fetch = realFetch;
+    listing.restore();
     await killAndAwaitExit(daemonPid);
   }
 }, 60_000);

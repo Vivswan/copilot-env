@@ -486,6 +486,17 @@ const ABSOLUTE_PATH_DOMAIN: ConfigDomain<string> = domain(
 /** `auto` = probed per credential (select*IdentityAndHost, integration_identity.ts); else an https origin. */
 export const COPILOT_HOST_AUTO = "auto";
 
+/** The dotted IPv4 an unbracketed address stands for: an IPv4-mapped IPv6 unwrapped (the two
+ *  hex-group form keeps its leading octet alone, all the 127/8 test reads), anything else as given. */
+function ipv4Of(bare: string): string {
+  // An IPv4-mapped address arrives as the URL parser serialises it: two hex groups (`::ffff:7f00:1`),
+  // or dotted when hand-spelled elsewhere.
+  const mapped = bare.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+  if (mapped !== null) return `${Number.parseInt(mapped[1] ?? "0", 16) >> 8}.0.0.0`;
+  if (bare.startsWith("::ffff:")) return bare.slice("::ffff:".length);
+  return bare;
+}
+
 /** THE one loopback test for a URL's hostname (as `new URL().hostname` spells it): the whole
  *  127.0.0.0/8 block, `::1` and its IPv4-mapped forms (bracketed), and `localhost` with or without
  *  the trailing dot. Owned here, beside the `host` validator, so isDirectBaseUrl
@@ -495,16 +506,7 @@ export function isLoopbackHostname(hostname: string): boolean {
   if (host === "localhost") return true;
   const bare = host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
   if (bare === "::1") return true;
-  // An IPv4-mapped address arrives as the URL parser serialises it: two hex groups (`::ffff:7f00:1`),
-  // or dotted when hand-spelled elsewhere.
-  const mapped = bare.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
-  const v4 =
-    mapped !== null
-      ? `${Number.parseInt(mapped[1] ?? "0", 16) >> 8}.0.0.0`
-      : bare.startsWith("::ffff:")
-        ? bare.slice("::ffff:".length)
-        : bare;
-  return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(v4);
+  return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(ipv4Of(bare));
 }
 
 /** An https origin, stored as the origin alone: a path, query, or userinfo is a typo, not a host.

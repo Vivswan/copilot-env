@@ -19,6 +19,7 @@ import {
   VSCODE_CHAT_INTEGRATION_ID,
 } from "../../src/copilot_api/integration_identity.ts";
 import { withNarrationMuted } from "../../src/utils/logger.ts";
+import { requestUrl } from "../helpers/fetch_input.ts";
 import { captureChannels } from "../helpers/output.ts";
 import { expect, test } from "../helpers/testing.ts";
 
@@ -99,7 +100,7 @@ test("surveyIntegrationIdentities: every candidate on every host that matters, n
       },
     );
   const fetchImpl: ProbeFetch = (input, init) => {
-    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    const url = requestUrl(input);
     if (url.includes("/copilot_internal/user")) {
       return Promise.resolve(
         new Response(JSON.stringify({ endpoints: { api: ENTERPRISE_API_BASE } }), { status: 200 }),
@@ -193,7 +194,7 @@ test("surveyIntegrationIdentities: the designated and configured columns appear 
   const stub =
     (lookup: Response): ProbeFetch =>
     (input) => {
-      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      const url = requestUrl(input);
       return Promise.resolve(
         url.includes("/copilot_internal/user")
           ? lookup
@@ -236,7 +237,7 @@ test("host rule: 2xx/400/401 keep the generic host; 403/404/5xx/network move to 
     let lookedUp = false;
     let probedAs: string | null = null;
     const fetchImpl: ProbeFetch = (input, init) => {
-      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      const url = requestUrl(input);
       if (url.includes("/copilot_internal/user")) {
         lookedUp = true;
         return Promise.resolve(
@@ -342,7 +343,7 @@ test("selectDirectIdentityAndHost: every credential is probed through the one ca
   // every candidate (the codex identity stands) and moves the host rule to the account lookup,
   // whose own failure stays put.
   const lookupOk: ProbeFetch = (input) => {
-    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    const url = requestUrl(input);
     return Promise.resolve(
       url.includes("/copilot_internal/user")
         ? new Response("{}", { status: 200 })
@@ -400,7 +401,7 @@ test("selectDirectIdentityAndHost: every credential is probed through the one ca
     const seen: string[] = [];
     const urls: string[] = [];
     const fetchImpl: ProbeFetch = (input, init) => {
-      urls.push(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+      urls.push(requestUrl(input));
       seen.push(new Headers(init?.headers).get(INTEGRATION_ID_HEADER) ?? "<none>");
       return c.fetchImpl(input, init);
     };
@@ -479,7 +480,7 @@ test("fetchRawModels(direct) probes and fetches ONE host; with no consumer named
   const sent: Record<string, string>[] = [];
   const accepted: string[] = [];
   const respond = (input: string | URL | Request, init?: RequestInit): Response => {
-    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    const url = requestUrl(input);
     seen.push(url);
     const headers = new Headers(init?.headers);
     sent.push(Object.fromEntries(headers.entries()));
@@ -523,7 +524,7 @@ test("fetchRawModels(direct): a host `auto` moved to re-selects the identity the
   const { fetchRawModels } = await import("../../src/copilot_api/catalog.ts");
   const enterprise = "https://api.enterprise.githubcopilot.com";
   const stub: ProbeFetch = (input, init) => {
-    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    const url = requestUrl(input);
     if (url.includes("/copilot_internal/user")) {
       return Promise.resolve(
         new Response(JSON.stringify({ endpoints: { api: enterprise } }), { status: 200 }),
@@ -612,7 +613,7 @@ test("fetchRawModels(direct) under the agents' identity sends the exact header s
 // narration of it belongs to the first caller that is not muted, the real run.
 test("the host note is said once per process, by the first caller that is not muted", async () => {
   setIntegrationProbeFetch((input) => {
-    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    const url = requestUrl(input);
     if (url.includes("/copilot_internal/user")) {
       return Promise.resolve(
         new Response(JSON.stringify({ endpoints: { api: ENTERPRISE_API_BASE } }), { status: 200 }),

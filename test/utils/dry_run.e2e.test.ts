@@ -3,6 +3,8 @@
 // and a secret never prints. One test per command family; the disk is proven untouched by a
 // fingerprint of the whole scratch HOME before and after. The named `add` preview also proves the
 // session's shadow: the wiring reads the slot the (recorded) commit landed a moment before.
+
+import { afterEach, beforeEach } from "bun:test";
 import { randomBytes } from "node:crypto";
 import {
   chmodSync,
@@ -62,7 +64,7 @@ import {
 import { stubGithubLogins, writeCodexConfigToml } from "../helpers/fixtures.ts";
 import { captureChannels } from "../helpers/output.ts";
 import { runCli } from "../helpers/run.ts";
-import { afterEach, beforeEach, expect, removeDir, test } from "../helpers/testing.ts";
+import { expect, removeDir, test } from "../helpers/testing.ts";
 
 const WORK = parseProfileName("work");
 const WORK_TOKEN = "ghp_worktoken";

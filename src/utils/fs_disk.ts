@@ -22,6 +22,7 @@ import {
   cpSync,
   createReadStream,
   createWriteStream,
+  existsSync,
   fsyncSync,
   lstatSync,
   mkdirSync,
@@ -29,6 +30,7 @@ import {
   openSync,
   readdirSync,
   readFileSync,
+  readlinkSync,
   realpathSync,
   renameSync,
   rmdirSync,
@@ -41,7 +43,12 @@ import {
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { Readable, Writable } from "node:stream";
-import { isEnoentOrNotdir, isOpenHandleRefusal, retryOpenHandleRefusal } from "./fs.ts";
+import {
+  isEnoentOrNotdir,
+  isOpenHandleRefusal,
+  RenameRefusedError,
+  retryOpenHandleRefusal,
+} from "./fs.ts";
 import {
   forgetReported,
   kindOf,
@@ -77,13 +84,25 @@ export interface DirEntry {
 
 // --- the reads -------------------------------------------------------------------------------------
 
-export {
-  existsSync as exists,
-  lstatSync as lstat,
-  readdirSync as readdir,
-  readlinkSync as readlink,
-  statSync as stat,
-} from "node:fs";
+export function exists(path: string): boolean {
+  return existsSync(path);
+}
+
+export function stat(path: string): Stats {
+  return statSync(path);
+}
+
+export function lstat(path: string): Stats {
+  return lstatSync(path);
+}
+
+export function readdir(path: string): string[] {
+  return readdirSync(path);
+}
+
+export function readlink(path: string): string {
+  return readlinkSync(path);
+}
 
 export function readText(path: string): string {
   return readFileSync(path, "utf8");
@@ -191,7 +210,8 @@ const ERRNO_TEXT: Record<string, string> = {
 /** An error shaped as node:fs throws it, so `(e as NodeJS.ErrnoException).code` reads the same.
  *  `path` null renders the message without a target, as bun's Windows write onto a directory does. */
 export function errno(code: string, syscall: string, path: string | null, dest?: string): Error {
-  const target = path === null ? "" : dest === undefined ? ` '${path}'` : ` '${path}' -> '${dest}'`;
+  let target = "";
+  if (path !== null) target = dest === undefined ? ` '${path}'` : ` '${path}' -> '${dest}'`;
   const e: NodeJS.ErrnoException = new Error(`${code}: ${ERRNO_TEXT[code]}, ${syscall}${target}`);
   e.code = code;
   e.syscall = syscall;
@@ -218,13 +238,14 @@ export function missingDirectories(path: string): string[] {
   for (let cur = path; ; cur = dirname(cur)) {
     const entry = lookEntry(cur);
     if (entry === "unreadable") return missing;
-    if (entry !== "absent") {
-      if (entry === "dangling") throw errno("ENOENT", "mkdir", path);
-      if (entry.isDirectory()) return missing;
-      throw errno(cur === path ? "EEXIST" : "ENOTDIR", "mkdir", path);
+    if (entry === "dangling") throw errno("ENOENT", "mkdir", path);
+    if (entry === "absent") {
+      missing.unshift(cur);
+      if (dirname(cur) === cur) return missing;
+      continue;
     }
-    missing.unshift(cur);
-    if (dirname(cur) === cur) return missing;
+    if (entry.isDirectory()) return missing;
+    throw errno(cur === path ? "EEXIST" : "ENOTDIR", "mkdir", path);
   }
 }
 
@@ -240,23 +261,6 @@ function lookEntry(path: string): Stats | "dangling" | "absent" | "unreadable" {
     return statSync(path);
   } catch (e) {
     return isEnoentOrNotdir(e) ? "dangling" : "unreadable";
-  }
-}
-
-function isDirectoryEntry(path: string): boolean {
-  try {
-    return lstatSync(path).isDirectory();
-  } catch {
-    return false;
-  }
-}
-
-/** The refusal a caller that plans a removal ahead of its apply raises at plan time, so a dry run
- *  refuses where the real run does instead of previewing a delete the apply would refuse. A
- *  symlink is the link, not what it points at. */
-export function assertNotDirectory(path: string): void {
-  if (isDirectoryEntry(path)) {
-    throw new Error(`${path} is a directory; only a file can be removed here`);
   }
 }
 
@@ -529,19 +533,6 @@ export function removeScratchDir(dir: ScratchDir): void {
 }
 
 // --- the rename over a live file -------------------------------------------------------------------
-
-/** The live file is untouched; the staged copy is dropped where removal succeeded, and a leftover
- *  is reported. The one failure a caller may answer with a direct write (the installer's launcher
- *  shims); every other failure propagates as itself. */
-export class RenameRefusedError extends Error {
-  constructor(
-    readonly path: string,
-    cause: unknown,
-  ) {
-    super(`rename over ${path} refused (the file is held open)`, { cause });
-    this.name = "RenameRefusedError";
-  }
-}
 
 /** `rename` is the test seam. */
 export function renameWithRetry(

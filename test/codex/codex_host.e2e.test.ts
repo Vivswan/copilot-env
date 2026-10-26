@@ -1,6 +1,7 @@
 // `agent profile sync --codex` is proxy-forced here so nothing probes the network, and PATH is an empty dir so the
 // shared-home prime can never spawn a real codex CLI.
 
+import { afterEach } from "bun:test";
 import * as fs from "node:fs";
 import { join, relative } from "node:path";
 import { runCodex } from "../../src/agents/configure_defaults.ts";
@@ -29,7 +30,7 @@ import { linesNaming } from "../helpers/dry_run.ts";
 import { envSnapshot, isolateAgentHomes, resetExitCode } from "../helpers/env.ts";
 import { writeClaudeSettings, writeCodexConfigToml, writeRunState } from "../helpers/fixtures.ts";
 import { captureChannels } from "../helpers/output.ts";
-import { afterEach, expect, removeDir, test } from "../helpers/testing.ts";
+import { expect, removeDir, test } from "../helpers/testing.ts";
 
 // The farm needs POSIX symlinks; Windows CI still runs the path-derivation test and the Windows-only guard.
 const skipWin = test.skipIf(process.platform === "win32");

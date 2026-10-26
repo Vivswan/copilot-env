@@ -53,11 +53,11 @@ function readPage(lines: readonly string[]): { fences: Fence[]; text: (string | 
       if (line === GENERATED_BEGIN) generated = true;
       if (line === GENERATED_END) generated = false;
       const fence = /^```(\w*)\s*$/.exec(line);
-      if (fence !== null) {
+      if (fence === null) {
+        text.push(line);
+      } else {
         open = { line: index, mermaid: fence[1] === "mermaid", body: [] };
         text.push(undefined);
-      } else {
-        text.push(line);
       }
       continue;
     }
@@ -104,6 +104,18 @@ interface Claim {
   symbols: string[];
 }
 
+/** The path a segment binds and the names after it: its head when that is a path, else the path
+ *  already bound; null for a caption (nothing bound yet). */
+function segmentPath(
+  tokens: string[],
+  bound: string | undefined,
+): { path: string; names: string[] } | null {
+  const [head] = tokens;
+  if (head !== undefined && PATH_TOKEN.test(head)) return { path: head, names: tokens.slice(1) };
+  if (bound === undefined) return null;
+  return { path: bound, names: tokens };
+}
+
 /** The (path, symbols) claims one label makes, per `<br>` segment: a segment opening with a path
  *  binds it and the rest are its exported symbols; a segment with no path continues the bound
  *  path's symbols, or is a caption when nothing is bound yet. Malformed segments are problems. */
@@ -116,16 +128,8 @@ function readLabel(label: string): { claims: Claim[]; problems: string[] } {
       .trim()
       .split(/[\s,]+/)
       .filter((token) => token !== "");
-    const [head] = tokens;
-    let path: string;
-    let names: string[];
-    if (head !== undefined && PATH_TOKEN.test(head)) {
-      path = head;
-      names = tokens.slice(1);
-    } else if (bound !== undefined) {
-      path = bound;
-      names = tokens;
-    } else {
+    const claim = segmentPath(tokens, bound);
+    if (claim === null) {
       // A caption; a call shape or a repo-relative path shape (`srcc/engine/x.ts`) in one is a
       // mistyped path, not a caption. A user-facing path (`~/.codex/config.toml`, `<home>/x`,
       // `https://...`, `.run/<host>/`) is a boundary the diagram names and stays a caption.
@@ -134,13 +138,13 @@ function readLabel(label: string): { claims: Claim[]; problems: string[] } {
       }
       continue;
     }
-    bound = path;
+    bound = claim.path;
     const symbols: string[] = [];
-    for (const name of names) {
+    for (const name of claim.names) {
       if (SYMBOL_TOKEN.test(name)) symbols.push(name.replace(/\(\)$/, ""));
       else problems.push(`"${label}": "${name}" is neither a symbol nor a path`);
     }
-    claims.push({ label, path, symbols });
+    claims.push({ label, path: claim.path, symbols });
   }
   return { claims, problems };
 }
@@ -149,6 +153,26 @@ function readLabel(label: string): { claims: Claim[]; problems: string[] } {
  *  the target's names, a re-export keeps the exported name. */
 function exportsByFile(files: readonly string[]): Map<string, Set<string>> {
   return new Map(files.map((file) => [file, exportedNames(join(PROJECT_ROOT, file))]));
+}
+
+/** The problems of one `Demonstrated by:` line: nothing linked, a link that names no file, or one
+ *  that is not a test file or a smoke scenario. */
+function demonstrationProblems(at: string, line: string): string[] {
+  const problems: string[] = [];
+  const links = [...line.matchAll(/\]\(([^)]+)\)/g)].map((match) => match[1] ?? "");
+  if (links.length === 0) problems.push(`${at}: the "Demonstrated by:" line links nothing`);
+  for (const link of links) {
+    const file = resolve(PROJECT_ROOT, dirname(PAGE), link.split("#")[0] ?? "");
+    const rel = relative(PROJECT_ROOT, file).replaceAll("\\", "/");
+    if (!existsSync(file) || statSync(file).isDirectory()) {
+      problems.push(`${at}: "${link}" names no file`);
+      continue;
+    }
+    if (!/^(?:test\/[\w./-]+\.test\.ts|\.github\/scripts\/[\w.-]+-smoke\.ts)$/.test(rel)) {
+      problems.push(`${at}: "${link}" is not a test file or a smoke scenario`);
+    }
+  }
+  return problems;
 }
 
 // --- the tests -------------------------------------------------------------------
@@ -227,17 +251,7 @@ test("every concept diagram has a Demonstrated by line whose links resolve to te
       continue;
     }
     claimed.add(demo);
-    const links = [...(page[demo] ?? "").matchAll(/\]\(([^)]+)\)/g)].map((match) => match[1] ?? "");
-    if (links.length === 0) problems.push(`${at}: the "Demonstrated by:" line links nothing`);
-    for (const link of links) {
-      const file = resolve(PROJECT_ROOT, dirname(PAGE), link.split("#")[0] ?? "");
-      const rel = relative(PROJECT_ROOT, file).replaceAll("\\", "/");
-      if (!existsSync(file) || statSync(file).isDirectory()) {
-        problems.push(`${at}: "${link}" names no file`);
-      } else if (!/^(?:test\/[\w./-]+\.test\.ts|\.github\/scripts\/[\w.-]+-smoke\.ts)$/.test(rel)) {
-        problems.push(`${at}: "${link}" is not a test file or a smoke scenario`);
-      }
-    }
+    problems.push(...demonstrationProblems(at, page[demo] ?? ""));
   }
   expect(problems).toEqual([]);
   expect(demonstrations).toHaveLength(concepts.length);

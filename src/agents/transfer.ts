@@ -565,44 +565,39 @@ export interface ImportScope {
   defaultWiring: boolean;
 }
 
-/** Compute the whole import plan against the CURRENT stores (one gh probe per
- *  pinned account, memoized, shared by every gh-cli slot and reused by the apply). */
-export function planImport(
-  bundle: SettingsBundle,
-  deps: ImportDeps = {},
-  scope: ImportScope = { defaultWiring: true },
-): ImportPlan {
-  const ghTokens = new Map<string | null, string | null>();
-  const gh = (ghUser: string | null): string | null => {
-    let token = ghTokens.get(ghUser);
+/** One gh probe per pinned account, memoized, shared by every gh-cli slot and reused by the
+ *  apply. */
+function memoizedGhToken(probe: typeof ghAuthToken): (ghUser: string | null) => string | null {
+  const tokens = new Map<string | null, string | null>();
+  return (ghUser) => {
+    let token = tokens.get(ghUser);
     if (token === undefined) {
-      token = (deps.ghAuthToken ?? ghAuthToken)(ghUser);
-      ghTokens.set(ghUser, token);
+      token = probe(ghUser);
+      tokens.set(ghUser, token);
     }
     return token;
   };
-  const skipped: Message[] = [...(bundle.skippedConfig ?? [])];
-  const defaultSlot = planSlotCredential(bundle.credential, null, gh);
-  if (defaultSlot.action === "skip" && bundle.credential.authProvider !== null) {
-    // Only a slot the bundle carried is an event; skipped wiring gets its own importableMode
-    // message.
-    skipped.push(`default credential: ${defaultSlot.reason}; run \`agent auth\``);
-  }
+}
+
+/** Both agents' default landing, decided at PLAN time, so the skip lines and the preview name both
+ *  agents' files. `pairUnstored` is the apply's own test (runAgentConfig), judged under the
+ *  BUNDLE's overlay: the apply replaces the preferences before it wires, so the local ones would
+ *  answer for the wrong document. The plan alone knows one more fact: a default credential landing
+ *  takes the pair with it.
+ *
+ *  A bundle with no default wiring still rebakes both on such a default: a landing is where the
+ *  pair is probed and stored, and nothing else in the import would wire it. */
+function planDefaultModes(
+  bundle: SettingsBundle,
+  defaultSlot: SlotPlan,
+  scope: ImportScope,
+): { modes: ImportPlan["modes"]; skipped: Message[] } {
   const defaultUsable = defaultSlot.action !== "skip";
   const codexWiring = importableMode(bundle.modes.codex, "Codex", defaultUsable);
   const claudeWiring = importableMode(bundle.modes.claude, "Claude", defaultUsable);
   const modes = { codex: codexWiring.mode, claude: claudeWiring.mode };
   const wiringSkips = { codex: codexWiring.skipped, claude: claudeWiring.skipped };
-  const profiles: PlannedProfile[] = [];
-  const state = new CopilotEnvState();
-  const recorded = state.readProfileSlot(null).mode;
-  // Decided at PLAN time, so the skip lines and the preview name both agents' files. `pairUnstored`
-  // is the apply's own test (runAgentConfig), judged under the BUNDLE's overlay: the apply replaces
-  // the preferences before it wires, so the local ones would answer for the wrong document. The
-  // plan alone knows one more fact: a default credential landing takes the pair with it.
-  //
-  // A bundle with no default wiring still rebakes both on such a default: a landing is where the
-  // pair is probed and stored, and nothing else in the import would wire it.
+  const recorded = new CopilotEnvState().readProfileSlot(null).mode;
   const named = modes.codex ?? modes.claude;
   const oneNamed = named !== null && (modes.codex === null) !== (modes.claude === null);
   /** A landing overrides a skip line for the OTHER agent (an unmanaged or gated mode there): the
@@ -633,15 +628,26 @@ export function planImport(
   } else if (oneNamed && named === "direct" && pairUnstored) {
     landBoth("direct", "the default's Direct pair is not stored, so both agents are rebaked");
   }
-  for (const line of [wiringSkips.codex, wiringSkips.claude]) {
-    if (line !== null) skipped.push(line);
-  }
+  const skipped = [wiringSkips.codex, wiringSkips.claude].filter(
+    (line): line is Message => line !== null,
+  );
+  return { modes, skipped };
+}
+
+/** Each named slot's landing. A credential with no mode can only RE-AUTH an existing profile; with
+ *  none here, writing it would create the half profile the atomic slot commit exists to prevent,
+ *  so that slot is skipped whole. */
+function planProfiles(
+  bundle: SettingsBundle,
+  gh: (ghUser: string | null) => string | null,
+): { profiles: PlannedProfile[]; skipped: Message[] } {
+  const state = new CopilotEnvState();
+  const profiles: PlannedProfile[] = [];
+  const skipped: Message[] = [];
   for (const [rawName, slot] of Object.entries(bundle.profiles)) {
     const name = parseProfileName(rawName);
     let landing = planSlotCredential(slot, name, gh);
     if (landing.action === "write" && slot.mode === null && !state.profileSlotStatus(name).exists) {
-      // A credential with no mode can only RE-AUTH an existing profile; with none here, writing
-      // it would create the half profile the atomic slot commit exists to prevent.
       landing = {
         action: "skip",
         reason:
@@ -658,7 +664,28 @@ export function planImport(
     }
     profiles.push({ name, slot, landing });
   }
-  return { bundle, defaultSlot, modes, profiles, skipped };
+  return { profiles, skipped };
+}
+
+/** Compute the whole import plan against the CURRENT stores. */
+export function planImport(
+  bundle: SettingsBundle,
+  deps: ImportDeps = {},
+  scope: ImportScope = { defaultWiring: true },
+): ImportPlan {
+  const gh = memoizedGhToken(deps.ghAuthToken ?? ghAuthToken);
+  const skipped: Message[] = [...(bundle.skippedConfig ?? [])];
+  const defaultSlot = planSlotCredential(bundle.credential, null, gh);
+  if (defaultSlot.action === "skip" && bundle.credential.authProvider !== null) {
+    // Only a slot the bundle carried is an event; skipped wiring gets its own importableMode
+    // message.
+    skipped.push(`default credential: ${defaultSlot.reason}; run \`agent auth\``);
+  }
+  const wiring = planDefaultModes(bundle, defaultSlot, scope);
+  skipped.push(...wiring.skipped);
+  const planned = planProfiles(bundle, gh);
+  skipped.push(...planned.skipped);
+  return { bundle, defaultSlot, modes: wiring.modes, profiles: planned.profiles, skipped };
 }
 
 // --- import apply -------------------------------------------------------------
@@ -675,6 +702,29 @@ function importPreferences(config: CopilotEnvConfigData): void {
   store.replace({ global, profiles: config.profiles });
 }
 
+/** No mode: a re-auth. planImport skipped the no-profile case; the store's own guard still fires
+ *  if a concurrent --del raced the plan, hence the try. A complete Direct slot is rebaked with a
+ *  fresh selection, as `agent profile <name> auth` does: the credential write took the previous
+ *  pair with it, and the Desktop reconcile after the profiles renders the slot's pair. */
+async function reauthProfile(
+  state: CopilotEnvState,
+  name: ProfileName,
+  landing: SlotPlan,
+  outcome: ImportOutcome,
+): Promise<void> {
+  if (landing.action !== "write") return;
+  try {
+    state.setCredential(name, landing.credential);
+    const landed = state.readProfileSlot(name);
+    if (landed.kind === "complete" && landed.mode === "direct") {
+      await wireBothAgents(name, "direct", false, "probe", landing.resolvedToken);
+      outcome.wiredProfiles.push(name);
+    }
+  } catch (e) {
+    outcome.failures.push(caught(e, (message) => `profile '${name}': ${message}`));
+  }
+}
+
 /**
  * Credential + mode land as ONE commitProfile write, the machinery `agent profile <name> add` uses.
  * Each profile stands alone: a failure is recorded and the next profile still runs.
@@ -688,22 +738,7 @@ async function importProfiles(plan: ImportPlan, outcome: ImportOutcome): Promise
   for (const { name, slot, landing } of plan.profiles) {
     if (landing.action === "skip") continue;
     if (slot.mode === null) {
-      // No mode: a re-auth. planImport skipped the no-profile case; the store's own guard still
-      // fires if a concurrent --del raced the plan, hence the try. A complete Direct slot is rebaked
-      // with a fresh selection, as `agent profile <name> auth` does: the credential write took the
-      // previous pair with it, and the Desktop reconcile below renders the slot's pair.
-      if (landing.action === "write") {
-        try {
-          state.setCredential(name, landing.credential);
-          const landed = state.readProfileSlot(name);
-          if (landed.kind === "complete" && landed.mode === "direct") {
-            await wireBothAgents(name, "direct", false, "probe", landing.resolvedToken);
-            outcome.wiredProfiles.push(name);
-          }
-        } catch (e) {
-          outcome.failures.push(caught(e, (message) => `profile '${name}': ${message}`));
-        }
-      }
+      await reauthProfile(state, name, landing, outcome);
       continue;
     }
     const credential =

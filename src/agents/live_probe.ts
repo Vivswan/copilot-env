@@ -35,7 +35,7 @@ import { removeScratchDir, type ScratchDir, scratchDir } from "../utils/fs_facad
 import { isRecord, parseJsonRecord } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import { caught } from "../utils/message.ts";
-import { type CliCommand, classifyAgentCli } from "./cli_install.ts";
+import { type AgentCliLook, type CliCommand, classifyAgentCli } from "./cli_install.ts";
 
 // Narration goes to stderr, never stdout: the machine-readable `--check` / `env` paths stay clean.
 const logger = createStderrLogger();
@@ -340,6 +340,81 @@ function binDir(found: string): string | null {
   return dir === "." ? null : dir;
 }
 
+/** No usable CLI: the endpoint itself answers (one minimal model call) when there is a credential
+ *  to smoke with; without one it is the proxy. */
+async function probeThroughEndpoint(
+  descriptor: ProbeDescriptor,
+  cliLook: Exclude<AgentCliLook, { kind: "found" }>,
+  smoke: DirectSmoke | null,
+): Promise<boolean> {
+  const look = cliLook.kind === "absent" ? `${descriptor.cli} CLI not found` : cliLook.note;
+  const advice =
+    cliLook.kind === "absent"
+      ? " (install it with `agent shell --clis` and re-run to auto-detect Direct, or pass --direct)"
+      : "";
+  if (smoke === null) {
+    logger.log(`    • ${look} → using the local proxy${advice}`);
+    return false;
+  }
+  logger.log(`    • ${look} → asking the Copilot endpoint itself (one minimal model call) ...`);
+  const picked = await smoke.pickModel();
+  const outcome = picked.ok ? await smoke.ping(picked.model) : picked;
+  if (outcome.ok) {
+    logger.success(
+      `    GitHub Copilot Direct is available (endpoint check; no ${descriptor.cli} CLI ran)`,
+    );
+    return true;
+  }
+  refuseTooOldCli(descriptor, outcome.detail);
+  logger.log(
+    `    • the endpoint check did not succeed (${outcome.detail}) → using the local proxy`,
+  );
+  return false;
+}
+
+/** The smoke prompt through the CLI, pinned to the first hop; a MODEL rejection fetches the catalog
+ *  and runs the second hop once, and any other failure is the verdict. `runProbe` runs one model
+ *  inside the temp home. */
+async function smokeThroughCli(
+  descriptor: ProbeDescriptor,
+  smoke: DirectSmoke,
+  firstModel: string,
+  runProbe: (model: string) => ProbeOutcome | Promise<ProbeOutcome>,
+): Promise<boolean> {
+  const run = async (model: string): Promise<ProbeOutcome> => {
+    logger.log(
+      `    • running a read-only smoke prompt through ${descriptor.cli} with ${model} (live model call, a few seconds; pass --direct to skip) ...`,
+    );
+    const outcome = await runProbe(model);
+    if (outcome.ok) logger.success("    GitHub Copilot Direct is available");
+    return outcome;
+  };
+  let outcome = await run(firstModel);
+  if (outcome.ok) return true;
+  refuseTooOldCli(descriptor, outcome.detail);
+  let lastDetail = outcome.detail;
+  const next = isModelRejection(lastDetail, firstModel) ? await smoke.cliFallbackModel() : null;
+  if (next !== null && !next.ok) {
+    logger.log(
+      `    • ${descriptor.cli} could not run ${firstModel} (${lastDetail}); ${next.detail}`,
+    );
+  } else if (next !== null) {
+    logger.log(
+      `    • ${descriptor.cli} could not run ${firstModel} (${lastDetail}); trying ${next.model} ...`,
+    );
+    outcome = await run(next.model);
+    if (outcome.ok) return true;
+    refuseTooOldCli(descriptor, outcome.detail);
+    lastDetail = outcome.detail;
+  }
+  logger.log(
+    `    • the Direct smoke prompt did not succeed${
+      lastDetail ? ` (${lastDetail})` : ""
+    } → using the local proxy`,
+  );
+  return false;
+}
+
 /** The RESOLVED CLI path is threaded to the spawn: the child runs from the temp home, so a
  *  relative answer is anchored first (anchorToCallerCwd). gh is looked up only to lead the child
  *  PATH with its anchored dir: a gh-cli credential's helper calls `gh` by name from inside the
@@ -371,31 +446,7 @@ export async function probeDirectWorks(
   // CLI, as a silent dry run) reads the credential the store already holds, since a dry run never
   // lands one it does not have.
   const cliLook = classifyAgentCli(descriptor.cli, find(descriptor.cli));
-  if (cliLook.kind !== "found") {
-    const look = cliLook.kind === "absent" ? `${descriptor.cli} CLI not found` : cliLook.note;
-    const advice =
-      cliLook.kind === "absent"
-        ? " (install it with `agent shell --clis` and re-run to auto-detect Direct, or pass --direct)"
-        : "";
-    if (smoke === null) {
-      logger.log(`    • ${look} → using the local proxy${advice}`);
-      return false;
-    }
-    logger.log(`    • ${look} → asking the Copilot endpoint itself (one minimal model call) ...`);
-    const picked = await smoke.pickModel();
-    const outcome = picked.ok ? await smoke.ping(picked.model) : picked;
-    if (outcome.ok) {
-      logger.success(
-        `    GitHub Copilot Direct is available (endpoint check; no ${descriptor.cli} CLI ran)`,
-      );
-      return true;
-    }
-    refuseTooOldCli(descriptor, outcome.detail);
-    logger.log(
-      `    • the endpoint check did not succeed (${outcome.detail}) → using the local proxy`,
-    );
-    return false;
-  }
+  if (cliLook.kind !== "found") return await probeThroughEndpoint(descriptor, cliLook, smoke);
   if (smoke === null) {
     logger.log("    • no stored credential to smoke with → using the local proxy");
     return false;
@@ -420,40 +471,9 @@ export async function probeDirectWorks(
       extra: { [descriptor.homeEnvVar]: tmpHome },
       omit: (upper) => PROVIDER_ENV_PREFIXES.some((prefix) => upper.startsWith(prefix)),
     });
-
-    const run = async (model: string): Promise<ProbeOutcome> => {
-      logger.log(
-        `    • running a read-only smoke prompt through ${descriptor.cli} with ${model} (live model call, a few seconds; pass --direct to skip) ...`,
-      );
-      const args = descriptor.args(PROBE_PROMPT, home, model);
-      const outcome = await runProbe(cliPath, args, probeEnv, home);
-      if (outcome.ok) logger.success("    GitHub Copilot Direct is available");
-      return outcome;
-    };
-    let outcome = await run(first.model);
-    if (outcome.ok) return true;
-    refuseTooOldCli(descriptor, outcome.detail);
-    let lastDetail = outcome.detail;
-    const next = isModelRejection(lastDetail, first.model) ? await smoke.cliFallbackModel() : null;
-    if (next !== null && !next.ok) {
-      logger.log(
-        `    • ${descriptor.cli} could not run ${first.model} (${lastDetail}); ${next.detail}`,
-      );
-    } else if (next !== null) {
-      logger.log(
-        `    • ${descriptor.cli} could not run ${first.model} (${lastDetail}); trying ${next.model} ...`,
-      );
-      outcome = await run(next.model);
-      if (outcome.ok) return true;
-      refuseTooOldCli(descriptor, outcome.detail);
-      lastDetail = outcome.detail;
-    }
-    logger.log(
-      `    • the Direct smoke prompt did not succeed${
-        lastDetail ? ` (${lastDetail})` : ""
-      } → using the local proxy`,
+    return await smokeThroughCli(descriptor, smoke, first.model, (model) =>
+      runProbe(cliPath, descriptor.args(PROBE_PROMPT, home, model), probeEnv, home),
     );
-    return false;
   } catch (e) {
     if (e instanceof CliTooOldError) throw e;
     logger.log(

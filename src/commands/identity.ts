@@ -166,83 +166,111 @@ export interface IdentityTableInput {
   color: boolean;
 }
 
-/** One column per host, one row per identity. `*` marks the one identity in use, on the host in
- *  use, or `>` the next landing's pick while the slot is empty; the notes name what would move it. */
-export function identityTableLines(input: IdentityTableInput): string[] {
-  const width = terminalWidth();
-  const paint = paintFor(input.color);
-  const { survey, pinned, configuredHost, stored, hostInUse, slot, daemonRunning } = input;
+/** One row per identity: the name, a verdict cell per host (the mark on the host in use), its
+ *  note. `*` is the identity in use, `>` the next landing's pick while the slot is empty. */
+function identityRows(
+  input: IdentityTableInput,
+  names: readonly string[],
+  inUseColumn: IdentityHostSurvey | null,
+  paint: SurveyPaint,
+): string[][] {
+  const { survey, slot } = input;
   const inUse = slot.kind === "in-use" ? slot.identity : null;
   const wouldPick = slot.kind === "empty" ? slot.wouldPick : null;
-  const inUseColumn = survey.hosts.find((h) => sameOrigin(h.apiBase, hostInUse)) ?? null;
-  const names = surveyedNames(survey);
   const mark = (column: IdentityHostSurvey, name: string): string => {
     if (column !== inUseColumn) return "";
     if (inUse === name) return "*";
     return wouldPick === name ? ">" : "";
   };
-  const rows = names.map((name) => [
+  return names.map((name) => [
     paint.cyan(name),
     ...survey.hosts.map((c) => verdictCell(verdictOf(c, name), mark(c, name), paint)),
     IDENTITY_NOTES[name] ?? "",
   ]);
-  // Every rejection behind a rendered cell.
-  const reasons = names.flatMap((name) =>
-    survey.hosts.flatMap((c) => {
+}
+
+/** Every rejection behind a rendered cell, dim and wrapped, after the table. */
+function rejectionLines(
+  input: IdentityTableInput,
+  names: readonly string[],
+  paint: SurveyPaint,
+  width: number | null,
+): string[] {
+  const literal = input.configuredHost !== null;
+  return names.flatMap((name) =>
+    input.survey.hosts.flatMap((c) => {
       const verdict = verdictOf(c, name);
-      return verdict === undefined || verdict.kind === "accepted"
-        ? []
-        : wrapLine(
-            paint.dim(
-              `${name} on ${hostLabel(c, false, configuredHost !== null)}: ${verdict.detail}`,
-            ),
-            width,
-            "  ",
-            "    ",
-          );
+      if (verdict === undefined || verdict.kind === "accepted") return [];
+      const reason = `${name} on ${hostLabel(c, false, literal)}: ${verdict.detail}`;
+      return wrapLine(paint.dim(reason), width, "  ", "    ");
     }),
   );
+}
+
+/** The slot's note: what the next landing stores while a half is missing, or the probed identity
+ *  a pin overlays; null when the slot and the pin agree. */
+function slotNote(input: IdentityTableInput): string | null {
+  const { slot, pinned, stored, profile } = input;
+  const start = agentStartCommand(profile);
+  const landing = profile === null ? "`agent init`" : `\`agent profile ${profile} add --direct\``;
+  if (slot.kind === "empty") {
+    return (
+      `Nothing stored yet for this profile: run ${landing} (or \`${start}\`) once; ` +
+      "it probes on the host in use and stores the identity and host it lands on."
+    );
+  }
+  if (slot.kind === "half") {
+    return (
+      `The ${slot.missing} is not stored yet for this profile: run ${landing} (or ` +
+      `\`${start}\`) once; it probes and stores what it lands on.`
+    );
+  }
+  if (pinned === null || stored.integrationId === undefined) return null;
+  const probed = stored.integrationId ?? CODEX_IDENTITY_NAME;
+  if (pinned === probed) return null;
+  return (
+    `Slot: the probed identity is ${probed}; the pin ` +
+    `overlays it at every re-render and daemon start.`
+  );
+}
+
+/** The notes under the table: the account's host when its lookup failed, the slot's own, and a
+ *  daemon that still sends what it launched with. */
+function tableNotes(input: IdentityTableInput): string[] {
+  const notes: string[] = [];
+  if (input.survey.designatedUnknown) {
+    notes.push(
+      "Host: the account's designated host could not be looked up (transient); only the hosts " +
+        "above were surveyed.",
+    );
+  }
+  const slot = slotNote(input);
+  if (slot !== null) notes.push(slot);
+  if (input.daemonRunning) {
+    const start = agentStartCommand(input.profile);
+    const restart = `\`${agentStopCommand(input.profile)}\`, then \`${start}\``;
+    notes.push(
+      "Proxy: a daemon is running and keeps the identity and host it launched with; restart it " +
+        `to apply a change: ${restart}.`,
+    );
+  }
+  return notes;
+}
+
+/** One column per host, one row per identity. `*` marks the one identity in use, on the host in
+ *  use, or `>` the next landing's pick while the slot is empty; the notes name what would move it. */
+export function identityTableLines(input: IdentityTableInput): string[] {
+  const width = terminalWidth();
+  const paint = paintFor(input.color);
+  const { survey, pinned, configuredHost, hostInUse, slot } = input;
+  const wouldPick = slot.kind === "empty" ? slot.wouldPick : null;
+  const inUseColumn = survey.hosts.find((h) => sameOrigin(h.apiBase, hostInUse)) ?? null;
+  const names = surveyedNames(survey);
   const inUseHost = new URL(hostInUse).host;
-  const start = agentStartCommand(input.profile);
-  const restart = `\`${agentStopCommand(input.profile)}\`, then \`${start}\``;
-  const landing =
-    input.profile === null ? "`agent init`" : `\`agent profile ${input.profile} add --direct\``;
   const legend =
     "* = in use: the pin, else the slot's probed identity; what every Direct " +
     "re-render bakes and a daemon launch sends, on the host in use" +
     (wouldPick === null ? "" : "; > = would be picked by the next landing (nothing stored yet)");
-  const notes = [
-    ...(survey.designatedUnknown
-      ? [
-          "Host: the account's designated host could not be looked up (transient); only the hosts " +
-            "above were surveyed.",
-        ]
-      : []),
-    ...(slot.kind === "empty"
-      ? [
-          `Nothing stored yet for this profile: run ${landing} (or \`${start}\`) once; ` +
-            "it probes on the host in use and stores the identity and host it lands on.",
-        ]
-      : slot.kind === "half"
-        ? [
-            `The ${slot.missing} is not stored yet for this profile: run ${landing} (or ` +
-              `\`${start}\`) once; it probes and stores what it lands on.`,
-          ]
-        : pinned !== null &&
-            stored.integrationId !== undefined &&
-            pinned !== (stored.integrationId ?? CODEX_IDENTITY_NAME)
-          ? [
-              `Slot: the probed identity is ${stored.integrationId ?? CODEX_IDENTITY_NAME}; the pin ` +
-                `overlays it at every re-render and daemon start.`,
-            ]
-          : []),
-    ...(daemonRunning
-      ? [
-          "Proxy: a daemon is running and keeps the identity and host it launched with; restart it " +
-            `to apply a change: ${restart}.`,
-        ]
-      : []),
-  ];
   return [
     ...wrapLine(
       pinned === null ? "identity: auto" : `identity: pinned to ${pinned}`,
@@ -257,7 +285,7 @@ export function identityTableLines(input: IdentityTableInput): string[] {
       "  ",
     ),
     ...wrapLine(paint.dim(legend), width, "", "  "),
-    ...formatTable(rows, {
+    ...formatTable(identityRows(input, names, inUseColumn, paint), {
       header: [
         paint.bold("identity"),
         ...survey.hosts.map((c) =>
@@ -270,8 +298,8 @@ export function identityTableLines(input: IdentityTableInput): string[] {
       width,
       color: input.color,
     }),
-    ...notes.flatMap((note) => wrapLine(paint.dim(note), width, "", "  ")),
-    ...reasons,
+    ...tableNotes(input).flatMap((note) => wrapLine(paint.dim(note), width, "", "  ")),
+    ...rejectionLines(input, names, paint, width),
   ];
 }
 
@@ -304,6 +332,28 @@ function nextLandingPick(
   return candidates.find((c) => verdictOf(column, c.name)?.kind === "accepted")?.name ?? null;
 }
 
+/** THE identity in use and where, as every re-render and daemon launch read it: the pin over the
+ *  slot's stored pair, the literal over its host. A pinned landing stores only the host and a
+ *  landing under a literal only the identity, so a cleared overlay leaves ONE half: the next
+ *  landing then re-selects from the generic host, not the host in use, and only the empty slot's
+ *  pick (`wouldPick`) is previewed. */
+function readSlot(
+  pinned: string | null,
+  stored: StoredDirectPair,
+  configuredHost: string | null,
+  wouldPick: string | null,
+): SlotReading {
+  const identity = pinned ?? stored.integrationId;
+  const host = configuredHost ?? stored.host;
+  if (identity !== undefined && host !== undefined) {
+    return { kind: "in-use", identity: identity ?? CODEX_IDENTITY_NAME };
+  }
+  if (pinned === null && stored.integrationId === undefined && stored.host === undefined) {
+    return { kind: "empty", wouldPick };
+  }
+  return { kind: "half", missing: host === undefined ? "host" : "identity" };
+}
+
 async function surveyAndTable(
   profile: Profile,
   token: string,
@@ -311,13 +361,10 @@ async function surveyAndTable(
 ): Promise<IdentitySurvey> {
   const userAgent = codexUserAgent();
   const configuredHost = new CopilotEnvConfig().copilotHost(profile);
-  // THE identity in use and where, as every re-render and daemon launch read it: the pin over the
-  // slot's stored pair, the literal over its host. The survey itself never probes to select and
-  // never writes: a slot with no pair reads as none, and the landing that probes stores it.
+  // The survey itself never probes to select and never writes: a slot with no pair reads as none,
+  // and the landing that probes stores it.
   const stored = new CopilotEnvState().readProfileDirectPair(profile);
-  const identity = pinned ?? stored.integrationId;
-  const host = configuredHost ?? stored.host;
-  const hostInUse = host ?? DEFAULT_COPILOT_API_BASE;
+  const hostInUse = configuredHost ?? stored.host ?? DEFAULT_COPILOT_API_BASE;
   // Rows: the candidates in the one header set every mode sends, plus the pin and the stored
   // identity when they are not candidates (a pin lands them there), so the row the mark lands on
   // always carries a probed verdict.
@@ -330,18 +377,8 @@ async function surveyAndTable(
     (id) => directIdentity(userAgent, id),
   );
   const survey = await surveyIntegrationIdentities(token, rows, { configuredHost: hostInUse });
-  // A pinned landing stores only the host and a landing under a literal only the identity, so a
-  // cleared overlay leaves ONE half: the next landing then re-selects from the generic host, not
-  // the host in use, and only the empty slot's pick is previewed.
-  const slot: SlotReading =
-    identity !== undefined && host !== undefined
-      ? { kind: "in-use", identity: identity ?? CODEX_IDENTITY_NAME }
-      : pinned === null && stored.integrationId === undefined && stored.host === undefined
-        ? {
-            kind: "empty",
-            wouldPick: nextLandingPick(survey, hostInUse, identityCandidates(userAgent)),
-          }
-        : { kind: "half", missing: host === undefined ? "host" : "identity" };
+  const wouldPick = nextLandingPick(survey, hostInUse, identityCandidates(userAgent));
+  const slot = readSlot(pinned, stored, configuredHost, wouldPick);
   for (const line of identityTableLines({
     survey,
     pinned,
@@ -403,6 +440,109 @@ function noteIdentityApplies(): void {
   if (hint !== undefined) logger.info(hint);
 }
 
+/** A host in a pin's survey: its label in the refusal and the narration, and its verdict for the
+ *  pinned id. */
+interface PinHost {
+  label: string;
+  verdict: IdentityVerdict | undefined;
+}
+
+/** A pin's survey, read once for the refusals and the narration. */
+interface PinSurvey {
+  /** Every surveyed host, the host in use among them as the configured column. */
+  hosts: PinHost[];
+
+  /** The host the pin's requests go to; undefined when the survey holds no column for it. */
+  inUse: PinHost | undefined;
+
+  /** The account's host could not be looked up (transient), so its column is missing. */
+  designatedUnknown: boolean;
+
+  /** A `host` literal is configured: the refusal names "the host in use", not auto's pick. */
+  literal: boolean;
+}
+
+async function surveyPin(id: string, profile: Profile, token: string): Promise<PinSurvey> {
+  const configuredHost = new CopilotEnvConfig().copilotHost(profile);
+  // The host the pin's requests go to: the `host` literal, else the slot's stored host (what
+  // every re-render bakes under the pin), else the pin's own selection (a slot never probed: the
+  // next re-render probes and stores). Surveyed as the configured column, so it always has a
+  // row whatever the account lookup answers.
+  const inUseHost =
+    configuredHost ??
+    new CopilotEnvState().readProfileDirectPair(profile)?.host ??
+    (
+      await selectDirectIdentityAndHost(token, codexUserAgent(), {
+        pinned: id,
+        fixedHost: configuredHost,
+        narrator: logger,
+      })
+    ).apiBase;
+  const survey = await surveyIntegrationIdentities(
+    token,
+    pinnedIdentityCandidates(id, codexUserAgent()),
+    { configuredHost: inUseHost },
+  );
+  const inUseIndex = survey.hosts.findIndex((h) => sameOrigin(h.apiBase, inUseHost));
+  const hosts = survey.hosts.map((column, i) => ({
+    // Under `auto` the selection's host rides in as the configured column; its label says so.
+    label:
+      configuredHost === null && column.role === "configured"
+        ? `${new URL(column.apiBase).host} (in use for this identity)`
+        : hostLabel(column, configuredHost !== null && i === inUseIndex),
+    verdict: column.verdicts[0]?.verdict,
+  }));
+  return {
+    hosts,
+    inUse: hosts[inUseIndex],
+    designatedUnknown: survey.designatedUnknown,
+    literal: configuredHost !== null,
+  };
+}
+
+/** Refuses the pin when every surveyed host rejects it, or the host its requests go to does. */
+function refuseRejectedPin(id: string, pin: PinSurvey): void {
+  // "Every host" needs the account's host to be known: a transient lookup failure hides that
+  // column, so the surveyed hosts' rejections alone cannot say so.
+  if (!pin.designatedUnknown && pin.hosts.every((h) => h.verdict?.kind === "rejected")) {
+    throw new Error(
+      [
+        `every host rejects this credential under \`${id}\`; not pinned:`,
+        ...pin.hosts.map(
+          (h) => `  - ${h.label}: ${h.verdict?.kind === "rejected" ? h.verdict.detail : ""}`,
+        ),
+      ].join("\n"),
+    );
+  }
+  // The host in use decides alone: acceptance elsewhere cannot carry a pin its requests never reach.
+  const { inUse } = pin;
+  if (inUse?.verdict?.kind === "rejected") {
+    const why = pin.literal ? "the host in use" : "the host auto selects for this identity";
+    throw new Error(
+      `${inUse.label} rejects this credential under \`${id}\`; not pinned, every request ` +
+        `goes to ${why}: ${inUse.verdict.detail}`,
+    );
+  }
+}
+
+/** Says what carries the pin (the hosts accepting it, else nothing: unverified) beside every
+ *  verdict that is not an acceptance. */
+function narratePinGround(id: string, pin: PinSurvey): void {
+  const accepted = pin.hosts.filter((h) => h.verdict?.kind === "accepted").map((h) => h.label);
+  const ground =
+    accepted.length === 0
+      ? "pinning unverified"
+      : `pinning on ${accepted.join(" and ")} accepting it`;
+  if (pin.designatedUnknown) {
+    logger.warn(`The account's designated host could not be looked up (transient); ${ground}.`);
+  }
+  for (const h of pin.hosts) {
+    if (h.verdict === undefined || h.verdict.kind === "accepted") continue;
+    const outcome = h.verdict.kind === "rejected" ? "rejects" : "could not verify";
+    logger.warn(`${h.label}: ${outcome} \`${id}\` (${h.verdict.detail}); ${ground}.`);
+  }
+}
+
 /** Pins `id` unless the host its requests would go to rejects it definitively (the `host`
  *  literal, else the slot's stored host, else what `auto` selects for it), or every surveyed host
  *  does. Otherwise the other hosts' verdicts are narrated, and with no acceptance at all (an
@@ -413,70 +553,9 @@ async function pinIdentity(id: string, profile: Profile, credential: Credential)
   if (token === null) {
     logger.warn(`Pinning \`${id}\` unverified: ${reason}.`);
   } else {
-    const configuredHost = new CopilotEnvConfig().copilotHost(profile);
-    // The host the pin's requests go to: the `host` literal, else the slot's stored host (what
-    // every re-render bakes under the pin), else the pin's own selection (a slot never probed: the
-    // next re-render probes and stores). Surveyed as the configured column, so it always has a
-    // row whatever the account lookup answers.
-    const inUseHost =
-      configuredHost ??
-      new CopilotEnvState().readProfileDirectPair(profile)?.host ??
-      (
-        await selectDirectIdentityAndHost(token, codexUserAgent(), {
-          pinned: id,
-          fixedHost: configuredHost,
-          narrator: logger,
-        })
-      ).apiBase;
-    const survey = await surveyIntegrationIdentities(
-      token,
-      pinnedIdentityCandidates(id, codexUserAgent()),
-      { configuredHost: inUseHost },
-    );
-    const inUseIndex = survey.hosts.findIndex((h) => sameOrigin(h.apiBase, inUseHost));
-    const hosts = survey.hosts.map((column, i) => ({
-      // Under `auto` the selection's host rides in as the configured column; its label says so.
-      label:
-        configuredHost === null && column.role === "configured"
-          ? `${new URL(column.apiBase).host} (in use for this identity)`
-          : hostLabel(column, configuredHost !== null && i === inUseIndex),
-      verdict: column.verdicts[0]?.verdict,
-    }));
-    // "Every host" needs the account's host to be known: a transient lookup failure hides that
-    // column, so the surveyed hosts' rejections alone cannot say so.
-    if (!survey.designatedUnknown && hosts.every((h) => h.verdict?.kind === "rejected")) {
-      throw new Error(
-        [
-          `every host rejects this credential under \`${id}\`; not pinned:`,
-          ...hosts.map(
-            (h) => `  - ${h.label}: ${h.verdict?.kind === "rejected" ? h.verdict.detail : ""}`,
-          ),
-        ].join("\n"),
-      );
-    }
-    // The host in use decides alone: acceptance elsewhere cannot carry a pin its requests never reach.
-    const inUse = hosts[inUseIndex];
-    if (inUse?.verdict?.kind === "rejected") {
-      const why =
-        configuredHost === null ? "the host auto selects for this identity" : "the host in use";
-      throw new Error(
-        `${inUse.label} rejects this credential under \`${id}\`; not pinned, every request ` +
-          `goes to ${why}: ${inUse.verdict.detail}`,
-      );
-    }
-    const accepted = hosts.filter((h) => h.verdict?.kind === "accepted").map((h) => h.label);
-    const ground =
-      accepted.length === 0
-        ? "pinning unverified"
-        : `pinning on ${accepted.join(" and ")} accepting it`;
-    if (survey.designatedUnknown) {
-      logger.warn(`The account's designated host could not be looked up (transient); ${ground}.`);
-    }
-    for (const h of hosts) {
-      if (h.verdict === undefined || h.verdict.kind === "accepted") continue;
-      const outcome = h.verdict.kind === "rejected" ? "rejects" : "could not verify";
-      logger.warn(`${h.label}: ${outcome} \`${id}\` (${h.verdict.detail}); ${ground}.`);
-    }
+    const pin = await surveyPin(id, profile, token);
+    refuseRejectedPin(id, pin);
+    narratePinGround(id, pin);
   }
   new CopilotEnvConfig().setProfile(profile, { identity: id });
   if (dryRunActive()) return;

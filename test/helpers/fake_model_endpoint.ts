@@ -24,7 +24,13 @@
 //                                 -> a test asserts their presence there and their value only on a
 //                                    catalog entry, which the front journals in full
 import { readFileSync, writeFileSync } from "node:fs";
-import { createServer, request as httpRequest, type IncomingMessage } from "node:http";
+import {
+  createServer,
+  request as httpRequest,
+  type IncomingMessage,
+  type Server,
+  type ServerResponse,
+} from "node:http";
 import { join } from "node:path";
 import { isRecord } from "../../src/utils/json.ts";
 import { bunRunArgs, ROOT, resolvePackageDir, spawnChild } from "./run.ts";
@@ -343,18 +349,26 @@ export async function awaitListening(child: Bun.Subprocess): Promise<number> {
   });
 }
 
+/** Kill aimock and release its stdin pipe. */
+async function stopChild(child: Bun.Subprocess): Promise<void> {
+  child.kill();
+  await child.exited;
+  const stdin = child.stdin;
+  if (stdin !== null && typeof stdin === "object" && "end" in stdin) await stdin.end();
+}
+
 /**
- * Start aimock on the scenario table (its fixture file lands in `dir`, a directory the caller
- * owns and removes) and the front in front of it; resolves once both listen.
+ * aimock on the scenario table (its fixture file lands in `dir`, a directory the caller owns
+ * and removes); resolves with the child and its port once it listens.
  *
  * aimock runs under the exit-with-parent preload (test/helpers/exit_with_parent_preload.ts) and
  * holds this process's stdin pipe: however this process ends, the pipe's EOF ends aimock too, so
- * a run interrupted mid-suite leaves nothing serving. `close` is the orderly path.
+ * a run interrupted mid-suite leaves nothing serving. `stopChild` is the orderly path.
  */
-export async function startFakeModelEndpoint(
+async function startAimock(
   dir: string,
   scenarios: Scenarios,
-): Promise<FakeModelEndpoint> {
+): Promise<{ child: Bun.Subprocess; port: number }> {
   const fixturesPath = join(dir, "fixtures.json");
   writeFileSync(fixturesPath, `${JSON.stringify(fixtureFile(scenarios), null, 2)}\n`);
   const child = spawnChild(process.execPath, {
@@ -377,89 +391,136 @@ export async function startFakeModelEndpoint(
     stdout: "pipe",
     stderr: "pipe",
   });
-  let aimockPort: number;
   try {
-    aimockPort = await awaitListening(child);
+    return { child, port: await awaitListening(child) };
   } catch (e) {
     // The start's own error (the early-exit rejection, say) is the one the caller must see.
     await stopChild(child);
     throw e;
   }
+}
 
-  const own: FakeRequest[] = [];
-  const front = createServer((req, res) => {
+/** Copilot's catalog, served by the front itself and journaled in `own` in full. */
+function serveCatalog(req: IncomingMessage, res: ServerResponse, own: FakeRequest[]): void {
+  own.push({
+    method: "GET",
+    path: req.url ?? "/",
+    headers: flatHeaders(req),
+    body: null,
+    status: 200,
+    interrupted: false,
+  });
+  res.writeHead(200, { "content-type": "application/json" });
+  res.end(JSON.stringify(catalogBody()));
+}
+
+/** The request forwarded to aimock byte for byte and the answer piped back, streams included.
+ *  aimock cuts a truncated stream by destroying its socket; `pipe` alone would leave the
+ *  client's side open forever, so the cut is passed on as a cut. */
+function proxyToAimock(req: IncomingMessage, res: ServerResponse, aimockPort: number): void {
+  const upstream = httpRequest(
+    {
+      host: "127.0.0.1",
+      port: aimockPort,
+      method: req.method,
+      path: req.url ?? "/",
+      headers: req.headers,
+    },
+    (answer) => {
+      res.writeHead(answer.statusCode ?? 502, answer.headers);
+      answer.pipe(res);
+      answer.on("close", () => {
+        if (!answer.complete) res.destroy();
+      });
+      answer.on("error", () => res.destroy());
+    },
+  );
+  upstream.on("error", () => {
+    if (!res.headersSent) res.writeHead(502, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: { message: "aimock unreachable", type: "front" } }));
+  });
+  // A client that goes away mid-stream takes its upstream with it.
+  res.on("close", () => {
+    if (!res.writableFinished) upstream.destroy();
+  });
+  req.pipe(upstream);
+}
+
+/** The front, listening on a free loopback port. */
+async function startFront(
+  aimockPort: number,
+  own: FakeRequest[],
+): Promise<{ server: Server; port: number }> {
+  const server = createServer((req, res) => {
     const path = req.url ?? "/";
     // Copilot's catalog lives at the ROOT /models; /v1/models stays aimock's own list.
     if (req.method === "GET" && (path.split("?")[0] ?? "") === "/models") {
-      own.push({
-        method: "GET",
-        path,
-        headers: flatHeaders(req),
-        body: null,
-        status: 200,
-        interrupted: false,
-      });
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify(catalogBody()));
+      serveCatalog(req, res, own);
       return;
     }
-    const upstream = httpRequest(
-      { host: "127.0.0.1", port: aimockPort, method: req.method, path, headers: req.headers },
-      (answer) => {
-        res.writeHead(answer.statusCode ?? 502, answer.headers);
-        answer.pipe(res);
-        // aimock cuts a truncated stream by destroying its socket; `pipe` alone would leave the
-        // client's side open forever, so the cut is passed on as a cut.
-        answer.on("close", () => {
-          if (!answer.complete) res.destroy();
-        });
-        answer.on("error", () => res.destroy());
-      },
-    );
-    upstream.on("error", () => {
-      if (!res.headersSent) res.writeHead(502, { "content-type": "application/json" });
-      res.end(JSON.stringify({ error: { message: "aimock unreachable", type: "front" } }));
-    });
-    // A client that goes away mid-stream takes its upstream with it.
-    res.on("close", () => {
-      if (!res.writableFinished) upstream.destroy();
-    });
-    req.pipe(upstream);
+    proxyToAimock(req, res, aimockPort);
   });
-  await new Promise<void>((resolve) => front.listen(0, "127.0.0.1", () => resolve()));
-  const address = front.address();
-  const frontPort = typeof address === "object" && address !== null ? address.port : 0;
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+  const address = server.address();
+  const port = typeof address === "object" && address !== null ? address.port : 0;
+  return { server, port };
+}
 
-  const aimockUrl = `http://127.0.0.1:${aimockPort}`;
+/** One aimock journal entry in the FakeRequest shape, or null for one without a path. */
+function journaledRequest(entry: unknown): FakeRequest | null {
+  if (!isRecord(entry) || typeof entry.path !== "string") return null;
+  const response = isRecord(entry.response) ? entry.response : {};
+  return {
+    method: typeof entry.method === "string" ? entry.method : "",
+    path: entry.path,
+    headers: isRecord(entry.headers)
+      ? Object.fromEntries(Object.entries(entry.headers).map(([k, v]) => [k, String(v)]))
+      : {},
+    body: entry.body ?? null,
+    status: typeof response.status === "number" ? response.status : 0,
+    interrupted: response.interrupted === true,
+  };
+}
+
+/** The requests aimock journaled, in its order. */
+async function aimockJournal(aimockUrl: string): Promise<FakeRequest[]> {
+  const res = await fetch(`${aimockUrl}/__aimock/journal`, {
+    signal: AbortSignal.timeout(JOURNAL_TIMEOUT_MS),
+  });
+  const entries = (await res.json()) as unknown;
+  if (!Array.isArray(entries)) return [];
+  const theirs: FakeRequest[] = [];
+  for (const entry of entries) {
+    const request = journaledRequest(entry);
+    if (request !== null) theirs.push(request);
+  }
+  return theirs;
+}
+
+/**
+ * Start aimock on the scenario table (its fixture file lands in `dir`, a directory the caller
+ * owns and removes) and the front in front of it; resolves once both listen. `close` is the
+ * orderly end of both.
+ */
+export async function startFakeModelEndpoint(
+  dir: string,
+  scenarios: Scenarios,
+): Promise<FakeModelEndpoint> {
+  const aimock = await startAimock(dir, scenarios);
+  const own: FakeRequest[] = [];
+  const front = await startFront(aimock.port, own);
+  const aimockUrl = `http://127.0.0.1:${aimock.port}`;
+  // The front's own requests are read AFTER the upstream journal arrives: one recorded during that await
+  // belongs to the journal too.
   const journal = async (): Promise<FakeRequest[]> => {
-    const res = await fetch(`${aimockUrl}/__aimock/journal`, {
-      signal: AbortSignal.timeout(JOURNAL_TIMEOUT_MS),
-    });
-    const entries = (await res.json()) as unknown;
-    const theirs: FakeRequest[] = [];
-    if (Array.isArray(entries)) {
-      for (const entry of entries) {
-        if (!isRecord(entry) || typeof entry.path !== "string") continue;
-        const response = isRecord(entry.response) ? entry.response : {};
-        theirs.push({
-          method: typeof entry.method === "string" ? entry.method : "",
-          path: entry.path,
-          headers: isRecord(entry.headers)
-            ? Object.fromEntries(Object.entries(entry.headers).map(([k, v]) => [k, String(v)]))
-            : {},
-          body: entry.body ?? null,
-          status: typeof response.status === "number" ? response.status : 0,
-          interrupted: response.interrupted === true,
-        });
-      }
-    }
+    const theirs = await aimockJournal(aimockUrl);
     return [...own, ...theirs];
   };
 
   return {
-    baseUrl: `http://127.0.0.1:${frontPort}`,
+    baseUrl: `http://127.0.0.1:${front.port}`,
     aimockUrl,
-    pid: child.pid,
+    pid: aimock.child.pid,
     journal,
     lastRequest: async (route) => {
       const all = (await journal()).filter((r) => isRoute(route, r.path));
@@ -467,18 +528,10 @@ export async function startFakeModelEndpoint(
     },
     close: async () => {
       await new Promise<void>((done) => {
-        front.closeAllConnections();
-        front.close(() => done());
+        front.server.closeAllConnections();
+        front.server.close(() => done());
       });
-      await stopChild(child);
+      await stopChild(aimock.child);
     },
   };
-}
-
-/** Kill aimock and release its stdin pipe. */
-async function stopChild(child: Bun.Subprocess): Promise<void> {
-  child.kill();
-  await child.exited;
-  const stdin = child.stdin;
-  if (stdin !== null && typeof stdin === "object" && "end" in stdin) await stdin.end();
 }

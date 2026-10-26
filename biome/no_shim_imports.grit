@@ -1,4 +1,4 @@
-// The daemon preload shims (the `src/scripts/*_preload.ts` files biome.json scopes this rule to)
+// The daemon preload shims (the `src/scripts/*_preload.ts` files biome.local.jsonc scopes this rule to)
 // stay free of runtime imports: a `--preload` shim runs inside the proxy daemon, and one import
 // would drag the CLI layer into that process, which is why each shim re-declares its env-key
 // and header contracts as local literals (pinned against the CLI constants by

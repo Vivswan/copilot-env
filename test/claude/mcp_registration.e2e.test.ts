@@ -1,3 +1,4 @@
+import { afterEach } from "bun:test";
 import {
   existsSync,
   lstatSync,
@@ -20,7 +21,7 @@ import {
 import { resolveExecutablePath } from "../../src/utils/command.ts";
 import { agentLauncherCommand } from "../../src/utils/root.ts";
 import { envSnapshot } from "../helpers/env.ts";
-import { afterEach, expect, removeDir, tempDir, test } from "../helpers/testing.ts";
+import { expect, removeDir, tempDir, test } from "../helpers/testing.ts";
 
 const restoreEnv = envSnapshot();
 let dir = "";

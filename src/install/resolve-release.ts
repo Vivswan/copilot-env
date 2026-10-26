@@ -58,6 +58,20 @@ export interface ReleasePage {
   rows: number;
 }
 
+/** One API row as a stable release: neither draft nor prerelease, its tag admitted by
+ *  `tagPattern`, with a readable publish (else creation) date; null for any other row. */
+function stableRelease(item: unknown, tagPattern: RegExp): Release | null {
+  if (typeof item !== "object" || item === null) return null;
+  const r = item as Record<string, unknown>;
+  if (r.draft === true || r.prerelease === true) return null;
+  if (typeof r.tag_name !== "string" || !tagPattern.test(r.tag_name)) return null;
+  const date = typeof r.published_at === "string" ? r.published_at : r.created_at;
+  if (typeof date !== "string") return null;
+  const dateSeconds = Math.floor(Date.parse(date) / 1000);
+  if (!Number.isFinite(dateSeconds)) return null;
+  return { tag: r.tag_name, dateSeconds };
+}
+
 /** Unparseable text, or an API error object, reads as an empty last page. */
 export function parseReleasesJson(
   jsonText: string,
@@ -73,16 +87,8 @@ export function parseReleasesJson(
 
   const releases: Release[] = [];
   for (const item of parsed) {
-    if (typeof item !== "object" || item === null) continue;
-    const r = item as Record<string, unknown>;
-    if (r.draft === true || r.prerelease === true) continue;
-    if (typeof r.tag_name !== "string" || !tagPattern.test(r.tag_name)) continue;
-    const date = typeof r.published_at === "string" ? r.published_at : r.created_at;
-    if (typeof date !== "string") continue;
-    const dateSeconds = Math.floor(Date.parse(date) / 1000);
-    if (Number.isFinite(dateSeconds)) {
-      releases.push({ tag: r.tag_name, dateSeconds });
-    }
+    const release = stableRelease(item, tagPattern);
+    if (release !== null) releases.push(release);
   }
   // The API's order is not trusted; sort newest-first here.
   releases.sort((a, b) => b.dateSeconds - a.dateSeconds);

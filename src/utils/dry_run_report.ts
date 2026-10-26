@@ -47,6 +47,19 @@ export interface FileChange {
 
 type Doc = Record<string, unknown>;
 
+/** What entryChange judges: the planned file or directory at `key`, the disk entry it lands on
+ *  (`onDisk`, a link there followed; `replacesLink` says one stood there), and what the run
+ *  declared secret in it. */
+interface PlannedEntry {
+  key: string;
+  name: string;
+  entry: Exclude<OverlayEntry, { kind: "gone" | "link" }>;
+  onDisk: Stats | null;
+  replacesLink: boolean;
+  secretKeys: ReadonlySet<string>;
+  secretFile: boolean;
+}
+
 function diskStat(key: string, follow: boolean): Stats | null {
   try {
     return follow ? disk.stat(key) : disk.lstat(key);
@@ -55,46 +68,55 @@ function diskStat(key: string, follow: boolean): Stats | null {
   }
 }
 
-/** A delete is judged by lstat (the link itself goes); a planned file or directory by stat, and a
- *  link at its path is replaced by the plain entry, which is a rewrite whatever the bytes; a
- *  planned link by lstat, against the disk link's target. */
+/** The report's rows: every key the run planned or tombstoned, in first-touch order, judged
+ *  against the disk; a key under the run's own scratch is left out. */
 export function diffOverlay(overlay: Overlay): FileChange[] {
   const changes: FileChange[] = [];
   for (const [key, entry] of overlay.entries()) {
     if (overlay.isHidden(key)) continue;
-    const name = overlay.nameOf(key);
-    const raw = diskStat(key, false);
-    if (entry.kind === "gone") {
-      if (raw !== null) changes.push(change(name, "delete", raw.isDirectory()));
-      continue;
-    }
-    if (entry.kind === "link") {
-      changes.push(change(name, linkVerdict(key, entry.target, raw), false));
-      continue;
-    }
-    const link = raw?.isSymbolicLink() ?? false;
-    const onDisk = link ? diskStat(key, true) : raw;
-    changes.push(
-      entryChange(
-        key,
-        name,
-        entry,
-        onDisk,
-        link,
-        overlay.secretKeysOf(key),
-        overlay.isSecretFile(key),
-      ),
-    );
-    // The children a fresh directory no longer lists went with the tree.
-    if (entry.kind === "dir" && entry.fresh && onDisk?.isDirectory()) {
-      for (const child of disk.readdir(key).sort()) {
-        if (overlay.touched(join(key, child))) continue;
-        const gone = diskStat(join(key, child), false);
-        changes.push(change(join(name, child), "delete", gone?.isDirectory() ?? false));
-      }
-    }
+    changes.push(...keyChanges(overlay, key, entry));
   }
   return changes;
+}
+
+/** A delete is judged by lstat (the link itself goes); a planned file or directory by stat, and a
+ *  link at its path is replaced by the plain entry, which is a rewrite whatever the bytes; a
+ *  planned link by lstat, against the disk link's target. */
+function keyChanges(overlay: Overlay, key: string, entry: OverlayEntry): FileChange[] {
+  const name = overlay.nameOf(key);
+  const raw = diskStat(key, false);
+  if (entry.kind === "gone") {
+    return raw === null ? [] : [change(name, "delete", raw.isDirectory())];
+  }
+  if (entry.kind === "link") {
+    return [change(name, linkVerdict(key, entry.target, raw), false)];
+  }
+  const link = raw?.isSymbolicLink() ?? false;
+  const onDisk = link ? diskStat(key, true) : raw;
+  const own = entryChange({
+    key,
+    name,
+    entry,
+    onDisk,
+    replacesLink: link,
+    secretKeys: overlay.secretKeysOf(key),
+    secretFile: overlay.isSecretFile(key),
+  });
+  if (entry.kind === "dir" && entry.fresh && onDisk?.isDirectory()) {
+    return [own, ...droppedChildren(overlay, key, name)];
+  }
+  return [own];
+}
+
+/** The children a fresh directory no longer lists went with the tree. */
+function droppedChildren(overlay: Overlay, key: string, name: string): FileChange[] {
+  const dropped: FileChange[] = [];
+  for (const child of disk.readdir(key).sort()) {
+    if (overlay.touched(join(key, child))) continue;
+    const gone = diskStat(join(key, child), false);
+    dropped.push(change(join(name, child), "delete", gone?.isDirectory() ?? false));
+  }
+  return dropped;
 }
 
 /** A link is the same only as a disk link with the same target text; anything else there is
@@ -121,37 +143,44 @@ function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
  *  rewrite whose rows read as a create's: nothing of the old inode carries over. A mode-only
  *  change is a rewrite with no row, as a helper's executable-bit repair prints. A file declared
  *  secret as a whole has no rows and no text: nothing of it may print. */
-function entryChange(
-  key: string,
-  name: string,
-  entry: Exclude<OverlayEntry, { kind: "gone" | "link" }>,
-  onDisk: Stats | null,
-  replacesLink: boolean,
-  secretKeys: ReadonlySet<string>,
-  secretFile: boolean,
-): FileChange {
+function entryChange(planned: PlannedEntry): FileChange {
+  const { key, name, entry, onDisk, secretKeys, secretFile } = planned;
   const directory = entry.kind === "dir";
   const sameKind = onDisk !== null && onDisk.isDirectory() === directory;
-  const planned = entry.kind === "file" ? entry.text : null;
-  const before = sameKind && planned !== null ? disk.readText(key) : null;
-  const rows = planned === null || secretFile ? [] : docRows(key, before, planned, secretKeys);
-  const bytesDiffer = (): boolean =>
-    entry.kind === "file" &&
-    (planned !== null ? before !== planned : !sameBytes(disk.readBytes(key), entry.bytes()));
-  const differs =
-    !sameKind ||
-    replacesLink ||
-    bytesDiffer() ||
-    (onDisk !== null && (onDisk.mode & 0o777) !== entry.mode);
-  const verdict: FileVerdict =
-    onDisk === null && !replacesLink ? "create" : differs ? "rewrite" : "same";
+  const text = entry.kind === "file" ? entry.text : null;
+  const before = sameKind && text !== null ? disk.readText(key) : null;
+  const rows = text === null || secretFile ? [] : docRows(key, before, text, secretKeys);
+  const verdict = entryVerdict(planned, sameKind, before);
+  const result: FileChange = { path: name, verdict, directory, attributes: rows };
   // A line diff cannot redact a value inside a line, so a file with a declared secret prints its
   // verdict alone when it has no leaf rows.
-  const text =
-    planned !== null && rows.length === 0 && secretKeys.size === 0 && !secretFile
-      ? { before, after: planned }
-      : undefined;
-  return { path: name, verdict, directory, attributes: rows, ...(text ? { text } : {}) };
+  if (text !== null && rows.length === 0 && secretKeys.size === 0 && !secretFile) {
+    result.text = { before, after: text };
+  }
+  return result;
+}
+
+function entryVerdict(
+  planned: PlannedEntry,
+  sameKind: boolean,
+  before: string | null,
+): FileVerdict {
+  const { key, entry, onDisk, replacesLink } = planned;
+  if (onDisk === null && !replacesLink) return "create";
+  if (!sameKind || replacesLink) return "rewrite";
+  if (entry.kind === "file" && bytesDiffer(key, entry, before)) return "rewrite";
+  if (onDisk !== null && (onDisk.mode & 0o777) !== entry.mode) return "rewrite";
+  return "same";
+}
+
+/** `before` is the disk's text the caller already read; a byte write compares the disk's bytes. */
+function bytesDiffer(
+  key: string,
+  entry: Extract<OverlayEntry, { kind: "file" }>,
+  before: string | null,
+): boolean {
+  if (entry.text === null) return !sameBytes(disk.readBytes(key), entry.bytes());
+  return before !== entry.text;
 }
 
 /** A blank file is the empty document, as the store and settings readers read it. */
@@ -206,6 +235,16 @@ function sameValue(a: unknown, b: unknown): boolean {
   return a instanceof Date === b instanceof Date && JSON.stringify(a) === JSON.stringify(b);
 }
 
+function rowStatus(
+  before: ReadonlyMap<string, unknown>,
+  after: ReadonlyMap<string, unknown>,
+  key: string,
+): AttributeStatus {
+  if (!before.has(key)) return "set";
+  if (!after.has(key)) return "remove";
+  return sameValue(before.get(key), after.get(key)) ? "same" : "change";
+}
+
 /** The leaf rows of a JSON or TOML file, every leaf of either side; no rows when either side does
  *  not parse (the verdict alone is what can be said) or the file is neither format. */
 function docRows(
@@ -231,16 +270,9 @@ function docRows(
   }
   const rows: AttributeRow[] = [];
   for (const key of new Set([...before.keys(), ...after.keys()])) {
-    const status: AttributeStatus = !before.has(key)
-      ? "set"
-      : !after.has(key)
-        ? "remove"
-        : sameValue(before.get(key), after.get(key))
-          ? "same"
-          : "change";
     rows.push({
       key,
-      status,
+      status: rowStatus(before, after, key),
       current: before.get(key),
       next: after.get(key),
       secret: secretKeys.has(key),
@@ -324,25 +356,27 @@ function lineDiff(from: readonly string[], to: readonly string[]): [DiffKind, st
   return rows;
 }
 
+/** The verdict line, then under a created or rewritten file what changes in it. */
+function fileLines(file: FileChange): string[] {
+  const lines = [`${VERDICT_LABEL[file.verdict]} ${file.path}${file.directory ? sep : ""}`];
+  if (file.verdict === "same" || file.verdict === "delete") return lines;
+  const changed = file.attributes.filter((row) => row.status !== "same");
+  if (changed.length === 0 && file.attributes.length > 0) {
+    lines.push("  (every managed attribute already holds its value)");
+  }
+  if (file.attributes.length === 0 && file.text !== undefined) {
+    for (const line of textDiffLines(file.text.before, file.text.after)) lines.push(`  ${line}`);
+  }
+  for (const row of changed) {
+    const from = renderValue(row.current, row.secret);
+    lines.push(`  ${row.key}  ${from} -> ${renderValue(row.next, row.secret)}`);
+  }
+  return lines;
+}
+
 /** Per file its verdict and path (a directory with a trailing separator), then every attribute
  *  that changes as `key  old -> new`, or for a file with no attribute rows its changed lines. */
 export function renderDryRun(changes: readonly FileChange[]): string[] {
   if (changes.length === 0) return ["Nothing would be written."];
-  const lines: string[] = [];
-  for (const file of changes) {
-    lines.push(`${VERDICT_LABEL[file.verdict]} ${file.path}${file.directory ? sep : ""}`);
-    if (file.verdict === "same" || file.verdict === "delete") continue;
-    const changed = file.attributes.filter((row) => row.status !== "same");
-    if (changed.length === 0 && file.attributes.length > 0) {
-      lines.push("  (every managed attribute already holds its value)");
-    }
-    if (file.attributes.length === 0 && file.text !== undefined) {
-      for (const line of textDiffLines(file.text.before, file.text.after)) lines.push(`  ${line}`);
-    }
-    for (const row of changed) {
-      const from = renderValue(row.current, row.secret);
-      lines.push(`  ${row.key}  ${from} -> ${renderValue(row.next, row.secret)}`);
-    }
-  }
-  return lines;
+  return changes.flatMap(fileLines);
 }

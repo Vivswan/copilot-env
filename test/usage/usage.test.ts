@@ -1,6 +1,7 @@
 // The fixture timestamps are June dates: a fall-back transition could stretch a local day to 25h
 // and land a full-day-apart pair on one day, and June has none.
 import { Database } from "bun:sqlite";
+import { afterEach } from "bun:test";
 import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
@@ -16,7 +17,7 @@ import {
 } from "../../src/usage/usage.ts";
 import { must } from "../../src/utils/assert.ts";
 import { dayKeyIn, localDayKey } from "../../src/utils/time.ts";
-import { afterEach, expect, removeDir, tempDir, test } from "../helpers/testing.ts";
+import { expect, removeDir, tempDir, test } from "../helpers/testing.ts";
 
 // Same-day timestamps share one instant; distinct days sit a full day apart in every runner zone.
 const ms = (utc: string): number => Date.parse(utc);

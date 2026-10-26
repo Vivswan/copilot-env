@@ -7,7 +7,7 @@ import {
 import { expect, test } from "../helpers/testing.ts";
 
 // A no-op rule passes `biome ci` exactly as quietly as a clean tree does, so the rule's teeth
-// and the scope biome.json gives it are pinned here rather than assumed.
+// and the scope biome.local.jsonc gives it are pinned here rather than assumed.
 
 /** The rule under test: its grit file, checkout-relative. */
 const PLUGIN = "biome/no_unmanaged_child_spawn.grit";
@@ -62,7 +62,7 @@ test("no-unmanaged-child-spawn: every route to a child process is rejected, and 
   expect(SOURCES.map(([source], i) => [source, counts[i]])).toEqual(SOURCES);
 });
 
-test("biome.json scopes the rule to the test tree, minus the two files that own a spawn", () => {
+test("biome.local.jsonc scopes the rule to the test tree, minus the two files that own a spawn", () => {
   // Under the repository's own overrides: a typo in a glob would turn the rule off for the files
   // it exists for, and `biome ci` would pass vacuously.
   const raw = 'Bun.spawn(["x"]);';

@@ -1,5 +1,6 @@
 // The `agent settings` bundle round-trips the two portable stores and re-derives everything else.
 
+import { afterEach, beforeEach } from "bun:test";
 import {
   chmodSync,
   existsSync,
@@ -64,7 +65,7 @@ import { changedPaths, fingerprintTree } from "../helpers/dry_run.ts";
 import { type AgentHomes, envSnapshot, isolateAgentHomes, resetExitCode } from "../helpers/env.ts";
 import { writeRunState } from "../helpers/fixtures.ts";
 import { captureChannels } from "../helpers/output.ts";
-import { afterEach, beforeEach, expect, test } from "../helpers/testing.ts";
+import { expect, test } from "../helpers/testing.ts";
 
 const WIN = process.platform === "win32";
 const WORK = parseProfileName("work");
@@ -805,7 +806,7 @@ test("a Direct default whose pair will not be stored at apply time rebakes both 
   expect(new CopilotEnvConfig().read().profiles).toEqual({});
 });
 
-test("gh-cli slots probe gh ONCE end to end: a failed probe skips them unless the local slot resolves, a pinned slot probes ITS account, and gh-cli wiring re-derives the identity", async () => {
+test("gh-cli slots probe gh ONCE end to end: a failed probe skips them unless the local slot resolves, and gh-cli wiring re-derives the identity", async () => {
   const machine = isolate();
   const bundle = parseSettingsBundle(
     rawBundle({
@@ -863,7 +864,9 @@ test("gh-cli slots probe gh ONCE end to end: a failed probe skips them unless th
     ghUser: null,
   });
   expect(new CopilotEnvState().profileNames()).toEqual([WORK]); // alt never landed
+});
 
+test("a pinned gh-cli slot probes ITS account, and a failed probe only rules out the bundle's credential over a working local token", async () => {
   // A pinned slot probes ITS account, and the pin lands with the credential.
   isolate();
   const asked: Array<string | null> = [];

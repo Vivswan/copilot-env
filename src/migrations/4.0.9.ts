@@ -116,6 +116,45 @@ function layer(
   return out;
 }
 
+/** A `[profiles.<name>]` table copilot-env wrote: a valid profile name whose model_provider is
+ *  our id for it. */
+function ownsProfileTable(name: string, table: unknown): table is Record<string, unknown> {
+  return (
+    isValidProfileName(name) &&
+    isRecord(table) &&
+    table.model_provider === codexProviderId(parseProfileName(name))
+  );
+}
+
+/** The table's keys into the profile file, under our selector. False when the file exists but
+ *  cannot be parsed: the table stays put, and the caller reports it. */
+function moveCodexProfileTable(
+  configPath: string,
+  profilePath: string,
+  profile: ProfileName,
+  table: Record<string, unknown>,
+): boolean {
+  const existing = readCodexToml(profilePath);
+  if (existing.kind === "unparseable") {
+    consola.warn(
+      `  left [profiles.${profile}] in ${configPath}: ${profilePath} is not valid TOML ` +
+        `(${existing.error}); repair it, then re-run this migration`,
+    );
+    return false;
+  }
+  // The file's own keys are what `codex --profile <name>` reads today, so they win over the
+  // table's; the selector is ours either way.
+  saveCodexToml(
+    profilePath,
+    {
+      ...layer(table, existing.kind === "ok" ? existing.doc : {}),
+      model_provider: codexProviderId(profile),
+    },
+    `moved from [profiles.${profile}] in config.toml`,
+  );
+  return true;
+}
+
 /** One home's config.toml: ours move, the rest is reported. Every table is visited before the
  *  file is saved, and an owned table whose profile file exists but cannot be parsed stays put and
  *  FAILS the step after the others moved (the runner then names the re-run), since no wiring
@@ -140,11 +179,7 @@ export function moveCodexProfileTables(codexHome: string): void {
   let changed = false;
   const stuck: string[] = [];
   for (const [name, table] of Object.entries(profiles)) {
-    const ours =
-      isValidProfileName(name) &&
-      isRecord(table) &&
-      table.model_provider === codexProviderId(parseProfileName(name));
-    if (!ours) {
+    if (!ownsProfileTable(name, table)) {
       // The name may be one copilot-env would never mint, so the file is spelled without the brand.
       consola.warn(
         `  [profiles.${name}] in ${configPath} is not copilot-env's; \`codex --profile ${name}\` ` +
@@ -153,26 +188,12 @@ export function moveCodexProfileTables(codexHome: string): void {
       );
       continue;
     }
-    const profilePath = codexProfileConfigPath(codexHome, parseProfileName(name));
-    const existing = readCodexToml(profilePath);
-    if (existing.kind === "unparseable") {
-      consola.warn(
-        `  left [profiles.${name}] in ${configPath}: ${profilePath} is not valid TOML ` +
-          `(${existing.error}); repair it, then re-run this migration`,
-      );
+    const profile = parseProfileName(name);
+    const profilePath = codexProfileConfigPath(codexHome, profile);
+    if (!moveCodexProfileTable(configPath, profilePath, profile, table)) {
       stuck.push(profilePath);
       continue;
     }
-    // The file's own keys are what `codex --profile <name>` reads today, so they win over the
-    // table's; the selector is ours either way.
-    saveCodexToml(
-      profilePath,
-      {
-        ...layer(table, existing.kind === "ok" ? existing.doc : {}),
-        model_provider: codexProviderId(parseProfileName(name)),
-      },
-      `moved from [profiles.${name}] in config.toml`,
-    );
     delete profiles[name];
     changed = true;
   }
@@ -391,6 +412,39 @@ const lineIs = (line: string | undefined, marker: string): boolean =>
 // Away from 4.0.9: `agent shell` stripped the launchers block every pre-4.0.0 release wrote on
 // every wire. The strip is a migration now, so an rc still carrying the block loses it once here.
 
+/** The index of the end fence closing the launchers block opened at `start`, or `start` itself
+ *  when another fence line comes first or none does (the block was never closed). */
+function launchersBlockEnd(lines: readonly string[], start: number): number {
+  for (let j = start + 1; j < lines.length; j++) {
+    const later = (lines[j] ?? "").replace(/\r$/, "");
+    if (later === LAUNCHERS_MARKER_END) return j;
+    if (FENCE_LINES.includes(later)) return start;
+  }
+  return start;
+}
+
+/** The user line directly under an unclosed marker at `start`; null when nothing, a blank, or a
+ *  fence line follows it. */
+function lineLeftBehind(lines: readonly string[], start: number): string | null {
+  const next = lines[start + 1];
+  if (next === undefined) return null;
+  const bare = next.replace(/\r$/, "");
+  if (bare === "" || FENCE_LINES.includes(bare)) return null;
+  return bare;
+}
+
+/** The line indices one block occupies: the marker through `end`, the blank line before it, and
+ *  the ONE blank after its end fence (never the file terminator). */
+function launchersBlockSpan(lines: readonly string[], start: number, end: number): number[] {
+  const span: number[] = [];
+  if (start > 0 && lineIs(lines[start - 1], "")) span.push(start - 1);
+  for (let i = start; i <= end; i++) span.push(i);
+  const after = end + 1;
+  const terminator = after === lines.length - 1 && lines[after] === "";
+  if (after < lines.length && lineIs(lines[after], "") && !terminator) span.push(after);
+  return span;
+}
+
 /**
  * Every launchers block, bounded as the shell writer bounded its blocks: the marker through its
  * end fence (any other fence line first means the block was never closed and the marker line
@@ -402,31 +456,15 @@ export function stripLaunchersBlocks(content: string): { content: string; leftBe
   const lines = content.split("\n");
   const skip = new Set<number>();
   const leftBehind: string[] = [];
-  lines.forEach((line, idx) => {
-    if (!lineIs(line, LAUNCHERS_MARKER)) return;
-    let end = idx;
-    for (let j = idx + 1; j < lines.length; j++) {
-      const later = (lines[j] ?? "").replace(/\r$/, "");
-      if (later === LAUNCHERS_MARKER_END) {
-        end = j;
-        break;
-      }
-      if (FENCE_LINES.includes(later)) break;
-    }
+  for (const [idx, line] of lines.entries()) {
+    if (!lineIs(line, LAUNCHERS_MARKER)) continue;
+    const end = launchersBlockEnd(lines, idx);
     if (end === idx) {
-      const next = idx + 1 < lines.length ? (lines[idx + 1] ?? "").replace(/\r$/, "") : null;
-      if (next !== null && next !== "" && !FENCE_LINES.includes(next)) leftBehind.push(next);
+      const left = lineLeftBehind(lines, idx);
+      if (left !== null) leftBehind.push(left);
     }
-    if (idx > 0 && lineIs(lines[idx - 1], "")) skip.add(idx - 1);
-    for (let i = idx; i <= end; i++) skip.add(i);
-    const after = end + 1;
-    if (
-      after < lines.length &&
-      lineIs(lines[after], "") &&
-      !(after === lines.length - 1 && lines[after] === "")
-    )
-      skip.add(after);
-  });
+    for (const i of launchersBlockSpan(lines, idx, end)) skip.add(i);
+  }
   if (skip.size === 0) return { content, leftBehind };
   return { content: lines.filter((_, idx) => !skip.has(idx)).join("\n"), leftBehind };
 }
@@ -618,74 +656,64 @@ function foldInto(
   }
 }
 
-/** Exported for the migration test; `rootHome` isolates. Idempotent: a
- *  home already folded (no old store present) writes nothing. A store that is not a JSON object is
- *  left in place and named: the fold never discards content it cannot carry over. */
-export function foldRootStores(rootHome: string = resolveRootHome()): void {
+/** The old store at `oldPath` as a JSON object; null for an absent one, or for one left in place
+ *  and named: not valid JSON, or not an object. */
+function readFoldedStore(oldPath: string): Record<string, unknown> | null {
+  if (!fs.exists(oldPath)) return null;
+  let doc: unknown;
+  try {
+    doc = JSON.parse(fs.readText(oldPath));
+  } catch {
+    // The parser's message can quote the file's text (a token); the store's fixed diagnostic instead.
+    consola.warn(
+      `  ${oldPath} is not valid JSON (${JSON_PARSE_DIAGNOSTIC}); left in place, not folded`,
+    );
+    return null;
+  }
+  if (!isRecord(doc)) {
+    consola.warn(`  ${oldPath} is not a JSON object; left in place, not folded`);
+    return null;
+  }
+  return doc;
+}
+
+/** Each read store folded into state.json's maps, then removed and named; a store already folded
+ *  (the half-migrated shape) is kept and named instead. */
+function foldStoreDocs(
+  rootHome: string,
+  docs: ReadonlyMap<FoldedStore, Record<string, unknown>>,
+): void {
   const stateFile = join(rootHome, STATE_STORE_FILENAME);
   const store = new CopilotApiConfig(
     stateFile,
     join(rootHome, LOCKS_DIR_NAME, `${STATE_STORE_FILENAME}.lock`),
   );
-  const docs = new Map<FoldedStore, Record<string, unknown>>();
-  for (const name of FOLDED_STORES) {
+  const kept: FoldedStore[] = [];
+  store.update((d) => {
+    // Judged on the document as it stood BEFORE this pass, so the credentials fold (which lands
+    // catalog keys in `global`) cannot make the preferences fold read as done.
+    const before = structuredClone(d);
+    for (const [name, doc] of docs) {
+      if (alreadyFolded(before, name)) kept.push(name);
+      else foldInto(d, name, doc);
+    }
+  });
+  for (const name of docs.keys()) {
     const oldPath = join(rootHome, name);
-    if (!fs.exists(oldPath)) continue;
-    let doc: unknown;
-    try {
-      doc = JSON.parse(fs.readText(oldPath));
-    } catch {
-      // The parser's message can quote the file's text (a token); the store's fixed diagnostic instead.
+    if (kept.includes(name)) {
       consola.warn(
-        `  ${oldPath} is not valid JSON (${JSON_PARSE_DIAGNOSTIC}); left in place, not folded`,
+        `  both ${oldPath} and its keys in ${stateFile} exist - keeping ${stateFile} (the one ` +
+          `readers use); delete ${name} by hand after checking it holds nothing newer`,
       );
       continue;
     }
-    if (!isRecord(doc)) {
-      consola.warn(`  ${oldPath} is not a JSON object; left in place, not folded`);
-      continue;
-    }
-    docs.set(name, doc);
+    fs.rm(oldPath, { force: true });
+    consola.info(`  folded ${name} into ${stateFile}`);
   }
-  // A flat preferences.json copies its profile keys into every profile credentials.json names, so
-  // it is folded only once credentials.json has been read (or never existed): a source is never
-  // deleted while a source it depends on failed validation.
-  const credentialsUnread =
-    fs.exists(join(rootHome, "credentials.json")) && !docs.has("credentials.json");
-  const prefs = docs.get("preferences.json");
-  const held = prefs !== undefined && credentialsUnread && isFlatPreferences(prefs);
-  if (held) docs.delete("preferences.json");
-  if (docs.size > 0) {
-    const kept: FoldedStore[] = [];
-    store.update((d) => {
-      // Judged on the document as it stood BEFORE this pass, so the credentials fold (which lands
-      // catalog keys in `global`) cannot make the preferences fold read as done.
-      const before = structuredClone(d);
-      for (const [name, doc] of docs) {
-        if (alreadyFolded(before, name)) kept.push(name);
-        else foldInto(d, name, doc);
-      }
-    });
-    for (const name of docs.keys()) {
-      const oldPath = join(rootHome, name);
-      if (kept.includes(name)) {
-        consola.warn(
-          `  both ${oldPath} and its keys in ${stateFile} exist - keeping ${stateFile} (the one ` +
-            `readers use); delete ${name} by hand after checking it holds nothing newer`,
-        );
-        continue;
-      }
-      fs.rm(oldPath, { force: true });
-      consola.info(`  folded ${name} into ${stateFile}`);
-    }
-  }
-  if (held) {
-    consola.warn(
-      `  ${join(rootHome, "preferences.json")} kept: its profile keys copy into every profile ` +
-        `credentials.json names, and credentials.json could not be read; fix credentials.json, ` +
-        "then re-run the migration",
-    );
-  }
+}
+
+/** The folded stores' lock sidecars and the root-home debris nothing reads, each named. */
+function removeFoldDebris(rootHome: string): void {
   for (const name of FOLDED_LOCKS) {
     const path = join(rootHome, LOCKS_DIR_NAME, name);
     if (!fs.exists(path)) continue;
@@ -704,6 +732,34 @@ export function foldRootStores(rootHome: string = resolveRootHome()): void {
     fs.rm(opencodeDir, { recursive: true, force: true });
     consola.info(`  removed ${opencodeDir} (empty)`);
   }
+}
+
+/** Exported for the migration test; `rootHome` isolates. Idempotent: a
+ *  home already folded (no old store present) writes nothing. A store that is not a JSON object is
+ *  left in place and named: the fold never discards content it cannot carry over. */
+export function foldRootStores(rootHome: string = resolveRootHome()): void {
+  const docs = new Map<FoldedStore, Record<string, unknown>>();
+  for (const name of FOLDED_STORES) {
+    const doc = readFoldedStore(join(rootHome, name));
+    if (doc !== null) docs.set(name, doc);
+  }
+  // A flat preferences.json copies its profile keys into every profile credentials.json names, so
+  // it is folded only once credentials.json has been read (or never existed): a source is never
+  // deleted while a source it depends on failed validation.
+  const credentialsUnread =
+    fs.exists(join(rootHome, "credentials.json")) && !docs.has("credentials.json");
+  const prefs = docs.get("preferences.json");
+  const held = prefs !== undefined && credentialsUnread && isFlatPreferences(prefs);
+  if (held) docs.delete("preferences.json");
+  if (docs.size > 0) foldStoreDocs(rootHome, docs);
+  if (held) {
+    consola.warn(
+      `  ${join(rootHome, "preferences.json")} kept: its profile keys copy into every profile ` +
+        `credentials.json names, and credentials.json could not be read; fix credentials.json, ` +
+        "then re-run the migration",
+    );
+  }
+  removeFoldDebris(rootHome);
 }
 
 /** The autoupdate throttle file takes the name of what it holds; "state.json" is the account-wide
@@ -906,11 +962,26 @@ function freeProfileName(base: ProfileName, taken: (name: string) => boolean): P
   }
 }
 
+/** The current resolver line for `to` when `helper` is a 4.0.9 line of `from` (a named profile's
+ *  Direct line, any profile's proxy line) or, under a rename, the current proxy line of `from`;
+ *  null for any other value. */
+function retargetedHelperLine(helper: unknown, { from, to }: ProfileMove): string | null {
+  if (typeof helper !== "string") return null;
+  if (from !== null && managedHelperShape(helper, legacyAuthGetArgs(from))) {
+    return directHelperCommand(to);
+  }
+  if (managedHelperShape(helper, legacyProxyTokenArgs(from))) return proxyHelperCommand(to);
+  if (from !== to && managedHelperShape(helper, proxyTokenArgs(from))) {
+    return proxyHelperCommand(to);
+  }
+  return null;
+}
+
 /** The one Claude file of the profile: the old resolver line becomes the new one, the file moves
  *  under the new name; every other key is the user's and rides along. */
-function retargetClaude(claudeHome: string, { from, to }: ProfileMove): boolean {
-  const oldPath = settingsPathFor(claudeHome, from);
-  const newPath = settingsPathFor(claudeHome, to);
+function retargetClaude(claudeHome: string, move: ProfileMove): boolean {
+  const oldPath = settingsPathFor(claudeHome, move.from);
+  const newPath = settingsPathFor(claudeHome, move.to);
   const read = fs.readTextResult(oldPath);
   if (read.kind === "absent") return false;
   if (read.kind === "unreadable") throw new Error(`could not read ${oldPath}: ${read.error}`);
@@ -919,17 +990,7 @@ function retargetClaude(claudeHome: string, { from, to }: ProfileMove): boolean 
     consola.warn(`  ${oldPath} is not a JSON object; left as it is`);
     return false;
   }
-  const helper = doc.apiKeyHelper;
-  let next: string | null = null;
-  if (typeof helper === "string") {
-    if (from !== null && managedHelperShape(helper, legacyAuthGetArgs(from))) {
-      next = directHelperCommand(to);
-    } else if (managedHelperShape(helper, legacyProxyTokenArgs(from))) {
-      next = proxyHelperCommand(to);
-    } else if (from !== to && managedHelperShape(helper, proxyTokenArgs(from))) {
-      next = proxyHelperCommand(to);
-    }
-  }
+  const next = retargetedHelperLine(doc.apiKeyHelper, move);
   if (next === null && oldPath === newPath) return false;
   if (next !== null) doc.apiKeyHelper = next;
   if (oldPath !== newPath) {
@@ -946,77 +1007,90 @@ function retargetClaude(claudeHome: string, { from, to }: ProfileMove): boolean 
   return true;
 }
 
-/** One Codex home: the provider table's `auth` command line and, for a rename, the table's key
- *  and `name` plus the profile file's selector. */
-function retargetCodex(codexHome: string, { from, to }: ProfileMove): boolean {
-  let changed = false;
-  const configPath = codexConfigPath(codexHome);
+/** `args` of the current resolver line for `to` when `auth` carries a 4.0.9 line of `from` (a
+ *  named profile's Direct line, any profile's proxy line) or, under a rename, the current proxy
+ *  line of `from`; null for any other command. */
+function retargetedAuthArgs(
+  auth: Record<string, unknown>,
+  { from, to }: ProfileMove,
+): string[] | null {
+  const legacy = from === null ? null : agentLauncherCommand(legacyAuthGetArgs(from));
+  if (legacy !== null && auth.command === legacy.command && sameStrings(auth.args, legacy.args)) {
+    return agentLauncherCommand(agentAuthGetArgs(to)).args;
+  }
+  const legacyProxy = agentLauncherCommand(legacyProxyTokenArgs(from));
+  if (auth.command === legacyProxy.command && sameStrings(auth.args, legacyProxy.args)) {
+    return proxyTokenCommand(to).args;
+  }
+  const proxy = proxyTokenCommand(from);
+  if (from !== to && auth.command === proxy.command && sameStrings(auth.args, proxy.args)) {
+    return proxyTokenCommand(to).args;
+  }
+  return null;
+}
+
+/** The provider table of `from` in one config.toml: its `auth` line retargeted and, for a rename,
+ *  the table re-keyed under the new id with its `name`. Returns whether the file changed. */
+function retargetCodexProviderTable(configPath: string, move: ProfileMove): boolean {
   const read = readCodexToml(configPath);
   if (read.kind === "unparseable") {
     throw new Error(`${configPath} is not valid TOML (${read.error})`);
   }
-  const oldId = codexProviderId(from);
-  const newId = codexProviderId(to);
-  if (read.kind === "ok") {
-    const providers = read.doc.model_providers;
-    const table = isRecord(providers) ? providers[oldId] : undefined;
-    if (isRecord(providers) && isRecord(table)) {
-      let tableChanged = false;
-      const auth = table.auth;
-      if (isRecord(auth)) {
-        const legacy = from === null ? null : agentLauncherCommand(legacyAuthGetArgs(from));
-        const legacyProxy = agentLauncherCommand(legacyProxyTokenArgs(from));
-        const proxy = proxyTokenCommand(from);
-        if (
-          legacy !== null &&
-          auth.command === legacy.command &&
-          sameStrings(auth.args, legacy.args)
-        ) {
-          auth.args = agentLauncherCommand(agentAuthGetArgs(to)).args;
-          tableChanged = true;
-        } else if (
-          auth.command === legacyProxy.command &&
-          sameStrings(auth.args, legacyProxy.args)
-        ) {
-          auth.args = proxyTokenCommand(to).args;
-          tableChanged = true;
-        } else if (
-          from !== to &&
-          auth.command === proxy.command &&
-          sameStrings(auth.args, proxy.args)
-        ) {
-          auth.args = proxyTokenCommand(to).args;
-          tableChanged = true;
-        }
-      }
-      if (oldId !== newId) {
-        table.name = newId;
-        providers[newId] = table;
-        delete providers[oldId];
-        tableChanged = true;
-      }
-      if (tableChanged) {
-        saveCodexToml(configPath, read.doc, `[model_providers.${newId}] resolver and name`);
-        changed = true;
-      }
+  if (read.kind === "absent") return false;
+  const oldId = codexProviderId(move.from);
+  const newId = codexProviderId(move.to);
+  const providers = read.doc.model_providers;
+  if (!isRecord(providers)) return false;
+  const table = providers[oldId];
+  if (!isRecord(table)) return false;
+  let tableChanged = false;
+  const auth = table.auth;
+  if (isRecord(auth)) {
+    const args = retargetedAuthArgs(auth, move);
+    if (args !== null) {
+      auth.args = args;
+      tableChanged = true;
     }
   }
-  const rename = renameOf({ from, to });
-  if (rename !== null) {
-    const oldFile = codexProfileConfigPath(codexHome, rename.from);
-    const newFile = codexProfileConfigPath(codexHome, rename.to);
-    const fileRead = readCodexToml(oldFile);
-    if (fileRead.kind === "unparseable") {
-      throw new Error(`${oldFile} is not valid TOML (${fileRead.error})`);
-    }
-    if (fileRead.kind === "ok") {
-      if (fileRead.doc.model_provider === oldId) fileRead.doc.model_provider = newId;
-      fs.rename(oldFile, newFile);
-      saveCodexToml(newFile, fileRead.doc, `model_provider = "${newId}"`);
-      changed = true;
-    }
+  if (oldId !== newId) {
+    table.name = newId;
+    providers[newId] = table;
+    delete providers[oldId];
+    tableChanged = true;
   }
-  return changed;
+  if (!tableChanged) return false;
+  saveCodexToml(configPath, read.doc, `[model_providers.${newId}] resolver and name`);
+  return true;
+}
+
+/** A renamed profile's file moved under the new name, its selector following. Returns whether a
+ *  file moved. */
+function renameCodexProfileFile(
+  codexHome: string,
+  rename: { from: ProfileName; to: ProfileName },
+): boolean {
+  const oldFile = codexProfileConfigPath(codexHome, rename.from);
+  const newFile = codexProfileConfigPath(codexHome, rename.to);
+  const fileRead = readCodexToml(oldFile);
+  if (fileRead.kind === "unparseable") {
+    throw new Error(`${oldFile} is not valid TOML (${fileRead.error})`);
+  }
+  if (fileRead.kind === "absent") return false;
+  const oldId = codexProviderId(rename.from);
+  const newId = codexProviderId(rename.to);
+  if (fileRead.doc.model_provider === oldId) fileRead.doc.model_provider = newId;
+  fs.rename(oldFile, newFile);
+  saveCodexToml(newFile, fileRead.doc, `model_provider = "${newId}"`);
+  return true;
+}
+
+/** One Codex home: the provider table's `auth` command line and, for a rename, the table's key
+ *  and `name` plus the profile file's selector. */
+function retargetCodex(codexHome: string, move: ProfileMove): boolean {
+  const tableChanged = retargetCodexProviderTable(codexConfigPath(codexHome), move);
+  const rename = renameOf(move);
+  const fileMoved = rename !== null && renameCodexProfileFile(codexHome, rename);
+  return tableChanged || fileMoved;
 }
 
 /** The 4.0.9 shape's attribution: the entry's own MCP row spawned `mcp --serve [--profile <name>]`
@@ -1066,6 +1140,27 @@ export const v409DesktopMcpArgv: Migration = {
   run: rewriteDesktopMcpArgv,
 };
 
+/** The owned entry at `path` whose profile is `from`, retargeted to `to` in its profile word and
+ *  its helper-script pointer; false for an entry not ours, another profile's, or unreadable. */
+function retargetOwnedEntry(
+  path: string,
+  ledger: OwnershipLedger,
+  from: ProfileName,
+  to: ProfileName,
+): boolean {
+  if (!ledger.owns("claudeDesktop", path) || entryProfileAt(path) !== from) return false;
+  const doc = parseJsonRecord(readFileOrNull(path) ?? "");
+  if (doc === null) return false;
+  retargetEntryProfile(doc, from, to);
+  for (const mode of PROFILE_MODES) {
+    if (doc.inferenceCredentialHelper === desktopHelperPath(resolveRootHome(), mode, from)) {
+      doc.inferenceCredentialHelper = desktopHelperPath(resolveRootHome(), mode, to);
+    }
+  }
+  saveJsonIfChanged(path, doc, `Claude Desktop entry "${desktopEntryName(to)}"`);
+  return true;
+}
+
 /** The owned Desktop entry keeps its id: its row is renamed and its MCP row's profile word
  *  retargeted, so the re-render finds it instead of minting a twin. */
 function retargetDesktopEntry(from: ProfileName, to: ProfileName): void {
@@ -1084,17 +1179,7 @@ function retargetDesktopEntry(from: ProfileName, to: ProfileName): void {
   const ledger = new OwnershipLedger();
   let changed = false;
   for (const entry of meta.entries) {
-    const path = join(dir, `${entry.id}.json`);
-    if (!ledger.owns("claudeDesktop", path) || entryProfileAt(path) !== from) continue;
-    const doc = parseJsonRecord(readFileOrNull(path) ?? "");
-    if (doc === null) continue;
-    retargetEntryProfile(doc, from, to);
-    for (const mode of PROFILE_MODES) {
-      if (doc.inferenceCredentialHelper === desktopHelperPath(resolveRootHome(), mode, from)) {
-        doc.inferenceCredentialHelper = desktopHelperPath(resolveRootHome(), mode, to);
-      }
-    }
-    saveJsonIfChanged(path, doc, `Claude Desktop entry "${desktopEntryName(to)}"`);
+    if (!retargetOwnedEntry(join(dir, `${entry.id}.json`), ledger, from, to)) continue;
     if (entry.name === desktopEntryName(from)) entry.name = desktopEntryName(to);
     changed = true;
   }
@@ -1172,46 +1257,45 @@ function assertMovable(
   }
 }
 
-async function moveProfile(
-  move: ProfileMove,
+/** The profile's daemon stopped, then its store slot and daemon home moved under the new name
+ *  (its agent files follow in moveProfile). Returns whether anything moved. */
+async function renameProfile(
+  rename: { from: ProfileName; to: ProfileName },
   claudeHome: string,
   codexHomes: readonly string[],
-): Promise<void> {
-  const { from, to } = move;
-  let changed = false;
-  const rename = renameOf(move);
-  if (rename !== null) {
-    assertMovable(rename, claudeHome, codexHomes);
-    // By the lock and the command line, like the root daemon's stop: the previous release's
-    // daemon reads as foreign to this release's classifier.
-    const outcome = await stopLockedDaemon(profileHome(rename.from));
-    if (outcome.kind === "foreign") {
-      consola.warn(foreignHolderWarning(profileHome(rename.from), outcome));
-    }
-    if (outcome.kind === "unjudged" || (outcome.kind === "stopped" && outcome.stillRunning)) {
-      // The profile's name is a verb, so no command addresses its daemon any more: by hand it is.
-      throw new Error(
-        `${profileLabel(from)}'s proxy daemon did not stop; stop it by hand (its pid is recorded ` +
-          `under ${profileHome(rename.from)}) and re-run`,
-      );
-    }
-    changed = renameStoreSlot(rename.from, rename.to) || changed;
-    const oldHome = profileHome(rename.from);
-    if (fs.exists(oldHome)) {
-      fs.rename(oldHome, profileHome(rename.to));
-      consola.info(`  moved ${oldHome} -> ${profileHome(rename.to)}`);
-      changed = true;
-    }
-    consola.info(
-      `  renamed ${profileLabel(from)} -> '${to}' (its name is a verb of agent profile)`,
+): Promise<boolean> {
+  assertMovable(rename, claudeHome, codexHomes);
+  // By the lock and the command line, like the root daemon's stop: the previous release's
+  // daemon reads as foreign to this release's classifier.
+  const outcome = await stopLockedDaemon(profileHome(rename.from));
+  if (outcome.kind === "foreign") {
+    consola.warn(foreignHolderWarning(profileHome(rename.from), outcome));
+  }
+  if (outcome.kind === "unjudged" || (outcome.kind === "stopped" && outcome.stillRunning)) {
+    // The profile's name is a verb, so no command addresses its daemon any more: by hand it is.
+    throw new Error(
+      `${profileLabel(rename.from)}'s proxy daemon did not stop; stop it by hand (its pid is ` +
+        `recorded under ${profileHome(rename.from)}) and re-run`,
     );
   }
-  // The machine-global registration spawns the default's server; its old argv is ours to rewrite.
-  if (from === null && retargetMcpRegistration(legacyMcpServeArgs(null))) changed = true;
-  // The Desktop entry points at a helper script by path, and the script's body carries the
-  // resolver spelling and the profile's name: every profile's script is rewritten under the new
-  // name (the same name when nothing renames), so the pointer retargeted below is valid and the
-  // body current whether or not the re-render runs.
+  const slotMoved = renameStoreSlot(rename.from, rename.to);
+  const oldHome = profileHome(rename.from);
+  const homeMoved = fs.exists(oldHome);
+  if (homeMoved) {
+    fs.rename(oldHome, profileHome(rename.to));
+    consola.info(`  moved ${oldHome} -> ${profileHome(rename.to)}`);
+  }
+  consola.info(
+    `  renamed ${profileLabel(rename.from)} -> '${rename.to}' (its name is a verb of agent profile)`,
+  );
+  return slotMoved || homeMoved;
+}
+
+/** Every mode's helper script of `from` rewritten under `to` (the same name when nothing renames):
+ *  the Desktop entry points at the script by path, and its body carries the resolver spelling and
+ *  the profile's name, so the pointer stays valid and the body current whether or not the
+ *  re-render runs. */
+function rewriteDesktopHelperScripts({ from, to }: ProfileMove): void {
   for (const mode of PROFILE_MODES) {
     const oldHelper = desktopHelperPath(resolveRootHome(), mode, from);
     if (!fs.exists(oldHelper)) continue;
@@ -1219,6 +1303,20 @@ async function moveProfile(
     if (from === to) continue;
     fs.rm(oldHelper, { force: true, detail: `Claude Desktop helper of profile '${from}'` });
   }
+}
+
+async function moveProfile(
+  move: ProfileMove,
+  claudeHome: string,
+  codexHomes: readonly string[],
+): Promise<void> {
+  const { from, to } = move;
+  const rename = renameOf(move);
+  let changed = false;
+  if (rename !== null) changed = await renameProfile(rename, claudeHome, codexHomes);
+  // The machine-global registration spawns the default's server; its old argv is ours to rewrite.
+  if (from === null && retargetMcpRegistration(legacyMcpServeArgs(null))) changed = true;
+  rewriteDesktopHelperScripts(move);
   changed = retargetClaude(claudeHome, move) || changed;
   for (const home of codexHomes) changed = retargetCodex(home, move) || changed;
   if (rename !== null) retargetDesktopEntry(rename.from, rename.to);

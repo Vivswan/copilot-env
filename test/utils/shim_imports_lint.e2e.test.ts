@@ -7,7 +7,7 @@ import {
 import { expect, test } from "../helpers/testing.ts";
 
 // The lint gate keeps the daemon preload shims import-free only if the rule has teeth and
-// biome.json points it at every shim, so both are pinned against doctored sources.
+// biome.local.jsonc points it at every shim, so both are pinned against doctored sources.
 
 const PLUGIN = "biome/no_shim_imports.grit";
 
@@ -38,7 +38,7 @@ test("no-shim-imports: rejects every runtime-import shape, allows type-only", ()
   expect(SOURCES.map(([source], i) => [source, counts[i]])).toEqual(SOURCES);
 });
 
-test("biome.json points the rule at each import-free shim and nothing else", () => {
+test("biome.local.jsonc points the rule at each import-free shim and nothing else", () => {
   // The shims that carry a cross-boundary env contract (test/copilot_api/daemon_env_keys.test.ts
   // pins each one's literal); a shim missing here is one a CLI import could reach unseen.
   const importing = 'import { x } from "./cli.ts";';

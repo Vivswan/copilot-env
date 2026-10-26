@@ -1,5 +1,7 @@
 // Stdout is the external contract: the key line is the only write in every branch, so each matrix
 // row asserts the full effect set and the spawn rows assert stdout byte for byte.
+
+import { afterEach } from "bun:test";
 import { readFileSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:net";
 import { join } from "node:path";
@@ -14,7 +16,7 @@ import { spawnDaemonShapedChild } from "../helpers/daemon.ts";
 import { agentHomeEnv, envSnapshot } from "../helpers/env.ts";
 import { writeRunState } from "../helpers/fixtures.ts";
 import { importSpecifier, ROOT, runCli, runScript } from "../helpers/run.ts";
-import { afterEach, expect, removeDir, tempDir, test } from "../helpers/testing.ts";
+import { expect, removeDir, tempDir, test } from "../helpers/testing.ts";
 
 const WORK = parseProfileName("work");
 
@@ -88,114 +90,123 @@ interface MatrixRow {
   rec: Recorded;
 }
 
+/** The start command a note names: the default daemon's, or the named profile's. */
 const startCommand = (profile: string | null) =>
   profile === null ? "agent start" : `agent profile ${profile} start`;
+
+/** The note after an interactive start is declined; the exit is 1 and no key prints. */
 const DECLINED = (profile: string | null) =>
   `Continuing without the proxy; proxy-backed agents need it (run '${startCommand(profile)}').`;
+
+/** The pointer when a silent managed start leaves the proxy down: see the error, or authenticate. */
 const START_FAILED = (profile: string | null) =>
   `copilot proxy failed to start (run '${startCommand(profile)}' to see the error; ` +
   `no credential stored? run '${
     profile === null ? "agent auth" : `agent profile ${profile} auth`
   }').`;
 
+/** The effects every row shares: the heartbeat, unconditional, and nothing else. */
+const NONE: Recorded = { launches: [], prompts: [], heartbeats: [null], printed: [], notes: [] };
+
+/** One row per (up, auto-start, --yes, answer, profile) case, with the exact effect set it yields. */
+const MATRIX_ROWS: MatrixRow[] = [
+  ...[true, false].map(
+    (assumeYes): MatrixRow => ({
+      name: `already up, assumeYes=${assumeYes}: no launch, no prompt, heartbeat then the key`,
+      opts: { up: true, autoStart: false },
+      assumeYes,
+      profile: null,
+      exit: 0,
+      rec: { ...NONE, printed: [null] },
+    }),
+  ),
+  ...[true, false].map(
+    (assumeYes): MatrixRow => ({
+      name: `down + managed, assumeYes=${assumeYes}: silent suppressed auto-start, never a prompt`,
+      opts: { autoStart: true },
+      assumeYes,
+      profile: null,
+      exit: 0,
+      rec: { ...NONE, launches: [{ profile: null, output: "suppressed" }], printed: [null] },
+    }),
+  ),
+  {
+    name: "down + managed + start fails: exit 1, no key, the hidden failure gets a pointer",
+    opts: { autoStart: true, launchBringsUp: false },
+    assumeYes: true,
+    profile: null,
+    exit: 1,
+    rec: {
+      ...NONE,
+      launches: [{ profile: null, output: "suppressed" }],
+      notes: [START_FAILED(null)],
+    },
+  },
+  {
+    name: "down + unmanaged + --yes (headless): never auto-start, exit 1 with no noise",
+    opts: { autoStart: false },
+    assumeYes: true,
+    profile: null,
+    exit: 1,
+    rec: NONE,
+  },
+  {
+    name: "down + unmanaged + interactive yes: START, visibly",
+    opts: { autoStart: false, answer: true },
+    assumeYes: false,
+    profile: null,
+    exit: 0,
+    rec: {
+      ...NONE,
+      prompts: [PROMPT],
+      launches: [{ profile: null, output: "visible" }],
+      printed: [null],
+    },
+  },
+  {
+    name: "down + unmanaged + interactive no: declines, no launch",
+    opts: { autoStart: false, answer: false },
+    assumeYes: false,
+    profile: null,
+    exit: 1,
+    rec: { ...NONE, prompts: [PROMPT], notes: [DECLINED(null)] },
+  },
+  {
+    name: "a named profile, declined: the hint points at the PROFILE's daemon",
+    opts: { autoStart: false, answer: false },
+    assumeYes: false,
+    profile: WORK,
+    exit: 1,
+    rec: { ...NONE, prompts: [PROMPT], heartbeats: [WORK], notes: [DECLINED("work")] },
+  },
+  {
+    name: "a named profile, managed start fails: profile-scoped launch and pointer",
+    opts: { autoStart: true, launchBringsUp: false },
+    assumeYes: true,
+    profile: WORK,
+    exit: 1,
+    rec: {
+      ...NONE,
+      launches: [{ profile: WORK, output: "suppressed" }],
+      heartbeats: [WORK],
+      notes: [START_FAILED("work")],
+    },
+  },
+  {
+    name: "a named profile, up: the key print is addressed at the profile's daemon config",
+    opts: { up: true },
+    assumeYes: true,
+    profile: WORK,
+    exit: 0,
+    rec: { ...NONE, heartbeats: [WORK], printed: [WORK] },
+  },
+];
+
 // The heartbeat is unconditional; a managed (auto-start) start is silent and SUPPRESSED, so its
 // failure needs the pointer that surfaces the hidden error; an interactive start is VISIBLE (child
 // stdout -> our stderr); every daemon-scoped step of a named profile is routed to the profile.
 test("resolveProxyToken: each (up, auto-start, --yes, answer, profile) row yields its exact effect set", async () => {
-  const none: Recorded = { launches: [], prompts: [], heartbeats: [null], printed: [], notes: [] };
-  const rows: MatrixRow[] = [
-    ...[true, false].map(
-      (assumeYes): MatrixRow => ({
-        name: `already up, assumeYes=${assumeYes}: no launch, no prompt, heartbeat then the key`,
-        opts: { up: true, autoStart: false },
-        assumeYes,
-        profile: null,
-        exit: 0,
-        rec: { ...none, printed: [null] },
-      }),
-    ),
-    ...[true, false].map(
-      (assumeYes): MatrixRow => ({
-        name: `down + managed, assumeYes=${assumeYes}: silent suppressed auto-start, never a prompt`,
-        opts: { autoStart: true },
-        assumeYes,
-        profile: null,
-        exit: 0,
-        rec: { ...none, launches: [{ profile: null, output: "suppressed" }], printed: [null] },
-      }),
-    ),
-    {
-      name: "down + managed + start fails: exit 1, no key, the hidden failure gets a pointer",
-      opts: { autoStart: true, launchBringsUp: false },
-      assumeYes: true,
-      profile: null,
-      exit: 1,
-      rec: {
-        ...none,
-        launches: [{ profile: null, output: "suppressed" }],
-        notes: [START_FAILED(null)],
-      },
-    },
-    {
-      name: "down + unmanaged + --yes (headless): never auto-start, exit 1 with no noise",
-      opts: { autoStart: false },
-      assumeYes: true,
-      profile: null,
-      exit: 1,
-      rec: none,
-    },
-    {
-      name: "down + unmanaged + interactive yes: START, visibly",
-      opts: { autoStart: false, answer: true },
-      assumeYes: false,
-      profile: null,
-      exit: 0,
-      rec: {
-        ...none,
-        prompts: [PROMPT],
-        launches: [{ profile: null, output: "visible" }],
-        printed: [null],
-      },
-    },
-    {
-      name: "down + unmanaged + interactive no: declines, no launch",
-      opts: { autoStart: false, answer: false },
-      assumeYes: false,
-      profile: null,
-      exit: 1,
-      rec: { ...none, prompts: [PROMPT], notes: [DECLINED(null)] },
-    },
-    {
-      name: "a named profile, declined: the hint points at the PROFILE's daemon",
-      opts: { autoStart: false, answer: false },
-      assumeYes: false,
-      profile: WORK,
-      exit: 1,
-      rec: { ...none, prompts: [PROMPT], heartbeats: [WORK], notes: [DECLINED("work")] },
-    },
-    {
-      name: "a named profile, managed start fails: profile-scoped launch and pointer",
-      opts: { autoStart: true, launchBringsUp: false },
-      assumeYes: true,
-      profile: WORK,
-      exit: 1,
-      rec: {
-        ...none,
-        launches: [{ profile: WORK, output: "suppressed" }],
-        heartbeats: [WORK],
-        notes: [START_FAILED("work")],
-      },
-    },
-    {
-      name: "a named profile, up: the key print is addressed at the profile's daemon config",
-      opts: { up: true },
-      assumeYes: true,
-      profile: WORK,
-      exit: 0,
-      rec: { ...none, heartbeats: [WORK], printed: [WORK] },
-    },
-  ];
-  for (const row of rows) {
+  for (const row of MATRIX_ROWS) {
     const { deps, rec } = fakeDeps(row.opts);
     const exit = await resolveProxyToken({ assumeYes: row.assumeYes, profile: row.profile }, deps);
     expect({ name: row.name, exit, ...rec }).toEqual({

@@ -1,3 +1,4 @@
+import { afterEach } from "bun:test";
 import { chmodSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -34,7 +35,7 @@ import { stageRefusedStop } from "../helpers/daemon.ts";
 import { envSnapshot, isolateAgentHomes, resetExitCode } from "../helpers/env.ts";
 import { stubGithubLogins } from "../helpers/fixtures.ts";
 import { captureChannels } from "../helpers/output.ts";
-import { afterEach, expect, removeDir, test } from "../helpers/testing.ts";
+import { expect, removeDir, test } from "../helpers/testing.ts";
 import {
   AUTH_GH_CLI,
   acct,
@@ -259,463 +260,478 @@ test("auth (bare) on a recorded provider names the account, then the two ways ou
   );
 });
 
-/** The shape every multi-part auth message prints in, at 80 columns: a headline, indented
- *  evidence, a lead, and the commands as a table. `run` returns the text where the message
- *  lands: a thrown Error's message, or the raw stderr or stdout (the fold in captureStderr would
- *  read the indented lines as one). */
-test("every auth message with more than one part prints as a headline, evidence, lead, and command table", async () => {
-  const thrown = async (fn: () => Promise<unknown>): Promise<string> => {
-    try {
-      await fn();
-    } catch (e) {
-      return errMessage(e);
-    }
-    throw new Error("expected a refusal");
-  };
-  const stderr = async (fn: () => Promise<unknown>): Promise<string> =>
-    (await captureChannels(async () => void (await fn()))).stderr;
-  const stdout = async (fn: () => Promise<unknown>): Promise<string> =>
-    (await captureChannels(async () => void (await fn()))).stdout;
-  const stored = () =>
-    new CopilotEnvState().setCredential(null, {
-      kind: "stored",
-      provider: "gh-token",
-      token: "ghu_stored123",
-    });
-  const rows: { name: string; run: () => Promise<string>; lines: string[] }[] = [
-    {
-      name: "--del with a stored token and no daemon",
-      run: () => {
-        stored();
-        return stderr(() => runAuth({ del: true }));
-      },
-      lines: ["De-authenticated.", "Then:", "  agent auth  log in again"],
-    },
-    {
-      name: "--del with nothing stored",
-      run: () => stderr(() => runAuth({ del: true })),
-      lines: ["Nothing to clear.", "  not authenticated", "Then:", "  agent auth  log in"],
-    },
-    {
-      name: "--check with nothing stored",
-      run: () => stdout(() => runAuth({ check: true })),
-      lines: ["not authenticated.", "Fix:", "  agent auth  log in"],
-    },
-    {
-      name: "--set lands the default credential",
-      run: () => stderr(() => runAuth({ set: "ghu_x" })),
-      lines: ["Authenticated (gh-token).", "Then:", "  agent init  configure Codex and Claude"],
-    },
-    {
-      name: "a named --set with a recorded mode names the launchers",
-      run: async () => {
-        await captureChannels(() => addProfile(WORK, { mode: "proxy", noAuth: true }));
-        return stderr(() => runAuth({ set: "ghu_x", profile: "work" }));
-      },
-      lines: [
-        "Authenticated (gh-token).",
-        "  for profile 'work'",
-        "  both agents are wired for its proxy mode",
-        "Then:",
-        "  cl --profile work  launch Claude",
-        "  cx --profile work  launch Codex",
-      ],
-    },
-    {
-      name: "a bare identity choice without a terminal",
-      run: () => {
-        stored();
-        return thrown(() => runAuth({ identity: true }));
-      },
-      lines: [
-        "no terminal to choose the identity in.",
-        "Pick one:",
-        "  agent profile set identity <id|auto>  pin an id, or auto",
-        "  agent profile identity                show the current identity",
-      ],
-    },
-    {
-      name: "gh-token without a terminal or a --set",
-      run: () => thrown(() => runAuth({ provider: "gh-token" })),
-      lines: [
-        "no GitHub token given.",
-        "Pick one:",
-        "  --set <token>      pass the token",
-        "  --provider gh-env  copy one of COPILOT_GITHUB_TOKEN / GH_TOKEN / GITHUB_TOKEN",
-      ],
-    },
-    {
-      name: "gh-env with nothing set",
-      run: () => thrown(() => runAuth({ provider: "gh-env" })),
-      lines: [
-        "no GitHub token in the environment.",
-        "Fix:",
-        "  COPILOT_GITHUB_TOKEN / GH_TOKEN / GITHUB_TOKEN  set one of these",
-      ],
-    },
-    {
-      name: "gh-env with two set and no terminal takes the most specific",
-      run: () => {
-        process.env.GH_TOKEN = "ghu_env_value";
-        process.env.GITHUB_TOKEN = "ghu_x";
-        return stderr(() => runAuth({ provider: "gh-env" }));
-      },
-      lines: [
-        "Taking $GH_TOKEN (the most specific).",
-        "  2 of $COPILOT_GITHUB_TOKEN, $GH_TOKEN, $GITHUB_TOKEN are set",
-        "Then:",
-        "  agent auth --provider gh-env  pick another in a terminal",
-      ],
-    },
-    {
-      name: "a bare --dry-run has no provider to plan from",
-      run: () => thrown(() => runAuth({ dryRun: true })),
-      lines: [
-        "a dry run never prompts.",
-        "  no provider to plan the default profile's credential slot from",
-        "Pick one:",
-        "  --provider <copilot|gh-cli|gh-token|gh-env>  plan that provider's landing",
-        "  --set <token>                                plan a gh-token landing",
-      ],
-    },
-    {
-      name: "gh-token --dry-run without a --set",
-      run: () => thrown(() => runAuth({ provider: "gh-token", dryRun: true })),
-      lines: [
-        "a dry run never prompts.",
-        "  no token to plan the default profile's credential slot with",
-        "Fix:",
-        "  --set <token>  the token to land",
-      ],
-    },
-    {
-      name: "--set --dry-run plans the store write",
-      run: () => stderr(() => runAuth({ set: "ghu_x", dryRun: true })),
-      lines: [
-        "Would store the given token.",
-        "  in the default profile's credential slot",
-        "  its GitHub account is looked up when the landing is real",
-      ],
-    },
-    {
-      name: "gh-env --dry-run with two set plans the most specific",
-      run: () => {
-        process.env.GH_TOKEN = "ghu_env_value";
-        process.env.GITHUB_TOKEN = "ghu_x";
-        return stderr(() => runAuth({ provider: "gh-env", dryRun: true }));
-      },
-      lines: [
-        "Would land the token from $GH_TOKEN.",
-        "  the most specific of 2 set",
-        "  in the default profile's credential slot",
-        "  its GitHub account is looked up when the landing is real",
-      ],
-    },
-    {
-      name: "a named --dry-run names the wiring it cannot plan",
-      run: async () => {
-        await captureChannels(() => addProfile(WORK, { mode: "proxy", noAuth: true }));
-        return stderr(() => runAuth({ provider: "copilot", profile: "work", dryRun: true }));
-      },
-      lines: ["Would wire both agents for the landed token.", "  profile 'work' in proxy mode"],
-    },
-    {
-      name: "a wiring command's dry run on no credential",
-      run: () => thrown(() => runDryRun(() => ensureAuthenticated())),
-      lines: [
-        "a dry run never logs in.",
-        "  default is not authenticated",
-        "Fix:",
-        "  agent auth  log in first, then re-run with --dry-run",
-      ],
-    },
-    {
-      name: "a named --del with the longest profile name, its daemon never started",
-      run: async () => {
-        await captureChannels(() => addProfile(LONGEST, { mode: "proxy", noAuth: true }));
-        new CopilotEnvState().setCredential(LONGEST, {
-          kind: "stored",
-          provider: "gh-token",
-          token: "ghu_stored123",
-        });
-        return stderr(() => runAuth({ del: true, profile: LONGEST }));
-      },
-      lines: [
-        "De-authenticated.",
-        `  for profile '${LONGEST}'`,
-        "Then:",
-        `  agent profile ${LONGEST} auth  log in again`,
-      ],
-    },
-    {
-      name: "a named bare auth with the longest profile name on a recorded provider",
-      run: async () => {
-        await captureChannels(() => addProfile(LONGEST, { mode: "proxy", noAuth: true }));
-        new CopilotEnvState().setCredential(LONGEST, {
-          kind: "stored",
-          provider: "gh-token",
-          token: "ghu_stored123",
-        });
-        return stderr(() => runAuth({ profile: LONGEST }));
-      },
-      lines: [
-        "Already authenticated.",
-        `  for profile '${LONGEST}'`,
-        "  gh-token as octocat",
-        // A command too wide for its column stacks the table; the command is one line however wide.
-        "Pick one:",
-        `  agent profile ${LONGEST} auth --provider <copilot|gh-cli|gh-token|gh-env>`,
-        "    switch the provider",
-        "",
-        `  agent profile ${LONGEST} auth --del`,
-        "    clear it",
-      ],
-    },
-    {
-      name: "headless gh pins the active account, the longest login",
-      run: () =>
-        stderr(() =>
-          chooseGhAccount(
-            AUTH_GH_CLI,
-            () => ({ kind: "listed", accounts: [acct(LOGIN, true), acct("b", false)] }),
-            "headless",
-          ),
-        ),
-      lines: [
-        "gh has 2 logged-in accounts; pinning the active one.",
-        `  active account: ${LOGIN}`,
-        "Pick one:",
-        "  agent auth --provider gh-cli --gh-user <login>  pin another account",
-        "  agent auth --provider gh-cli                    choose in a terminal (auto",
-        "                                                  included)",
-      ],
-    },
-    {
-      name: "gh cannot serve the longest login by name",
-      run: () => {
-        const detail = "`gh auth token` exited 1: no oauth token found";
-        return Promise.resolve(errMessage(ghCannotServeByName(LOGIN, detail, "agent auth")));
-      },
-      lines: [
-        "gh cannot serve the pinned account by name.",
-        `  account: ${LOGIN}`,
-        "  `gh auth token` exited 1: no oauth token found",
-        "Pick one:",
-        "  gh auth login              re-login on gh 2.40 or newer, then retry",
-        "  agent auth --gh-user auto  follow gh's active account (switches with gh)",
-      ],
-    },
-    {
-      name: "--check on the longest profile name with nothing stored",
-      run: async () => {
-        await captureChannels(() => addProfile(LONGEST, { mode: "proxy", noAuth: true }));
-        return stdout(() => runAuth({ check: true, profile: LONGEST }));
-      },
-      lines: [
-        "not authenticated.",
-        `  for profile '${LONGEST}'`,
-        "Fix:",
-        `  agent profile ${LONGEST} auth  log in`,
-      ],
-    },
-    {
-      name: "a named --del with nothing stored on the longest profile name",
-      run: async () => {
-        await captureChannels(() => addProfile(LONGEST, { mode: "proxy", noAuth: true }));
-        return stderr(() => runAuth({ del: true, profile: LONGEST }));
-      },
-      lines: [
-        "Nothing to clear.",
-        `  for profile '${LONGEST}'`,
-        "  not authenticated",
-        "Then:",
-        `  agent profile ${LONGEST} auth  log in`,
-      ],
-    },
-    {
-      name: "a named --set with the longest profile name names the launchers",
-      run: async () => {
-        await captureChannels(() => addProfile(LONGEST, { mode: "proxy", noAuth: true }));
-        return stderr(() => runAuth({ set: "ghu_x", profile: LONGEST }));
-      },
-      lines: [
-        "Authenticated (gh-token).",
-        `  for profile '${LONGEST}'`,
-        "  both agents are wired for its proxy mode",
-        "Then:",
-        `  cl --profile ${LONGEST}  launch Claude`,
-        `  cx --profile ${LONGEST}  launch Codex`,
-      ],
-    },
-    {
-      name: "a named --dry-run with the longest profile name names the wiring",
-      run: async () => {
-        await captureChannels(() => addProfile(LONGEST, { mode: "proxy", noAuth: true }));
-        return stderr(() => runAuth({ provider: "copilot", profile: LONGEST, dryRun: true }));
-      },
-      lines: [
-        "Would wire both agents for the landed token.",
-        `  profile '${LONGEST}' in proxy mode`,
-      ],
-    },
-    {
-      name: "a wiring command's dry run on the longest unauthenticated profile",
-      run: async () => {
-        await captureChannels(() => addProfile(LONGEST, { mode: "proxy", noAuth: true }));
-        return thrown(() => runDryRun(() => ensureAuthenticated(LONGEST)));
-      },
-      lines: [
-        "a dry run never logs in.",
-        `  profile '${LONGEST}' is not authenticated`,
-        "Fix:",
-        `  agent profile ${LONGEST} auth  log in first, then re-run`,
-        "                                                       with --dry-run",
-      ],
-    },
-    {
-      name: "--del on a half-created profile with the longest name: the store's refusal carries the verb's outcome",
-      run: () => {
-        mkdirSync(profileHome(LONGEST), { recursive: true });
-        return stderr(() => runAuth({ del: true, profile: LONGEST }));
-      },
-      lines: [
-        `profile '${LONGEST}' has no store slot.`,
-        "  nothing to clear",
-        "  half-created: its daemon home exists",
-        "Fix:",
-        // The command is too wide for its column at 80: the table stacks the meaning under it.
-        `  agent profile ${LONGEST} add --direct|--proxy`,
-        "    re-create it",
-      ],
-    },
-    {
-      name: "--del on a nonexistent profile with the longest name",
-      run: () => stderr(() => runAuth({ del: true, profile: LONGEST })),
-      lines: [
-        `no such profile '${LONGEST}'.`,
-        "  nothing to clear",
-        "  no profiles exist",
-        "Fix:",
-        `  agent profile ${LONGEST} add --direct|--proxy  create it`,
-      ],
-    },
-    {
-      name: "--check on a half-created profile with the longest name",
-      run: () => {
-        mkdirSync(profileHome(LONGEST), { recursive: true });
-        return stdout(() => runAuth({ check: true, profile: LONGEST }));
-      },
-      lines: [
-        `profile '${LONGEST}' has no store slot.`,
-        "  half-created: its daemon home exists",
-        "Fix:",
-        // The command is too wide for its column at 80: the table stacks the meaning under it.
-        `  agent profile ${LONGEST} add --direct|--proxy`,
-        "    re-create it",
-      ],
-    },
-    {
-      name: "a baked static-key stays until the rewire",
-      run: () => {
-        stored();
-        new CopilotEnvConfig().setProfile(null, { "static-key": "claude" });
-        return stderr(() => runAuth({}));
-      },
-      lines: [
-        "static-key is claude.",
-        "  Claude's baked value stays as it is",
-        "Fix:",
-        "  agent init  rewrites it",
-      ],
-    },
-    {
-      name: "--check on the longest profile name, authenticated",
-      run: async () => {
-        await captureChannels(() => addProfile(LONGEST, { mode: "proxy", noAuth: true }));
-        new CopilotEnvState().setCredential(LONGEST, {
-          kind: "stored",
-          provider: "gh-token",
-          token: "ghu_stored123",
-        });
-        return stdout(() => runAuth({ check: true, profile: LONGEST }));
-      },
-      lines: ["authenticated.", `  for profile '${LONGEST}'`, "  gh-token as octocat"],
-    },
-    {
-      name: "the gh CLI login pinned to the longest login",
-      run: () =>
-        stderr(() =>
-          Promise.resolve(
-            loginWithGhCli({ kind: "pinned", login: LOGIN }, () => ({
-              kind: "found",
-              token: "tok",
-              command: `gh auth token --user ${LOGIN}`,
-            })),
-          ),
-        ),
-      lines: ["Using the gh CLI login as the Direct credential.", `  pinned to account ${LOGIN}`],
-    },
-    {
-      name: "a copilot --dry-run on the longest profile name plans the device flow",
-      run: async () => {
-        await captureChannels(() => addProfile(LONGEST, { mode: "proxy", noAuth: true }));
-        return stderr(() => runAuth({ provider: "copilot", profile: LONGEST, dryRun: true }));
-      },
-      lines: [
-        "Would run GitHub's device flow and land the token.",
-        `  in profile '${LONGEST}''s credential slot`,
-      ],
-    },
-    {
-      name: "a gh-cli --dry-run pinned to the longest login on the longest profile name",
-      run: async () => {
-        await captureChannels(() => addProfile(LONGEST, { mode: "proxy", noAuth: true }));
-        return stderr(() =>
-          runDryRun(() =>
-            acquireCredential(
-              { kind: "gh-cli", account: { kind: "pinned", login: LOGIN } },
-              LONGEST,
-              { look: () => ({ kind: "found", token: "gho_saved", command: "gh auth token" }) },
-            ),
-          ),
-        );
-      },
-      lines: [
-        "Would record the gh CLI login.",
-        `  pinned to account ${LOGIN}`,
-        `  in profile '${LONGEST}''s credential slot`,
-      ],
-    },
-    {
-      name: "the login step on the longest profile name",
-      run: async () => {
-        await captureChannels(() => addProfile(LONGEST, { mode: "proxy", noAuth: true }));
-        return stderr(() => ensureAuthenticated(LONGEST, { kind: "gh-token", token: "ghu_x" }));
-      },
-      lines: [
-        "  Not authenticated yet - let's log in to GitHub Copilot.",
-        `    for profile '${LONGEST}'`,
-      ],
-    },
-  ];
-  if (process.platform !== "win32") {
-    rows.push({
-      name: "--check with a gh-cli pin and no gh on PATH",
-      run: () => {
-        new CopilotEnvState().setCredential(null, { kind: "gh-cli", ghUser: "octocat" });
-        const emptyBin = join(dir, "empty-bin");
-        mkdirSync(emptyBin, { recursive: true });
-        process.env.PATH = emptyBin;
-        return stdout(() => runAuth({ check: true }));
-      },
-      lines: [
-        "no credential resolves.",
-        "  provider 'gh-cli as octocat' is selected",
-        "Fix:",
-        "  agent auth  log in again",
-      ],
-    });
+/** The message `fn` throws; a return is the failure. */
+async function thrownMessage(fn: () => Promise<unknown>): Promise<string> {
+  try {
+    await fn();
+  } catch (e) {
+    return errMessage(e);
   }
+  throw new Error("expected a refusal");
+}
+
+async function stderrOf(fn: () => Promise<unknown>): Promise<string> {
+  return (await captureChannels(async () => void (await fn()))).stderr;
+}
+
+async function stdoutOf(fn: () => Promise<unknown>): Promise<string> {
+  return (await captureChannels(async () => void (await fn()))).stdout;
+}
+
+function storeDefaultToken(): void {
+  new CopilotEnvState().setCredential(null, {
+    kind: "stored",
+    provider: "gh-token",
+    token: "ghu_stored123",
+  });
+}
+
+/** One auth message: how to provoke it, and the lines it prints at 80 columns. `run` returns the
+ *  text where the message lands: a thrown Error's message, or the raw stderr or stdout (the fold
+ *  in captureStderr would read the indented lines as one). */
+interface MessageRow {
+  name: string;
+  run: () => Promise<string>;
+  lines: string[];
+}
+
+/** Every multi-part auth message that prints on any platform; the POSIX-only one follows. */
+const MESSAGE_ROWS: MessageRow[] = [
+  {
+    name: "--del with a stored token and no daemon",
+    run: () => {
+      storeDefaultToken();
+      return stderrOf(() => runAuth({ del: true }));
+    },
+    lines: ["De-authenticated.", "Then:", "  agent auth  log in again"],
+  },
+  {
+    name: "--del with nothing stored",
+    run: () => stderrOf(() => runAuth({ del: true })),
+    lines: ["Nothing to clear.", "  not authenticated", "Then:", "  agent auth  log in"],
+  },
+  {
+    name: "--check with nothing stored",
+    run: () => stdoutOf(() => runAuth({ check: true })),
+    lines: ["not authenticated.", "Fix:", "  agent auth  log in"],
+  },
+  {
+    name: "--set lands the default credential",
+    run: () => stderrOf(() => runAuth({ set: "ghu_x" })),
+    lines: ["Authenticated (gh-token).", "Then:", "  agent init  configure Codex and Claude"],
+  },
+  {
+    name: "a named --set with a recorded mode names the launchers",
+    run: async () => {
+      await captureChannels(() => addProfile(WORK, { mode: "proxy", noAuth: true }));
+      return stderrOf(() => runAuth({ set: "ghu_x", profile: "work" }));
+    },
+    lines: [
+      "Authenticated (gh-token).",
+      "  for profile 'work'",
+      "  both agents are wired for its proxy mode",
+      "Then:",
+      "  cl --profile work  launch Claude",
+      "  cx --profile work  launch Codex",
+    ],
+  },
+  {
+    name: "a bare identity choice without a terminal",
+    run: () => {
+      storeDefaultToken();
+      return thrownMessage(() => runAuth({ identity: true }));
+    },
+    lines: [
+      "no terminal to choose the identity in.",
+      "Pick one:",
+      "  agent profile set identity <id|auto>  pin an id, or auto",
+      "  agent profile identity                show the current identity",
+    ],
+  },
+  {
+    name: "gh-token without a terminal or a --set",
+    run: () => thrownMessage(() => runAuth({ provider: "gh-token" })),
+    lines: [
+      "no GitHub token given.",
+      "Pick one:",
+      "  --set <token>      pass the token",
+      "  --provider gh-env  copy one of COPILOT_GITHUB_TOKEN / GH_TOKEN / GITHUB_TOKEN",
+    ],
+  },
+  {
+    name: "gh-env with nothing set",
+    run: () => thrownMessage(() => runAuth({ provider: "gh-env" })),
+    lines: [
+      "no GitHub token in the environment.",
+      "Fix:",
+      "  COPILOT_GITHUB_TOKEN / GH_TOKEN / GITHUB_TOKEN  set one of these",
+    ],
+  },
+  {
+    name: "gh-env with two set and no terminal takes the most specific",
+    run: () => {
+      process.env.GH_TOKEN = "ghu_env_value";
+      process.env.GITHUB_TOKEN = "ghu_x";
+      return stderrOf(() => runAuth({ provider: "gh-env" }));
+    },
+    lines: [
+      "Taking $GH_TOKEN (the most specific).",
+      "  2 of $COPILOT_GITHUB_TOKEN, $GH_TOKEN, $GITHUB_TOKEN are set",
+      "Then:",
+      "  agent auth --provider gh-env  pick another in a terminal",
+    ],
+  },
+  {
+    name: "a bare --dry-run has no provider to plan from",
+    run: () => thrownMessage(() => runAuth({ dryRun: true })),
+    lines: [
+      "a dry run never prompts.",
+      "  no provider to plan the default profile's credential slot from",
+      "Pick one:",
+      "  --provider <copilot|gh-cli|gh-token|gh-env>  plan that provider's landing",
+      "  --set <token>                                plan a gh-token landing",
+    ],
+  },
+  {
+    name: "gh-token --dry-run without a --set",
+    run: () => thrownMessage(() => runAuth({ provider: "gh-token", dryRun: true })),
+    lines: [
+      "a dry run never prompts.",
+      "  no token to plan the default profile's credential slot with",
+      "Fix:",
+      "  --set <token>  the token to land",
+    ],
+  },
+  {
+    name: "--set --dry-run plans the store write",
+    run: () => stderrOf(() => runAuth({ set: "ghu_x", dryRun: true })),
+    lines: [
+      "Would store the given token.",
+      "  in the default profile's credential slot",
+      "  its GitHub account is looked up when the landing is real",
+    ],
+  },
+  {
+    name: "gh-env --dry-run with two set plans the most specific",
+    run: () => {
+      process.env.GH_TOKEN = "ghu_env_value";
+      process.env.GITHUB_TOKEN = "ghu_x";
+      return stderrOf(() => runAuth({ provider: "gh-env", dryRun: true }));
+    },
+    lines: [
+      "Would land the token from $GH_TOKEN.",
+      "  the most specific of 2 set",
+      "  in the default profile's credential slot",
+      "  its GitHub account is looked up when the landing is real",
+    ],
+  },
+  {
+    name: "a named --dry-run names the wiring it cannot plan",
+    run: async () => {
+      await captureChannels(() => addProfile(WORK, { mode: "proxy", noAuth: true }));
+      return stderrOf(() => runAuth({ provider: "copilot", profile: "work", dryRun: true }));
+    },
+    lines: ["Would wire both agents for the landed token.", "  profile 'work' in proxy mode"],
+  },
+  {
+    name: "a wiring command's dry run on no credential",
+    run: () => thrownMessage(() => runDryRun(() => ensureAuthenticated())),
+    lines: [
+      "a dry run never logs in.",
+      "  default is not authenticated",
+      "Fix:",
+      "  agent auth  log in first, then re-run with --dry-run",
+    ],
+  },
+  {
+    name: "a named --del with the longest profile name, its daemon never started",
+    run: async () => {
+      await captureChannels(() => addProfile(LONGEST, { mode: "proxy", noAuth: true }));
+      new CopilotEnvState().setCredential(LONGEST, {
+        kind: "stored",
+        provider: "gh-token",
+        token: "ghu_stored123",
+      });
+      return stderrOf(() => runAuth({ del: true, profile: LONGEST }));
+    },
+    lines: [
+      "De-authenticated.",
+      `  for profile '${LONGEST}'`,
+      "Then:",
+      `  agent profile ${LONGEST} auth  log in again`,
+    ],
+  },
+  {
+    name: "a named bare auth with the longest profile name on a recorded provider",
+    run: async () => {
+      await captureChannels(() => addProfile(LONGEST, { mode: "proxy", noAuth: true }));
+      new CopilotEnvState().setCredential(LONGEST, {
+        kind: "stored",
+        provider: "gh-token",
+        token: "ghu_stored123",
+      });
+      return stderrOf(() => runAuth({ profile: LONGEST }));
+    },
+    lines: [
+      "Already authenticated.",
+      `  for profile '${LONGEST}'`,
+      "  gh-token as octocat",
+      // A command too wide for its column stacks the table; the command is one line however wide.
+      "Pick one:",
+      `  agent profile ${LONGEST} auth --provider <copilot|gh-cli|gh-token|gh-env>`,
+      "    switch the provider",
+      "",
+      `  agent profile ${LONGEST} auth --del`,
+      "    clear it",
+    ],
+  },
+  {
+    name: "headless gh pins the active account, the longest login",
+    run: () =>
+      stderrOf(() =>
+        chooseGhAccount(
+          AUTH_GH_CLI,
+          () => ({ kind: "listed", accounts: [acct(LOGIN, true), acct("b", false)] }),
+          "headless",
+        ),
+      ),
+    lines: [
+      "gh has 2 logged-in accounts; pinning the active one.",
+      `  active account: ${LOGIN}`,
+      "Pick one:",
+      "  agent auth --provider gh-cli --gh-user <login>  pin another account",
+      "  agent auth --provider gh-cli                    choose in a terminal (auto",
+      "                                                  included)",
+    ],
+  },
+  {
+    name: "gh cannot serve the longest login by name",
+    run: () => {
+      const detail = "`gh auth token` exited 1: no oauth token found";
+      return Promise.resolve(errMessage(ghCannotServeByName(LOGIN, detail, "agent auth")));
+    },
+    lines: [
+      "gh cannot serve the pinned account by name.",
+      `  account: ${LOGIN}`,
+      "  `gh auth token` exited 1: no oauth token found",
+      "Pick one:",
+      "  gh auth login              re-login on gh 2.40 or newer, then retry",
+      "  agent auth --gh-user auto  follow gh's active account (switches with gh)",
+    ],
+  },
+  {
+    name: "--check on the longest profile name with nothing stored",
+    run: async () => {
+      await captureChannels(() => addProfile(LONGEST, { mode: "proxy", noAuth: true }));
+      return stdoutOf(() => runAuth({ check: true, profile: LONGEST }));
+    },
+    lines: [
+      "not authenticated.",
+      `  for profile '${LONGEST}'`,
+      "Fix:",
+      `  agent profile ${LONGEST} auth  log in`,
+    ],
+  },
+  {
+    name: "a named --del with nothing stored on the longest profile name",
+    run: async () => {
+      await captureChannels(() => addProfile(LONGEST, { mode: "proxy", noAuth: true }));
+      return stderrOf(() => runAuth({ del: true, profile: LONGEST }));
+    },
+    lines: [
+      "Nothing to clear.",
+      `  for profile '${LONGEST}'`,
+      "  not authenticated",
+      "Then:",
+      `  agent profile ${LONGEST} auth  log in`,
+    ],
+  },
+  {
+    name: "a named --set with the longest profile name names the launchers",
+    run: async () => {
+      await captureChannels(() => addProfile(LONGEST, { mode: "proxy", noAuth: true }));
+      return stderrOf(() => runAuth({ set: "ghu_x", profile: LONGEST }));
+    },
+    lines: [
+      "Authenticated (gh-token).",
+      `  for profile '${LONGEST}'`,
+      "  both agents are wired for its proxy mode",
+      "Then:",
+      `  cl --profile ${LONGEST}  launch Claude`,
+      `  cx --profile ${LONGEST}  launch Codex`,
+    ],
+  },
+  {
+    name: "a named --dry-run with the longest profile name names the wiring",
+    run: async () => {
+      await captureChannels(() => addProfile(LONGEST, { mode: "proxy", noAuth: true }));
+      return stderrOf(() => runAuth({ provider: "copilot", profile: LONGEST, dryRun: true }));
+    },
+    lines: ["Would wire both agents for the landed token.", `  profile '${LONGEST}' in proxy mode`],
+  },
+  {
+    name: "a wiring command's dry run on the longest unauthenticated profile",
+    run: async () => {
+      await captureChannels(() => addProfile(LONGEST, { mode: "proxy", noAuth: true }));
+      return thrownMessage(() => runDryRun(() => ensureAuthenticated(LONGEST)));
+    },
+    lines: [
+      "a dry run never logs in.",
+      `  profile '${LONGEST}' is not authenticated`,
+      "Fix:",
+      `  agent profile ${LONGEST} auth  log in first, then re-run`,
+      "                                                       with --dry-run",
+    ],
+  },
+  {
+    name: "--del on a half-created profile with the longest name: the store's refusal carries the verb's outcome",
+    run: () => {
+      mkdirSync(profileHome(LONGEST), { recursive: true });
+      return stderrOf(() => runAuth({ del: true, profile: LONGEST }));
+    },
+    lines: [
+      `profile '${LONGEST}' has no store slot.`,
+      "  nothing to clear",
+      "  half-created: its daemon home exists",
+      "Fix:",
+      // The command is too wide for its column at 80: the table stacks the meaning under it.
+      `  agent profile ${LONGEST} add --direct|--proxy`,
+      "    re-create it",
+    ],
+  },
+  {
+    name: "--del on a nonexistent profile with the longest name",
+    run: () => stderrOf(() => runAuth({ del: true, profile: LONGEST })),
+    lines: [
+      `no such profile '${LONGEST}'.`,
+      "  nothing to clear",
+      "  no profiles exist",
+      "Fix:",
+      `  agent profile ${LONGEST} add --direct|--proxy  create it`,
+    ],
+  },
+  {
+    name: "--check on a half-created profile with the longest name",
+    run: () => {
+      mkdirSync(profileHome(LONGEST), { recursive: true });
+      return stdoutOf(() => runAuth({ check: true, profile: LONGEST }));
+    },
+    lines: [
+      `profile '${LONGEST}' has no store slot.`,
+      "  half-created: its daemon home exists",
+      "Fix:",
+      // The command is too wide for its column at 80: the table stacks the meaning under it.
+      `  agent profile ${LONGEST} add --direct|--proxy`,
+      "    re-create it",
+    ],
+  },
+  {
+    name: "a baked static-key stays until the rewire",
+    run: () => {
+      storeDefaultToken();
+      new CopilotEnvConfig().setProfile(null, { "static-key": "claude" });
+      return stderrOf(() => runAuth({}));
+    },
+    lines: [
+      "static-key is claude.",
+      "  Claude's baked value stays as it is",
+      "Fix:",
+      "  agent init  rewrites it",
+    ],
+  },
+  {
+    name: "--check on the longest profile name, authenticated",
+    run: async () => {
+      await captureChannels(() => addProfile(LONGEST, { mode: "proxy", noAuth: true }));
+      new CopilotEnvState().setCredential(LONGEST, {
+        kind: "stored",
+        provider: "gh-token",
+        token: "ghu_stored123",
+      });
+      return stdoutOf(() => runAuth({ check: true, profile: LONGEST }));
+    },
+    lines: ["authenticated.", `  for profile '${LONGEST}'`, "  gh-token as octocat"],
+  },
+  {
+    name: "the gh CLI login pinned to the longest login",
+    run: () =>
+      stderrOf(() =>
+        Promise.resolve(
+          loginWithGhCli({ kind: "pinned", login: LOGIN }, () => ({
+            kind: "found",
+            token: "tok",
+            command: `gh auth token --user ${LOGIN}`,
+          })),
+        ),
+      ),
+    lines: ["Using the gh CLI login as the Direct credential.", `  pinned to account ${LOGIN}`],
+  },
+  {
+    name: "a copilot --dry-run on the longest profile name plans the device flow",
+    run: async () => {
+      await captureChannels(() => addProfile(LONGEST, { mode: "proxy", noAuth: true }));
+      return stderrOf(() => runAuth({ provider: "copilot", profile: LONGEST, dryRun: true }));
+    },
+    lines: [
+      "Would run GitHub's device flow and land the token.",
+      `  in profile '${LONGEST}''s credential slot`,
+    ],
+  },
+  {
+    name: "a gh-cli --dry-run pinned to the longest login on the longest profile name",
+    run: async () => {
+      await captureChannels(() => addProfile(LONGEST, { mode: "proxy", noAuth: true }));
+      return stderrOf(() =>
+        runDryRun(() =>
+          acquireCredential(
+            { kind: "gh-cli", account: { kind: "pinned", login: LOGIN } },
+            LONGEST,
+            { look: () => ({ kind: "found", token: "gho_saved", command: "gh auth token" }) },
+          ),
+        ),
+      );
+    },
+    lines: [
+      "Would record the gh CLI login.",
+      `  pinned to account ${LOGIN}`,
+      `  in profile '${LONGEST}''s credential slot`,
+    ],
+  },
+  {
+    name: "the login step on the longest profile name",
+    run: async () => {
+      await captureChannels(() => addProfile(LONGEST, { mode: "proxy", noAuth: true }));
+      return stderrOf(() => ensureAuthenticated(LONGEST, { kind: "gh-token", token: "ghu_x" }));
+    },
+    lines: [
+      "  Not authenticated yet - let's log in to GitHub Copilot.",
+      `    for profile '${LONGEST}'`,
+    ],
+  },
+];
+
+/** An empty PATH hides gh from the pinned look. POSIX only. */
+const NO_GH_ON_PATH_ROW: MessageRow = {
+  name: "--check with a gh-cli pin and no gh on PATH",
+  run: () => {
+    new CopilotEnvState().setCredential(null, { kind: "gh-cli", ghUser: "octocat" });
+    const emptyBin = join(dir, "empty-bin");
+    mkdirSync(emptyBin, { recursive: true });
+    process.env.PATH = emptyBin;
+    return stdoutOf(() => runAuth({ check: true }));
+  },
+  lines: [
+    "no credential resolves.",
+    "  provider 'gh-cli as octocat' is selected",
+    "Fix:",
+    "  agent auth  log in again",
+  ],
+};
+
+/** The shape every multi-part auth message prints in, at 80 columns: a headline, indented
+ *  evidence, a lead, and the commands as a table. */
+test("every auth message with more than one part prints as a headline, evidence, lead, and command table", async () => {
+  const rows = process.platform === "win32" ? MESSAGE_ROWS : [...MESSAGE_ROWS, NO_GH_ON_PATH_ROW];
   const hadTty = process.stdin.isTTY;
   process.stdin.isTTY = false;
   try {

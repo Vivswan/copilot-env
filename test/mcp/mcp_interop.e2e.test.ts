@@ -3,13 +3,14 @@
 //   v1 monolith SDK client (what Claude Code embeds)  -> the legacy `initialize` handshake
 //   v2 client pinned to 2026-07-28                    -> the modern era outright; the pin forbids the silent legacy fallback
 
+import { afterEach } from "bun:test";
 import { Client as ClientV2 } from "@modelcontextprotocol/client";
 import { StdioClientTransport as StdioTransportV2 } from "@modelcontextprotocol/client/stdio";
 import { Client as ClientV1 } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport as StdioTransportV1 } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { cleanupTmpDirs, mcpEnv } from "../helpers/mcp.ts";
 import { bunRunArgs, CLI_ENTRY } from "../helpers/run.ts";
-import { afterEach, expect, test } from "../helpers/testing.ts";
+import { expect, test } from "../helpers/testing.ts";
 
 afterEach(cleanupTmpDirs);
 

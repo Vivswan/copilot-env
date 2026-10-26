@@ -2,6 +2,7 @@
 // runs from); the codex homes, the host farm, the shell rc files, and the Desktop library resolve
 // through the suite's redirected HOME and env seams.
 
+import { afterEach } from "bun:test";
 import {
   chmodSync,
   existsSync,
@@ -53,7 +54,7 @@ import { dryRunChanges } from "../helpers/dry_run.ts";
 import { envSnapshot, isolateAgentHomes, resetExitCode } from "../helpers/env.ts";
 import { captureChannels } from "../helpers/output.ts";
 import { ROOT } from "../helpers/run.ts";
-import { afterEach, expect, test } from "../helpers/testing.ts";
+import { expect, test } from "../helpers/testing.ts";
 
 // A branded fixture name: parseProfileName is the only mint for ProfileName.
 const WORK = parseProfileName("work");
@@ -175,9 +176,11 @@ test("uninstall: a REFUSED stop aborts before anything is deleted", async () => 
   }
 }, 30_000);
 
-test("uninstall removes everything managed and preserves user config", async () => {
-  const { proxyHome, claudeHome, codexHome } = tmpHomes();
-
+/** The default and the work profile wired into both agents beside the user's own config lines,
+ *  and a second Codex home, a farm home under the redirected HOME (from when it was the effective
+ *  one), carrying BOTH default and profile wiring: the sweep enumerates and cleans it too.
+ *  Returns that second home. */
+function wireManagedEverything(claudeHome: string, codexHome: string): string {
   mkdirSync(claudeHome, { recursive: true });
   writeFileSync(settingsPathFor(claudeHome), JSON.stringify({ model: "opus" }));
   configureClaudeConfig(claudeHome, { credential: COMMAND, mode: "direct", direct: null });
@@ -213,8 +216,6 @@ test("uninstall removes everything managed and preserves user config", async () 
   });
   mkdirSync(profileHome(WORK), { recursive: true });
 
-  // A second Codex home, a farm home under the redirected HOME (from when it was the effective
-  // one), carrying BOTH default and profile wiring: the sweep enumerates and cleans it too.
   const codexHome2 = join(dir, ".codex", "hosts", "old-box");
   configureCodexConfig(codexHome2, {
     credential: COMMAND,
@@ -227,6 +228,12 @@ test("uninstall removes everything managed and preserves user config", async () 
     direct: null,
     profile: WORK,
   });
+  return codexHome2;
+}
+
+test("uninstall removes everything managed and preserves user config", async () => {
+  const { proxyHome, claudeHome, codexHome } = tmpHomes();
+  const codexHome2 = wireManagedEverything(claudeHome, codexHome);
 
   const root = sandboxRoot();
   await runUninstall({ yes: true }, root);
@@ -551,12 +558,31 @@ test("uninstall removes owned Claude Desktop entries from the library the env se
   expect(meta.appliedId).toBeUndefined(); // ours was applied; the reference is dropped
 });
 
-test("uninstall's dry run and live run land ONE resolved plan", async () => {
-  const { proxyHome, claudeHome, codexHome } = tmpHomes();
+type UninstallCtx = ReturnType<typeof resolveUninstallContext>;
+
+/** What the plan must name outside the data home: the Desktop library with its owned entry, a
+ *  stale claim's row, and both helper scripts; the float's bun cache; a wired rc file. */
+interface PlanFixture {
+  library: string;
+  defaultHelper: string;
+  workHelper: string;
+  metaRows: { id: string; name: string }[];
+  ledger: OwnershipLedger;
+  bunCache: string;
+  rc: string;
+}
+
+function desktopEntryFor(helper: string): string {
+  return `${JSON.stringify({ inferenceGatewayBaseUrl: "x", inferenceCredentialHelper: helper })}\n`;
+}
+
+/** The default wired with our MCP entry in .claude.json, a named profile with a daemon home (so
+ *  the profile step has a tree to delete) and a Codex profile file (a deletion OUTSIDE our homes,
+ *  so the plan must name it), the Desktop library, the float's artifacts, and a wired rc. */
+function plantPlanFixture(proxyHome: string, claudeHome: string, codexHome: string): PlanFixture {
   mkdirSync(claudeHome, { recursive: true });
   configureClaudeConfig(claudeHome, { credential: COMMAND, mode: "direct", direct: null });
   expect(registerClaudeMcpServer()).toBe(true); // our MCP entry is in .claude.json
-  // A named profile with a daemon home, so the profile step has a tree to delete.
   new CopilotEnvState().commitProfile(WORK, {
     credential: { kind: "stored", provider: "gh-token", token: "ghp_work" },
     mode: "direct",
@@ -567,7 +593,6 @@ test("uninstall's dry run and live run land ONE resolved plan", async () => {
     direct: null,
     profile: WORK,
   });
-  // The Codex profile file is a deletion OUTSIDE our homes, so the plan must name it.
   configureCodexConfig(codexHome, {
     credential: COMMAND,
     mode: "direct",
@@ -583,8 +608,6 @@ test("uninstall's dry run and live run land ONE resolved plan", async () => {
   mkdirSync(dirname(defaultHelper), { recursive: true });
   writeFileSync(defaultHelper, "#!/bin/sh\n");
   writeFileSync(workHelper, "#!/bin/sh\n");
-  const entryFor = (helper: string): string =>
-    `${JSON.stringify({ inferenceGatewayBaseUrl: "x", inferenceCredentialHelper: helper })}\n`;
   const metaRows = [
     { id: "ours", name: "copilot-env" },
     {
@@ -592,7 +615,7 @@ test("uninstall's dry run and live run land ONE resolved plan", async () => {
       name: "copilot-env (work)",
     },
   ];
-  writeFileSync(join(library, "ours.json"), entryFor(defaultHelper));
+  writeFileSync(join(library, "ours.json"), desktopEntryFor(defaultHelper));
   writeFileSync(join(library, "_meta.json"), `${JSON.stringify({ entries: metaRows })}\n`);
   const ledger = new OwnershipLedger();
   ledger.record("claudeDesktop", join(library, "ours.json"));
@@ -612,86 +635,83 @@ test("uninstall's dry run and live run land ONE resolved plan", async () => {
     process.platform === "win32" ? (shellTargetFiles()[0] as string) : join(rcDir, ".bashrc");
   mkdirSync(dirname(rc), { recursive: true });
   writeFileSync(rc, `echo mine\n${SHELL_MARKER}\nsource ours\n${MARKER_END}\n`);
+  return { library, defaultHelper, workHelper, metaRows, ledger, bunCache, rc };
+}
 
-  const ctx = resolveUninstallContext({ yes: true }, sandboxRoot());
-  expect(ctx.targets.desktop.helpers.sort()).toEqual([defaultHelper, workHelper].sort());
-  expect(ctx.targets.desktop.staleClaims).toEqual([join(library, "gone.json")]);
-  expect(ctx.targets.shellFiles).toEqual([rc]);
-  // The MCP registration file follows CLAUDE_CONFIG_DIR (the isolated home), and holds
-  // our entry, so the plan names the rewrite.
+/** The resolved plan names every fixture path: both helpers, the stale claim, the rc file, the
+ *  MCP registration file (it follows CLAUDE_CONFIG_DIR, the isolated home, and holds our entry,
+ *  so the plan names the rewrite), the meta rewrite, and the work profile's Claude artifact. */
+function expectPlanNamesFixture(ctx: UninstallCtx, fx: PlanFixture, claudeHome: string): void {
+  expect(ctx.targets.desktop.helpers.sort()).toEqual([fx.defaultHelper, fx.workHelper].sort());
+  expect(ctx.targets.desktop.staleClaims).toEqual([join(fx.library, "gone.json")]);
+  expect(ctx.targets.shellFiles).toEqual([fx.rc]);
   expect(claudeJsonPath()).toBe(join(claudeHome, ".claude.json"));
   expect(ctx.targets.claudeMcpRegistration).toBe(claudeJsonPath());
-  const metaPath = join(library, "_meta.json");
-  expect(ctx.targets.desktop.metaRewrite).toBe(metaPath);
+  expect(ctx.targets.desktop.metaRewrite).toBe(join(fx.library, "_meta.json"));
   expect(ctx.targets.profiles).toEqual([
     {
       name: WORK,
       claudeArtifacts: [settingsPathFor(claudeHome, WORK)],
     },
   ]);
-  // The dry run: the same steps on the overlay, nothing landed, and the shell-restart hint that
-  // follows a landed removal is not said.
-  let changes: FileChange[] = [];
-  const preview = await captureChannels(async () => {
-    ({ changes } = await dryRunChanges(() => applyUninstall(ctx)));
-  });
-  expect(preview.all).not.toContain("Restart");
-  const named = new Set(changes.map((c) => c.path));
-  expect(readFileSync(rc, "utf8")).toContain(SHELL_MARKER);
-  expect(existsSync(join(library, "ours.json"))).toBe(true);
-  expect(existsSync(bunCache)).toBe(true);
-  // Planted AFTER planning: a LISTED owned Desktop entry attributed to the profile the
-  // profile step deletes. Neither that step nor the Desktop sweep may take a path the
-  // dry run never named.
-  writeFileSync(join(library, "late.json"), entryFor(workHelper));
-  metaRows.push({ id: "late", name: "copilot-env (work, late)" });
-  writeFileSync(join(library, "_meta.json"), `${JSON.stringify({ entries: metaRows })}\n`);
-  ledger.record("claudeDesktop", join(library, "late.json"));
+}
 
-  deferWriteReports();
-  await applyUninstall(ctx);
-  const reported = flushWriteReports();
-  const deleted = new Set(
+/** The paths the write report named under `prefix`, their detail stripped. */
+function reportedPaths(reported: readonly string[], prefix: string): Set<string> {
+  return new Set(
     reported
-      .filter((line) => line.startsWith("deleted -> "))
-      .map((line) => line.slice("deleted -> ".length).replace(/ \(.*\)$/, "")),
+      .filter((line) => line.startsWith(prefix))
+      .map((line) => line.slice(prefix.length).replace(/ \(.*\)$/, "")),
   );
-  // The block went, the user's own line stayed, and the rewrite was named, once.
-  expect(readFileSync(rc, "utf8")).toBe("echo mine\n");
-  expect(reported.filter((line) => line.includes(rc))).toEqual([
-    `rewritten -> ${rc} (shell integration removed)`,
+}
+
+/** After the live run: the rc block went and the user's own line stayed, the rewrite named once;
+ *  the meta rewrite was named too; the MCP entry is gone; the owned Desktop entry and the bun
+ *  cache went while the late entry stayed; and the meta rows are the late one alone. */
+function expectLiveRemovals(
+  fx: PlanFixture,
+  reported: readonly string[],
+  rewritten: Set<string>,
+): void {
+  expect(readFileSync(fx.rc, "utf8")).toBe("echo mine\n");
+  expect(reported.filter((line) => line.includes(fx.rc))).toEqual([
+    `rewritten -> ${fx.rc} (shell integration removed)`,
   ]);
   // The other outside-home REWRITE the sweep performs is named live too, and the dry
-  // run named its path (asserted with the deletions below).
-  const rewritten = new Set(
-    reported
-      .filter((line) => line.startsWith("rewritten -> "))
-      .map((line) => line.slice("rewritten -> ".length).replace(/ \(.*\)$/, "")),
-  );
-  expect(rewritten.has(metaPath)).toBe(true);
+  // run named its path (asserted with the deletions in expectPlanParity).
+  expect(rewritten.has(join(fx.library, "_meta.json"))).toBe(true);
   // .claude.json was CREATED in this process (the registration above), so the uninstall's
   // rewrite is the same per-process fact and prints no second line: the entry being gone,
-  // and the dry run naming the file (below), are the observables.
+  // and the dry run naming the file (expectPlanParity), are the observables.
   expect(
     (JSON.parse(readFileSync(claudeJsonPath(), "utf8")) as Record<string, unknown>).mcpServers,
   ).toBeUndefined();
 
-  expect(existsSync(join(library, "late.json"))).toBe(true);
-  expect(existsSync(join(library, "ours.json"))).toBe(false);
-  expect(existsSync(bunCache)).toBe(false);
+  expect(existsSync(join(fx.library, "late.json"))).toBe(true);
+  expect(existsSync(join(fx.library, "ours.json"))).toBe(false);
+  expect(existsSync(fx.bunCache)).toBe(false);
   // The live row and the stale claim's row went; the late row stayed (the ledger itself
   // lives in the root home the uninstall deleted, so the rows are the observable).
-  const meta = JSON.parse(readFileSync(join(library, "_meta.json"), "utf8")) as {
+  const meta = JSON.parse(readFileSync(join(fx.library, "_meta.json"), "utf8")) as {
     entries: { id: string }[];
   };
   expect(meta.entries.map((row) => row.id)).toEqual(["late"]);
+}
 
-  // Exact parity, both ways: every path the live run deleted or rewrote outside the data home
-  // is a row of the plan, and the plan's rows are paths, so an ancestor is never counted as named.
+/** What the dry run planned and the live run reported. */
+interface PlanAndRun {
+  changes: FileChange[];
+  named: Set<string>;
+  deleted: Set<string>;
+  rewritten: Set<string>;
+}
+
+/** Exact parity, both ways: every path the live run deleted or rewrote outside the data home is
+ *  a row of the plan, and the plan's rows are paths, so an ancestor is never counted as named. */
+function expectPlanParity(ctx: UninstallCtx, run: PlanAndRun, codexHome: string): void {
+  const { changes, named, deleted, rewritten } = run;
   expect([...deleted].filter((path) => !named.has(path))).toEqual([]);
   expect([...rewritten].filter((path) => !named.has(path))).toEqual([]);
-  expect(named.has(rc)).toBe(true);
-  expect(named.has(claudeJsonPath())).toBe(true);
   const workCodexFile = codexProfileConfigPath(codexHome, WORK);
   expect(deleted.has(workCodexFile)).toBe(true);
   expect(named.has(workCodexFile)).toBe(true);
@@ -711,6 +731,42 @@ test("uninstall's dry run and live run land ONE resolved plan", async () => {
   // Negative control: the tmp root is a prefix of every named path and is not itself one.
   expect(changes.some((c) => c.path.startsWith(dir + sep))).toBe(true);
   expect(named.has(dir)).toBe(false);
+}
+
+test("uninstall's dry run and live run land ONE resolved plan", async () => {
+  const { proxyHome, claudeHome, codexHome } = tmpHomes();
+  const fx = plantPlanFixture(proxyHome, claudeHome, codexHome);
+
+  const ctx = resolveUninstallContext({ yes: true }, sandboxRoot());
+  expectPlanNamesFixture(ctx, fx, claudeHome);
+  // The dry run: the same steps on the overlay, nothing landed, and the shell-restart hint that
+  // follows a landed removal is not said.
+  let changes: FileChange[] = [];
+  const preview = await captureChannels(async () => {
+    ({ changes } = await dryRunChanges(() => applyUninstall(ctx)));
+  });
+  expect(preview.all).not.toContain("Restart");
+  const named = new Set(changes.map((c) => c.path));
+  expect(readFileSync(fx.rc, "utf8")).toContain(SHELL_MARKER);
+  expect(existsSync(join(fx.library, "ours.json"))).toBe(true);
+  expect(existsSync(fx.bunCache)).toBe(true);
+  expect(named.has(fx.rc)).toBe(true);
+  expect(named.has(claudeJsonPath())).toBe(true);
+  // Planted AFTER planning: a LISTED owned Desktop entry attributed to the profile the
+  // profile step deletes. Neither that step nor the Desktop sweep may take a path the
+  // dry run never named.
+  writeFileSync(join(fx.library, "late.json"), desktopEntryFor(fx.workHelper));
+  fx.metaRows.push({ id: "late", name: "copilot-env (work, late)" });
+  writeFileSync(join(fx.library, "_meta.json"), `${JSON.stringify({ entries: fx.metaRows })}\n`);
+  fx.ledger.record("claudeDesktop", join(fx.library, "late.json"));
+
+  deferWriteReports();
+  await applyUninstall(ctx);
+  const reported = flushWriteReports();
+  const deleted = reportedPaths(reported, "deleted -> ");
+  const rewritten = reportedPaths(reported, "rewritten -> ");
+  expectLiveRemovals(fx, reported, rewritten);
+  expectPlanParity(ctx, { changes, named, deleted, rewritten }, codexHome);
 });
 
 test.skipIf(process.platform === "win32")(

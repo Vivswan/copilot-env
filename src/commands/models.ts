@@ -37,8 +37,8 @@ export function formatTokens(tokens: number): string {
 
 function entryDetail(entry: ModelListEntry): string {
   const parts = [
-    entry.contextWindow !== null ? `${formatTokens(entry.contextWindow)} context` : null,
-    entry.maxOutput !== null ? `${formatTokens(entry.maxOutput)} out` : null,
+    entry.contextWindow === null ? null : `${formatTokens(entry.contextWindow)} context`,
+    entry.maxOutput === null ? null : `${formatTokens(entry.maxOutput)} out`,
     entry.type !== null && entry.type !== "chat" ? entry.type : null,
     entry.preview ? "preview" : null,
     entry.unlisted === true ? "unlisted" : null,
@@ -109,6 +109,38 @@ function sourceLabel(resolved: ResolvedSource, profile: Profile): string {
     : `profile '${profile}' local proxy (port ${resolved.port})`;
 }
 
+/** The same discovery the Claude Desktop wiring runs, so a discovery fix reaches both; the
+ *  listings still differ, because Desktop keeps only the Claude rows. */
+async function directModels(profile: Profile): Promise<ModelListEntry[]> {
+  const resolved = new Credential(undefined, profile).resolveWithReason();
+  if (resolved.token === null) throw new Error(resolved.reason);
+  const token = resolved.token;
+  // A listing renders what the wiring bakes (renderDirectWiring: the pin and literal over the
+  // slot's probed halves) and writes nothing; a half never probed is probed here, and even that
+  // answer is not stored: storing is the landing commands' (directWiringFor's `land`).
+  const direct = renderDirectWiring(profile) ?? (await directWiringFor(profile, token, "probe"));
+  const discovered = await discoverServableClaudeModels(
+    token,
+    codexUserAgent(),
+    direct.directIntegrationId,
+    direct.directBaseUrl,
+    {},
+  );
+  return mergeUnlistedModels(parseModelList(discovered.catalogBody), discovered);
+}
+
+async function listModels(resolved: ResolvedSource, profile: Profile): Promise<ModelListEntry[]> {
+  if (resolved.source === "direct") return directModels(profile);
+  return parseModelList(await fetchRawModels("proxy", { profile, port: resolved.port }));
+}
+
+/** What to check when the listing fails: the proxy's health, or the credential's. */
+function listingFailureHint(resolved: ResolvedSource, profile: Profile): string {
+  if (resolved.source === "direct") return `see \`${agentAuthCommand(profile)} --check\``;
+  if (profile === null) return "check `agent health` (or use --direct)";
+  return `check \`${agentStartCommand(profile)} --check\` (or use --direct)`;
+}
+
 export async function runModels(args: ModelsArgs): Promise<void> {
   // Before any probe or fetch: an unknown profile must error naming the known ones, never answer
   // from the default wiring.
@@ -118,41 +150,9 @@ export async function runModels(args: ModelsArgs): Promise<void> {
   const label = sourceLabel(resolved, profile);
   let models: ModelListEntry[];
   try {
-    if (source === "direct") {
-      // The same discovery the Claude Desktop wiring runs, so a discovery fix reaches both; the
-      // listings still differ, because Desktop keeps only the Claude rows.
-      const resolved = new Credential(undefined, profile).resolveWithReason();
-      if (resolved.token === null) throw new Error(resolved.reason);
-      const token = resolved.token;
-      // A listing renders what the wiring bakes (renderDirectWiring: the pin and literal over the
-      // slot's probed halves) and writes nothing; a half never probed is probed here, and even that
-      // answer is not stored: storing is the landing commands' (directWiringFor's `land`).
-      const direct =
-        renderDirectWiring(profile) ?? (await directWiringFor(profile, token, "probe"));
-      const discovered = await discoverServableClaudeModels(
-        token,
-        codexUserAgent(),
-        direct.directIntegrationId,
-        direct.directBaseUrl,
-        {},
-      );
-      models = mergeUnlistedModels(parseModelList(discovered.catalogBody), discovered);
-    } else {
-      models = parseModelList(
-        await fetchRawModels(source, {
-          profile,
-          ...(resolved.source === "proxy" ? { port: resolved.port } : {}),
-        }),
-      );
-    }
+    models = await listModels(resolved, profile);
   } catch (e) {
-    const authCommand = agentAuthCommand(profile);
-    const hint =
-      source === "proxy"
-        ? profile === null
-          ? "check `agent health` (or use --direct)"
-          : `check \`${agentStartCommand(profile)} --check\` (or use --direct)`
-        : `see \`${authCommand} --check\``;
+    const hint = listingFailureHint(resolved, profile);
     throw rethrown(e, (message) => `could not list models via ${label}: ${message}; ${hint}`);
   }
   if (args.json) {

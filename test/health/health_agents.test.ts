@@ -24,297 +24,52 @@ import { withColumns } from "../helpers/columns.ts";
 import { captureChannels } from "../helpers/output.ts";
 import { expect, test } from "../helpers/testing.ts";
 
-// --- codex wiring -----------------------------------------------------------
+// --- fixtures -----------------------------------------------------------------
+//
+// `satisfies` keeps each literal arm narrow, so the spreads stay inside the discriminated union's
+// proxy/direct variants.
 
-test("codex: not configured is ok; each broken part warns with a precise message", () => {
-  // Shared non-wiring facts; `satisfies` keeps the literal arms narrow so the
-  // spreads below stay inside the discriminated union's proxy/direct variants.
-  const codexExtras = {
-    home: "/c",
-    directAuth: { kind: "found", command: "/bin/gh", ghCommand: "gh auth token" },
-    directUsesToken: false,
-    directNeedsNoGh: false,
-    provider: "gh-cli",
-    otherReason: null,
-  } as const;
-  const wired = {
-    ...codexExtras,
-    configExists: true,
-    providerSelected: true,
-    providerMode: "proxy",
-    modelProvider: "copilot-env",
-    baseUrl: "http://localhost:4141/v1",
-    baseUrlMatches: true,
-    envKeyMatches: true,
-    providerWired: true,
-    credential: "command",
-    envFilePresent: true,
-    envKeyInDotenv: true,
-    envKeyInEnviron: false,
-    tokenAvailable: true,
-  } satisfies CodexFacts;
-  // No config at all -> ok (user never wired Codex): the "none" arm.
-  expect(
-    checkCodex(
-      {
-        ...wired,
-        providerMode: "none",
-        configExists: false,
-        modelProvider: null,
-        providerSelected: false,
-        baseUrl: null,
-        baseUrlMatches: false,
-        envKeyMatches: false,
-        providerWired: false,
-        credential: "none",
-      },
-      null,
-    ).status,
-  ).toBe("ok");
-  // Fully wired -> ok; the detail names the wiring, the proxy, and the auth.command resolver.
-  const ok = checkCodex(wired, null);
-  expect(ok.status).toBe("ok");
-  expect(ok.detail).toContain("copilot-env");
-  expect(ok.detail).toContain("4141");
-  expect(ok.detail).toContain("provider: proxy");
-  expect(ok.detail.split("\n")).toHaveLength(4);
-  expect(ok.detail).toContain(`config.toml: ${join("/c", "config.toml")}`);
-  expect(ok.detail).toContain("proxy-token resolver");
-  // A foreign model_provider selected: the "other" arm.
-  const foreign = {
-    ...wired,
-    providerMode: "other",
-    modelProvider: "openai",
-    providerSelected: false,
-    baseUrl: null,
-    baseUrlMatches: false,
-    envKeyMatches: false,
-    providerWired: false,
-    credential: "none",
-    otherReason: "custom",
-  } satisfies CodexFacts;
-  expect(checkCodex(foreign, null).detail).toContain("model_provider");
-  expect(checkCodex(foreign, null).detail).toContain(`config.toml: ${join("/c", "config.toml")}`);
-  // The classifier's reason travels into the --json value on every arm.
-  expect(checkCodex(foreign, null).value?.otherReason).toBe("custom");
-  expect(ok.value?.otherReason).toBe(null);
-  // A config.toml the writers REFUSE (malformed/read-error) gets the repair fix,
-  // never the generic `agent init --proxy` re-wire that cannot land.
-  const malformed = checkCodex({ ...foreign, modelProvider: null, otherReason: "malformed" }, null);
-  expect(malformed.status).toBe("warn");
-  expect(malformed.detail).toContain("not valid TOML");
-  expect(malformed.detail).toContain("provider: other");
-  expect(malformed.fix).toBe(
-    `repair ${join("/c", "config.toml")}, then re-run \`agent profile sync --codex\``,
-  );
-  expect(malformed.value?.otherReason).toBe("malformed");
-  const unreadable = checkCodex(
-    { ...foreign, modelProvider: null, otherReason: "read-error" },
-    null,
-  );
-  expect(unreadable.status).toBe("warn");
-  expect(unreadable.detail).toContain("could not be read");
-  expect(unreadable.fix).toBe(
-    `repair ${join("/c", "config.toml")}, then re-run \`agent profile sync --codex\``,
-  );
-  // A named profile's repair re-runs its atomic re-add instead of `agent profile sync --codex`.
-  const namedMalformed = checkCodex(
-    { ...foreign, modelProvider: null, otherReason: "malformed" },
-    parseProfileName("work"),
-  );
-  expect(namedMalformed.status).toBe("warn");
-  expect(namedMalformed.fix).toBe(
-    `repair ${join("/c", "config.toml")}, then re-run \`agent profile work add\``,
-  );
-  // The profile's own file (`codex --profile work` layers it over config.toml) is the one to
-  // repair when IT is the broken one, and every named row names it beside config.toml.
-  const namedFileMalformed = checkCodex(
-    { ...foreign, modelProvider: null, otherReason: "profile-malformed" },
-    parseProfileName("work"),
-  );
-  expect(namedFileMalformed.detail).toContain(
-    `work.config.toml: ${join("/c", "work.config.toml")}`,
-  );
-  expect(namedFileMalformed.detail).toContain("work.config.toml is present but not valid TOML");
-  expect(namedFileMalformed.fix).toBe(
-    `repair ${join("/c", "work.config.toml")}, then re-run \`agent profile work add\``,
-  );
-  // With no config.toml beside it the broken file still owns the repair: `agent profile <name> add`
-  // would refuse that file, so "not wired, re-add" is the wrong fix.
-  expect(
-    checkCodex(
-      { ...foreign, configExists: false, modelProvider: null, otherReason: "profile-malformed" },
-      parseProfileName("work"),
-    ).fix,
-  ).toBe(namedFileMalformed.fix);
-  // base_url points at the wrong port.
-  expect(
-    checkCodex(
-      {
-        ...wired,
-        baseUrl: "http://localhost:9999/v1",
-        baseUrlMatches: false,
-        providerWired: false,
-      },
-      null,
-    ).detail,
-  ).toContain("base_url");
-  expect(
-    checkCodex(
-      {
-        ...wired,
-        baseUrl: "http://localhost:9999/v1",
-        baseUrlMatches: false,
-        providerWired: false,
-      },
-      null,
-    ).detail,
-  ).toContain(`config.toml: ${join("/c", "config.toml")}`);
-  // Not fully wired (e.g. the managed proxy auth.command is missing/foreign).
-  const notWired = checkCodex({ ...wired, providerWired: false }, null);
-  expect(notWired.status).toBe("warn");
-  expect(notWired.detail).toContain("not fully wired");
-  expect(notWired.detail).toContain(`config.toml: ${join("/c", "config.toml")}`);
-  // A wired proxy is ok regardless of any env token (the key comes from auth.command).
-  const noEnvToken = checkCodex({ ...wired, envKeyInDotenv: false, tokenAvailable: false }, null);
-  expect(noEnvToken.status).toBe("ok");
-  expect(noEnvToken.detail).toContain("proxy-token resolver");
+/** The non-wiring facts CODEX_WIRED and CODEX_FOREIGN share. */
+const CODEX_EXTRAS = {
+  home: "/c",
+  directAuth: { kind: "found", command: "/bin/gh", ghCommand: "gh auth token" },
+  directUsesToken: false,
+  directNeedsNoGh: false,
+  provider: "gh-cli",
+  otherReason: null,
+} as const;
 
-  // (gh look, recorded provider) -> the direct verdict, its auth line, and the fix it names. A wrong
-  // row hides the account a verdict is about, or offers `gh auth login` for a provider gh cannot serve.
-  const direct = {
-    ...wired,
-    providerMode: "direct",
-    modelProvider: "copilot-env",
-    baseUrl: "https://api.githubcopilot.com",
-    envKeyMatches: false,
-    envKeyInDotenv: false,
-    envKeyInEnviron: false,
-    tokenAvailable: false,
-  } satisfies CodexFacts;
-  const directRows: Array<{
-    name: string;
-    directAuth: CodexFacts["directAuth"];
-    provider?: CodexFacts["provider"];
-    status: CheckStatus;
-    detail: string[];
-    notDetail?: string[];
-    fix?: string;
-  }> = [
-    {
-      // An auto slot whose account list could not name the active login still says it is on AUTO
-      // (never a bare "authenticated" that hides the mode).
-      name: "auto, authenticated, login unknown",
-      directAuth: { kind: "found", command: "/bin/gh", ghCommand: "gh auth token" },
-      status: "ok",
-      detail: [
-        "provider: direct",
-        "gh auth: authenticated via /bin/gh (AUTO - follows gh's active account)",
-        `config.toml: ${join("/c", "config.toml")}`,
-      ],
-    },
-    {
-      name: "gh missing",
-      directAuth: { kind: "absent", command: null },
-      status: "warn",
-      detail: ["GitHub CLI not found"],
-      fix: "install gh and run gh auth login",
-    },
-    {
-      name: "auto, unauthenticated",
-      directAuth: {
-        kind: "absent",
-        command: "/bin/gh",
-        ghDetail: "`gh auth token` printed no token",
-      },
-      status: "warn",
-      detail: ["not authenticated"],
-      fix: "gh auth login",
-    },
-    {
-      // A PINNED slot's verdict names its account: the probe ran `gh auth token --user work-bot`,
-      // so "not authenticated" is about that account, not gh's active one (which may be fine).
-      name: "pinned, unauthenticated",
-      directAuth: {
-        kind: "absent",
-        command: "/bin/gh",
-        ghDetail: "`gh auth token --user work-bot` printed no token",
-        ghUser: "work-bot",
-      },
-      status: "warn",
-      detail: ["gh auth: /bin/gh is not authenticated as account 'work-bot'"],
-      fix: "gh auth login",
-    },
-    {
-      // An AUTO slot's ok line names the account it follows (no hidden information).
-      name: "auto, authenticated, login named",
-      directAuth: {
-        kind: "found",
-        command: "/bin/gh",
-        ghCommand: "gh auth token",
-        ghActiveLogin: "octocat",
-      },
-      status: "ok",
-      detail: ["gh auth: authenticated via /bin/gh (AUTO - currently account octocat)"],
-    },
-    {
-      // Non-gh-cli provider with no stored token: gh is NOT a fallback, so the warn points at
-      // `agent auth` in the fix row alone, never the gh-specific message (the provider-blind
-      // false-OK) and never a second copy of the command in the line.
-      name: "copilot provider, no stored token",
-      directAuth: { kind: "found", command: "/bin/gh", ghCommand: "gh auth token" },
-      provider: "copilot",
-      status: "warn",
-      detail: ["auth: no credential resolves via `agent auth --get`"],
-      notDetail: ["gh auth:", " - run "],
-      fix: "agent auth",
-    },
-  ];
-  for (const row of directRows) {
-    const r = checkCodex(
-      { ...direct, directAuth: row.directAuth, provider: row.provider ?? direct.provider },
-      null,
-    );
-    expect({ name: row.name, status: r.status, fix: r.fix }).toEqual({
-      name: row.name,
-      status: row.status,
-      fix: row.fix,
-    });
-    for (const needle of row.detail) expect(r.detail, row.name).toContain(needle);
-    for (const needle of row.notDetail ?? []) expect(r.detail, row.name).not.toContain(needle);
-  }
+/** The "proxy" arm, fully wired; the other arms and the broken parts are overrides of it. */
+const CODEX_WIRED = {
+  ...CODEX_EXTRAS,
+  configExists: true,
+  providerSelected: true,
+  providerMode: "proxy",
+  modelProvider: "copilot-env",
+  baseUrl: "http://localhost:4141/v1",
+  baseUrlMatches: true,
+  envKeyMatches: true,
+  providerWired: true,
+  credential: "command",
+  envFilePresent: true,
+  envKeyInDotenv: true,
+  envKeyInEnviron: false,
+  tokenAvailable: true,
+} satisfies CodexFacts;
 
-  // A Codex-scoped report has no auth row of its own, so when the credential is missing AND the
-  // wiring is broken this check's fix must still name the login, in the profile's own form, before
-  // the rewire that needs it.
-  const broken = { ...direct, providerWired: false, provider: "copilot" } as const;
-  expect(checkCodex(broken, null).fix).toBe("agent auth, then agent init --direct");
-  expect(checkCodex(broken, parseProfileName("work")).fix).toBe(
-    "agent profile work auth, then agent profile work add",
-  );
-});
-
-// What would drift silently: the printed shape of the Direct auth line at 80 columns, the command
-// kept out of the bullet and on the fix row alone.
-test("renderReport prints the Direct no-credential verdict at 80 columns: the auth bullet states the failed read, the fix row names the login and the rewire", async () => {
-  const codex = checkCodex(
-    { ...CODEX_DIRECT, providerWired: false, provider: "copilot", directUsesToken: false },
-    null,
-  );
-  const { stdout } = await withColumns(80, () =>
-    captureChannels(() => renderReport("codex", [codex], new Map(), false)),
-  );
-  expect(stdout).toContain(
-    [
-      "  ! Codex wiring",
-      "      \u2022 provider: direct",
-      `      \u2022 config.toml: ${join("/c", "config.toml")}`,
-      "      \u2022 model_provider copilot-env (direct) \u2192 https://api.githubcopilot.com",
-      "      \u2022 auth: no credential resolves via `agent auth --get`",
-      "      \u2192 fix: agent auth, then agent init --direct",
-    ].join("\n"),
-  );
-});
+// A foreign model_provider selected: the "other" arm.
+const CODEX_FOREIGN = {
+  ...CODEX_WIRED,
+  providerMode: "other",
+  modelProvider: "openai",
+  providerSelected: false,
+  baseUrl: null,
+  baseUrlMatches: false,
+  envKeyMatches: false,
+  providerWired: false,
+  credential: "none",
+  otherReason: "custom",
+} satisfies CodexFacts;
 
 // Direct on a gh-cli slot, gh authenticated; the direct-auth tests swap in the verdict under test.
 const CODEX_DIRECT = {
@@ -362,6 +117,278 @@ const UNPROVEN_TOKEN_CALL = {
   command: "/bin/gh",
   ghDetail: "`gh auth token` did not complete (ETIMEDOUT)",
 } as const;
+
+// --- codex wiring -----------------------------------------------------------
+
+test("codex: not configured is ok; fully wired names the wiring, the proxy, and the resolver", () => {
+  // No config at all -> ok (user never wired Codex): the "none" arm.
+  expect(
+    checkCodex(
+      {
+        ...CODEX_WIRED,
+        providerMode: "none",
+        configExists: false,
+        modelProvider: null,
+        providerSelected: false,
+        baseUrl: null,
+        baseUrlMatches: false,
+        envKeyMatches: false,
+        providerWired: false,
+        credential: "none",
+      },
+      null,
+    ).status,
+  ).toBe("ok");
+  // Fully wired -> ok; the detail names the wiring, the proxy, and the auth.command resolver.
+  const ok = checkCodex(CODEX_WIRED, null);
+  expect(ok.status).toBe("ok");
+  expect(ok.detail).toContain("copilot-env");
+  expect(ok.detail).toContain("4141");
+  expect(ok.detail).toContain("provider: proxy");
+  expect(ok.detail.split("\n")).toHaveLength(4);
+  expect(ok.detail).toContain(`config.toml: ${join("/c", "config.toml")}`);
+  expect(ok.detail).toContain("proxy-token resolver");
+  // A foreign model_provider selected reports the selection and the file.
+  expect(checkCodex(CODEX_FOREIGN, null).detail).toContain("model_provider");
+  expect(checkCodex(CODEX_FOREIGN, null).detail).toContain(
+    `config.toml: ${join("/c", "config.toml")}`,
+  );
+  // The classifier's reason travels into the --json value on every arm.
+  expect(checkCodex(CODEX_FOREIGN, null).value?.otherReason).toBe("custom");
+  expect(ok.value?.otherReason).toBe(null);
+});
+
+// A config.toml the writers REFUSE (malformed/read-error) gets the repair fix, never the generic
+// `agent init --proxy` re-wire that cannot land.
+test("codex: a config file the writers refuse gets the repair fix, never the re-wire", () => {
+  const malformed = checkCodex(
+    { ...CODEX_FOREIGN, modelProvider: null, otherReason: "malformed" },
+    null,
+  );
+  expect(malformed.status).toBe("warn");
+  expect(malformed.detail).toContain("not valid TOML");
+  expect(malformed.detail).toContain("provider: other");
+  expect(malformed.fix).toBe(
+    `repair ${join("/c", "config.toml")}, then re-run \`agent profile sync --codex\``,
+  );
+  expect(malformed.value?.otherReason).toBe("malformed");
+  const unreadable = checkCodex(
+    { ...CODEX_FOREIGN, modelProvider: null, otherReason: "read-error" },
+    null,
+  );
+  expect(unreadable.status).toBe("warn");
+  expect(unreadable.detail).toContain("could not be read");
+  expect(unreadable.fix).toBe(
+    `repair ${join("/c", "config.toml")}, then re-run \`agent profile sync --codex\``,
+  );
+  // A named profile's repair re-runs its atomic re-add instead of `agent profile sync --codex`.
+  const namedMalformed = checkCodex(
+    { ...CODEX_FOREIGN, modelProvider: null, otherReason: "malformed" },
+    parseProfileName("work"),
+  );
+  expect(namedMalformed.status).toBe("warn");
+  expect(namedMalformed.fix).toBe(
+    `repair ${join("/c", "config.toml")}, then re-run \`agent profile work add\``,
+  );
+  // The profile's own file (`codex --profile work` layers it over config.toml) is the one to
+  // repair when IT is the broken one, and every named row names it beside config.toml.
+  const namedFileMalformed = checkCodex(
+    { ...CODEX_FOREIGN, modelProvider: null, otherReason: "profile-malformed" },
+    parseProfileName("work"),
+  );
+  expect(namedFileMalformed.detail).toContain(
+    `work.config.toml: ${join("/c", "work.config.toml")}`,
+  );
+  expect(namedFileMalformed.detail).toContain("work.config.toml is present but not valid TOML");
+  expect(namedFileMalformed.fix).toBe(
+    `repair ${join("/c", "work.config.toml")}, then re-run \`agent profile work add\``,
+  );
+  // With no config.toml beside it the broken file still owns the repair: `agent profile <name> add`
+  // would refuse that file, so "not wired, re-add" is the wrong fix.
+  expect(
+    checkCodex(
+      {
+        ...CODEX_FOREIGN,
+        configExists: false,
+        modelProvider: null,
+        otherReason: "profile-malformed",
+      },
+      parseProfileName("work"),
+    ).fix,
+  ).toBe(namedFileMalformed.fix);
+});
+
+test("codex: each broken part of the proxy wiring warns with a precise message", () => {
+  // base_url points at the wrong port.
+  expect(
+    checkCodex(
+      {
+        ...CODEX_WIRED,
+        baseUrl: "http://localhost:9999/v1",
+        baseUrlMatches: false,
+        providerWired: false,
+      },
+      null,
+    ).detail,
+  ).toContain("base_url");
+  expect(
+    checkCodex(
+      {
+        ...CODEX_WIRED,
+        baseUrl: "http://localhost:9999/v1",
+        baseUrlMatches: false,
+        providerWired: false,
+      },
+      null,
+    ).detail,
+  ).toContain(`config.toml: ${join("/c", "config.toml")}`);
+  // Not fully wired (e.g. the managed proxy auth.command is missing/foreign).
+  const notWired = checkCodex({ ...CODEX_WIRED, providerWired: false }, null);
+  expect(notWired.status).toBe("warn");
+  expect(notWired.detail).toContain("not fully wired");
+  expect(notWired.detail).toContain(`config.toml: ${join("/c", "config.toml")}`);
+  // A wired proxy is ok regardless of any env token (the key comes from auth.command).
+  const noEnvToken = checkCodex(
+    { ...CODEX_WIRED, envKeyInDotenv: false, tokenAvailable: false },
+    null,
+  );
+  expect(noEnvToken.status).toBe("ok");
+  expect(noEnvToken.detail).toContain("proxy-token resolver");
+});
+
+interface CodexDirectRow {
+  name: string;
+  directAuth: CodexFacts["directAuth"];
+  provider?: CodexFacts["provider"];
+  status: CheckStatus;
+  detail: string[];
+  notDetail?: string[];
+  fix?: string;
+}
+
+const CODEX_DIRECT_ROWS: CodexDirectRow[] = [
+  {
+    // An auto slot whose account list could not name the active login still says it is on AUTO
+    // (never a bare "authenticated" that hides the mode).
+    name: "auto, authenticated, login unknown",
+    directAuth: { kind: "found", command: "/bin/gh", ghCommand: "gh auth token" },
+    status: "ok",
+    detail: [
+      "provider: direct",
+      "gh auth: authenticated via /bin/gh (AUTO - follows gh's active account)",
+      `config.toml: ${join("/c", "config.toml")}`,
+    ],
+  },
+  {
+    name: "gh missing",
+    directAuth: { kind: "absent", command: null },
+    status: "warn",
+    detail: ["GitHub CLI not found"],
+    fix: "install gh and run gh auth login",
+  },
+  {
+    name: "auto, unauthenticated",
+    directAuth: {
+      kind: "absent",
+      command: "/bin/gh",
+      ghDetail: "`gh auth token` printed no token",
+    },
+    status: "warn",
+    detail: ["not authenticated"],
+    fix: "gh auth login",
+  },
+  {
+    // A PINNED slot's verdict names its account: the probe ran `gh auth token --user work-bot`,
+    // so "not authenticated" is about that account, not gh's active one (which may be fine).
+    name: "pinned, unauthenticated",
+    directAuth: {
+      kind: "absent",
+      command: "/bin/gh",
+      ghDetail: "`gh auth token --user work-bot` printed no token",
+      ghUser: "work-bot",
+    },
+    status: "warn",
+    detail: ["gh auth: /bin/gh is not authenticated as account 'work-bot'"],
+    fix: "gh auth login",
+  },
+  {
+    // An AUTO slot's ok line names the account it follows (no hidden information).
+    name: "auto, authenticated, login named",
+    directAuth: {
+      kind: "found",
+      command: "/bin/gh",
+      ghCommand: "gh auth token",
+      ghActiveLogin: "octocat",
+    },
+    status: "ok",
+    detail: ["gh auth: authenticated via /bin/gh (AUTO - currently account octocat)"],
+  },
+  {
+    // Non-gh-cli provider with no stored token: gh is NOT a fallback, so the warn points at
+    // `agent auth` in the fix row alone, never the gh-specific message (the provider-blind
+    // false-OK) and never a second copy of the command in the line.
+    name: "copilot provider, no stored token",
+    directAuth: { kind: "found", command: "/bin/gh", ghCommand: "gh auth token" },
+    provider: "copilot",
+    status: "warn",
+    detail: ["auth: no credential resolves via `agent auth --get`"],
+    notDetail: ["gh auth:", " - run "],
+    fix: "agent auth",
+  },
+];
+
+// (gh look, recorded provider) -> the direct verdict, its auth line, and the fix it names. A wrong
+// row hides the account a verdict is about, or offers `gh auth login` for a provider gh cannot serve.
+test("codex direct: the gh look and the recorded provider decide the verdict, its auth line, and its fix", () => {
+  for (const row of CODEX_DIRECT_ROWS) {
+    const r = checkCodex(
+      {
+        ...CODEX_DIRECT,
+        directAuth: row.directAuth,
+        provider: row.provider ?? CODEX_DIRECT.provider,
+      },
+      null,
+    );
+    expect({ name: row.name, status: r.status, fix: r.fix }).toEqual({
+      name: row.name,
+      status: row.status,
+      fix: row.fix,
+    });
+    for (const needle of row.detail) expect(r.detail, row.name).toContain(needle);
+    for (const needle of row.notDetail ?? []) expect(r.detail, row.name).not.toContain(needle);
+  }
+
+  // A Codex-scoped report has no auth row of its own, so when the credential is missing AND the
+  // wiring is broken this check's fix must still name the login, in the profile's own form, before
+  // the rewire that needs it.
+  const broken = { ...CODEX_DIRECT, providerWired: false, provider: "copilot" } as const;
+  expect(checkCodex(broken, null).fix).toBe("agent auth, then agent init --direct");
+  expect(checkCodex(broken, parseProfileName("work")).fix).toBe(
+    "agent profile work auth, then agent profile work add",
+  );
+});
+
+// What would drift silently: the printed shape of the Direct auth line at 80 columns, the command
+// kept out of the bullet and on the fix row alone.
+test("renderReport prints the Direct no-credential verdict at 80 columns: the auth bullet states the failed read, the fix row names the login and the rewire", async () => {
+  const codex = checkCodex(
+    { ...CODEX_DIRECT, providerWired: false, provider: "copilot", directUsesToken: false },
+    null,
+  );
+  const { stdout } = await withColumns(80, () =>
+    captureChannels(() => renderReport("codex", [codex], new Map(), false)),
+  );
+  expect(stdout).toContain(
+    [
+      "  ! Codex wiring",
+      "      \u2022 provider: direct",
+      `      \u2022 config.toml: ${join("/c", "config.toml")}`,
+      "      \u2022 model_provider copilot-env (direct) \u2192 https://api.githubcopilot.com",
+      "      \u2022 auth: no credential resolves via `agent auth --get`",
+      "      \u2192 fix: agent auth, then agent init --direct",
+    ].join("\n"),
+  );
+});
 
 test("checkCodex/checkClaude direct: an UNPROVEN gh probe says could-not-check, never a confident verdict", () => {
   const codexDirect = { ...CODEX_DIRECT, directAuth: UNPROVEN_TOKEN_CALL };
@@ -467,37 +494,24 @@ test("health --json: the directAuth row keeps its flat bytes (authenticated, an 
 
 // --- claude wiring ----------------------------------------------------------
 
-test("checkClaude: direct needs gh + managed base URL; proxy/none/other informational", () => {
-  // `satisfies` keeps the literal arm narrow so spreads stay in the union.
-  const direct = {
-    home: "/h/.claude",
-    settingsPath: join("/h/.claude", "settings.json"),
-    settingsExists: true,
-    wired: true,
-    credential: "command",
-    helperPath: join("/h/.claude", "copilot-token.sh"),
-    baseUrl: "https://api.githubcopilot.com",
-    baseUrlMatches: false,
-    providerMode: "direct",
-    otherReason: null,
-    directAuth: { kind: "found", command: "/bin/gh", ghCommand: "gh auth token" },
-    directUsesToken: false,
-    provider: "gh-cli",
-  } satisfies ClaudeFacts;
-  const directOk = checkClaude(direct, null);
+test("checkClaude direct: gh and the managed base URL decide; a missing credential points at agent auth", () => {
+  const directOk = checkClaude(CLAUDE_DIRECT, null);
   expect(directOk.status).toBe("ok");
   expect(directOk.detail).toContain("provider: direct");
   expect(directOk.detail).toContain("ANTHROPIC_BASE_URL → https://api.githubcopilot.com");
   expect(directOk.detail).toContain("authenticated via /bin/gh");
 
-  const missingGh = checkClaude({ ...direct, directAuth: { kind: "absent", command: null } }, null);
+  const missingGh = checkClaude(
+    { ...CLAUDE_DIRECT, directAuth: { kind: "absent", command: null } },
+    null,
+  );
   expect(missingGh.status).toBe("warn");
   expect(missingGh.detail).toContain("GitHub CLI not found");
   expect(missingGh.fix).toBe("install gh and run gh auth login");
 
   const unauthed = checkClaude(
     {
-      ...direct,
+      ...CLAUDE_DIRECT,
       directAuth: {
         kind: "absent",
         command: "/bin/gh",
@@ -512,22 +526,27 @@ test("checkClaude: direct needs gh + managed base URL; proxy/none/other informat
 
   // Non-gh-cli provider with no stored token: gh is NOT a fallback -- warn pointing
   // at `agent auth`, not the gh-specific message.
-  const noCred = checkClaude({ ...direct, provider: "copilot", directUsesToken: false }, null);
+  const noCred = checkClaude(
+    { ...CLAUDE_DIRECT, provider: "copilot", directUsesToken: false },
+    null,
+  );
   expect(noCred.status).toBe("warn");
   expect(noCred.detail).toContain("no credential resolves");
   expect(noCred.detail).not.toContain("gh auth:");
   expect(noCred.fix).toBe("agent auth");
 
   // Direct helper present but the managed base URL was dropped/altered: warn.
-  const staleBase = checkClaude({ ...direct, baseUrl: null }, null);
+  const staleBase = checkClaude({ ...CLAUDE_DIRECT, baseUrl: null }, null);
   expect(staleBase.status).toBe("warn");
   expect(staleBase.detail).toContain("(missing)");
   expect(staleBase.fix).toBe("agent init --direct");
+});
 
+test("checkClaude proxy: the base URL must match the resolved port, else a repoint fix", () => {
   // Proxy: proxy-backed via settings.json (localhost base URL matching the resolved port).
   const proxy = checkClaude(
     {
-      ...direct,
+      ...CLAUDE_DIRECT,
       helperPath: join("/h/.claude", "copilot-proxy-token.sh"),
       baseUrl: "http://localhost:4141",
       baseUrlMatches: true,
@@ -545,7 +564,7 @@ test("checkClaude: direct needs gh + managed base URL; proxy/none/other informat
   // must warn, not read green, with a repoint fix.
   const proxyStale = checkClaude(
     {
-      ...direct,
+      ...CLAUDE_DIRECT,
       helperPath: join("/h/.claude", "copilot-proxy-token.sh"),
       baseUrl: "http://localhost:4141",
       baseUrlMatches: false,
@@ -559,11 +578,13 @@ test("checkClaude: direct needs gh + managed base URL; proxy/none/other informat
   // The fix names the deterministic proxy rewire (the bare commands auto-detect
   // a mode, which is not guaranteed to re-bake the proxy wiring).
   expect(proxyStale.fix).toContain("agent init --proxy");
+});
 
+test("checkClaude: none and a custom helper are informational; a file that cannot be read or parsed warns", () => {
   // Never configured: informational; cl defaults it to the proxy.
   const none = checkClaude(
     {
-      ...direct,
+      ...CLAUDE_DIRECT,
       wired: false,
       settingsExists: false,
       credential: null,
@@ -581,7 +602,7 @@ test("checkClaude: direct needs gh + managed base URL; proxy/none/other informat
   // Custom apiKeyHelper the user set -- left alone, reported informationally.
   const other = checkClaude(
     {
-      ...direct,
+      ...CLAUDE_DIRECT,
       wired: false,
       credential: null,
       helperPath: "/opt/x/helper.sh",
@@ -599,7 +620,7 @@ test("checkClaude: direct needs gh + managed base URL; proxy/none/other informat
   // over it, and copilot-env can verify nothing there.
   const malformed = checkClaude(
     {
-      ...direct,
+      ...CLAUDE_DIRECT,
       wired: false,
       credential: null,
       helperPath: null,
@@ -614,7 +635,7 @@ test("checkClaude: direct needs gh + managed base URL; proxy/none/other informat
   expect(malformed.fix).toContain("repair");
   const unreadable = checkClaude(
     {
-      ...direct,
+      ...CLAUDE_DIRECT,
       wired: false,
       credential: null,
       helperPath: null,
@@ -676,7 +697,7 @@ test("direct + stored token reports ok with gh absent (no gh requirement)", () =
   expect(claudeRes.detail).not.toContain("GitHub CLI not found");
 });
 
-test("static-key: a baked credential needs no gh; the proxy detail names the daemon", () => {
+test("static-key (Codex): a baked credential needs no gh; the proxy detail names the daemon", () => {
   // Direct static: the store is never consulted (no provider, no gh), so the verdict is the
   // wiring alone. `satisfies` keeps the arm narrow for the spreads below.
   const codexDirectStatic = {
@@ -741,7 +762,9 @@ test("static-key: a baked credential needs no gh; the proxy detail names the dae
     parseProfileName("work"),
   );
   expect(codexProxyWork.detail).toContain("`agent profile work start`");
+});
 
+test("static-key (Claude): a baked credential needs no gh; the proxy detail names the daemon", () => {
   const claudeDirectStatic = {
     home: "/h/.claude",
     settingsPath: join("/h/.claude", "settings.json"),
@@ -964,24 +987,25 @@ test("checkCodexHost: the codex-host key against the disk, every drift warns wit
 
 // --- claude desktop ---------------------------------------------------------
 
+const DESKTOP_INSPECTED = {
+  kind: "inspected" as const,
+  enabled: true,
+  installed: true,
+  helperPaths: [] as string[],
+  libraryDir: "/lib",
+  unlisted: [] as Extract<ClaudeDesktopStatus, { kind: "inspected" }>["unlisted"],
+  owned: [{ name: "copilot-env", path: "/lib/a.json", profile: null }],
+  entries: [] as Extract<ClaudeDesktopStatus, { kind: "inspected" }>["entries"],
+  orphans: [] as Extract<ClaudeDesktopStatus, { kind: "inspected" }>["orphans"],
+  applied: { path: "/lib/a.json", name: "copilot-env" },
+  app: { kind: "read" as const, developerMode: true, deploymentMode: "3p" as const },
+};
+
 test("checkClaudeDesktop: a rendered fix is a warn, none is ok; the detail is the rendered lines", () => {
   // The rendering itself (every arm) is proven over real libraries in claude_desktop.e2e.test.ts;
   // this pins the check's mapping of that rendering onto a health verdict.
-  const inspected = {
-    kind: "inspected" as const,
-    enabled: true,
-    installed: true,
-    helperPaths: [] as string[],
-    libraryDir: "/lib",
-    unlisted: [] as Extract<ClaudeDesktopStatus, { kind: "inspected" }>["unlisted"],
-    owned: [{ name: "copilot-env", path: "/lib/a.json", profile: null }],
-    entries: [] as Extract<ClaudeDesktopStatus, { kind: "inspected" }>["entries"],
-    orphans: [] as Extract<ClaudeDesktopStatus, { kind: "inspected" }>["orphans"],
-    applied: { path: "/lib/a.json", name: "copilot-env" },
-    app: { kind: "read" as const, developerMode: true, deploymentMode: "3p" as const },
-  };
   const wired = checkClaudeDesktop({
-    ...inspected,
+    ...DESKTOP_INSPECTED,
     entries: [{ profile: null, mode: "direct", verdict: { kind: "wired", path: "/lib/a.json" } }],
   });
   expect(wired.status).toBe("ok");
@@ -995,7 +1019,7 @@ test("checkClaudeDesktop: a rendered fix is a warn, none is ok; the detail is th
   ]);
 
   const missing = checkClaudeDesktop({
-    ...inspected,
+    ...DESKTOP_INSPECTED,
     entries: [
       { profile: null, mode: "direct", verdict: { kind: "wired", path: "/lib/a.json" } },
       { profile: parseProfileName("work"), mode: "proxy", verdict: { kind: "missing" } },
@@ -1019,11 +1043,12 @@ test("checkClaudeDesktop: a rendered fix is a warn, none is ok; the detail is th
   expect(helperLeft.detail).toContain("/root/claude-desktop-token-work.sh");
   expect(helperLeft.detail).toContain("1 copilot-env leftover remains");
   expect(helperLeft.fix).toBe("agent profile sync --claude");
+});
 
-  // The rest of the `--json` value contract: each arm's own fields ride along whole.
+test("checkClaudeDesktop --json: each arm's own fields ride along whole", () => {
   const old = parseProfileName("old");
   const drift = checkClaudeDesktop({
-    ...inspected,
+    ...DESKTOP_INSPECTED,
     orphans: [{ name: "copilot-env: old", path: "/lib/o.json", profile: old }],
     unlisted: [{ path: "/lib/gone.json", profile: old }],
   });

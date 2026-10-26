@@ -34,6 +34,51 @@ function glyph(status: CheckStatus, paint: Paint): string {
   return paint.red("✘");
 }
 
+/** First-appearance (evaluation) order: the default (null) target evaluates first, so it leads. */
+function sectionProfiles(results: CheckResult[]): CheckResult["profile"][] {
+  const seen: CheckResult["profile"][] = [];
+  for (const r of results) {
+    if (!seen.includes(r.profile)) seen.push(r.profile);
+  }
+  return seen;
+}
+
+/** A profile's Runtime section header says which kind of daemon it describes. */
+function sectionHeading(
+  group: CheckGroup,
+  profile: CheckResult["profile"],
+  profileModes: ReadonlyMap<string, ProfileMode | null>,
+): string {
+  if (profile === null) return GROUP_LABEL[group];
+  if (group === "runtime") {
+    const mode = profileModes.get(profile) ?? null;
+    return `${GROUP_LABEL[group]} - profile '${profile}' (${mode ?? "no mode"})`;
+  }
+  return `${GROUP_LABEL[group]} - profile '${profile}'`;
+}
+
+function printResult(r: CheckResult, paint: Paint): void {
+  const lines = r.detail.split("\n");
+  if (lines.length <= 1) {
+    printWrapped(`  ${glyph(r.status, paint)} ${r.label}: ${lines[0] ?? ""}`);
+  } else {
+    printWrapped(`  ${glyph(r.status, paint)} ${r.label}`);
+    for (const line of lines) printWrapped(`      ${paint.gray("•")} ${line}`);
+  }
+  // CheckOutcome (src/health/types.ts): every warn/fail carries a fix, ok never does.
+  if (r.status !== "ok") printWrapped(`      ${paint.gray(`→ fix: ${r.fix}`)}`);
+}
+
+function printSummary(results: CheckResult[], paint: Paint, color: boolean): void {
+  const counts = { ok: 0, warn: 0, fail: 0 };
+  for (const r of results) counts[r.status]++;
+  const summary = (["ok", "warn", "fail"] as const)
+    .map((status) => `${counts[status]} ${statusPaint(status, color)}`)
+    .join(", ");
+  const overall = worstStatus(results);
+  printWrapped(`\n${glyph(overall, paint)} ${paint.bold(summary)}`);
+}
+
 /** `profileModes` carries each named runtime target's recorded mode (from its store slot, null =
  *  none recorded) so a profile's Runtime section header can say which kind of daemon it
  *  describes. */
@@ -49,43 +94,9 @@ export function renderReport(
     const inGroup = results.filter((r) => r.group === group);
     for (const profile of sectionProfiles(inGroup)) {
       const section = inGroup.filter((r) => r.profile === profile);
-      let heading: string;
-      if (profile === null) {
-        heading = GROUP_LABEL[group];
-      } else if (group === "runtime") {
-        const mode = profileModes.get(profile) ?? null;
-        heading = `${GROUP_LABEL[group]} - profile '${profile}' (${mode ?? "no mode"})`;
-      } else {
-        heading = `${GROUP_LABEL[group]} - profile '${profile}'`;
-      }
-      printWrapped(`\n${paint.bold(heading)}`);
-      for (const r of section) {
-        const lines = r.detail.split("\n");
-        if (lines.length <= 1) {
-          printWrapped(`  ${glyph(r.status, paint)} ${r.label}: ${lines[0] ?? ""}`);
-        } else {
-          printWrapped(`  ${glyph(r.status, paint)} ${r.label}`);
-          for (const line of lines) printWrapped(`      ${paint.gray("•")} ${line}`);
-        }
-        // CheckOutcome (src/health/types.ts): every warn/fail carries a fix, ok never does.
-        if (r.status !== "ok") printWrapped(`      ${paint.gray(`→ fix: ${r.fix}`)}`);
-      }
+      printWrapped(`\n${paint.bold(sectionHeading(group, profile, profileModes))}`);
+      for (const r of section) printResult(r, paint);
     }
   }
-  const counts = { ok: 0, warn: 0, fail: 0 };
-  for (const r of results) counts[r.status]++;
-  const summary = (["ok", "warn", "fail"] as const)
-    .map((status) => `${counts[status]} ${statusPaint(status, color)}`)
-    .join(", ");
-  const overall = worstStatus(results);
-  printWrapped(`\n${glyph(overall, paint)} ${paint.bold(summary)}`);
-}
-
-/** First-appearance (evaluation) order: the default (null) target evaluates first, so it leads. */
-function sectionProfiles(results: CheckResult[]): CheckResult["profile"][] {
-  const seen: CheckResult["profile"][] = [];
-  for (const r of results) {
-    if (!seen.includes(r.profile)) seen.push(r.profile);
-  }
-  return seen;
+  printSummary(results, paint, color);
 }

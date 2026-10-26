@@ -39,7 +39,20 @@ export function filesFor(files: string[], id: string, source: Source): string[] 
   });
 }
 
-export function recordsUnder(dir: string): Map<string, Record<string, unknown>[]> {
+/** The records of each transcript file under a corpus directory, keyed by path. */
+export type RecordsByFile = Map<string, Record<string, unknown>[]>;
+
+/** Every record of session `id`'s own transcript(s) for `source`, in file order. */
+export function sessionRecords(
+  recordsByFile: RecordsByFile,
+  id: string,
+  source: Source,
+): Record<string, unknown>[] {
+  const files = filesFor([...recordsByFile.keys()], id, source);
+  return files.flatMap((file) => recordsByFile.get(file) ?? []);
+}
+
+export function recordsUnder(dir: string): RecordsByFile {
   const files: string[] = [];
   walkJsonl(dir, files);
   return new Map(files.map((file) => [file, readRecords(file)]));

@@ -1,3 +1,4 @@
+import { afterEach } from "bun:test";
 import { configDefaultNumber } from "../../src/copilot_api/config_registry.ts";
 import {
   resetDaemonShutdownForTests,
@@ -21,7 +22,7 @@ import { DAEMON_KEEP_PORT_ENV } from "../../src/copilot_api/paths.ts";
 import { CopilotEnvRunState } from "../../src/copilot_api/run_state.ts";
 import { envSnapshot, isolateProxyHome } from "../helpers/env.ts";
 import { writeRunState } from "../helpers/fixtures.ts";
-import { afterEach, expect, test } from "../helpers/testing.ts";
+import { expect, test } from "../helpers/testing.ts";
 
 const restoreEnv = envSnapshot([IDLE_TIMEOUT_ENV, DAEMON_KEEP_PORT_ENV]);
 

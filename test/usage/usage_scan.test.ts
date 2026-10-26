@@ -1,8 +1,9 @@
+import { afterEach } from "bun:test";
 import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { type ScanHit, type ScanLines, TAIL_PROBE_BYTES } from "../../src/usage/contribution.ts";
 import { scanBytes, scanLines, scanSource } from "../../src/usage/scan.ts";
-import { afterEach, expect, tempDir, test } from "../helpers/testing.ts";
+import { expect, tempDir, test } from "../helpers/testing.ts";
 
 // The contract's function type and the implementation must stay assignable.
 const asContract: ScanLines = scanLines;

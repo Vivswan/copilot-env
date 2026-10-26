@@ -1,3 +1,4 @@
+import { afterEach, beforeEach, describe } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -7,7 +8,7 @@ import {
   proxyVersionFloorStatus,
 } from "../../src/copilot_api/version.ts";
 import type { ProjectConfig } from "../../src/utils/project_config.ts";
-import { afterEach, beforeEach, describe, expect, tempDir, test } from "../helpers/testing.ts";
+import { expect, tempDir, test } from "../helpers/testing.ts";
 
 let dir = "";
 

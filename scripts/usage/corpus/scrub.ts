@@ -89,6 +89,45 @@ interface ScrubState {
   scrubbed: number;
 }
 
+/** A string the vocabulary keeps as is: a timestamp or version under one of its keys outside a
+ *  container, or one of its key's closed enum values (inside a container, under `type` and
+ *  `name` alone). */
+function isVocabularyString(
+  key: string,
+  value: string,
+  nested: boolean,
+  inContainer: boolean,
+): boolean {
+  if (!nested && TIMESTAMP_KEYS.has(key) && ISO_TIMESTAMP_RE.test(value)) return true;
+  if (!nested && VERSION_KEYS.has(key) && VERSION_RE.test(value)) return true;
+  const enumKey = inContainer ? key === "type" || key === "name" : Object.hasOwn(ENUM_VALUES, key);
+  const allowed = enumKey ? ENUM_VALUES[key] : undefined;
+  return (!nested || inContainer) && allowed !== undefined && allowed.has(value);
+}
+
+/** Each member under its own key when the key is known (a container's structural keys inside
+ *  one), else under a placeholder key with its value as content. */
+function scrubRecord(
+  value: Record<string, unknown>,
+  ids: IdMap,
+  state: ScrubState,
+  nested: boolean,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  let ordinal = 0;
+  for (const [k, v] of Object.entries(value)) {
+    const keep = nested ? CONTAINER_STRUCT_KEYS.has(k) : KNOWN_KEYS.has(k);
+    let outKey = k;
+    if (!keep) {
+      state.scrubbed++;
+      do outKey = `${PLACEHOLDER}_KEY_${ordinal++}`;
+      while (outKey in value || outKey in out);
+    }
+    out[outKey] = scrubValue(k, v, ids, state, nested || !keep);
+  }
+  return out;
+}
+
 /** Fail-closed for strings and numbers: one not listed below is content and becomes its
  *  placeholder. Booleans, null, and the empty string pass through unchanged
  *  (test/usage/usage_corpus.e2e.test.ts pins a kept null).
@@ -111,13 +150,7 @@ function scrubValue(
     if (value === "") return value;
     const pseudonym = ids.pseudonym(value);
     if (pseudonym !== null) return pseudonym;
-    if (!nested && TIMESTAMP_KEYS.has(key) && ISO_TIMESTAMP_RE.test(value)) return value;
-    if (!nested && VERSION_KEYS.has(key) && VERSION_RE.test(value)) return value;
-    const enumKey = inContainer
-      ? key === "type" || key === "name"
-      : Object.hasOwn(ENUM_VALUES, key);
-    const allowed = enumKey ? ENUM_VALUES[key] : undefined;
-    if ((!nested || inContainer) && allowed !== undefined && allowed.has(value)) return value;
+    if (isVocabularyString(key, value, nested, inContainer)) return value;
     state.scrubbed++;
     return PLACEHOLDER;
   }
@@ -129,21 +162,7 @@ function scrubValue(
   if (Array.isArray(value)) {
     return value.map((item) => scrubValue(NO_KEY, item, ids, state, nested));
   }
-  if (isRecord(value)) {
-    const out: Record<string, unknown> = {};
-    let ordinal = 0;
-    for (const [k, v] of Object.entries(value)) {
-      const keep = nested ? CONTAINER_STRUCT_KEYS.has(k) : KNOWN_KEYS.has(k);
-      let outKey = k;
-      if (!keep) {
-        state.scrubbed++;
-        do outKey = `${PLACEHOLDER}_KEY_${ordinal++}`;
-        while (outKey in value || outKey in out);
-      }
-      out[outKey] = scrubValue(k, v, ids, state, nested || !keep);
-    }
-    return out;
-  }
+  if (isRecord(value)) return scrubRecord(value, ids, state, nested);
   return value;
 }
 
@@ -219,12 +238,98 @@ export function scrubJsonl(
   };
 }
 
+/** A Claude session id as a whole segment; a Codex rollout's id is ROLLOUT_FILE_RE's to find. */
 const UUID_SEGMENT_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** The group keeps the `agent-` prefix, so the pseudonym replaces the whole stem. */
 const AGENT_FILE_RE = /^(agent-[A-Za-z0-9_-]+)\.jsonl$/;
 
-/** The destination-relative path, judged position by position against each source's layout
- *  (Claude `<slug>/<uuid>[/subagents[/workflows/<name>]/agent-<id>.jsonl]`, Codex
- *  `YYYY/MM/DD/rollout-<stamp>-<uuid>.jsonl`): ids pseudonymized in place, other segments renamed. */
+/** The numbered placeholder a renamed path segment gets. */
+const SEGMENT_PREFIX = "scrubbed-";
+
+/** The same for a Claude project slug, keeping a cwd slug's leading dash. */
+const CWD_SLUG_PREFIX = "-scrubbed-cwd-";
+
+/** `segment`'s placeholder, stable within one source tree, never the raw segment itself (a user
+ *  directory could be named like a placeholder). */
+function renamedSegment(
+  segment: string,
+  prefix: string,
+  segmentNames: Map<string, string>,
+): string {
+  const known = segmentNames.get(segment);
+  if (known !== undefined) return known;
+  const taken = new Set(segmentNames.values());
+  for (let n = segmentNames.size + 1; ; n++) {
+    const renamed = `${prefix}${n}`;
+    if (renamed === segment || taken.has(renamed)) continue;
+    segmentNames.set(segment, renamed);
+    return renamed;
+  }
+}
+
+/** One segment of a Codex `YYYY/MM/DD/rollout-<stamp>-<uuid>.jsonl` path: the date directories
+ *  kept, the rollout file's id pseudonymized in place, anything else renamed. */
+function scrubCodexSegment(
+  segment: string,
+  index: number,
+  last: number,
+  ids: IdMap,
+  segmentNames: Map<string, string>,
+): string {
+  const dateShape = index === 0 ? /^\d{4}$/ : /^\d{2}$/;
+  if (index < 3 && index < last && dateShape.test(segment)) return segment;
+  const rollout = index === last && index === 3 ? ROLLOUT_FILE_RE.exec(segment) : null;
+  if (rollout !== null) {
+    const id = must(rollout[2], "the id group of ROLLOUT_FILE_RE always participates");
+    return `rollout-${rollout[1]}-${ids.pseudonym(id) ?? id}.jsonl`;
+  }
+  return renamedSegment(segment, SEGMENT_PREFIX, segmentNames);
+}
+
+/** The session segment of a Claude path, `<uuid>` or `<uuid>.jsonl`, pseudonymized; null when
+ *  it is not uuid-shaped. */
+function pseudonymizedSession(segment: string, ids: IdMap): string | null {
+  const suffix = segment.endsWith(".jsonl") ? ".jsonl" : "";
+  const file = segment.slice(0, segment.length - suffix.length);
+  if (!UUID_SEGMENT_RE.test(file)) return null;
+  return `${ids.pseudonym(file)}${suffix}`;
+}
+
+/** An agent file sits right under subagents/ (index 3) or under a workflow name (index 5). */
+function isAgentFilePosition(segments: string[], index: number): boolean {
+  if (index !== segments.length - 1 || segments[2] !== "subagents") return false;
+  return index === 3 || (index === 5 && segments[3] === "workflows");
+}
+
+/** One segment of a Claude `<slug>/<uuid>[/subagents[/workflows/<name>]/agent-<id>.jsonl]`
+ *  path: ids pseudonymized in place, the structural names kept, anything else renamed. */
+function scrubClaudeSegment(
+  segment: string,
+  index: number,
+  segments: string[],
+  ids: IdMap,
+  segmentNames: Map<string, string>,
+): string {
+  const last = segments.length - 1;
+  if (index === 0) return renamedSegment(segment, CWD_SLUG_PREFIX, segmentNames);
+  if (index === 1) {
+    const session = pseudonymizedSession(segment, ids);
+    if (session !== null) return session;
+    return renamedSegment(segment, SEGMENT_PREFIX, segmentNames);
+  }
+  if (index === 2 && segment === "subagents" && index < last) return segment;
+  if (index === 3 && segment === "workflows" && index < last) return segment;
+  const agent = isAgentFilePosition(segments, index) ? AGENT_FILE_RE.exec(segment) : null;
+  if (agent !== null) {
+    const id = must(agent[1], "the name group of AGENT_FILE_RE always participates");
+    return `${ids.pseudonym(id) ?? id}.jsonl`;
+  }
+  return renamedSegment(segment, SEGMENT_PREFIX, segmentNames);
+}
+
+/** The destination-relative path, judged position by position against each source's layout:
+ *  ids pseudonymized in place, other segments renamed. */
 function scrubbedRelativePath(
   rel: string,
   source: Source,
@@ -232,54 +337,14 @@ function scrubbedRelativePath(
   segmentNames: Map<string, string>,
 ): string {
   const segments = rel.split(/[\\/]/);
-  const rename = (segment: string, index: number): string => {
-    let renamed = segmentNames.get(segment);
-    if (renamed === undefined) {
-      const taken = new Set(segmentNames.values());
-      // Never the raw segment itself (a user directory could be named like a placeholder).
-      for (let n = segmentNames.size + 1; ; n++) {
-        renamed = index === 0 && source === "claude" ? `-scrubbed-cwd-${n}` : `scrubbed-${n}`;
-        if (renamed !== segment && !taken.has(renamed)) break;
-      }
-      segmentNames.set(segment, renamed);
-    }
-    return renamed;
-  };
-  const last = segments.length - 1;
+  if (source === "codex") {
+    const last = segments.length - 1;
+    return segments
+      .map((segment, index) => scrubCodexSegment(segment, index, last, ids, segmentNames))
+      .join("/");
+  }
   return segments
-    .map((segment, index) => {
-      if (source === "codex") {
-        const dateShape = index === 0 ? /^\d{4}$/ : /^\d{2}$/;
-        if (index < 3 && index < last && dateShape.test(segment)) return segment;
-        const rollout = index === last && index === 3 ? ROLLOUT_FILE_RE.exec(segment) : null;
-        if (rollout !== null) {
-          const id = must(rollout[2], "the id group of ROLLOUT_FILE_RE always participates");
-          return `rollout-${rollout[1]}-${ids.pseudonym(id) ?? id}.jsonl`;
-        }
-        return rename(segment, index);
-      }
-      if (index === 0) return rename(segment, index);
-      if (index === 1) {
-        const file = segment.endsWith(".jsonl") ? segment.slice(0, -".jsonl".length) : segment;
-        if (UUID_SEGMENT_RE.test(file)) {
-          return `${ids.pseudonym(file)}${segment.endsWith(".jsonl") ? ".jsonl" : ""}`;
-        }
-        return rename(segment, index);
-      }
-      if (index === 2 && segment === "subagents" && index < last) return segment;
-      if (index === 3 && segment === "workflows" && index < last) return segment;
-      // An agent file sits right under subagents/ (index 3) or under a workflow name (index 5).
-      const agentPosition =
-        index === last &&
-        segments[2] === "subagents" &&
-        (index === 3 || (index === 5 && segments[3] === "workflows"));
-      const agent = agentPosition ? AGENT_FILE_RE.exec(segment) : null;
-      if (agent !== null) {
-        const id = must(agent[1], "the name group of AGENT_FILE_RE always participates");
-        return `${ids.pseudonym(id) ?? id}.jsonl`;
-      }
-      return rename(segment, index);
-    })
+    .map((segment, index) => scrubClaudeSegment(segment, index, segments, ids, segmentNames))
     .join("/");
 }
 

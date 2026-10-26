@@ -1,5 +1,6 @@
+import { describe } from "bun:test";
 import { parseProjectConfig } from "../../src/utils/project_config.ts";
-import { describe, expect, test } from "../helpers/testing.ts";
+import { expect, test } from "../helpers/testing.ts";
 
 describe("project config", () => {
   test("parses the proxy version window: comments and unknown keys ignored, an empty or null ceiling absent, tolerant spellings canonical x.y.z", () => {

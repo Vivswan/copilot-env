@@ -49,6 +49,39 @@ function managedEntry(ghPath: string | null, previous?: unknown): Record<string,
   return { type: "stdio", command: command, args: args, ...(env ? { env } : {}) };
 }
 
+/** A moved checkout's launcher on Windows, split at -File: the flag prefix must match verbatim, the
+ *  path must still end in bin/agent.ps1 (a moved checkout, not a foreign tool), and the trailing
+ *  subargs must be the judged shape. */
+function movedWindowsLauncher(
+  command: string,
+  args: readonly unknown[],
+  managedArgs: readonly string[],
+  subArgs: readonly string[],
+): boolean {
+  const fileIdx = managedArgs.indexOf("-File");
+  return (
+    command
+      .toLowerCase()
+      .replace(/\.exe$/, "")
+      .endsWith("powershell") &&
+    fileIdx >= 0 &&
+    managedArgs.slice(0, fileIdx + 1).every((a, i) => args[i] === a) &&
+    typeof args[fileIdx + 1] === "string" &&
+    /[\\/]bin[\\/]agent\.ps1$/i.test(String(args[fileIdx + 1])) &&
+    sameStrings(args.slice(fileIdx + 2), subArgs)
+  );
+}
+
+/** A moved checkout's launcher on POSIX: a command ending in bin/agent (the checkout layout); a
+ *  bare `agent` from someone's PATH is NOT claimed. */
+function movedPosixLauncher(
+  command: string,
+  args: readonly unknown[],
+  subArgs: readonly string[],
+): boolean {
+  return /[\\/]bin[\\/]agent$/.test(command) && sameStrings(args, subArgs);
+}
+
 /** `ghPath` null means gh is unknown HERE, so a recorded env is taken as current rather than stale.
  *  `subArgs` is the subcommand the shape is judged against: the current one, or an old one the
  *  4.0.9 migration rewrites (retargetMcpRegistration). */
@@ -70,26 +103,11 @@ export function classifyMcpEntry(
   if (command === managed.command && sameStrings(args, managed.args) && sameEnv) {
     return "ours-current";
   }
-  if (process.platform === "win32") {
-    // Split at -File: the flag prefix must match verbatim, the path must still end in bin/agent.ps1
-    // (a moved checkout, not a foreign tool), and the trailing subargs must be the current shape.
-    const fileIdx = managed.args.indexOf("-File");
-    const shape =
-      command
-        .toLowerCase()
-        .replace(/\.exe$/, "")
-        .endsWith("powershell") &&
-      fileIdx >= 0 &&
-      managed.args.slice(0, fileIdx + 1).every((a, i) => args[i] === a) &&
-      typeof args[fileIdx + 1] === "string" &&
-      /[\\/]bin[\\/]agent\.ps1$/i.test(String(args[fileIdx + 1])) &&
-      sameStrings(args.slice(fileIdx + 2), subArgs);
-    return shape ? "ours-stale" : "foreign";
-  }
-  // POSIX: a command ending in bin/agent (the checkout layout); a bare `agent` from someone's PATH
-  // is NOT claimed.
-  const shape = /[\\/]bin[\\/]agent$/.test(command) && sameStrings(args, subArgs);
-  return shape ? "ours-stale" : "foreign";
+  const moved =
+    process.platform === "win32"
+      ? movedWindowsLauncher(command, args, managed.args, subArgs)
+      : movedPosixLauncher(command, args, subArgs);
+  return moved ? "ours-stale" : "foreign";
 }
 
 /** The 4.0.9 migration's rewrite of a registration in an old argv shape (`legacySubArgs` behind

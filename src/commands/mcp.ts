@@ -30,34 +30,21 @@ type McpAction =
   | { kind: "serve"; profile: Profile; model?: string }
   | { kind: "remove"; dryRun: boolean };
 
-function parseMcpAction(args: McpArgs): McpAction {
-  if (args.serve && args.remove) {
-    throw new Error("--serve and --remove are mutually exclusive");
+/** `--remove` takes the machine-global wiring down, so a profile name or a model is a mistake. */
+function parseMcpRemove(args: McpArgs): McpAction {
+  if (args.profile !== undefined) {
+    throw new Error(
+      "--remove takes no profile name: it removes the machine-global Claude wiring " +
+        "(`agent profile mcp --remove`)",
+    );
   }
-  if (args.dryRun && !args.remove) {
-    throw new Error("--dry-run previews --remove (status and --serve write nothing)");
+  if (args.model !== undefined) {
+    throw new Error("--remove takes no --model (it removes the machine-global Claude wiring)");
   }
-  if (args.remove) {
-    if (args.profile !== undefined) {
-      throw new Error(
-        "--remove takes no profile name: it removes the machine-global Claude wiring " +
-          "(`agent profile mcp --remove`)",
-      );
-    }
-    if (args.model !== undefined) {
-      throw new Error("--remove takes no --model (it removes the machine-global Claude wiring)");
-    }
-    return { kind: "remove", dryRun: Boolean(args.dryRun) };
-  }
-  if (!args.serve) {
-    if (args.profile !== undefined || args.model !== undefined) {
-      throw new Error(
-        "a profile name and --model apply to --serve (the stdio server); bare `agent profile " +
-          "mcp` prints the machine-global status",
-      );
-    }
-    return { kind: "status" };
-  }
+  return { kind: "remove", dryRun: Boolean(args.dryRun) };
+}
+
+function parseMcpServe(args: McpArgs): McpAction {
   const name: Profile = parseProfileFlag(args.profile);
   const model = args.model?.trim() ?? "";
   if (args.model !== undefined && model === "") {
@@ -68,6 +55,24 @@ function parseMcpAction(args: McpArgs): McpAction {
     profile: name,
     model: model === "" ? undefined : model,
   };
+}
+
+function parseMcpAction(args: McpArgs): McpAction {
+  if (args.serve && args.remove) {
+    throw new Error("--serve and --remove are mutually exclusive");
+  }
+  if (args.dryRun && !args.remove) {
+    throw new Error("--dry-run previews --remove (status and --serve write nothing)");
+  }
+  if (args.remove) return parseMcpRemove(args);
+  if (args.serve) return parseMcpServe(args);
+  if (args.profile !== undefined || args.model !== undefined) {
+    throw new Error(
+      "a profile name and --model apply to --serve (the stdio server); bare `agent profile " +
+        "mcp` prints the machine-global status",
+    );
+  }
+  return { kind: "status" };
 }
 
 const STATUS_LINES: Record<McpRegistrationStatus, string> = {

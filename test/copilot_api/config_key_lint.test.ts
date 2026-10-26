@@ -69,30 +69,38 @@ const HAND_SPELLED_HINT =
 /** "the <key> config key", "`<key>` config key", or a dotted/dashed "<key> config key". */
 const KEY_MENTION = /(?:(?:the |`)([a-z][a-z0-9.-]*)`?|([a-z0-9]+(?:[.-][a-z0-9]+)+)) config key/g;
 
-test("no source string spells an `agent config` hint by hand or names a dotted key the registry lacks", () => {
+/** The offences in one string literal of the file at `where`. */
+function literalOffences(where: string, literal: string): string[] {
   const offences: string[] = [];
-  for (const file of sourceFiles(SRC)) {
-    if (file === REGISTRY_FILE) continue;
-    const where = relative(PROJECT_ROOT, file);
-    for (const literal of stringLiterals(readFileSync(file, "utf8"))) {
-      // In HAND_SPELLED_HINT a `<placeholder>`, a bare verb, or a verb menu (`set|unset|get`) is not a
-      // key, and the profile name may be a template hole (blanked to a space by stringLiterals) or the
-      // documented `<name>` / `[<name>]` placeholder, so any run of spaces precedes the verb.
-      for (const hint of literal.match(HAND_SPELLED_HINT) ?? []) {
-        offences.push(`${where}: hand-spelled hint \`${hint}\` (use configSetCommand and friends)`);
-      }
-      for (const token of literal.match(DOTTED_KEY_SHAPE) ?? []) {
-        if (KEYS.has(token) || NOT_KEYS.has(token)) continue;
-        offences.push(`${where}: \`${token}\` is not a registry key`);
-      }
-      for (const mention of literal.matchAll(KEY_MENTION)) {
-        const token = mention[1] ?? mention[2] ?? "";
-        if (KEYS.has(token)) continue;
-        offences.push(`${where}: "${token} config key" names no registry key`);
-      }
-    }
+  // In HAND_SPELLED_HINT a `<placeholder>`, a bare verb, or a verb menu (`set|unset|get`) is not a
+  // key, and the profile name may be a template hole (blanked to a space by stringLiterals) or the
+  // documented `<name>` / `[<name>]` placeholder, so any run of spaces precedes the verb.
+  for (const hint of literal.match(HAND_SPELLED_HINT) ?? []) {
+    offences.push(`${where}: hand-spelled hint \`${hint}\` (use configSetCommand and friends)`);
   }
-  expect(offences).toEqual([]);
+  for (const token of literal.match(DOTTED_KEY_SHAPE) ?? []) {
+    if (KEYS.has(token) || NOT_KEYS.has(token)) continue;
+    offences.push(`${where}: \`${token}\` is not a registry key`);
+  }
+  for (const mention of literal.matchAll(KEY_MENTION)) {
+    const token = mention[1] ?? mention[2] ?? "";
+    if (KEYS.has(token)) continue;
+    offences.push(`${where}: "${token} config key" names no registry key`);
+  }
+  return offences;
+}
+
+/** Every hand-spelled hint or unknown key a source file's string literals carry, naming the file. */
+function keySpellingOffences(file: string): string[] {
+  const where = relative(PROJECT_ROOT, file);
+  return stringLiterals(readFileSync(file, "utf8")).flatMap((literal) =>
+    literalOffences(where, literal),
+  );
+}
+
+test("no source string spells an `agent config` hint by hand or names a dotted key the registry lacks", () => {
+  const scanned = sourceFiles(SRC).filter((file) => file !== REGISTRY_FILE);
+  expect(scanned.flatMap(keySpellingOffences)).toEqual([]);
   // Negative controls: the scan sees what it is meant to see.
   expect(
     stringLiterals('x("agent config set daemon.port 4242")').join("").match(HAND_SPELLED_HINT),

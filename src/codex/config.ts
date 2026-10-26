@@ -94,6 +94,13 @@ type CodexWriteRequest =
   | (Extract<CodexModeRequest, { mode: "direct" }> & CodexWriteCommon)
   | (Extract<CodexModeRequest, { mode: "proxy" }> & CodexWriteCommon);
 
+/** What the default write did with `model_catalog_json`, and the line the write's detail carries
+ *  when the reference changed. */
+interface CatalogReferenceWrite {
+  ref: "written" | "cleared";
+  line: string | null;
+}
+
 // === config.toml management ===
 //
 // smol-toml does NOT preserve comments or whitespace (TS has no battle-tested tomlkit equivalent),
@@ -242,6 +249,111 @@ function readConfigForRemoval(configPath: string): Record<string, unknown> | nul
   return read.doc;
 }
 
+/** config.toml as the write starts from it: null when absent (a blank file is seeded like a missing
+ *  one, since readCodexToml reads it as absent). A present-but-UNPARSEABLE file throws rather than
+ *  letting the caller clobber a config it could not read: a hand-edit typo must never cost the user
+ *  their whole config.toml (mcp_servers, custom providers, model pins). Other read errors (EISDIR,
+ *  permission) propagate raw. */
+function loadHostConfig(hostConfig: string): Doc | null {
+  const read = readCodexToml(hostConfig);
+  if (read.kind === "unparseable") {
+    throw new Error(`${hostConfig} is not valid TOML; refusing to overwrite it (${read.error})`);
+  }
+  return read.kind === "ok" ? read.doc : null;
+}
+
+/** The top-level managed keys are the DEFAULT selection's alone; `fresh` says the config was
+ *  seeded from the template for this write. */
+function writeTopLevelKeys(
+  doc: Doc,
+  request: CodexWriteRequest,
+  profile: Profile,
+  fresh: boolean,
+): void {
+  if (profile === null) {
+    doc.model_provider = CODEX_PROVIDER_ID;
+    doc.web_search = "live";
+  } else if (fresh) {
+    // The template's default `model_provider` would point at a `copilot-env` table this write never
+    // creates, and an unknown provider reference is a Codex startup error.
+    delete doc.model_provider;
+  }
+  if (request.mode === "proxy") {
+    // Codex's offline sandbox blocks loopback for its sandboxed subprocesses, the auth.command
+    // included, so the proxy-token resolver's liveness probe is refused and auth exits 1.
+    // workspace-write network access is the documented toggle (verified: it removes the
+    // codex_sandbox_offline_block_loopback firewall rule), and codex has no finer exemption.
+    //   global key, not provider-scoped -> the model's sandboxed shell reaches the network too
+    tableAt(doc, "sandbox_workspace_write").network_access = true;
+  }
+}
+
+/** `model_catalog_json` REPLACES Codex's bundled catalog, and a missing, empty, unparseable, or
+ *  schema-rejected file is a Codex STARTUP error: the key is written only when opted in, usable,
+ *  and not rejected by the installed codex, re-judged on every write so that after a codex upgrade
+ *  `agent profile sync --codex` recovers; otherwise scrubbed, even over a user-pinned path. */
+function writeCatalogReference(doc: Doc): CatalogReferenceWrite {
+  const catalogFile = new CopilotApiPaths().codexModelCatalogFile;
+  const previousRef = doc.model_catalog_json;
+  const verdict: CatalogFileVerdict | "disabled" = new CopilotEnvConfig().codexModelCatalogEnabled()
+    ? inspectCatalogFile(catalogFile)
+    : "disabled";
+  if (verdict === "rejected") {
+    logger.warn(
+      scannable({
+        headline: `the installed codex rejects ${paintFor(colorEnabled()).cyan(catalogFile)}.`,
+        evidence: ["left out of the config"],
+        lead: "Pick one:",
+        actions: [
+          ["agent profile sync --codex", "regenerate the catalog"],
+          [configSetCommand("codex.model-catalog", "false"), "disable the catalog"],
+        ],
+      }),
+    );
+  }
+  if (verdict === "accepted" || verdict === "unverifiable") {
+    doc.model_catalog_json = catalogFile;
+    if (previousRef === catalogFile) return { ref: "written", line: null };
+    const suffix = verdict === "unverifiable" ? UNVERIFIED_SUFFIX : "";
+    return { ref: "written", line: `model_catalog_json = "${catalogFile}" set${suffix}` };
+  }
+  delete doc.model_catalog_json;
+  if (previousRef === undefined) return { ref: "cleared", line: null };
+  return { ref: "cleared", line: `model_catalog_json removed, was "${String(previousRef)}"` };
+}
+
+/** Both modes share ONE table per profile, so every managed key is stripped BEFORE the mode's own
+ *  land: toggling modes can never bleed the OTHER mode's keys, and the managed keys settle after
+ *  the user's own, which survive. `env_key` goes whoever put it there: Codex rejects `auth` +
+ *  `env_key` on one provider, so a managed table must never carry one. */
+function writeProviderTable(doc: Doc, request: CodexWriteRequest, profile: Profile): void {
+  const table = tableAt(tableAt(doc, "model_providers"), codexProviderId(profile));
+  for (const key of MANAGED_PROVIDER_KEYS) delete table[key];
+  for (const [key, value] of Object.entries(managedProviderForMode(request, profile))) {
+    table[key] = value;
+  }
+}
+
+function ensureCodexHome(codexHome: string): void {
+  try {
+    fs.mkdir(codexHome);
+  } catch (e) {
+    throw rethrown(
+      e,
+      (message) => `could not create Codex config directory ${codexHome}: ${message}`,
+    );
+  }
+}
+
+/** Ownership lands only AFTER the successful save (the ledger's crash-direction contract), and
+ *  only for a KNOWN Codex home (the set the cleanup sweep visits), so a write to a foreign home
+ *  never enters the ledger. Recording on every enabled write keeps the claim current; the cleared
+ *  branch drops any claim, ours or stale. */
+function claimCatalogReference(catalog: CatalogReferenceWrite, hostConfig: string): void {
+  if (catalog.ref === "written") new OwnershipLedger().record("codexCatalog", hostConfig);
+  else new OwnershipLedger().release("codexCatalog", hostConfig);
+}
+
 /**
  * A named profile's selector lives in `<name>.config.toml`, never at the top level of config.toml,
  * so `codex --profile <name>` and plain `codex` coexist.
@@ -251,17 +363,7 @@ export function configureCodexConfig(codexHome: string, request: CodexWriteReque
   const providerId = codexProviderId(profile);
 
   const hostConfig = codexConfigPath(codexHome);
-  // A present-but-UNPARSEABLE file throws rather than letting the caller clobber a config it could
-  // not read: a hand-edit typo must never cost the user their whole config.toml (mcp_servers,
-  // custom providers, model pins). Other read errors (EISDIR, permission) propagate raw.
-  const hostRead = readCodexToml(hostConfig);
-  if (hostRead.kind === "unparseable") {
-    throw new Error(
-      `${hostConfig} is not valid TOML; refusing to overwrite it (${hostRead.error})`,
-    );
-  }
-  // A blank file is seeded like a missing one (readCodexToml reads it as absent).
-  const current: Doc | null = hostRead.kind === "ok" ? hostRead.doc : null;
+  const current = loadHostConfig(hostConfig);
   const doc: Doc = current ?? defaultConfig();
   // Loaded BEFORE anything is saved, so a profile file this write refuses to clobber fails the
   // write whole rather than after config.toml already changed.
@@ -275,78 +377,10 @@ export function configureCodexConfig(codexHome: string, request: CodexWriteReque
 
   // Every managed field is (re)written on every run, so a stale value or a missing managed key
   // heals; other providers, [analytics]/[feedback], and unknown top-level keys are left untouched.
-  // The top-level managed keys are the DEFAULT selection's alone.
-  if (profile === null) {
-    doc.model_provider = CODEX_PROVIDER_ID;
-    doc.web_search = "live";
-  } else if (current === null) {
-    // The template's default `model_provider` would point at a `copilot-env` table this write never
-    // creates, and an unknown provider reference is a Codex startup error.
-    delete doc.model_provider;
-  }
-  if (request.mode === "proxy") {
-    // Codex's offline sandbox blocks loopback for its sandboxed subprocesses, the auth.command
-    // included, so the proxy-token resolver's liveness probe is refused and auth exits 1.
-    // workspace-write network access is the documented toggle (verified: it removes the
-    // codex_sandbox_offline_block_loopback firewall rule), and codex has no finer exemption.
-    //   global key, not provider-scoped -> the model's sandboxed shell reaches the network too
-    tableAt(doc, "sandbox_workspace_write").network_access = true;
-  }
-
-  // `model_catalog_json` REPLACES Codex's bundled catalog, and a missing, empty, unparseable, or
-  // schema-rejected file is a Codex STARTUP error: the key is written only when opted in, usable,
-  // and not rejected by the installed codex (re-judged on every write, so `agent profile sync --codex` recovers
-  // from a codex upgrade); otherwise scrubbed, even over a user-pinned path. Only the DEFAULT write
-  // owns it.
-  let catalogRef: "written" | "cleared" | null = null;
-  let catalogRefLine: string | null = null;
-  if (profile === null) {
-    const catalogFile = new CopilotApiPaths().codexModelCatalogFile;
-    const previousRef = doc.model_catalog_json;
-    const verdict: CatalogFileVerdict | "disabled" =
-      new CopilotEnvConfig().codexModelCatalogEnabled()
-        ? inspectCatalogFile(catalogFile)
-        : "disabled";
-    if (verdict === "rejected") {
-      logger.warn(
-        scannable({
-          headline: `the installed codex rejects ${paintFor(colorEnabled()).cyan(catalogFile)}.`,
-          evidence: ["left out of the config"],
-          lead: "Pick one:",
-          actions: [
-            ["agent profile sync --codex", "regenerate the catalog"],
-            [configSetCommand("codex.model-catalog", "false"), "disable the catalog"],
-          ],
-        }),
-      );
-    }
-    if (verdict === "accepted" || verdict === "unverifiable") {
-      doc.model_catalog_json = catalogFile;
-      catalogRef = "written";
-      if (previousRef !== catalogFile) {
-        catalogRefLine =
-          `model_catalog_json = "${catalogFile}" set` +
-          (verdict === "unverifiable" ? UNVERIFIED_SUFFIX : "");
-      }
-    } else {
-      delete doc.model_catalog_json;
-      catalogRef = "cleared";
-      if (previousRef !== undefined) {
-        catalogRefLine = `model_catalog_json removed, was "${String(previousRef)}"`;
-      }
-    }
-  }
-
-  // Both modes share ONE table per profile, so every managed key is stripped BEFORE the mode's own
-  // land: toggling modes can never bleed the OTHER mode's keys, and the managed keys settle after
-  // the user's own, which survive. `env_key` goes whoever put it there: Codex rejects `auth` +
-  // `env_key` on one provider, so a managed table must never carry one.
-  const table = tableAt(tableAt(doc, "model_providers"), providerId);
-  for (const key of MANAGED_PROVIDER_KEYS) delete table[key];
-  for (const [key, value] of Object.entries(managedProviderForMode(request, profile))) {
-    table[key] = value;
-  }
-
+  // Only the DEFAULT write owns the catalog reference.
+  writeTopLevelKeys(doc, request, profile, current === null);
+  const catalog = profile === null ? writeCatalogReference(doc) : null;
+  writeProviderTable(doc, request, profile);
   // `codex --profile <name>` flips ONLY the provider; the user's own keys in the profile file
   // (model pins etc.) survive.
   if (profileFile !== null) profileFile.doc.model_provider = providerId;
@@ -357,33 +391,19 @@ export function configureCodexConfig(codexHome: string, request: CodexWriteReque
   // the detail says nothing profile-specific (`agent profile` prints the launch hint).
   const credentialLine =
     request.credential.kind === "command" ? null : staticKeyDetail(request.mode, profile, "cx");
-  const detail = ["Codex config", credentialLine, catalogRefLine].filter(Boolean).join("; ");
+  const detail = ["Codex config", credentialLine, catalog?.line].filter(Boolean).join("; ");
 
   // Reserved only now that the text is computed: a throw above leaves no reservation behind.
   if (request.mode === "proxy" && request.plannedPort !== undefined) {
     reservePlannedPort(profile, request.plannedPort);
   }
-  try {
-    fs.mkdir(codexHome);
-  } catch (e) {
-    throw rethrown(
-      e,
-      (message) => `could not create Codex config directory ${codexHome}: ${message}`,
-    );
-  }
+  ensureCodexHome(codexHome);
   saveCodexToml(hostConfig, doc, detail);
   // Saved after config.toml so the selector never lands ahead of the table it points at.
   if (profileFile !== null) {
     saveCodexToml(profileFile.path, profileFile.doc, "Codex profile config");
   }
-  // Ownership lands only AFTER the successful save (the ledger's crash-direction contract), and
-  // only for a KNOWN Codex home (the set the cleanup sweep visits), so a write to a foreign home
-  // never enters the ledger. Recording on every enabled write keeps the claim current; the cleared
-  // branch drops any claim, ours or stale.
-  if (catalogRef !== null && knownHome) {
-    if (catalogRef === "written") new OwnershipLedger().record("codexCatalog", hostConfig);
-    else new OwnershipLedger().release("codexCatalog", hostConfig);
-  }
+  if (catalog !== null && knownHome) claimCatalogReference(catalog, hostConfig);
 }
 
 /** A proxy write PEEKS the profile's port (copilotApiResolvePort) so computing the text writes
@@ -438,7 +458,7 @@ export async function directWiringFor(
   token: string | null | undefined,
   landing: "probe" | "land",
 ): Promise<DirectWiring> {
-  const resolved = token !== undefined ? token : new Credential(undefined, profile).resolve();
+  const resolved = token === undefined ? new Credential(undefined, profile).resolve() : token;
   if (resolved === null) throw directNeedsCredentialError(profile);
   const overlay = directOverlay(profile);
   const userAgent = codexUserAgent();
@@ -537,42 +557,41 @@ export function removeCodexProfile(codexHome: string, name: ProfileName): void {
 export function removeCodexDefaultWiring(codexHome: string): void {
   const configPath = codexConfigPath(codexHome);
   const doc = readConfigForRemoval(configPath);
-  if (doc !== null) {
-    let changed = false;
-    const providers = isRecord(doc.model_providers) ? doc.model_providers : {};
-    if (providers[CODEX_PROVIDER_ID] !== undefined) {
-      delete providers[CODEX_PROVIDER_ID];
-      changed = true;
-      if (Object.keys(providers).length === 0) delete doc.model_providers;
-    }
-    let selectorWasOurs = false;
-    if (doc.model_provider === CODEX_PROVIDER_ID) {
-      delete doc.model_provider;
-      selectorWasOurs = true;
-      changed = true;
-    }
-    const catalogFile = new CopilotApiPaths().codexModelCatalogFile;
-    let catalogWasReferenced = false;
-    if (
-      doc.model_catalog_json === catalogFile ||
-      // "yes" only, since an UNKNOWN resolve is no proof the key is ours; the cleanup sweep
-      // refuses on "unknown" the same way.
-      //   strip on doubt  -> a user-owned key silently deleted
-      //   leave on doubt  -> a dangling reference, and only when it WAS ours: loud and fixable
-      resolvesToCatalogFile(doc.model_catalog_json, catalogFile) === "yes"
-    ) {
-      delete doc.model_catalog_json;
-      catalogWasReferenced = true;
-      changed = true;
-    }
-    if (selectorWasOurs && doc.web_search === "live") {
-      delete doc.web_search;
-      changed = true;
-    }
-    if (changed) saveCodexToml(configPath, doc);
-    // Never claim-drop before the artifact write actually landed.
-    if (catalogWasReferenced) new OwnershipLedger().release("codexCatalog", configPath);
+  if (doc === null) return;
+  let changed = false;
+  const providers = isRecord(doc.model_providers) ? doc.model_providers : {};
+  if (providers[CODEX_PROVIDER_ID] !== undefined) {
+    delete providers[CODEX_PROVIDER_ID];
+    changed = true;
+    if (Object.keys(providers).length === 0) delete doc.model_providers;
   }
+  let selectorWasOurs = false;
+  if (doc.model_provider === CODEX_PROVIDER_ID) {
+    delete doc.model_provider;
+    selectorWasOurs = true;
+    changed = true;
+  }
+  const catalogFile = new CopilotApiPaths().codexModelCatalogFile;
+  let catalogWasReferenced = false;
+  if (
+    doc.model_catalog_json === catalogFile ||
+    // "yes" only, since an UNKNOWN resolve is no proof the key is ours; the cleanup sweep
+    // refuses on "unknown" the same way.
+    //   strip on doubt  -> a user-owned key silently deleted
+    //   leave on doubt  -> a dangling reference, and only when it WAS ours: loud and fixable
+    resolvesToCatalogFile(doc.model_catalog_json, catalogFile) === "yes"
+  ) {
+    delete doc.model_catalog_json;
+    catalogWasReferenced = true;
+    changed = true;
+  }
+  if (selectorWasOurs && doc.web_search === "live") {
+    delete doc.web_search;
+    changed = true;
+  }
+  if (changed) saveCodexToml(configPath, doc);
+  // Never claim-drop before the artifact write actually landed.
+  if (catalogWasReferenced) new OwnershipLedger().release("codexCatalog", configPath);
 }
 
 /** Pings a model the catalog would offer (codexServable); a reduced tier first, as cheapestClaudeModel does. */

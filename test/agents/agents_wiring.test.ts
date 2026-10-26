@@ -2,6 +2,7 @@
 //   defaultSetupNeedsProxy -> health's question; ignores profile homes (they run their own daemon)
 //   proxyUnusedEverywhere  -> the float's question; counts them (a profile daemon uses the package)
 
+import { afterEach, beforeEach, describe } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -9,13 +10,12 @@ import {
   proxyUnusedEverywhere,
   readAgentWirings,
 } from "../../src/agents/wiring.ts";
-
 import { directHelperCommand, proxyHelperCommand } from "../../src/claude/config.ts";
 import { getHostLocalCodexHome } from "../../src/codex/host.ts";
 import { CopilotEnvConfig } from "../../src/copilot_api/env_config.ts";
 import { envSnapshot, isolateProxyHome } from "../helpers/env.ts";
 import { writeClaudeSettings, writeCodexConfigToml } from "../helpers/fixtures.ts";
-import { afterEach, beforeEach, describe, expect, test } from "../helpers/testing.ts";
+import { expect, test } from "../helpers/testing.ts";
 
 /** The two default modes as the classifiers read them (a test-side view: src reads no agent file
  *  as truth, so this helper exists here alone). */
@@ -95,103 +95,105 @@ describe("mode matrix: codex x claude x profile home", () => {
   }
 });
 
+// Claude's mode keys off apiKeyHelper alone, so the base URL decides whether a mode-direct Claude
+// still routes to OUR daemon. A daemon that is not in the path can neither fix nor break the
+// agent, so health must not demand it; the float skips only for a Direct-shaped https host (the
+// generic one or a `host` literal), never a loopback or missing URL. (The mixed shape's
+// needsProxy once said false: the bug health inherited.)
+
+const CLAUDE_ROUTE_CASES: {
+  name: string;
+  codex: WiredMode;
+  helper: "direct" | "proxy";
+  baseUrl?: string;
+  claudeMode: "direct" | "proxy";
+  needsProxy: boolean;
+  unused: boolean;
+}[] = [
+  {
+    name: "the local proxy origin (mixed: direct helper, proxy URL)",
+    codex: "direct",
+    helper: "direct",
+    baseUrl: PROXY_CLAUDE_BASE,
+    claudeMode: "direct",
+    needsProxy: true,
+    unused: false,
+  },
+  {
+    name: "the local proxy origin, localhost spelling",
+    codex: "direct",
+    helper: "direct",
+    baseUrl: "http://localhost:4141",
+    claudeMode: "direct",
+    needsProxy: true,
+    unused: false,
+  },
+  {
+    name: "the local proxy origin, trailing slash",
+    codex: "direct",
+    helper: "direct",
+    baseUrl: "http://127.0.0.1:4141/",
+    claudeMode: "direct",
+    needsProxy: true,
+    unused: false,
+  },
+  {
+    name: "a foreign https gateway (routes elsewhere: Direct on another host)",
+    codex: "direct",
+    helper: "direct",
+    baseUrl: "https://some-gateway.example",
+    claudeMode: "direct",
+    needsProxy: false,
+    unused: true,
+  },
+  {
+    name: "a loopback service on a DIFFERENT port (not our daemon)",
+    codex: "direct",
+    helper: "direct",
+    baseUrl: "http://127.0.0.1:5000",
+    claudeMode: "direct",
+    needsProxy: false,
+    unused: false,
+  },
+  {
+    name: "the managed Direct URL",
+    codex: "direct",
+    helper: "direct",
+    baseUrl: DIRECT_BASE,
+    claudeMode: "direct",
+    needsProxy: false,
+    unused: true,
+  },
+  {
+    name: "no base URL at all (partially managed config)",
+    codex: "direct",
+    helper: "direct",
+    claudeMode: "direct",
+    needsProxy: false,
+    unused: false,
+  },
+  {
+    name: "the reverse mixed shape (proxy helper, direct base URL) stays true via the mode",
+    codex: "direct",
+    helper: "proxy",
+    baseUrl: DIRECT_BASE,
+    claudeMode: "proxy",
+    needsProxy: true,
+    unused: false,
+  },
+  {
+    name: "codex proxy + claude direct stays true regardless of Claude's base URL",
+    codex: "proxy",
+    helper: "direct",
+    baseUrl: DIRECT_BASE,
+    claudeMode: "direct",
+    needsProxy: true,
+    unused: false,
+  },
+];
+
 describe("Claude's base URL against its helper: the route decides, not the mode alone", () => {
-  // Claude's mode keys off apiKeyHelper alone, so the base URL decides whether a mode-direct Claude
-  // still routes to OUR daemon. A daemon that is not in the path can neither fix nor break the
-  // agent, so health must not demand it; the float skips only for a Direct-shaped https host (the
-  // generic one or a `host` literal), never a loopback or missing URL. (The mixed shape's
-  // needsProxy once said false: the bug health inherited.)
-  const cases: {
-    name: string;
-    codex: WiredMode;
-    helper: "direct" | "proxy";
-    baseUrl?: string;
-    claudeMode: "direct" | "proxy";
-    needsProxy: boolean;
-    unused: boolean;
-  }[] = [
-    {
-      name: "the local proxy origin (mixed: direct helper, proxy URL)",
-      codex: "direct",
-      helper: "direct",
-      baseUrl: PROXY_CLAUDE_BASE,
-      claudeMode: "direct",
-      needsProxy: true,
-      unused: false,
-    },
-    {
-      name: "the local proxy origin, localhost spelling",
-      codex: "direct",
-      helper: "direct",
-      baseUrl: "http://localhost:4141",
-      claudeMode: "direct",
-      needsProxy: true,
-      unused: false,
-    },
-    {
-      name: "the local proxy origin, trailing slash",
-      codex: "direct",
-      helper: "direct",
-      baseUrl: "http://127.0.0.1:4141/",
-      claudeMode: "direct",
-      needsProxy: true,
-      unused: false,
-    },
-    {
-      name: "a foreign https gateway (routes elsewhere: Direct on another host)",
-      codex: "direct",
-      helper: "direct",
-      baseUrl: "https://some-gateway.example",
-      claudeMode: "direct",
-      needsProxy: false,
-      unused: true,
-    },
-    {
-      name: "a loopback service on a DIFFERENT port (not our daemon)",
-      codex: "direct",
-      helper: "direct",
-      baseUrl: "http://127.0.0.1:5000",
-      claudeMode: "direct",
-      needsProxy: false,
-      unused: false,
-    },
-    {
-      name: "the managed Direct URL",
-      codex: "direct",
-      helper: "direct",
-      baseUrl: DIRECT_BASE,
-      claudeMode: "direct",
-      needsProxy: false,
-      unused: true,
-    },
-    {
-      name: "no base URL at all (partially managed config)",
-      codex: "direct",
-      helper: "direct",
-      claudeMode: "direct",
-      needsProxy: false,
-      unused: false,
-    },
-    {
-      name: "the reverse mixed shape (proxy helper, direct base URL) stays true via the mode",
-      codex: "direct",
-      helper: "proxy",
-      baseUrl: DIRECT_BASE,
-      claudeMode: "proxy",
-      needsProxy: true,
-      unused: false,
-    },
-    {
-      name: "codex proxy + claude direct stays true regardless of Claude's base URL",
-      codex: "proxy",
-      helper: "direct",
-      baseUrl: DIRECT_BASE,
-      claudeMode: "direct",
-      needsProxy: true,
-      unused: false,
-    },
-  ];
-  for (const c of cases) {
+  for (const c of CLAUDE_ROUTE_CASES) {
     test(`${c.name} => needsProxy ${c.needsProxy}, unused ${c.unused}`, () => {
       const codexHome = makeCodexHome(c.codex);
       const claudeHome = join(dir, "claude-home");

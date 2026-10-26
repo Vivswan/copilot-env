@@ -1,3 +1,4 @@
+import { afterEach } from "bun:test";
 import {
   chmodSync,
   existsSync,
@@ -45,7 +46,7 @@ import { linesNaming } from "../helpers/dry_run.ts";
 import { envSnapshot, isolateAgentHomes } from "../helpers/env.ts";
 import { writeClaudeSettings } from "../helpers/fixtures.ts";
 import { captureChannels, captureChannelsSync } from "../helpers/output.ts";
-import { afterEach, expect, removeDir, test } from "../helpers/testing.ts";
+import { expect, removeDir, test } from "../helpers/testing.ts";
 
 /** A recorded Direct default whose slot holds its pair, so a single-agent write is a re-render
  *  (zero probes, no credential needed); with no pair it would land both agents and ask to log in. */
@@ -291,133 +292,139 @@ function siblingRootHelper(args: string): string {
     : `/some/other/checkout/bin/agent ${args}`;
 }
 
+/** The home 3.5.6 wrote its helper files under; the paths are foreign now. */
+const STALE_HELPER_HOME = "/home/user/.claude";
+
+/** The managed direct document, read for the default and, below, for a profile. */
+const DIRECT_DOC = JSON.stringify({ apiKeyHelper: directHelperCommand() });
+
+/** One settings document per arm (direct, proxy, other, none, malformed, unreadable) and its wiring. */
+const INSPECT_ROWS: {
+  name: string;
+  input: Parameters<typeof inspectClaudeWiring>[0];
+  profile?: typeof WORK | null;
+  expect: Partial<ReturnType<typeof inspectClaudeWiring>>;
+}[] = [
+  // The reason travels ONLY on the "other" arm; `wired` is minted by the owner, alongside the
+  // mode -- never re-derived.
+  {
+    name: "the managed direct command",
+    input: DIRECT_DOC,
+    expect: { providerMode: "direct", otherReason: null, wired: true },
+  },
+  {
+    name: "the managed proxy command",
+    input: JSON.stringify({ apiKeyHelper: proxyHelperCommand() }),
+    expect: { providerMode: "proxy" },
+  },
+  // The helper-file PATHS 3.5.6 wrote are foreign now (the 4.0.0 migration rewrites them),
+  // whatever the file holds; a foreign helper sharing our basename but elsewhere is NOT ours.
+  ...["copilot-token.sh", "copilot-proxy-token.sh"].map((name) => ({
+    name: `the stale helper path ${name}`,
+    input: JSON.stringify({ apiKeyHelper: join(STALE_HELPER_HOME, name) }),
+    expect: { providerMode: "other" as const, otherReason: "custom" as const },
+  })),
+  {
+    name: "a foreign helper sharing our basename",
+    input: JSON.stringify({ apiKeyHelper: "/opt/company/copilot-token.sh" }),
+    expect: { providerMode: "other", otherReason: "custom" },
+  },
+  {
+    name: "a custom base URL",
+    input: JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://other.example" } }),
+    expect: { providerMode: "other", otherReason: "custom" },
+  },
+  // A bare token is a user's own Anthropic wiring: static-managed only beside OUR env keys.
+  {
+    name: "a bare token",
+    input: JSON.stringify({ env: { [AUTH_TOKEN_ENV]: "sk-ant-users-own" } }),
+    expect: { providerMode: "other", otherReason: "custom", wired: false, credential: null },
+  },
+  { name: "an empty document", input: "{}", expect: { providerMode: "none", otherReason: null } },
+  {
+    name: "user keys only",
+    input: JSON.stringify({ model: "sonnet" }),
+    expect: { providerMode: "none" },
+  },
+  {
+    name: "no file",
+    input: null,
+    expect: { providerMode: "none", settingsExists: false, otherReason: null },
+  },
+  {
+    name: "malformed JSON",
+    input: "{not json",
+    expect: { providerMode: "other", otherReason: "malformed" },
+  },
+  // Unreadable EXISTS -- it just cannot be read: other/read-error, never none.
+  {
+    name: "an unreadable file",
+    input: { kind: "unreadable", error: "EACCES" },
+    expect: {
+      providerMode: "other",
+      otherReason: "read-error",
+      settingsExists: true,
+      wired: false,
+    },
+  },
+  {
+    name: "an absent read result",
+    input: { kind: "absent" },
+    expect: { providerMode: "none", settingsExists: false, wired: false },
+  },
+  {
+    name: "a text read result",
+    input: { kind: "text", text: DIRECT_DOC },
+    expect: { providerMode: "direct", otherReason: null, wired: true },
+  },
+  // A dev checkout and ~/.copilot-env spell different roots into apiKeyHelper; both resolve the
+  // same shared store, so a sibling root's wiring reads as its real mode, not other.
+  {
+    name: "a sibling root's direct wiring",
+    input: JSON.stringify({
+      apiKeyHelper: siblingRootHelper("auth --get"),
+      env: { ANTHROPIC_BASE_URL: "https://api.githubcopilot.com" },
+    }),
+    expect: { providerMode: "direct" },
+  },
+  {
+    name: "a sibling root's proxy wiring",
+    input: JSON.stringify({
+      apiKeyHelper: siblingRootHelper("profile proxy-token --yes"),
+      env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:4141" },
+    }),
+    expect: { providerMode: "proxy" },
+  },
+  // Profile-addressed: a default-addressed inline command is NOT a named profile's resolver
+  // (and vice versa).
+  {
+    name: "the default command read for the default",
+    input: DIRECT_DOC,
+    profile: null,
+    expect: { providerMode: "direct" },
+  },
+  {
+    name: "the default command read for a profile",
+    input: DIRECT_DOC,
+    profile: WORK,
+    expect: { providerMode: "other" },
+  },
+  {
+    name: "the profile command read for the profile",
+    input: JSON.stringify({ apiKeyHelper: directHelperCommand(WORK) }),
+    profile: WORK,
+    expect: { providerMode: "direct" },
+  },
+  {
+    name: "the profile command read for the default",
+    input: JSON.stringify({ apiKeyHelper: directHelperCommand(WORK) }),
+    profile: null,
+    expect: { providerMode: "other" },
+  },
+];
+
 test("inspectClaudeWiring classifies by exact value: direct / proxy / other / none / malformed / unreadable, from any root, profile-addressed", () => {
-  const home = "/home/user/.claude";
-  const direct = JSON.stringify({ apiKeyHelper: directHelperCommand() });
-  const rows: {
-    name: string;
-    input: Parameters<typeof inspectClaudeWiring>[0];
-    profile?: typeof WORK | null;
-    expect: Partial<ReturnType<typeof inspectClaudeWiring>>;
-  }[] = [
-    // The reason travels ONLY on the "other" arm; `wired` is minted by the owner, alongside the
-    // mode -- never re-derived.
-    {
-      name: "the managed direct command",
-      input: direct,
-      expect: { providerMode: "direct", otherReason: null, wired: true },
-    },
-    {
-      name: "the managed proxy command",
-      input: JSON.stringify({ apiKeyHelper: proxyHelperCommand() }),
-      expect: { providerMode: "proxy" },
-    },
-    // The helper-file PATHS 3.5.6 wrote are foreign now (the 4.0.0 migration rewrites them),
-    // whatever the file holds; a foreign helper sharing our basename but elsewhere is NOT ours.
-    ...["copilot-token.sh", "copilot-proxy-token.sh"].map((name) => ({
-      name: `the stale helper path ${name}`,
-      input: JSON.stringify({ apiKeyHelper: join(home, name) }),
-      expect: { providerMode: "other" as const, otherReason: "custom" as const },
-    })),
-    {
-      name: "a foreign helper sharing our basename",
-      input: JSON.stringify({ apiKeyHelper: "/opt/company/copilot-token.sh" }),
-      expect: { providerMode: "other", otherReason: "custom" },
-    },
-    {
-      name: "a custom base URL",
-      input: JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://other.example" } }),
-      expect: { providerMode: "other", otherReason: "custom" },
-    },
-    // A bare token is a user's own Anthropic wiring: static-managed only beside OUR env keys.
-    {
-      name: "a bare token",
-      input: JSON.stringify({ env: { [AUTH_TOKEN_ENV]: "sk-ant-users-own" } }),
-      expect: { providerMode: "other", otherReason: "custom", wired: false, credential: null },
-    },
-    { name: "an empty document", input: "{}", expect: { providerMode: "none", otherReason: null } },
-    {
-      name: "user keys only",
-      input: JSON.stringify({ model: "sonnet" }),
-      expect: { providerMode: "none" },
-    },
-    {
-      name: "no file",
-      input: null,
-      expect: { providerMode: "none", settingsExists: false, otherReason: null },
-    },
-    {
-      name: "malformed JSON",
-      input: "{not json",
-      expect: { providerMode: "other", otherReason: "malformed" },
-    },
-    // Unreadable EXISTS -- it just cannot be read: other/read-error, never none.
-    {
-      name: "an unreadable file",
-      input: { kind: "unreadable", error: "EACCES" },
-      expect: {
-        providerMode: "other",
-        otherReason: "read-error",
-        settingsExists: true,
-        wired: false,
-      },
-    },
-    {
-      name: "an absent read result",
-      input: { kind: "absent" },
-      expect: { providerMode: "none", settingsExists: false, wired: false },
-    },
-    {
-      name: "a text read result",
-      input: { kind: "text", text: direct },
-      expect: { providerMode: "direct", otherReason: null, wired: true },
-    },
-    // A dev checkout and ~/.copilot-env spell different roots into apiKeyHelper; both resolve the
-    // same shared store, so a sibling root's wiring reads as its real mode, not other.
-    {
-      name: "a sibling root's direct wiring",
-      input: JSON.stringify({
-        apiKeyHelper: siblingRootHelper("auth --get"),
-        env: { ANTHROPIC_BASE_URL: "https://api.githubcopilot.com" },
-      }),
-      expect: { providerMode: "direct" },
-    },
-    {
-      name: "a sibling root's proxy wiring",
-      input: JSON.stringify({
-        apiKeyHelper: siblingRootHelper("profile proxy-token --yes"),
-        env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:4141" },
-      }),
-      expect: { providerMode: "proxy" },
-    },
-    // Profile-addressed: a default-addressed inline command is NOT a named profile's resolver
-    // (and vice versa).
-    {
-      name: "the default command read for the default",
-      input: direct,
-      profile: null,
-      expect: { providerMode: "direct" },
-    },
-    {
-      name: "the default command read for a profile",
-      input: direct,
-      profile: WORK,
-      expect: { providerMode: "other" },
-    },
-    {
-      name: "the profile command read for the profile",
-      input: JSON.stringify({ apiKeyHelper: directHelperCommand(WORK) }),
-      profile: WORK,
-      expect: { providerMode: "direct" },
-    },
-    {
-      name: "the profile command read for the default",
-      input: JSON.stringify({ apiKeyHelper: directHelperCommand(WORK) }),
-      profile: null,
-      expect: { providerMode: "other" },
-    },
-  ];
-  for (const row of rows) {
+  for (const row of INSPECT_ROWS) {
     expect(inspectClaudeWiring(row.input, 4141, row.profile ?? null), row.name).toMatchObject(
       row.expect,
     );

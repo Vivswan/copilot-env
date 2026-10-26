@@ -21,6 +21,13 @@ function tokenFromArgv(): string | null {
   return i >= 0 && i + 1 < process.argv.length ? (process.argv[i + 1] ?? null) : null;
 }
 
+/** The URL a fetch argument addresses, in each of its three spellings. */
+function requestUrl(input: Parameters<typeof fetch>[0]): string {
+  if (typeof input === "string") return input;
+  if (input instanceof URL) return input.href;
+  return input.url;
+}
+
 // No token-shape re-check: it would defeat a forced run for a legacy unprefixed classic PAT the predicate misses.
 const token = tokenFromArgv();
 
@@ -30,7 +37,7 @@ if (token !== null) {
     input: Parameters<typeof fetch>[0],
     init?: Parameters<typeof fetch>[1],
   ): Promise<Response> => {
-    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    const url = requestUrl(input);
     if (url.includes(EXCHANGE_PATH)) {
       // The success shape copilot-api's setupCopilotToken expects.
       return Promise.resolve(

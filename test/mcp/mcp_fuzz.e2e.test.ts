@@ -10,13 +10,14 @@
 // unknown method with a valid id                                          -> -32601 MethodNotFound
 // ~1MB request (under the transport's 10MB buffer)                        -> answered normally
 
+import { afterEach } from "bun:test";
 import {
   cleanupTmpDirs,
   expectStdoutPurity,
   type JsonRpcMessage,
   McpClient,
 } from "../helpers/mcp.ts";
-import { afterEach, expect, test } from "../helpers/testing.ts";
+import { expect, test } from "../helpers/testing.ts";
 
 afterEach(cleanupTmpDirs);
 

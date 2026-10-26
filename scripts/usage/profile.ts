@@ -27,6 +27,7 @@ import { ROLLOUT_FILE } from "../../src/usage/codex_sessions.ts";
 import { must } from "../../src/utils/assert.ts";
 import { isEnoentOrNotdir } from "../../src/utils/fs.ts";
 import { isRecord } from "../../src/utils/json.ts";
+import { byCodeUnit } from "../../src/utils/order.ts";
 import { localDayKey } from "../../src/utils/time.ts";
 import { mulberry32, type Rng } from "../../test/helpers/usage_fixtures.ts";
 import {
@@ -104,26 +105,27 @@ function insideRepository(file: string): boolean {
   return rel === "" || (!path.isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${path.sep}`));
 }
 
+function integerSeed(value: string): number {
+  const seed = Number(value);
+  if (!Number.isInteger(seed)) die(`--seed must be an integer, got '${value}'`);
+  return seed;
+}
+
 function parseArgs(argv: string[]): Args {
   let out: string | undefined;
   let seed = 1;
-  for (let i = 0; i < argv.length; i++) {
+  for (let i = 0; i < argv.length; i += 2) {
     const arg = argv[i];
     if (arg === "--help" || arg === "-h") {
       console.log(usage());
       process.exit(0);
     }
     const value = argv[i + 1];
-    if (arg === "--out" && value !== undefined) {
-      out = value;
-      i++;
-    } else if (arg === "--seed" && value !== undefined) {
-      seed = Number(value);
-      if (!Number.isInteger(seed)) die(`--seed must be an integer, got '${value}'`);
-      i++;
-    } else {
+    if ((arg !== "--out" && arg !== "--seed") || value === undefined) {
       die(`unknown argument '${arg}'\n\n${usage()}`);
     }
+    if (arg === "--out") out = value;
+    else seed = integerSeed(value);
   }
   if (out === undefined) die(`--out FILE is required\n\n${usage()}`);
   if (insideRepository(out)) {
@@ -333,9 +335,7 @@ function sessionRoots(unreadable: string[]): { codex: string[]; claude: string[]
  *  it is not descended into, exactly as the readers do not. */
 function listing(dir: string): Dirent[] | null {
   try {
-    return readdirSync(dir, { withFileTypes: true }).sort((a, b) =>
-      a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
-    );
+    return readdirSync(dir, { withFileTypes: true }).sort((a, b) => byCodeUnit(a.name, b.name));
   } catch {
     return null;
   }
@@ -438,19 +438,140 @@ class FileTrace {
   }
 }
 
+/** The record one line holds, or null once a torn or non-object line has been booked. */
+function parsedLine(raw: string, bytes: number, trace: FileTrace): Record<string, unknown> | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    trace.line(TORN_LINE_TYPE, bytes, undefined);
+    return null;
+  }
+  if (!isRecord(parsed)) {
+    trace.line(OTHER_LINE_TYPE, bytes, undefined);
+    return null;
+  }
+  return parsed;
+}
+
 // ---------- Codex ----------
 
 /** The readers' fallback window for a fork whose parent is gone (codex_sessions.ts). */
 const FORK_PREFIX_WINDOW_MS = 2_000;
 
+/** The model a turn_context or thread_settings_applied line names, else null. */
+function lineModel(type: string, payload: Record<string, unknown>): string | null {
+  if (type === "turn_context" && typeof payload.model === "string" && payload.model !== "") {
+    return modelLabel(payload.model);
+  }
+  if (type === "event_msg/thread_settings_applied" && isRecord(payload.thread_settings)) {
+    const m = payload.thread_settings.model;
+    if (typeof m === "string" && m !== "") return modelLabel(m);
+  }
+  return null;
+}
+
 /**
- * Profile one rollout, sampling each token_count the way the readers book it.
- * `infoHashesBySession` is the readers' own ledger: every info this file saw is
- * recorded under its session id at the end, and a fork drops the infos found in
- * its declared parent's set (or, with the parent absent, the counts inside the
- * batch-write window). Within the file an exact repeat is a repeat. Every line
- * still counts toward the file's physical statistics.
+ * One rollout being profiled. `infoHashesBySession` is the readers' own ledger: every info
+ * this file saw is recorded under its session id at the end, and a fork drops the infos found
+ * in its declared parent's set (or, with the parent absent, the counts inside the batch-write
+ * window). Within the file an exact repeat is a repeat. Every line still counts toward the
+ * file's physical statistics.
  */
+class RolloutProfiler {
+  readonly trace: FileTrace;
+
+  private model = "unknown";
+
+  private forked = false;
+
+  private sessionId: string | undefined;
+
+  private metaTsMs: number | undefined;
+
+  private parentHashes: Set<string> | undefined;
+
+  private readonly ownHashes = new Set<string>();
+
+  private readonly infoRepeats = new Map<string, number>();
+
+  constructor(
+    private readonly acc: SourceAccumulator,
+    private readonly infoHashesBySession: Map<string, Set<string>>,
+  ) {
+    this.trace = new FileTrace(acc);
+  }
+
+  /** Book one parsed line by its type; `ms` is its own timestamp. */
+  record(type: string, payload: Record<string, unknown>, ms: number | undefined): void {
+    if (type === "session_meta" && this.sessionId === undefined) this.sessionMeta(payload, ms);
+    if (type === "turn_context") this.trace.turns++;
+    const model = lineModel(type, payload);
+    if (model !== null) this.model = model;
+    if (type === "event_msg/token_count" && isRecord(payload.info)) {
+      this.tokenCount(payload.info, ms);
+    }
+  }
+
+  private sessionMeta(payload: Record<string, unknown>, ms: number | undefined): void {
+    const id = payload.id ?? payload.session_id;
+    this.sessionId = typeof id === "string" ? id : undefined;
+    if (typeof payload.forked_from_id === "string") {
+      this.forked = true;
+      this.parentHashes = this.infoHashesBySession.get(payload.forked_from_id);
+    }
+    this.metaTsMs = ms;
+  }
+
+  /** A token_count info the readers would skip: already seen in this file, found in the
+   *  declared parent, or (parent absent) inside the fork's batch-write window. */
+  private isCopy(key: string, ms: number | undefined): boolean {
+    if (this.ownHashes.has(key) || this.parentHashes?.has(key) === true) return true;
+    return (
+      this.forked &&
+      this.parentHashes === undefined &&
+      this.metaTsMs !== undefined &&
+      ms !== undefined &&
+      ms - this.metaTsMs <= FORK_PREFIX_WINDOW_MS
+    );
+  }
+
+  /** Sample one token_count the way the readers book it: an exact repeat within the file is a
+   *  repeat, a copy is skipped, the rest is a usage event under the current model. */
+  private tokenCount(info: Record<string, unknown>, ms: number | undefined): void {
+    this.acc.usageLines++;
+    const key = JSON.stringify(info);
+    const seen = this.infoRepeats.get(key) ?? 0;
+    this.infoRepeats.set(key, seen + 1);
+    if (seen > 0) {
+      this.acc.repeatedLines++;
+      return;
+    }
+    const copied = this.isCopy(key, ms);
+    this.ownHashes.add(key);
+    if (copied) return;
+    const last = info.last_token_usage;
+    if (!isRecord(last)) return;
+    this.trace.usageEvents++;
+    this.acc.usageEvent(
+      this.model,
+      num(last.input_tokens),
+      num(last.output_tokens),
+      num(last.cached_input_tokens),
+      num(last.cache_write_input_tokens),
+    );
+  }
+
+  finish(fileBytes: number, depth: number, name: string): void {
+    for (const repeats of this.infoRepeats.values()) this.acc.repeatsPerUsageKey.add(repeats);
+    if (this.sessionId !== undefined && this.ownHashes.size > 0) {
+      this.infoHashesBySession.set(this.sessionId, this.ownHashes);
+    }
+    this.trace.finish(fileBytes, depth, name, this.forked);
+  }
+}
+
+/** Profile one rollout, sampling each token_count the way the readers book it. */
 async function profileCodexFile(
   acc: SourceAccumulator,
   file: string,
@@ -458,87 +579,20 @@ async function profileCodexFile(
   infoHashesBySession: Map<string, Set<string>>,
 ): Promise<void> {
   const name = path.basename(file);
-  const trace = new FileTrace(acc);
-  let model = "unknown";
-  let forked = false;
-  let sessionId: string | undefined;
-  let metaTsMs: number | undefined;
-  let parentHashes: Set<string> | undefined;
-  const ownHashes = new Set<string>();
-  const infoRepeats = new Map<string, number>();
-  const rollout = ROLLOUT_FILE.exec(name);
-  if (rollout !== null) acc.sessionsPerDay.add(`${rollout[1]}-${rollout[2]}-${rollout[3]}`);
+  const rollout = new RolloutProfiler(acc, infoHashesBySession);
+  const stamp = ROLLOUT_FILE.exec(name);
+  if (stamp !== null) acc.sessionsPerDay.add(`${stamp[1]}-${stamp[2]}-${stamp[3]}`);
   for await (const raw of lines(file)) {
     if (raw.length === 0) continue;
     const bytes = Buffer.byteLength(raw);
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      trace.line(TORN_LINE_TYPE, bytes, undefined);
-      continue;
-    }
-    if (!isRecord(parsed)) {
-      trace.line(OTHER_LINE_TYPE, bytes, undefined);
-      continue;
-    }
+    const parsed = parsedLine(raw, bytes, rollout.trace);
+    if (parsed === null) continue;
     const type = codexLineType(parsed);
-    trace.line(type, bytes, timestampMs(parsed));
-    const payload = isRecord(parsed.payload) ? parsed.payload : {};
-    if (type === "session_meta" && sessionId === undefined) {
-      const id = payload.id ?? payload.session_id;
-      sessionId = typeof id === "string" ? id : undefined;
-      if (typeof payload.forked_from_id === "string") {
-        forked = true;
-        parentHashes = infoHashesBySession.get(payload.forked_from_id);
-      }
-      metaTsMs = timestampMs(parsed);
-    }
-    if (type === "turn_context") {
-      trace.turns++;
-      if (typeof payload.model === "string" && payload.model !== "") {
-        model = modelLabel(payload.model);
-      }
-    }
-    if (type === "event_msg/thread_settings_applied" && isRecord(payload.thread_settings)) {
-      const m = payload.thread_settings.model;
-      if (typeof m === "string" && m !== "") model = modelLabel(m);
-    }
-    if (type === "event_msg/token_count" && isRecord(payload.info)) {
-      acc.usageLines++;
-      const key = JSON.stringify(payload.info);
-      const seen = infoRepeats.get(key) ?? 0;
-      infoRepeats.set(key, seen + 1);
-      if (seen > 0) {
-        acc.repeatedLines++;
-        continue;
-      }
-      const ms = timestampMs(parsed);
-      const copied =
-        ownHashes.has(key) ||
-        parentHashes?.has(key) === true ||
-        (forked &&
-          parentHashes === undefined &&
-          metaTsMs !== undefined &&
-          ms !== undefined &&
-          ms - metaTsMs <= FORK_PREFIX_WINDOW_MS);
-      ownHashes.add(key);
-      if (copied) continue;
-      const last = payload.info.last_token_usage;
-      if (!isRecord(last)) continue;
-      trace.usageEvents++;
-      acc.usageEvent(
-        model,
-        num(last.input_tokens),
-        num(last.output_tokens),
-        num(last.cached_input_tokens),
-        num(last.cache_write_input_tokens),
-      );
-    }
+    const ms = timestampMs(parsed);
+    rollout.trace.line(type, bytes, ms);
+    rollout.record(type, isRecord(parsed.payload) ? parsed.payload : {}, ms);
   }
-  for (const repeats of infoRepeats.values()) acc.repeatsPerUsageKey.add(repeats);
-  if (sessionId !== undefined && ownHashes.size > 0) infoHashesBySession.set(sessionId, ownHashes);
-  trace.finish(statSync(file).size, depth, name, forked);
+  rollout.finish(statSync(file).size, depth, name);
 }
 
 // ---------- Claude ----------
@@ -552,13 +606,90 @@ interface Snapshot {
   lines: number;
 }
 
+/** An assistant message's usage under its id (an id-less line gets `lineKey`, unique to its
+ *  file and position, since the readers count such lines independently); null for a message
+ *  without usage or from the synthetic model. */
+function assistantUsage(
+  message: Record<string, unknown>,
+  lineKey: string,
+): { id: string; snapshot: Snapshot } | null {
+  if (!isRecord(message.usage)) return null;
+  if (message.model === SYNTHETIC_MODEL) return null;
+  return {
+    id: typeof message.id === "string" ? message.id : lineKey,
+    snapshot: {
+      model: modelLabel(message.model),
+      input: num(message.usage.input_tokens),
+      output: num(message.usage.output_tokens),
+      cacheRead: num(message.usage.cache_read_input_tokens),
+      cacheWrite: num(message.usage.cache_creation_input_tokens),
+      lines: 1,
+    },
+  };
+}
+
+/** A repeat of a booked id folded in: each bucket at its maximum, one more line. */
+function raiseSnapshot(prev: Snapshot, next: Snapshot): void {
+  prev.lines++;
+  prev.input = Math.max(prev.input, next.input);
+  prev.output = Math.max(prev.output, next.output);
+  prev.cacheRead = Math.max(prev.cacheRead, next.cacheRead);
+  prev.cacheWrite = Math.max(prev.cacheWrite, next.cacheWrite);
+}
+
 /**
- * Profile one transcript. `messages` is the RUN-WIDE per-id ledger: streaming
- * repeats a message id within a file and a resume repeats it across files, so
- * each id's per-bucket maximum and line count are booked once, by the caller,
- * after every file has been seen. An id-less line gets a key unique to its
- * file and position, since the readers count such lines independently.
+ * One transcript being profiled. `messages` is the RUN-WIDE per-id ledger: streaming repeats
+ * a message id within a file and a resume repeats it across files, so each id's per-bucket
+ * maximum and line count are booked once, by the caller, after every file has been seen.
  */
+class TranscriptProfiler {
+  readonly trace: FileTrace;
+
+  private forked = false;
+
+  private readonly ownIds = new Set<string>();
+
+  private prevId: string | undefined;
+
+  private prevOutput = 0;
+
+  constructor(
+    private readonly acc: SourceAccumulator,
+    private readonly messages: Map<string, Snapshot>,
+  ) {
+    this.trace = new FileTrace(acc);
+  }
+
+  /** Book one assistant usage line: a repeat of the previous id is a streaming snapshot (grown
+   *  when its output rose); a first sighting enters the ledger, a later one raises its entry. */
+  usage(id: string, snapshot: Snapshot): void {
+    this.acc.usageLines++;
+    if (id === this.prevId) {
+      this.acc.repeatedLines++;
+      if (snapshot.output > this.prevOutput) this.acc.grownLines++;
+    }
+    this.prevId = id;
+    this.prevOutput = snapshot.output;
+    const prev = this.messages.get(id);
+    if (prev === undefined) {
+      this.trace.usageEvents++;
+      this.ownIds.add(id);
+      this.messages.set(id, snapshot);
+      return;
+    }
+    // Seen first in an EARLIER file: a resume copy. Within this file it is streaming.
+    if (!this.ownIds.has(id)) this.forked = true;
+    raiseSnapshot(prev, snapshot);
+  }
+
+  finish(fileBytes: number, depth: number, name: string): void {
+    const { firstMs } = this.trace;
+    if (firstMs !== undefined) this.acc.sessionsPerDay.add(localDayKey(firstMs));
+    this.trace.finish(fileBytes, depth, name, this.forked);
+  }
+}
+
+/** Profile one transcript, each assistant usage line into the run-wide ledger. */
 async function profileClaudeFile(
   acc: SourceAccumulator,
   file: string,
@@ -566,70 +697,118 @@ async function profileClaudeFile(
   messages: Map<string, Snapshot>,
 ): Promise<void> {
   const name = path.basename(file);
-  const trace = new FileTrace(acc);
-  const ownIds = new Set<string>();
-  let forked = false;
-  let prevId: string | undefined;
-  let prevOutput = 0;
+  const transcript = new TranscriptProfiler(acc, messages);
   for await (const raw of lines(file)) {
     if (raw.length === 0) continue;
     const bytes = Buffer.byteLength(raw);
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      trace.line(TORN_LINE_TYPE, bytes, undefined);
-      continue;
-    }
-    if (!isRecord(parsed)) {
-      trace.line(OTHER_LINE_TYPE, bytes, undefined);
-      continue;
-    }
+    const parsed = parsedLine(raw, bytes, transcript.trace);
+    if (parsed === null) continue;
     const type = claudeLineType(parsed);
-    const ms = timestampMs(parsed);
-    trace.line(type, bytes, ms);
-    if (type === "user/prompt") trace.turns++;
+    transcript.trace.line(type, bytes, timestampMs(parsed));
+    if (type === "user/prompt") transcript.trace.turns++;
     if (type !== "assistant" || !isRecord(parsed.message)) continue;
-    const message = parsed.message;
-    if (!isRecord(message.usage)) continue;
-    if (message.model === SYNTHETIC_MODEL) continue;
-    const model = modelLabel(message.model);
-    acc.usageLines++;
-    const id = typeof message.id === "string" ? message.id : `${file}:${trace.lines}`;
-    const output = num(message.usage.output_tokens);
-    if (id === prevId) {
-      acc.repeatedLines++;
-      if (output > prevOutput) acc.grownLines++;
-    }
-    prevId = id;
-    prevOutput = output;
-    const prev = messages.get(id);
-    if (prev === undefined) {
-      trace.usageEvents++;
-      ownIds.add(id);
-      messages.set(id, {
-        model,
-        input: num(message.usage.input_tokens),
-        output,
-        cacheRead: num(message.usage.cache_read_input_tokens),
-        cacheWrite: num(message.usage.cache_creation_input_tokens),
-        lines: 1,
-      });
-    } else {
-      // Seen first in an EARLIER file: a resume copy. Within this file it is streaming.
-      if (!ownIds.has(id)) forked = true;
-      prev.lines++;
-      prev.input = Math.max(prev.input, num(message.usage.input_tokens));
-      prev.output = Math.max(prev.output, output);
-      prev.cacheRead = Math.max(prev.cacheRead, num(message.usage.cache_read_input_tokens));
-      prev.cacheWrite = Math.max(prev.cacheWrite, num(message.usage.cache_creation_input_tokens));
-    }
+    const usage = assistantUsage(parsed.message, `${file}:${transcript.trace.lines}`);
+    if (usage !== null) transcript.usage(usage.id, usage.snapshot);
   }
-  if (trace.firstMs !== undefined) acc.sessionsPerDay.add(localDayKey(trace.firstMs));
-  trace.finish(statSync(file).size, depth, name, forked);
+  transcript.finish(statSync(file).size, depth, name);
 }
 
 // ---------- main ----------
+
+/** The readers' file selection: basename order (a fork's parent, the earlier start, comes
+ *  first) and one file per rollout name, the plain copy preferred over its .zst archive. A file
+ *  the readers never open shapes nothing here either. */
+function selectedCodexFiles(roots: string[], unreadable: string[]): WalkEntry[] {
+  const found: WalkEntry[] = [];
+  for (const root of roots) walk(root, 1, ROLLOUT_FILE, CODEX_MAX_DEPTH, found, unreadable);
+  found.sort((a, b) => byCodeUnit(path.basename(a.file), path.basename(b.file)));
+  const byBasename = new Map<string, WalkEntry>();
+  for (const entry of found) {
+    const key = path.basename(entry.file).replace(/\.zst$/, "");
+    const prev = byBasename.get(key);
+    if (prev === undefined || (prev.file.endsWith(".zst") && !entry.file.endsWith(".zst"))) {
+      byBasename.set(key, entry);
+    }
+  }
+  return [...byBasename.values()];
+}
+
+/** Project slugs are the DIRECTORIES at the root; a stray file there is not a project. */
+function bookSlugSegments(root: string, acc: SourceAccumulator, unreadable: string[]): void {
+  const entries = listing(root);
+  if (entries === null) unreadable.push(root);
+  for (const entry of entries ?? []) {
+    if (!entry.isDirectory()) continue;
+    acc.slugSegments.push(entry.name.split("-").filter((s) => s.length > 0).length);
+  }
+}
+
+/** The transcript files oldest first, so a resume's copied ids are seen in the original first;
+ *  the project slugs at each root are booked on the way. */
+function selectedClaudeFiles(
+  roots: string[],
+  acc: SourceAccumulator,
+  unreadable: string[],
+): WalkEntry[] {
+  const found: WalkEntry[] = [];
+  for (const root of roots) {
+    walk(root, 1, CLAUDE_FILE, CLAUDE_MAX_DEPTH, found, unreadable);
+    bookSlugSegments(root, acc, unreadable);
+  }
+  found.sort((a, b) => {
+    const am = statSync(a.file).mtimeMs;
+    const bm = statSync(b.file).mtimeMs;
+    return am === bm ? a.file.localeCompare(b.file) : am - bm;
+  });
+  return found;
+}
+
+/** Every entry in order, a progress line every 500; a file that fails to parse is collected,
+ *  never skipped silently. */
+async function profileEach(
+  source: UsageSource,
+  entries: WalkEntry[],
+  failed: string[],
+  profile: (entry: WalkEntry) => Promise<void>,
+): Promise<void> {
+  for (const [i, entry] of entries.entries()) {
+    if (i % 500 === 0 && i > 0) console.error(`  ${source} ${i}/${entries.length}`);
+    try {
+      await profile(entry);
+    } catch {
+      failed.push(entry.file);
+    }
+  }
+}
+
+/** Fail closed: a profile over part of the logs would be plausible and wrong. The offending
+ *  paths go to stderr only (this machine's paths never enter the profile). */
+function refuseIncomplete(out: string, unreadable: string[], failed: string[]): void {
+  if (unreadable.length === 0 && failed.length === 0) return;
+  for (const p of unreadable) console.error(`unreadable: ${p}`);
+  for (const p of failed) console.error(`failed to parse: ${p}`);
+  die(
+    `refusing to write ${out}: ${unreadable.length} unreadable entries, ${failed.length} unreadable files`,
+  );
+}
+
+/** The profile written to `out`, or refused when there is too little to measure (no usage lines
+ *  at all): one the generator could not sample from is never written. */
+function writeProfile(out: string, accs: Record<UsageSource, SourceAccumulator>): void {
+  const totalBytes = accs.codex.bytes + accs.claude.bytes;
+  let profile: Profile;
+  try {
+    profile = parseProfile({
+      version: 1,
+      codex: accs.codex.profile(totalBytes),
+      claude: accs.claude.profile(totalBytes),
+    });
+  } catch (e) {
+    die(`refusing to write ${out}: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  writeFileSync(out, `${JSON.stringify(profile, null, 2)}\n`);
+  console.error(`wrote ${out}: codex ${accs.codex.files} files, claude ${accs.claude.files} files`);
+}
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
@@ -640,67 +819,21 @@ async function main(): Promise<void> {
   };
   const unreadable: string[] = [];
   const failed: string[] = [];
-
   const roots = sessionRoots(unreadable);
-  const codexFiles: WalkEntry[] = [];
-  for (const root of roots.codex) {
-    walk(root, 1, ROLLOUT_FILE, CODEX_MAX_DEPTH, codexFiles, unreadable);
-  }
-  // The readers' file selection: basename order (a fork's parent, the earlier start, comes
-  // first) and one file per rollout name, the plain copy preferred over its .zst archive.
-  // A file the readers never open shapes nothing here either.
-  codexFiles.sort((a, b) => {
-    const an = path.basename(a.file);
-    const bn = path.basename(b.file);
-    return an < bn ? -1 : an > bn ? 1 : 0;
-  });
-  const byBasename = new Map<string, WalkEntry>();
-  for (const entry of codexFiles) {
-    const key = path.basename(entry.file).replace(/\.zst$/, "");
-    const prev = byBasename.get(key);
-    if (prev === undefined || (prev.file.endsWith(".zst") && !entry.file.endsWith(".zst"))) {
-      byBasename.set(key, entry);
-    }
-  }
-  const selected = [...byBasename.values()];
-  console.error(`profiling ${selected.length} codex rollout files`);
-  const infoHashesBySession = new Map<string, Set<string>>();
-  for (const [i, entry] of selected.entries()) {
-    if (i % 500 === 0 && i > 0) console.error(`  codex ${i}/${selected.length}`);
-    try {
-      await profileCodexFile(accs.codex, entry.file, entry.depth, infoHashesBySession);
-    } catch {
-      failed.push(entry.file);
-    }
-  }
 
-  const claudeFiles: WalkEntry[] = [];
-  for (const root of roots.claude) {
-    walk(root, 1, CLAUDE_FILE, CLAUDE_MAX_DEPTH, claudeFiles, unreadable);
-    // Project slugs are the DIRECTORIES at the root; a stray file there is not a project.
-    const entries = listing(root);
-    if (entries === null) unreadable.push(root);
-    for (const entry of entries ?? []) {
-      if (!entry.isDirectory()) continue;
-      accs.claude.slugSegments.push(entry.name.split("-").filter((s) => s.length > 0).length);
-    }
-  }
-  // Files are visited oldest first so a resume's copied ids are seen in the original first.
-  claudeFiles.sort((a, b) => {
-    const am = statSync(a.file).mtimeMs;
-    const bm = statSync(b.file).mtimeMs;
-    return am === bm ? a.file.localeCompare(b.file) : am - bm;
-  });
+  const codexFiles = selectedCodexFiles(roots.codex, unreadable);
+  console.error(`profiling ${codexFiles.length} codex rollout files`);
+  const infoHashesBySession = new Map<string, Set<string>>();
+  await profileEach("codex", codexFiles, failed, (entry) =>
+    profileCodexFile(accs.codex, entry.file, entry.depth, infoHashesBySession),
+  );
+
+  const claudeFiles = selectedClaudeFiles(roots.claude, accs.claude, unreadable);
   console.error(`profiling ${claudeFiles.length} claude transcript files`);
   const messages = new Map<string, Snapshot>();
-  for (const [i, entry] of claudeFiles.entries()) {
-    if (i % 500 === 0 && i > 0) console.error(`  claude ${i}/${claudeFiles.length}`);
-    try {
-      await profileClaudeFile(accs.claude, entry.file, entry.depth, messages);
-    } catch {
-      failed.push(entry.file);
-    }
-  }
+  await profileEach("claude", claudeFiles, failed, (entry) =>
+    profileClaudeFile(accs.claude, entry.file, entry.depth, messages),
+  );
   // One sample per message id at its run-wide maximum, the way the readers price it.
   for (const snapshot of messages.values()) {
     accs.claude.usageEvent(
@@ -713,33 +846,8 @@ async function main(): Promise<void> {
     accs.claude.repeatsPerUsageKey.add(snapshot.lines);
   }
 
-  // Fail closed: a profile over part of the logs would be plausible and wrong. The
-  // offending paths go to stderr only (this machine's paths never enter the profile).
-  if (unreadable.length > 0 || failed.length > 0) {
-    for (const p of unreadable) console.error(`unreadable: ${p}`);
-    for (const p of failed) console.error(`failed to parse: ${p}`);
-    die(
-      `refusing to write ${args.out}: ${unreadable.length} unreadable entries, ${failed.length} unreadable files`,
-    );
-  }
-
-  const totalBytes = accs.codex.bytes + accs.claude.bytes;
-  let profile: Profile;
-  try {
-    profile = parseProfile({
-      version: 1,
-      codex: accs.codex.profile(totalBytes),
-      claude: accs.claude.profile(totalBytes),
-    });
-  } catch (e) {
-    // Too little to measure (no usage lines at all): a profile the generator could not
-    // sample from is refused here rather than written.
-    die(`refusing to write ${args.out}: ${e instanceof Error ? e.message : String(e)}`);
-  }
-  writeFileSync(args.out, `${JSON.stringify(profile, null, 2)}\n`);
-  console.error(
-    `wrote ${args.out}: codex ${accs.codex.files} files, claude ${accs.claude.files} files`,
-  );
+  refuseIncomplete(args.out, unreadable, failed);
+  writeProfile(args.out, accs);
 }
 
 await main();

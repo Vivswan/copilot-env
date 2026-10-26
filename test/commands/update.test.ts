@@ -1,3 +1,4 @@
+import { describe } from "bun:test";
 import {
   parseUpdateAction,
   recheckVerdict,
@@ -13,7 +14,7 @@ import {
 } from "../../src/install/resolve-release.ts";
 import { must } from "../../src/utils/assert.ts";
 import { envSnapshot, isolateProxyHome } from "../helpers/env.ts";
-import { describe, expect, removeDir, test } from "../helpers/testing.ts";
+import { expect, removeDir, test } from "../helpers/testing.ts";
 
 // resolve-release.ts is the single source of truth for which release `agent
 // update` and the autoupdate preflight move to. The network side is thin; the

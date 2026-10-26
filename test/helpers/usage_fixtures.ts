@@ -8,7 +8,14 @@
 // (scripts/usage/profile.ts) writes the same schema from a machine's logs; its output is personal
 // data, so run it only with `--out` pointing outside the repository.
 import { Buffer } from "node:buffer";
-import { lstatSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  lstatSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  type Stats,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { zstdCompressSync } from "node:zlib";
@@ -23,6 +30,7 @@ import {
   parseProfile,
   type Quantiles,
   RESUME_GAP_MS,
+  type SourceProfile,
   type UsageSource,
 } from "./usage_profile_contract.ts";
 
@@ -543,6 +551,12 @@ interface Generator {
   lastEventMs: number;
 }
 
+/** A session's file size and start instant, drawn before it is built. */
+interface SessionDraw {
+  bytes: number;
+  start: number;
+}
+
 interface Usage {
   input: number;
   output: number;
@@ -724,6 +738,25 @@ interface LineOptions {
   reshape?: (line: JsonObject) => JsonObject;
 }
 
+/** A line's size: the caller's, else drawn from the ladder for its type (the file's, for a type
+ *  without one). */
+function lineBytes(
+  g: Generator,
+  profile: SourceProfile,
+  type: string,
+  bytes: number | undefined,
+): number {
+  if (bytes !== undefined) return bytes;
+  return sampleQuantile(g.rng, profile.bytesPerLine[type] ?? profile.fileBytes);
+}
+
+/** How one turn is sized: the last turn fills the session to its sampled file size. */
+interface TurnPlan {
+  first: boolean;
+  last: boolean;
+  targetBytes: number;
+}
+
 // ----- Codex -----
 
 interface CodexSession {
@@ -813,8 +846,7 @@ function codexLine(
     if (!state.withOrdinal) delete rendered.ordinal;
     if (opts.reshape !== undefined) rendered = opts.reshape(rendered);
   }
-  const target =
-    opts.bytes ?? sampleQuantile(g.rng, profile.bytesPerLine[type] ?? profile.fileBytes);
+  const target = lineBytes(g, profile, type, opts.bytes);
   session.buffer.push(
     serializeSized(g.rng, rendered, target, opts.kind ?? "prose", opts.prefix ?? ""),
     lineStamps(template, ctx),
@@ -993,17 +1025,10 @@ function codexRoundTrip(
 /** File and line sizes both follow the profile and the event count per file emerges, as it
  *  does in a rollout: the LAST turn runs until the file reaches its sampled size, capped at
  *  MAX_EVENTS_PER_TURN round trips. */
-function codexTurn(
-  g: Generator,
-  session: CodexSession,
-  state: CodexState,
-  firstTurn: boolean,
-  lastTurn: boolean,
-  targetBytes: number,
-): void {
+function codexTurn(g: Generator, session: CodexSession, state: CodexState, plan: TurnPlan): void {
   const profile = g.profile.codex;
   state.turnId = uuid(g.rng);
-  if (!firstTurn) {
+  if (!plan.first) {
     codexLine(g, session, state, "event_msg/task_started");
     if (chance(g.rng, 0.15)) {
       state.model = weightedKey(g.rng, modelShares(profile.models));
@@ -1018,8 +1043,8 @@ function codexTurn(
   const model = modelOf(profile, state.model);
   const events = sampleCount(g.rng, profile.usageEventsPerTurn, 1);
   for (let i = 0; i < MAX_EVENTS_PER_TURN; i++) {
-    const reached = session.buffer.bytes >= targetBytes;
-    const last = reached || (!lastTurn && i === events - 1) || i === MAX_EVENTS_PER_TURN - 1;
+    const reached = session.buffer.bytes >= plan.targetBytes;
+    const last = reached || (!plan.last && i === events - 1) || i === MAX_EVENTS_PER_TURN - 1;
     codexRoundTrip(g, session, state, model, last);
     if (last) break;
   }
@@ -1040,6 +1065,112 @@ interface CodexSessionOptions {
 
   /** Paste this needle into the opening prompt (the fork parent carries "session_meta"). */
   needle?: string;
+}
+
+/** The running totals a copied token_count carries, so the fork's own counts continue from them. */
+function tokenCountTotals(parsed: JsonObject): Usage | undefined {
+  const payload = parsed.payload;
+  if (!isJsonObject(payload) || payload.type !== "token_count" || !isJsonObject(payload.info)) {
+    return undefined;
+  }
+  const totals = payload.info.total_token_usage;
+  if (!isJsonObject(totals)) return undefined;
+  return {
+    input: Number(totals.input_tokens ?? 0),
+    output: Number(totals.output_tokens ?? 0),
+    cacheRead: Number(totals.cached_input_tokens ?? 0),
+    cacheWrite: Number(totals.cache_write_input_tokens ?? 0),
+  };
+}
+
+/** A fork persists the parent's rollout ITEMS (never a session_meta; filtered on the parsed type,
+ *  so a prompt that pasted the word is still an item) in one batch under fresh outer timestamps;
+ *  nested instants stay the parent's. Its totals continue from the prefix. */
+function codexCopyForkPrefix(
+  g: Generator,
+  session: CodexSession,
+  state: CodexState,
+  parent: CodexSession,
+): void {
+  const copied = parent.buffer
+    .pairs()
+    .map(([line, stamps]) => ({ parsed: JSON.parse(line) as JsonObject, nested: stamps.nested }))
+    .filter(({ parsed }) => parsed.type !== "session_meta");
+  let copyMs = state.nowMs;
+  const step = FORK_COPY_WINDOW_MS / Math.max(1, copied.length);
+  for (const { parsed, nested } of copied) {
+    copyMs += step * g.rng();
+    parsed.timestamp = isoTimestamp(copyMs);
+    session.buffer.push(JSON.stringify(parsed), { outer: copyMs, nested });
+    const totals = tokenCountTotals(parsed);
+    if (totals !== undefined) state.totals = totals;
+  }
+  state.ordinal += copied.length;
+  state.nowMs = state.nowMs + READER_FORK_WINDOW_MS + 1_000 + g.rng() * 5_000;
+}
+
+/** A fresh session's opening lines, through its first prompt. */
+function codexOpening(
+  g: Generator,
+  session: CodexSession,
+  state: CodexState,
+  needle: string | undefined,
+): void {
+  codexLine(g, session, state, "event_msg/task_started");
+  for (let i = 0; i < 3; i++) codexMessage(g, session, state, "developer");
+  codexMessage(g, session, state, "user");
+  codexLine(g, session, state, "world_state");
+  codexLine(g, session, state, "turn_context");
+  const prompt = needle === undefined ? promptText(g) : `${nextMarker(g)} pasted: ${needle}`;
+  codexMessage(g, session, state, "user", prompt);
+}
+
+/** The break before a turn: the forced span before the second turn, else a sampled resume, else
+ *  none. */
+function codexResumeGapMs(
+  g: Generator,
+  opts: CodexSessionOptions,
+  turn: number,
+  turns: number,
+): number {
+  if (opts.spanMs !== undefined && turn === 1) return opts.spanMs;
+  if (chance(g.rng, g.profile.codex.resumeShare / Math.max(1, turns - 1))) {
+    return RESUME_GAP_MS + g.rng() * 6 * RESUME_GAP_MS;
+  }
+  return 0;
+}
+
+/** The turns, each sized so the last one fills the session to `targetBytes`. */
+function codexTurns(
+  g: Generator,
+  session: CodexSession,
+  state: CodexState,
+  targetBytes: number,
+  opts: CodexSessionOptions,
+): void {
+  const minTurns = opts.spanMs === undefined ? 1 : 2;
+  const turns = sampleCount(g.rng, g.profile.codex.turnsPerSession, minTurns);
+  const perTurn = targetBytes / turns;
+  for (let turn = 0; turn < turns; turn++) {
+    if (turn > 0) {
+      const resumed = codexResumeGapMs(g, opts, turn, turns);
+      if (resumed > 0) {
+        // Codex appends a fresh session_meta when a session is resumed; the readers
+        // honor only the first.
+        state.nowMs += resumed;
+        codexSessionMeta(g, session, state, false);
+      }
+    }
+    const lastTurn = turn === turns - 1;
+    codexTurn(g, session, state, {
+      first: turn === 0 && opts.forkOf === undefined,
+      last: lastTurn,
+      targetBytes: lastTurn ? targetBytes : session.buffer.bytes + perTurn,
+    });
+    // A forced span still gets its second turn when the first already filled the file.
+    const spanPending = opts.spanMs !== undefined && turn === 0;
+    if (session.buffer.bytes >= targetBytes && !spanPending) break;
+  }
 }
 
 /** Build one Codex session; `forkOf` copies the parent's items first, the way a fork persists. */
@@ -1077,80 +1208,12 @@ function codexSession(
     minCountRepeats: opts.repeatCounts === true ? 2 : 1,
   };
   codexSessionMeta(g, session, state, true);
-  if (opts.forkOf !== undefined) {
-    // A fork persists the parent's rollout ITEMS (never a session_meta; filtered on the parsed
-    // type, so a prompt that pasted the word is still an item) in one batch under fresh outer
-    // timestamps; nested instants stay the parent's. Its totals continue from the prefix.
-    const parent = opts.forkOf.buffer;
-    const copied = parent
-      .pairs()
-      .map(([line, stamps]) => ({ parsed: JSON.parse(line) as JsonObject, nested: stamps.nested }))
-      .filter(({ parsed }) => parsed.type !== "session_meta");
-    let copyMs = state.nowMs;
-    const step = FORK_COPY_WINDOW_MS / Math.max(1, copied.length);
-    for (const { parsed, nested } of copied) {
-      copyMs += step * g.rng();
-      parsed.timestamp = isoTimestamp(copyMs);
-      session.buffer.push(JSON.stringify(parsed), { outer: copyMs, nested });
-      const payload = parsed.payload;
-      if (isJsonObject(payload) && payload.type === "token_count" && isJsonObject(payload.info)) {
-        const totals = payload.info.total_token_usage;
-        if (isJsonObject(totals)) {
-          state.totals = {
-            input: Number(totals.input_tokens ?? 0),
-            output: Number(totals.output_tokens ?? 0),
-            cacheRead: Number(totals.cached_input_tokens ?? 0),
-            cacheWrite: Number(totals.cache_write_input_tokens ?? 0),
-          };
-        }
-      }
-    }
-    state.ordinal += copied.length;
-    state.nowMs = state.nowMs + READER_FORK_WINDOW_MS + 1_000 + g.rng() * 5_000;
+  if (opts.forkOf === undefined) {
+    codexOpening(g, session, state, opts.needle);
   } else {
-    codexLine(g, session, state, "event_msg/task_started");
-    for (let i = 0; i < 3; i++) codexMessage(g, session, state, "developer");
-    codexMessage(g, session, state, "user");
-    codexLine(g, session, state, "world_state");
-    codexLine(g, session, state, "turn_context");
-    codexMessage(
-      g,
-      session,
-      state,
-      "user",
-      opts.needle === undefined ? promptText(g) : `${nextMarker(g)} pasted: ${opts.needle}`,
-    );
+    codexCopyForkPrefix(g, session, state, opts.forkOf);
   }
-  const turns = sampleCount(g.rng, profile.turnsPerSession, opts.spanMs === undefined ? 1 : 2);
-  const perTurn = targetBytes / turns;
-  for (let turn = 0; turn < turns; turn++) {
-    if (turn > 0) {
-      const resumed =
-        opts.spanMs !== undefined && turn === 1
-          ? opts.spanMs
-          : chance(g.rng, profile.resumeShare / Math.max(1, turns - 1))
-            ? RESUME_GAP_MS + g.rng() * 6 * RESUME_GAP_MS
-            : 0;
-      if (resumed > 0) {
-        // Codex appends a fresh session_meta when a session is resumed; the readers
-        // honor only the first.
-        state.nowMs += resumed;
-        codexSessionMeta(g, session, state, false);
-      }
-    }
-    const lastTurn = turn === turns - 1;
-    codexTurn(
-      g,
-      session,
-      state,
-      turn === 0 && opts.forkOf === undefined,
-      lastTurn,
-      lastTurn ? targetBytes : session.buffer.bytes + perTurn,
-    );
-    // A forced span still gets its second turn when the first already filled the file.
-    const spanPending = opts.spanMs !== undefined && turn === 0;
-    if (session.buffer.bytes >= targetBytes && !spanPending) break;
-  }
+  codexTurns(g, session, state, targetBytes, opts);
   return session;
 }
 
@@ -1192,15 +1255,18 @@ function snapshotCodexExpected(expected: Map<string, ExpectedReport>): Map<strin
   return new Map([...expected].map(([provider, report]) => [provider, copyReport(report)]));
 }
 
-function generateCodex(g: Generator, codexHome: string, budget: number): void {
-  let index = 0;
-  let forkParent: CodexSession | undefined;
-  while (g.written < budget - MIN_FILE_BYTES) {
-    const scripted = g.adversarial && index < CODEX_SCRIPTED_SESSIONS ? index : -1;
-    const drawn = nextFileBytes(g, "codex", budget);
-    const bytes = scripted >= 0 ? Math.min(drawn, SCRIPTED_MAX_BYTES) : drawn;
-    const start = sessionStart(g, "codex");
-    if (scripted === 0) {
+/** The first CODEX_SCRIPTED_SESSIONS sessions of an adversarial tree, one edge case each; returns
+ *  the session later forks copy, when this is it. */
+function writeScriptedCodexSession(
+  g: Generator,
+  codexHome: string,
+  index: number,
+  draw: SessionDraw,
+  forkParent: CodexSession | undefined,
+): CodexSession | undefined {
+  const { bytes, start } = draw;
+  switch (index) {
+    case 0: {
       // Resumed 26 hours later, so it crosses local midnight in every zone, with every
       // count re-emitted. The torn tail lands here too, and an archived copy sits beside
       // the live file.
@@ -1210,17 +1276,22 @@ function generateCodex(g: Generator, codexHome: string, budget: number): void {
       });
       writeCodexSession(g, codexHome, session, { torn: true });
       writeCodexSession(g, codexHome, session, { archived: true });
-    } else if (scripted === 1) {
+      return undefined;
+    }
+    case 1: {
       // The parent a fork will copy: its opening prompt pastes the word "session_meta", so
       // a copy that filtered items by substring instead of by type would lose it.
-      forkParent = codexSession(g, bytes, start, { needle: '"session_meta"' });
-      writeCodexSession(g, codexHome, forkParent);
-    } else if (scripted === 2 && forkParent !== undefined) {
-      const fork = codexSession(g, bytes, forkParent.metaMs + 10 * 60 * 1000, {
-        forkOf: forkParent,
-      });
+      const parent = codexSession(g, bytes, start, { needle: '"session_meta"' });
+      writeCodexSession(g, codexHome, parent);
+      return parent;
+    }
+    case 2: {
+      const parent = must(forkParent, "the fork parent is scripted first");
+      const fork = codexSession(g, bytes, parent.metaMs + 10 * 60 * 1000, { forkOf: parent });
       writeCodexSession(g, codexHome, fork);
-    } else if (scripted === 3) {
+      return undefined;
+    }
+    case 3: {
       // A fork whose parent was deleted: only the batch-write window tells the
       // copied prefix apart. The ghost's usage is booked nowhere, since no file
       // carries it as its own, so the bookings its build made are rolled back.
@@ -1232,20 +1303,53 @@ function generateCodex(g: Generator, codexHome: string, budget: number): void {
       g.expected.codex = before;
       const fork = codexSession(g, bytes, ghost.metaMs + 30 * 60 * 1000, { forkOf: ghost });
       writeCodexSession(g, codexHome, fork);
-    } else if (scripted === 4) {
+      return undefined;
+    }
+    case 4: {
       // Archived only: the compressed copy is the sole record of this session.
       writeCodexSession(g, codexHome, codexSession(g, bytes, start), { archived: true });
-    } else if (
-      g.adversarial &&
-      forkParent !== undefined &&
-      chance(g.rng, g.profile.codex.forkShare)
-    ) {
-      const fork = codexSession(g, bytes, forkParent.metaMs + 60 * 60 * 1000, {
-        forkOf: forkParent,
-      });
-      writeCodexSession(g, codexHome, fork);
+      return undefined;
+    }
+  }
+  throw new Error(`no scripted codex session ${index}`);
+}
+
+/** A plain session or, adversarially with a parent to copy, a fork of it an hour on. */
+function writeCodexSessionOrFork(
+  g: Generator,
+  codexHome: string,
+  draw: SessionDraw,
+  forkParent: CodexSession | undefined,
+): void {
+  if (g.adversarial && forkParent !== undefined && chance(g.rng, g.profile.codex.forkShare)) {
+    const fork = codexSession(g, draw.bytes, forkParent.metaMs + 60 * 60 * 1000, {
+      forkOf: forkParent,
+    });
+    writeCodexSession(g, codexHome, fork);
+    return;
+  }
+  writeCodexSession(g, codexHome, codexSession(g, draw.bytes, draw.start));
+}
+
+function generateCodex(g: Generator, codexHome: string, budget: number): void {
+  let index = 0;
+  let forkParent: CodexSession | undefined;
+  while (g.written < budget - MIN_FILE_BYTES) {
+    const scripted = g.adversarial && index < CODEX_SCRIPTED_SESSIONS ? index : -1;
+    const drawn = nextFileBytes(g, "codex", budget);
+    const bytes = scripted >= 0 ? Math.min(drawn, SCRIPTED_MAX_BYTES) : drawn;
+    const start = sessionStart(g, "codex");
+    if (scripted >= 0) {
+      const parent = writeScriptedCodexSession(
+        g,
+        codexHome,
+        scripted,
+        { bytes, start },
+        forkParent,
+      );
+      if (parent !== undefined) forkParent = parent;
     } else {
-      writeCodexSession(g, codexHome, codexSession(g, bytes, start));
+      writeCodexSessionOrFork(g, codexHome, { bytes, start }, forkParent);
     }
     index++;
   }
@@ -1302,6 +1406,12 @@ interface ClaudeLineOptions extends LineOptions {
   header?: boolean;
 }
 
+/** A subagent line's `agentId` sits after parentUuid and isSidechain, in the writer's key order. */
+function withAgentId(rendered: JsonObject, agentId: string): JsonObject {
+  const { parentUuid, isSidechain, ...rest } = rendered;
+  return { parentUuid: parentUuid ?? null, isSidechain: isSidechain ?? null, agentId, ...rest };
+}
+
 function claudeLine(
   g: Generator,
   session: ClaudeSession,
@@ -1334,19 +1444,13 @@ function claudeLine(
   };
   let rendered = render(template, ctx);
   if (isJsonObject(rendered)) {
-    if (state.agentId !== undefined && (type === "assistant" || type.startsWith("user"))) {
-      const { parentUuid, isSidechain, ...rest } = rendered;
-      rendered = {
-        parentUuid: parentUuid ?? null,
-        isSidechain: isSidechain ?? null,
-        agentId: state.agentId,
-        ...rest,
-      };
+    const conversation = type === "assistant" || type.startsWith("user");
+    if (state.agentId !== undefined && conversation) {
+      rendered = withAgentId(rendered, state.agentId);
     }
     if (opts.reshape !== undefined) rendered = opts.reshape(rendered);
   }
-  const target =
-    opts.bytes ?? sampleQuantile(g.rng, profile.bytesPerLine[type] ?? profile.fileBytes);
+  const target = lineBytes(g, profile, type, opts.bytes);
   const line = serializeSized(g.rng, rendered, target, opts.kind ?? "prose", opts.prefix ?? "");
   const stamps = lineStamps(template, ctx);
   session.buffer.push(line, stamps);
@@ -1387,6 +1491,118 @@ function expectClaude(g: Generator, ms: number, model: string, delta: Usage, fir
   });
 }
 
+/** The content block of a message's `i`th line: a thinking block opens a multi-line message, a
+ *  final message ends in text, and otherwise a tool call four times in five. */
+function claudeBlock(g: Generator, i: number, repeats: number, final: boolean): string {
+  const isLast = i === repeats - 1;
+  if (i === 0 && repeats > 1) return "thinking";
+  if (isLast && final) return "text";
+  if (chance(g.rng, 0.8)) return "tool_use";
+  return "text";
+}
+
+/** One content block, rendered. */
+function claudeContentBlock(g: Generator, block: string, toolUseId: string): Json {
+  // An unescaped needle: a nested object whose key and value spell a reader gate.
+  const needle = g.adversarial && chance(g.rng, 0.3);
+  const ctx: Record<string, Json> = {
+    ...KEEP_FILL,
+    toolUseId,
+    toolName: pick(g.rng, ["Bash", "Read", "Edit", "Grep", "Agent", "Write"]),
+    toolInput: needle
+      ? { command: "@fill", filter: { type: "assistant", token_count: 1 } }
+      : { command: "@fill" },
+    signature: hex(g.rng, 64),
+  };
+  return render(templates.claude.blocks[block] ?? null, ctx);
+}
+
+/** The tool's result line and, now and then, the hook attachment that follows it. */
+function claudeToolResult(
+  g: Generator,
+  session: ClaudeSession,
+  state: ClaudeState,
+  toolUseId: string,
+): void {
+  claudeLine(g, session, state, "user/tool_result", { extra: { toolUseId } });
+  if (!chance(g.rng, 0.3)) return;
+  claudeLine(g, session, state, "attachment", {
+    extra: {
+      attachment: {
+        type: "hook_success",
+        hookName: "PostToolUse:Bash",
+        toolUseID: toolUseId,
+        hookEvent: "PostToolUse",
+        content: "@fill",
+        stdout: "",
+        stderr: "",
+        exitCode: 0,
+        command: "deno lint",
+        durationMs: 120,
+      },
+    },
+  });
+}
+
+/** One assistant message as it streams: what its lines share, and what the stream has booked. */
+interface ClaudeStream {
+  /** Shared by every line of the message. */
+  messageId: string;
+
+  /** The message's usage; the output is what the snapshots climb to. */
+  usage: Usage;
+
+  /** How many lines the message streams. */
+  repeats: number;
+
+  /** Whether the output snapshot rises line by line, else every line carries the final count. */
+  growing: boolean;
+
+  /** A final message ends in text, not a tool call. */
+  final: boolean;
+
+  /** The id of the latest tool call, which its result line answers. */
+  toolUseId: string;
+
+  /** The highest output snapshot written so far, so a line's delta is its growth. */
+  booked: number;
+}
+
+/** The `i`th streamed line of a message: its block, the line as written, and the usage it adds. */
+function claudeStreamedLine(
+  g: Generator,
+  session: ClaudeSession,
+  state: ClaudeState,
+  stream: ClaudeStream,
+  i: number,
+): { block: string; line: string; delta: Usage } {
+  const { usage, repeats } = stream;
+  const isLast = i === repeats - 1;
+  const block = claudeBlock(g, i, repeats, stream.final);
+  const snapshot = stream.growing
+    ? Math.max(1, Math.round(usage.output * ((i + 1) / repeats)))
+    : usage.output;
+  if (block === "tool_use") stream.toolUseId = `toolu_${hex(g.rng, 24)}`;
+  const content = claudeContentBlock(g, block, stream.toolUseId);
+  let stopReason: Json = null;
+  if (isLast) stopReason = block === "tool_use" ? "tool_use" : "end_turn";
+  const line = claudeLine(g, session, state, "assistant", {
+    extra: {
+      messageId: stream.messageId,
+      content: [content],
+      usage: claudeUsageJson(usage, snapshot),
+      stopReason,
+      apiBlockIndex: i,
+    },
+  });
+  const delta: Usage =
+    i === 0
+      ? { ...usage, output: snapshot }
+      : { input: 0, cacheRead: 0, cacheWrite: 0, output: Math.max(0, snapshot - stream.booked) };
+  stream.booked = Math.max(stream.booked, snapshot);
+  return { block, line, delta };
+}
+
 /**
  * Booked the way readClaudeSessions prices a message id: the first snapshot, then each
  * positive delta on its line's day. With `truncate` the last line is held in `pendingFinal`.
@@ -1405,47 +1621,18 @@ function claudeMessage(
   const repeats = sampleCount(g.rng, profile.repeatsPerUsageKey, truncate ? 2 : 1);
   const growing = chance(g.rng, profile.growingSnapshotShare);
   const messageId = `msg_${hex(g.rng, 24)}`;
-  let toolUseId = "";
-  let booked = 0;
+  const stream: ClaudeStream = {
+    messageId,
+    usage,
+    repeats,
+    growing,
+    final,
+    toolUseId: "",
+    booked: 0,
+  };
   for (let i = 0; i < repeats; i++) {
-    const isLast = i === repeats - 1;
-    const block =
-      i === 0 && repeats > 1
-        ? "thinking"
-        : (isLast && final) || !chance(g.rng, 0.8)
-          ? "text"
-          : "tool_use";
-    const snapshot = growing
-      ? Math.max(1, Math.round(usage.output * ((i + 1) / repeats)))
-      : usage.output;
-    if (block === "tool_use") toolUseId = `toolu_${hex(g.rng, 24)}`;
-    // An unescaped needle: a nested object whose key and value spell a reader gate.
-    const needle = g.adversarial && chance(g.rng, 0.3);
-    const blockCtx: Record<string, Json> = {
-      ...KEEP_FILL,
-      toolUseId,
-      toolName: pick(g.rng, ["Bash", "Read", "Edit", "Grep", "Agent", "Write"]),
-      toolInput: needle
-        ? { command: "@fill", filter: { type: "assistant", token_count: 1 } }
-        : { command: "@fill" },
-      signature: hex(g.rng, 64),
-    };
-    const held = truncate && isLast;
-    const line = claudeLine(g, session, state, "assistant", {
-      extra: {
-        messageId,
-        content: [render(templates.claude.blocks[block] ?? null, blockCtx)],
-        usage: claudeUsageJson(usage, snapshot),
-        stopReason: isLast ? (block === "tool_use" ? "tool_use" : "end_turn") : null,
-        apiBlockIndex: i,
-      },
-    });
-    const delta: Usage =
-      i === 0
-        ? { ...usage, output: snapshot }
-        : { input: 0, cacheRead: 0, cacheWrite: 0, output: Math.max(0, snapshot - booked) };
-    booked = Math.max(booked, snapshot);
-    if (held) {
+    const { block, line, delta } = claudeStreamedLine(g, session, state, stream, i);
+    if (truncate && i === repeats - 1) {
       session.buffer.pop();
       session.body.pop();
       session.pendingFinal = { text: line, ms: state.nowMs, model: state.model, delta };
@@ -1453,27 +1640,7 @@ function claudeMessage(
     }
     // An exact repeat adds nothing and the readers skip it outright, touching no day.
     if (i === 0 || delta.output > 0) expectClaude(g, state.nowMs, state.model, delta, i === 0);
-    if (block === "tool_use") {
-      claudeLine(g, session, state, "user/tool_result", { extra: { toolUseId } });
-      if (chance(g.rng, 0.3)) {
-        claudeLine(g, session, state, "attachment", {
-          extra: {
-            attachment: {
-              type: "hook_success",
-              hookName: "PostToolUse:Bash",
-              toolUseID: toolUseId,
-              hookEvent: "PostToolUse",
-              content: "@fill",
-              stdout: "",
-              stderr: "",
-              exitCode: 0,
-              command: "deno lint",
-              durationMs: 120,
-            },
-          },
-        });
-      }
-    }
+    if (block === "tool_use") claudeToolResult(g, session, state, stream.toolUseId);
   }
 }
 
@@ -1482,9 +1649,7 @@ function claudeTurn(
   g: Generator,
   session: ClaudeSession,
   state: ClaudeState,
-  firstTurn: boolean,
-  lastTurn: boolean,
-  targetBytes: number,
+  plan: TurnPlan,
   truncate: boolean,
 ): void {
   const profile = g.profile.claude;
@@ -1492,14 +1657,14 @@ function claudeTurn(
   claudeLine(g, session, state, "attachment", {
     extra: { attachment: { type: "total_tokens_reminder", text: "@fill" } },
   });
-  if (firstTurn) claudeLine(g, session, state, "ai-title", { header: true });
+  if (plan.first) claudeLine(g, session, state, "ai-title", { header: true });
   if (chance(g.rng, 0.3)) claudeLine(g, session, state, "queue-operation", { header: true });
   if (chance(g.rng, 0.1)) state.model = weightedKey(g.rng, modelShares(profile.models));
   const model = modelOf(profile, state.model);
   const events = sampleCount(g.rng, profile.usageEventsPerTurn, 1);
   for (let i = 0; i < MAX_EVENTS_PER_TURN; i++) {
-    const reached = session.buffer.bytes >= targetBytes;
-    const last = reached || (!lastTurn && i === events - 1) || i === MAX_EVENTS_PER_TURN - 1;
+    const reached = session.buffer.bytes >= plan.targetBytes;
+    const last = reached || (!plan.last && i === events - 1) || i === MAX_EVENTS_PER_TURN - 1;
     claudeMessage(g, session, state, model, last, truncate && last);
     if (session.pendingFinal !== undefined) return;
     if (last) break;
@@ -1520,14 +1685,59 @@ interface ClaudeSessionOptions {
   truncate?: boolean;
 }
 
+/** A top-level transcript's header lines, or a subagent's one `agent-name` line. */
+function claudeHeader(g: Generator, session: ClaudeSession, state: ClaudeState): void {
+  if (state.agentId !== undefined) {
+    claudeLine(g, session, state, "agent-name", { header: true });
+    return;
+  }
+  claudeLine(g, session, state, "last-prompt", { header: true, extra: { text: promptText(g) } });
+  claudeLine(g, session, state, "mode", { header: true });
+  claudeLine(g, session, state, "permission-mode", { header: true });
+  if (chance(g.rng, 0.7)) claudeLine(g, session, state, "atis-latch", { header: true });
+  claudeLine(g, session, state, "attachment", {
+    extra: {
+      attachment: {
+        type: "skill_listing",
+        content: "@fill",
+        skillCount: 12,
+        isInitial: true,
+        names: [],
+      },
+    },
+  });
+  claudeLine(g, session, state, "file-history-snapshot", { header: true });
+}
+
+/** A resume carries the earlier file's conversation over byte for byte (the same message ids and
+ *  snapshots, which the readers book nothing new for), then the final line the original never got
+ *  to write, then its own turns. */
+function claudeCopyResumed(g: Generator, session: ClaudeSession, original: ClaudeSession): void {
+  for (const [line, stamps] of original.body.pairs()) {
+    session.buffer.push(line, stamps);
+    session.body.push(line, stamps);
+  }
+  const pending = original.pendingFinal;
+  if (pending !== undefined) {
+    session.buffer.push(pending.text, { outer: pending.ms, nested: [] });
+    session.body.push(pending.text, { outer: pending.ms, nested: [] });
+    if (pending.delta.output > 0) {
+      expectClaude(g, pending.ms, pending.model, pending.delta, false);
+    }
+    original.pendingFinal = undefined;
+  }
+  session.lastUuid = original.lastUuid;
+}
+
 function claudeSession(
   g: Generator,
   targetBytes: number,
-  startMs: number,
+  drawnStartMs: number,
   slug: string,
   opts: ClaudeSessionOptions = {},
 ): ClaudeSession {
   const profile = g.profile.claude;
+  let startMs = drawnStartMs;
   // A resume opens an hour or more after the original went quiet, not at a fresh draw.
   if (opts.resumeOf !== undefined) {
     startMs = opts.resumeOf.endMs + RESUME_GAP_MS + g.rng() * 3 * RESUME_GAP_MS;
@@ -1550,46 +1760,8 @@ function claudeSession(
     branch: pick(g.rng, BRANCHES),
     slugWord: `${pick(g.rng, WORDS)}-${pick(g.rng, WORDS)}`,
   };
-  if (opts.agentId === undefined) {
-    claudeLine(g, session, state, "last-prompt", { header: true, extra: { text: promptText(g) } });
-    claudeLine(g, session, state, "mode", { header: true });
-    claudeLine(g, session, state, "permission-mode", { header: true });
-    if (chance(g.rng, 0.7)) claudeLine(g, session, state, "atis-latch", { header: true });
-    claudeLine(g, session, state, "attachment", {
-      extra: {
-        attachment: {
-          type: "skill_listing",
-          content: "@fill",
-          skillCount: 12,
-          isInitial: true,
-          names: [],
-        },
-      },
-    });
-    claudeLine(g, session, state, "file-history-snapshot", { header: true });
-  } else {
-    claudeLine(g, session, state, "agent-name", { header: true });
-  }
-  if (opts.resumeOf !== undefined) {
-    // A resume carries the earlier file's conversation over byte for byte (the
-    // same message ids and snapshots, which the readers book nothing new for),
-    // then the final line the original never got to write, then its own turns.
-    const copied = opts.resumeOf.body;
-    for (const [line, stamps] of copied.pairs()) {
-      session.buffer.push(line, stamps);
-      session.body.push(line, stamps);
-    }
-    const pending = opts.resumeOf.pendingFinal;
-    if (pending !== undefined) {
-      session.buffer.push(pending.text, { outer: pending.ms, nested: [] });
-      session.body.push(pending.text, { outer: pending.ms, nested: [] });
-      if (pending.delta.output > 0) {
-        expectClaude(g, pending.ms, pending.model, pending.delta, false);
-      }
-      opts.resumeOf.pendingFinal = undefined;
-    }
-    session.lastUuid = opts.resumeOf.lastUuid;
-  }
+  claudeHeader(g, session, state);
+  if (opts.resumeOf !== undefined) claudeCopyResumed(g, session, opts.resumeOf);
   const turns = sampleCount(g.rng, profile.turnsPerSession, 1);
   const perTurn = targetBytes / turns;
   for (let turn = 0; turn < turns; turn++) {
@@ -1597,15 +1769,12 @@ function claudeSession(
       state.nowMs += RESUME_GAP_MS + g.rng() * 6 * RESUME_GAP_MS;
     }
     const lastTurn = turn === turns - 1;
-    claudeTurn(
-      g,
-      session,
-      state,
-      turn === 0,
-      lastTurn,
-      lastTurn ? targetBytes : session.buffer.bytes + perTurn,
-      opts.truncate === true && lastTurn,
-    );
+    const plan: TurnPlan = {
+      first: turn === 0,
+      last: lastTurn,
+      targetBytes: lastTurn ? targetBytes : session.buffer.bytes + perTurn,
+    };
+    claudeTurn(g, session, state, plan, opts.truncate === true && lastTurn);
     session.endMs = state.nowMs;
     if (session.buffer.bytes >= targetBytes || session.pendingFinal !== undefined) break;
   }
@@ -1643,12 +1812,11 @@ function writeClaudeSubagent(
   g: Generator,
   claudeHome: string,
   parent: ClaudeSession,
-  bytes: number,
-  start: number,
+  draw: SessionDraw,
   deep: boolean,
 ): void {
   const agentId = `a${hex(g.rng, 15)}`;
-  const agent = claudeSession(g, bytes, start, parent.slug, { agentId });
+  const agent = claudeSession(g, draw.bytes, draw.start, parent.slug, { agentId });
   const dir = deep
     ? [parent.id, "subagents", "workflows", `wf_${hex(g.rng, 8)}-${hex(g.rng, 3)}`]
     : [parent.id, "subagents"];
@@ -1660,25 +1828,97 @@ function writeClaudeSubagent(
       JSON.stringify({
         type: "workflow_started",
         workflowId: dir[3],
-        timestamp: isoTimestamp(start),
+        timestamp: isoTimestamp(draw.start),
       }),
-      { outer: start, nested: [] },
+      { outer: draw.start, nested: [] },
     );
     journal.push(
       JSON.stringify({
         type: "step_completed",
         workflowId: dir[3],
         step: 1,
-        timestamp: isoTimestamp(start + 60_000),
+        timestamp: isoTimestamp(draw.start + 60_000),
       }),
-      { outer: start + 60_000, nested: [] },
+      { outer: draw.start + 60_000, nested: [] },
     );
     writeClaudeFile(g, claudeHome, parent.slug, [...dir, "journal.jsonl"], journal);
   }
 }
 
-function generateClaude(g: Generator, claudeHome: string, budget: number): void {
+/** A Claude session's draw also names the project slug it files under. */
+interface ClaudeDraw extends SessionDraw {
+  slug: string;
+}
+
+/** A top-level transcript sits directly under its project slug. */
+function writeClaudeTopLevel(g: Generator, claudeHome: string, session: ClaudeSession): void {
+  writeClaudeFile(g, claudeHome, session.slug, [`${session.id}.jsonl`], session.buffer);
+}
+
+function writeClaudeResume(
+  g: Generator,
+  claudeHome: string,
+  original: ClaudeSession,
+  draw: SessionDraw,
+): ClaudeSession {
+  const resumed = claudeSession(g, draw.bytes, draw.start, original.slug, { resumeOf: original });
+  writeClaudeTopLevel(g, claudeHome, resumed);
+  return resumed;
+}
+
+/** The first CLAUDE_SCRIPTED_SESSIONS sessions of an adversarial tree, one edge case each; returns
+ *  the new top-level session, when the case made one. */
+function writeScriptedClaudeSession(
+  g: Generator,
+  claudeHome: string,
+  index: number,
+  draw: ClaudeDraw,
+  lastTopLevel: ClaudeSession | undefined,
+): ClaudeSession | undefined {
+  switch (index) {
+    case 0: {
+      // The original of a resume pair, its last message cut mid-stream.
+      const original = claudeSession(g, draw.bytes, draw.start, draw.slug, { truncate: true });
+      writeClaudeTopLevel(g, claudeHome, original);
+      return original;
+    }
+    case 1: {
+      const original = must(lastTopLevel, "the original is scripted first");
+      return writeClaudeResume(g, claudeHome, original, draw);
+    }
+    case 2: {
+      const parent = must(lastTopLevel, "the original is scripted first");
+      writeClaudeSubagent(g, claudeHome, parent, draw, true);
+      return undefined;
+    }
+  }
+  throw new Error(`no scripted claude session ${index}`);
+}
+
+/** An unscripted session: at a sampled depth of 4 or more a subagent of the last top-level
+ *  session, adversarially now and then a resume of it, else a plain session; returns the new
+ *  top-level session, when there is one. */
+function writeUnscriptedClaudeSession(
+  g: Generator,
+  claudeHome: string,
+  draw: ClaudeDraw,
+  lastTopLevel: ClaudeSession | undefined,
+): ClaudeSession | undefined {
   const profile = g.profile.claude;
+  const depth = sampleCount(g.rng, profile.directoryDepth, 2);
+  if (depth >= 4 && lastTopLevel !== undefined) {
+    writeClaudeSubagent(g, claudeHome, lastTopLevel, draw, depth >= 6);
+    return undefined;
+  }
+  if (g.adversarial && lastTopLevel !== undefined && chance(g.rng, profile.forkShare)) {
+    return writeClaudeResume(g, claudeHome, lastTopLevel, draw);
+  }
+  const session = claudeSession(g, draw.bytes, draw.start, draw.slug);
+  writeClaudeTopLevel(g, claudeHome, session);
+  return session;
+}
+
+function generateClaude(g: Generator, claudeHome: string, budget: number): void {
   const slugs: string[] = [];
   let index = 0;
   let lastTopLevel: ClaudeSession | undefined;
@@ -1688,33 +1928,12 @@ function generateClaude(g: Generator, claudeHome: string, budget: number): void 
     const bytes = scripted >= 0 ? Math.min(drawn, SCRIPTED_MAX_BYTES) : drawn;
     const start = sessionStart(g, "claude");
     const slug = claudeSlug(g, slugs);
-    if (scripted === 0) {
-      // The original of a resume pair, its last message cut mid-stream.
-      const original = claudeSession(g, bytes, start, slug, { truncate: true });
-      writeClaudeFile(g, claudeHome, slug, [`${original.id}.jsonl`], original.buffer);
-      lastTopLevel = original;
-    } else if (scripted === 1 && lastTopLevel !== undefined) {
-      const resumed = claudeSession(g, bytes, start, lastTopLevel.slug, { resumeOf: lastTopLevel });
-      writeClaudeFile(g, claudeHome, resumed.slug, [`${resumed.id}.jsonl`], resumed.buffer);
-      lastTopLevel = resumed;
-    } else if (scripted === 2 && lastTopLevel !== undefined) {
-      writeClaudeSubagent(g, claudeHome, lastTopLevel, bytes, start, true);
-    } else {
-      const depth = sampleCount(g.rng, profile.directoryDepth, 2);
-      if (depth >= 4 && lastTopLevel !== undefined) {
-        writeClaudeSubagent(g, claudeHome, lastTopLevel, bytes, start, depth >= 6);
-      } else if (g.adversarial && lastTopLevel !== undefined && chance(g.rng, profile.forkShare)) {
-        const resumed = claudeSession(g, bytes, start, lastTopLevel.slug, {
-          resumeOf: lastTopLevel,
-        });
-        writeClaudeFile(g, claudeHome, resumed.slug, [`${resumed.id}.jsonl`], resumed.buffer);
-        lastTopLevel = resumed;
-      } else {
-        const session = claudeSession(g, bytes, start, slug);
-        writeClaudeFile(g, claudeHome, slug, [`${session.id}.jsonl`], session.buffer);
-        lastTopLevel = session;
-      }
-    }
+    const draw: ClaudeDraw = { bytes, start, slug };
+    const written =
+      scripted >= 0
+        ? writeScriptedClaudeSession(g, claudeHome, scripted, draw, lastTopLevel)
+        : writeUnscriptedClaudeSession(g, claudeHome, draw, lastTopLevel);
+    if (written !== undefined) lastTopLevel = written;
     index++;
   }
 }
@@ -1723,6 +1942,36 @@ function generateClaude(g: Generator, claudeHome: string, budget: number): void 
 
 /** RFC 3339 with an explicit zone; a zone-less instant would parse in the host's zone. */
 const ZONED_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/;
+
+/** Only an absent or EMPTY real directory (normalized first: `link/` would make lstat follow the
+ *  link): old logs beside the new ones would reach the readers while the ledger describes the new
+ *  files alone, and a symlink would put the tree elsewhere. Only ENOENT means absent. */
+function requireAbsentOrEmpty(root: string): void {
+  let stat: Stats;
+  try {
+    stat = lstatSync(root);
+  } catch (e) {
+    if (!(isRecord(e) && e.code === "ENOENT")) throw e;
+    return;
+  }
+  const empty = stat.isDirectory() && readdirSync(root).length === 0;
+  if (!empty) throw new Error("root must be an absent or empty directory");
+}
+
+/** Per source, the weight each day draws sessions with. */
+function dayWeights(
+  rng: Rng,
+  profile: Profile,
+  days: number,
+): Record<UsageSource, Record<string, number>> {
+  const weights: Record<UsageSource, Record<string, number>> = { codex: {}, claude: {} };
+  for (const source of USAGE_SOURCES) {
+    for (let day = 0; day < days; day++) {
+      weights[source][String(day)] = sampleCount(rng, profile[source].sessionsPerDay) + 0.01;
+    }
+  }
+  return weights;
+}
 
 /**
  * Generate `.codex/sessions` + `.claude/projects` under `root` (absent or an empty directory),
@@ -1747,19 +1996,8 @@ export async function generateUsageTree(opts: GenerateOptions): Promise<Generate
   if (!ZONED_INSTANT.test(end) || !Number.isFinite(endMs)) {
     throw new Error(`end must be an RFC 3339 instant with a zone (Z or offset), got ${opts.end}`);
   }
-  // Only an absent or EMPTY real directory (normalized first: `link/` would make lstat follow
-  // the link): old logs beside the new ones would reach the readers while the ledger describes
-  // the new files alone, and a symlink would put the tree elsewhere. Only ENOENT means absent.
   const root = path.resolve(opts.root);
-  let claim: "absent" | "empty" | "occupied";
-  try {
-    const stat = lstatSync(root);
-    claim = stat.isDirectory() && readdirSync(root).length === 0 ? "empty" : "occupied";
-  } catch (e) {
-    if (!(isRecord(e) && e.code === "ENOENT")) throw e;
-    claim = "absent";
-  }
-  if (claim === "occupied") throw new Error("root must be an absent or empty directory");
+  requireAbsentOrEmpty(root);
   const rng = mulberry32(opts.seed);
   const g: Generator = {
     rng,
@@ -1774,16 +2012,11 @@ export async function generateUsageTree(opts: GenerateOptions): Promise<Generate
     files: [],
     written: 0,
     startMs: endMs - days * MILLISECONDS_PER_DAY,
-    dayWeights: { codex: {}, claude: {} },
+    dayWeights: dayWeights(rng, profile, days),
     expected: { codex: new Map(), claude: emptyReport() },
     firstEventMs: Number.POSITIVE_INFINITY,
     lastEventMs: Number.NEGATIVE_INFINITY,
   };
-  for (const source of USAGE_SOURCES) {
-    for (let day = 0; day < days; day++) {
-      g.dayWeights[source][String(day)] = sampleCount(rng, profile[source].sessionsPerDay) + 0.01;
-    }
-  }
   const total = opts.mb * MEGABYTE;
   const shareSum = profile.codex.bytesShare + profile.claude.bytesShare;
   const codexBudget = shareSum > 0 ? total * (profile.codex.bytesShare / shareSum) : total / 2;

@@ -33,6 +33,17 @@ import {
 
 const OS_LOCK_SUFFIX = ".oslock";
 
+/** Whether `pid` is this release's daemon: "no" is the previous release's, "unknown" no verdict. */
+type DaemonClassifier = (pid: number) => Promise<"yes" | "no" | "unknown">;
+
+/** The stop by the lock and the pid's command line (./legacy_daemon.ts). */
+type DaemonStopper = (home: string) => Promise<LockedDaemonOutcome>;
+
+/** What stopping one home's daemon leaves the lock sweep: the marker to judge (`sweep`), nothing
+ *  (`left`: the daemon is ours, or the stop was only previewed), or a daemon that may still run
+ *  (`unclear`: named, and the deno-era files stay). */
+type StopVerdict = "sweep" | "left" | "unclear";
+
 /** Every `*.oslock` under `dir`, through links never (a link is the link). */
 function osLockSidecarsUnder(dir: string): string[] {
   let entries: ReturnType<typeof fs.readdirEntries>;
@@ -82,6 +93,70 @@ export function removeDenoLeftovers(rootHome: string): void {
   }
 }
 
+/** The stop's outcome narrated, and the verdict it leaves the sweep. */
+function reportStopOutcome(home: string, outcome: LockedDaemonOutcome): StopVerdict {
+  switch (outcome.kind) {
+    case "would-stop":
+      consola.info(
+        `  would stop the previous release's proxy daemon (pid ${outcome.pid}) in ${home}`,
+      );
+      return "left";
+    case "stopped":
+      if (outcome.stillRunning) {
+        consola.warn(
+          `  the previous release's proxy daemon (pid ${outcome.pid}) in ${home} would not stop (${outcome.verdict}); left as it is`,
+        );
+        return "unclear";
+      }
+      consola.info(
+        `  stopped the previous release's proxy daemon (pid ${outcome.pid}) in ${home}: ${outcome.verdict}`,
+      );
+      return "sweep";
+    case "unjudged":
+      consola.warn(
+        `  could not judge the daemon holding ${daemonLockPath(home)}: ${outcome.reason}; left as it is`,
+      );
+      return "unclear";
+    case "foreign":
+      consola.warn(foreignHolderWarning(home, outcome));
+      return "unclear";
+    case "none":
+      // The holder went between the two looks: the sweep judges the marker as it is now.
+      return "sweep";
+    default:
+      return assertNever(outcome);
+  }
+}
+
+/** The daemon holding `home`'s lock judged, and stopped when it is the previous release's. */
+async function stopHeldDaemon(
+  home: string,
+  pid: number,
+  classify: DaemonClassifier,
+  stop: DaemonStopper,
+): Promise<StopVerdict> {
+  const verdict = await classify(pid);
+  if (verdict === "unknown") {
+    consola.warn(
+      `  could not judge the daemon holding ${daemonLockPath(home)} (pid ${pid}); left as it is: stop it yourself if it is the previous release's`,
+    );
+    return "unclear";
+  }
+  if (verdict === "yes") return "left";
+  return reportStopOutcome(home, await stop(home));
+}
+
+/** The marker a daemon that is gone left, removed and named. A preview names a free marker still
+ *  on disk instead: the removal is a raw unlink outside the write seam. */
+function sweepDeadLock(home: string, free: boolean, preview: boolean): void {
+  const lock = daemonLockPath(home);
+  if (preview) {
+    if (free && fs.exists(lock)) consola.info(`  would remove ${lock}`);
+    return;
+  }
+  if (clearDeadDaemonLock(home)) consola.info(`  removed ${lock} (left by a daemon that is gone)`);
+}
+
 /**
  * The previous release's daemon reads "no" under the new classifier and ours "yes"; "unknown" is
  * left alone rather than taken as licence. Exported for the migration test; `homes`, `classify`,
@@ -93,69 +168,24 @@ export function removeDenoLeftovers(rootHome: string): void {
  */
 export async function stopPreviousDaemons(
   homes: readonly string[],
-  classify: (pid: number) => Promise<"yes" | "no" | "unknown"> = classifyDaemonPid,
-  stop: (home: string) => Promise<LockedDaemonOutcome> = stopLockedDaemon,
+  classify: DaemonClassifier = classifyDaemonPid,
+  stop: DaemonStopper = stopLockedDaemon,
 ): Promise<{ clear: boolean }> {
   const preview = fs.dryRunActive();
   let clear = true;
   for (const home of homes) {
     const hold = daemonLockHold(home);
-    if (hold.kind === "held" && hold.pid !== null) {
-      const verdict = await classify(hold.pid);
-      if (verdict === "unknown") {
-        consola.warn(
-          `  could not judge the daemon holding ${daemonLockPath(home)} (pid ${hold.pid}); left as it is: stop it yourself if it is the previous release's`,
-        );
-        clear = false;
-        continue;
-      }
-      if (verdict === "yes") continue;
-      const outcome = await stop(home);
-      switch (outcome.kind) {
-        case "would-stop":
-          consola.info(
-            `  would stop the previous release's proxy daemon (pid ${outcome.pid}) in ${home}`,
-          );
-          continue;
-        case "stopped":
-          if (outcome.stillRunning) {
-            consola.warn(
-              `  the previous release's proxy daemon (pid ${outcome.pid}) in ${home} would not stop (${outcome.verdict}); left as it is`,
-            );
-            clear = false;
-            continue;
-          }
-          consola.info(
-            `  stopped the previous release's proxy daemon (pid ${outcome.pid}) in ${home}: ${outcome.verdict}`,
-          );
-          break;
-        case "unjudged":
-          consola.warn(
-            `  could not judge the daemon holding ${daemonLockPath(home)}: ${outcome.reason}; left as it is`,
-          );
-          clear = false;
-          continue;
-        case "foreign":
-          consola.warn(foreignHolderWarning(home, outcome));
-          clear = false;
-          continue;
-        case "none":
-          // The holder went between the two looks: the sweep below judges the marker as it is now.
-          break;
-        default:
-          assertNever(outcome);
-      }
-    } else if (hold.kind === "unreadable") {
+    if (hold.kind === "unreadable") {
       consola.warn(`  could not read ${daemonLockPath(home)}; left as it is`);
       clear = false;
       continue;
     }
-    const lock = daemonLockPath(home);
-    if (preview) {
-      if (hold.kind === "free" && fs.exists(lock)) consola.info(`  would remove ${lock}`);
-    } else if (clearDeadDaemonLock(home)) {
-      consola.info(`  removed ${lock} (left by a daemon that is gone)`);
+    if (hold.kind === "held" && hold.pid !== null) {
+      const verdict = await stopHeldDaemon(home, hold.pid, classify, stop);
+      if (verdict === "unclear") clear = false;
+      if (verdict !== "sweep") continue;
     }
+    sweepDeadLock(home, hold.kind === "free", preview);
   }
   return { clear };
 }
@@ -166,8 +196,8 @@ export async function stopPreviousDaemons(
 export async function retireDenoDaemon(
   rootHome: string,
   homes: readonly string[],
-  classify: (pid: number) => Promise<"yes" | "no" | "unknown"> = classifyDaemonPid,
-  stop: (home: string) => Promise<LockedDaemonOutcome> = stopLockedDaemon,
+  classify: DaemonClassifier = classifyDaemonPid,
+  stop: DaemonStopper = stopLockedDaemon,
 ): Promise<void> {
   const { clear } = await stopPreviousDaemons(homes, classify, stop);
   if (!clear) {

@@ -141,6 +141,99 @@ type Narration = () => void;
 
 type UninstallStep = () => void | Narration | Promise<void> | Promise<Narration>;
 
+/** The Codex wiring out of every known home, and the host farm with it. */
+function removeCodexWiring(ctx: UninstallContext): Narration {
+  for (const home of ctx.codexHomes) {
+    removeCodexDefaultWiring(home);
+    for (const name of ctx.profiles) removeCodexProfile(home, name);
+  }
+  removeCodexHostFarm(ctx.targets.codexHostFarm);
+  if (!ctx.codexSweepComplete) {
+    consola.warn(
+      "Could not enumerate every ~/.codex/hosts home; if Codex fails to start there " +
+        "later, delete the stale model_catalog_json line from that config.toml.",
+    );
+  }
+  return () => consola.info("Removed the copilot-env Codex wiring.");
+}
+
+/** The default Claude wiring, then the MCP registration once no owned deny remains. */
+function removeClaudeWiring(ctx: UninstallContext): Narration {
+  const { ownedDenyRemains } = removeClaudeDefaultWiring(ctx.claudeHome);
+  if (ownedDenyRemains) {
+    consola.warn(
+      scannable({
+        headline: "the copilot-env WebSearch deny could not be removed.",
+        evidence: [
+          `the file could not be read, parsed, or rewritten: ${settingsPathFor(ctx.claudeHome)}`,
+          "the copilot-env MCP registration stays as its marker (it stops working once copilot-env is gone)",
+        ],
+        lead: "Then:",
+        actions: [
+          ["1.", `remove the deny by hand from ${settingsPathFor(ctx.claudeHome)}`],
+          ["2.", `remove the copilot-env entry from ${claudeJsonPath()}`],
+        ],
+      }),
+    );
+  } else if (ctx.targets.claudeMcpRegistration !== null) {
+    try {
+      removeClaudeMcpRegistration();
+    } catch (e) {
+      consola.warn(
+        caught(e, (message) => `could not remove the copilot-env MCP registration: ${message}`),
+      );
+    }
+  }
+  return () => consola.info("Removed the copilot-env Claude wiring.");
+}
+
+/** The install root, from a safe cwd; a removal that cannot finish names the finishing command
+ *  and fails the run. */
+function removeInstallRoot(ctx: UninstallContext): void {
+  const installRoot = ctx.installRoot.root;
+  if (ctx.skipRootDelete) {
+    consola.info(
+      `${installRoot} is a source checkout; leaving it in place - delete it yourself, ` +
+        "or re-run with --force.",
+    );
+    return;
+  }
+  // Already gone: a second run must be a silent no-op, not a refusal.
+  if (!fs.exists(installRoot)) return;
+  // The root is derived, so confirm it is really ours before deleting it recursively.
+  if (!looksLikeInstallRoot(installRoot)) {
+    consola.warn(
+      scannable({
+        headline: "Left in place: the install root does not look like copilot-env's.",
+        evidence: [installRoot],
+        lead: "Fix:",
+        actions: [[manualRemoveCommand(installRoot), "remove it yourself, if it is one"]],
+      }),
+    );
+    ctx.rootRemains = true;
+    process.exitCode = 1;
+    return;
+  }
+  // Out of the doomed tree first; a dry run deletes nothing and moves nothing.
+  if (!fs.dryRunActive()) {
+    try {
+      process.chdir(userHomeDir());
+    } catch {
+      // deletion may still succeed from the current cwd
+    }
+  }
+  try {
+    fs.rm(installRoot, { recursive: true, force: true, detail: "the install directory" });
+  } catch {
+    consola.warn(
+      `Could not fully delete ${installRoot} (files may be in use). ` +
+        `Finish with: ${manualRemoveCommand(installRoot)}`,
+    );
+    ctx.rootRemains = true;
+    process.exitCode = 1;
+  }
+}
+
 /** Order matters: daemons first (they hold the credential in memory, and a stuck one aborts before
  *  anything is deleted), all wiring and store work before the copilot-api home they read from, and
  *  the checkout (where this very process runs) dead last. Every removal goes through the facade, so
@@ -158,51 +251,11 @@ function uninstallSteps(ctx: UninstallContext): UninstallStep[] {
     // 3. Codex wiring, from EVERY known home: a farm home's config may reference the catalog file
     // step 7 removes (a dangling reference breaks Codex startup), and a profile wired while that
     // home was active left its tables there; step 2 stripped only the currently-effective home.
-    () => {
-      for (const home of ctx.codexHomes) {
-        removeCodexDefaultWiring(home);
-        for (const name of ctx.profiles) removeCodexProfile(home, name);
-      }
-      removeCodexHostFarm(ctx.targets.codexHostFarm);
-      if (!ctx.codexSweepComplete) {
-        consola.warn(
-          "Could not enumerate every ~/.codex/hosts home; if Codex fails to start there " +
-            "later, delete the stale model_catalog_json line from that config.toml.",
-        );
-      }
-      return () => consola.info("Removed the copilot-env Codex wiring.");
-    },
+    () => removeCodexWiring(ctx),
     // 4. Default Claude wiring. An exact-path-OWNED WebSearch deny is stripped even from a
     // foreign-edited config, ownership being the proof. The MCP registration is the deny's
     // web-search replacement, so it goes only once no owned deny remains.
-    () => {
-      const { ownedDenyRemains } = removeClaudeDefaultWiring(ctx.claudeHome);
-      if (ownedDenyRemains) {
-        consola.warn(
-          scannable({
-            headline: "the copilot-env WebSearch deny could not be removed.",
-            evidence: [
-              `the file could not be read, parsed, or rewritten: ${settingsPathFor(ctx.claudeHome)}`,
-              "the copilot-env MCP registration stays as its marker (it stops working once copilot-env is gone)",
-            ],
-            lead: "Then:",
-            actions: [
-              ["1.", `remove the deny by hand from ${settingsPathFor(ctx.claudeHome)}`],
-              ["2.", `remove the copilot-env entry from ${claudeJsonPath()}`],
-            ],
-          }),
-        );
-      } else if (ctx.targets.claudeMcpRegistration !== null) {
-        try {
-          removeClaudeMcpRegistration();
-        } catch (e) {
-          consola.warn(
-            caught(e, (message) => `could not remove the copilot-env MCP registration: ${message}`),
-          );
-        }
-      }
-      return () => consola.info("Removed the copilot-env Claude wiring.");
-    },
+    () => removeClaudeWiring(ctx),
     // 4b. Claude Desktop's config library: owned entries and helper scripts only.
     () => {
       try {
@@ -232,50 +285,7 @@ function uninstallSteps(ctx: UninstallContext): UninstallStep[] {
     // 8. The install root, last and from a safe cwd. rmSync can fail mid-tree (Windows open
     // handles), so the exact finishing command and a non-zero exit let scripts tell "fully
     // removed" from "left behind".
-    () => {
-      const installRoot = ctx.installRoot.root;
-      if (ctx.skipRootDelete) {
-        consola.info(
-          `${installRoot} is a source checkout; leaving it in place - delete it yourself, ` +
-            "or re-run with --force.",
-        );
-        return;
-      }
-      // Already gone: a second run must be a silent no-op, not a refusal.
-      if (!fs.exists(installRoot)) return;
-      // The root is derived, so confirm it is really ours before deleting it recursively.
-      if (!looksLikeInstallRoot(installRoot)) {
-        consola.warn(
-          scannable({
-            headline: "Left in place: the install root does not look like copilot-env's.",
-            evidence: [installRoot],
-            lead: "Fix:",
-            actions: [[manualRemoveCommand(installRoot), "remove it yourself, if it is one"]],
-          }),
-        );
-        ctx.rootRemains = true;
-        process.exitCode = 1;
-        return;
-      }
-      // Out of the doomed tree first; a dry run deletes nothing and moves nothing.
-      if (!fs.dryRunActive()) {
-        try {
-          process.chdir(userHomeDir());
-        } catch {
-          // deletion may still succeed from the current cwd
-        }
-      }
-      try {
-        fs.rm(installRoot, { recursive: true, force: true, detail: "the install directory" });
-      } catch {
-        consola.warn(
-          `Could not fully delete ${installRoot} (files may be in use). ` +
-            `Finish with: ${manualRemoveCommand(installRoot)}`,
-        );
-        ctx.rootRemains = true;
-        process.exitCode = 1;
-      }
-    },
+    () => removeInstallRoot(ctx),
   ];
 }
 

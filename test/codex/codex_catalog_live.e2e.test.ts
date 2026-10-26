@@ -1,6 +1,8 @@
 // Schema-drift gate against the INSTALLED Codex CLI, opt-in via COPILOT_ENV_LIVE_CODEX. No
 // token and no Copilot call: the CLI's bundled dump plus a fixture /models body, under
 // scratch homes only.
+
+import { afterEach } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { stringify } from "smol-toml";
@@ -16,7 +18,7 @@ import { childEnv, resolveCommand } from "../../src/utils/command.ts";
 import { PROJECT_ROOT } from "../../src/utils/root.ts";
 import { envSnapshot, isolateAgentHomes } from "../helpers/env.ts";
 import { runSync } from "../helpers/run.ts";
-import { afterEach, expect, test } from "../helpers/testing.ts";
+import { expect, test } from "../helpers/testing.ts";
 
 // Opted in: the test RUNS and a missing codex FAILS it (CI installs one right before), never a vacuous skip.
 const LIVE_ENV = "COPILOT_ENV_LIVE_CODEX";
@@ -85,6 +87,26 @@ function slugsOf(json: string): string[] {
   return (JSON.parse(json) as { models: Model[] }).models.map((m) => String(m.slug)).sort();
 }
 
+/** Negative control through the same path: the same file minus one required field per model is a
+ *  startup error naming the key; so is a non-catalog. */
+function expectBrokenCatalogsRejected(codexPath: string, scratchHome: string, ours: Model[]): void {
+  const broken = join(dir, "broken-catalog.json");
+  writeFileSync(
+    broken,
+    JSON.stringify({
+      models: ours.map((m) => {
+        const rest: Model = { ...m };
+        delete rest.truncation_policy;
+        return rest;
+      }),
+    }),
+  );
+  writeFileSync(join(scratchHome, "config.toml"), stringify({ model_catalog_json: broken }));
+  expectCatalogRejection(codexDebugModels(codexPath, scratchHome));
+  writeFileSync(broken, "not a catalog");
+  expectCatalogRejection(codexDebugModels(codexPath, scratchHome));
+}
+
 live(
   "the installed Codex accepts the catalog generated from its own dump, and rejects a broken one",
   async () => {
@@ -138,23 +160,8 @@ live(
     expect(additions).toContain(FIXTURE_ONLY);
     expect(slugsOf(generated)).toEqual([...bundledSlugs, ...additions].sort());
 
-    // (2) Negative control through the same path: the same file minus one required
-    // field per model is a startup error naming the key; so is a non-catalog.
-    const broken = join(dir, "broken-catalog.json");
-    writeFileSync(
-      broken,
-      JSON.stringify({
-        models: ours.map((m) => {
-          const rest: Model = { ...m };
-          delete rest.truncation_policy;
-          return rest;
-        }),
-      }),
-    );
-    writeFileSync(join(scratchHome, "config.toml"), stringify({ model_catalog_json: broken }));
-    expectCatalogRejection(codexDebugModels(codexPath, scratchHome));
-    writeFileSync(broken, "not a catalog");
-    expectCatalogRejection(codexDebugModels(codexPath, scratchHome));
+    // (2) Negative control through the same path.
+    expectBrokenCatalogsRejected(codexPath, scratchHome, ours);
 
     // (3) Every field of every bundled entry survives into ours (a newly required
     // field can never be dropped by the patcher), on the real dump of this release.

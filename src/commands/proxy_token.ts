@@ -112,6 +112,63 @@ export function runPrintProxyToken(profile: Profile): void {
   if (!dryRunActive()) process.stdout.write(`${key}\n`);
 }
 
+/** What a down proxy's start did. A `suppressed` start is the managed one, silent, so its failure
+ *  needs the pointer that surfaces the hidden error. A `planned` start is a dry run's: the start's
+ *  own preview (launchProxy under a dry run), whose refusals stand; past it the resolve proceeds
+ *  as if the daemon came up, since the writes that follow are the plan. */
+interface DownProxyStart {
+  suppressed: boolean;
+  planned: boolean;
+}
+
+/** Runs the start; whether it counts as planned (a dry run's start that was not refused). */
+async function launchOrPlan(
+  profile: Profile,
+  output: LaunchOutput,
+  deps: ProxyTokenDeps,
+): Promise<boolean> {
+  try {
+    await deps.launchProxy(profile, output);
+  } catch (e) {
+    // The real start is a child whose refusal is its own stderr and exit status (unread here):
+    // the in-process preview's refusal is said the same way, and the resolve reaches the same
+    // failed-start arm.
+    if (!dryRunActive()) throw e;
+    deps.notify(caught(e, (message) => `the proxy start would refuse: ${message}`));
+    return false;
+  }
+  return dryRunActive();
+}
+
+/** A down proxy's start, by the matrix above resolveProxyToken: managed starts silently,
+ *  unmanaged asks (a dry run cannot, and --yes never starts). */
+async function startDownProxy(
+  action: ProxyTokenAction,
+  deps: ProxyTokenDeps,
+): Promise<DownProxyStart> {
+  const { profile } = action;
+  if (deps.autoStartEnabled()) {
+    const planned = await launchOrPlan(profile, "suppressed", deps);
+    return { suppressed: true, planned };
+  }
+  if (action.assumeYes) return { suppressed: false, planned: false };
+  if (dryRunActive()) {
+    const yesHint = `agent profile ${profile === null ? "" : `${profile} `}proxy-token --yes`;
+    throw promptRefusedInDryRun(
+      `start the proxy? \`${yesHint}\` answers it, and ` +
+        `\`${configSetCommand("daemon.auto-start", "true")}\` starts it for every launcher`,
+    );
+  }
+  if (await deps.confirmStart("copilot proxy not running. Start it now?")) {
+    const planned = await launchOrPlan(profile, "visible", deps);
+    return { suppressed: false, planned };
+  }
+  // Human-facing hints must name the profile's daemon, or they'd point at the default one.
+  const startHint = agentStartCommand(profile);
+  deps.notify(`Continuing without the proxy; proxy-backed agents need it (run '${startHint}').`);
+  return { suppressed: false, planned: false };
+}
+
 /**
  * The key is printed only if the proxy is actually up after the re-probe.
  *   down, managed lifecycle on   -> silent auto-start, even interactive: the opt-in holds anywhere
@@ -123,54 +180,19 @@ export async function resolveProxyToken(
   deps: ProxyTokenDeps,
 ): Promise<0 | 1> {
   const { profile } = action;
-  // Human-facing hints must name the profile's daemon, or they'd point at the default one.
-  const startHint = agentStartCommand(profile);
-  const authHint = agentAuthCommand(profile);
-  const yesHint = `agent profile ${profile === null ? "" : `${profile} `}proxy-token --yes`;
-  let suppressedStart = false;
-  // A dry run asks nothing, and its start is the start's own preview (launchProxy under a dry
-  // run), whose refusals stand; past it the resolve proceeds as if the daemon came up, since the
-  // writes that follow are the plan.
-  let plannedStart = false;
-  const launch = async (output: LaunchOutput): Promise<void> => {
-    try {
-      await deps.launchProxy(profile, output);
-    } catch (e) {
-      // The real start is a child whose refusal is its own stderr and exit status (unread here):
-      // the in-process preview's refusal is said the same way, and the resolve reaches the same
-      // failed-start arm.
-      if (!dryRunActive()) throw e;
-      deps.notify(caught(e, (message) => `the proxy start would refuse: ${message}`));
-      return;
-    }
-    plannedStart = dryRunActive();
-  };
+  let start: DownProxyStart = { suppressed: false, planned: false };
   if (!(await deps.proxyUp(profile))) {
-    if (deps.autoStartEnabled()) {
-      await launch("suppressed");
-      suppressedStart = true;
-    } else if (!action.assumeYes) {
-      if (dryRunActive()) {
-        throw promptRefusedInDryRun(
-          `start the proxy? \`${yesHint}\` answers it, and ` +
-            `\`${configSetCommand("daemon.auto-start", "true")}\` starts it for every launcher`,
-        );
-      }
-      if (await deps.confirmStart("copilot proxy not running. Start it now?")) {
-        await launch("visible");
-      } else {
-        deps.notify(
-          `Continuing without the proxy; proxy-backed agents need it (run '${startHint}').`,
-        );
-      }
-    }
+    start = await startDownProxy(action, deps);
   }
   deps.recordHeartbeat(profile);
-  if (plannedStart || (await deps.proxyUp(profile))) {
+  if (start.planned || (await deps.proxyUp(profile))) {
     await deps.printProxyToken(profile);
     return 0;
   }
-  if (suppressedStart) {
+  if (start.suppressed) {
+    // Human-facing hints must name the profile's daemon, or they'd point at the default one.
+    const startHint = agentStartCommand(profile);
+    const authHint = agentAuthCommand(profile);
     deps.notify(
       `copilot proxy failed to start (run '${startHint}' to see the error; no credential stored? run '${authHint}').`,
     );

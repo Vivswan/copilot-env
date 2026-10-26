@@ -3,6 +3,8 @@
 // teardown (the event loop's use-after-free in a socket close, oven-sh/bun#40376, still in 1.4.3;
 // scripts/run_tests.ts runs the file once more when it hits) must not take the daemon tests down
 // with it.
+
+import { afterEach } from "bun:test";
 import { CopilotEnvConfig, type GlobalPatch } from "../../src/copilot_api/env_config.ts";
 import { resolveStartPort } from "../../src/copilot_api/launch.ts";
 import { parseProfileName } from "../../src/copilot_api/profile.ts";
@@ -10,7 +12,7 @@ import { CopilotEnvRunState } from "../../src/copilot_api/run_state.ts";
 import { defaultHomeDir, envSnapshot, isolateProxyHome } from "../helpers/env.ts";
 import { writeRunState } from "../helpers/fixtures.ts";
 import { closeServer, freePort, listenEphemeral } from "../helpers/net.ts";
-import { afterEach, expect, removeDir, test } from "../helpers/testing.ts";
+import { expect, removeDir, test } from "../helpers/testing.ts";
 
 const WORK = parseProfileName("work");
 
@@ -78,16 +80,54 @@ test("resolveStartPort: a port outside the configured range is a clear error, wh
   }
 });
 
+interface PortRow {
+  /** The row's name, echoed in the assertion so a failure names it. */
+  name: string;
+
+  /** Whether `port` is passed as the `--port` pin, else stored as the default. */
+  pinned: boolean;
+
+  /** Whether a loopback listener holds `port` while the probe runs. */
+  busy: boolean;
+
+  /** Whether `daemon.strict-port` is stored. */
+  strict: boolean;
+
+  /** The port used (`same`, or `moved` above it), or the refusal's text for `port`. */
+  outcome: "same" | "moved" | ((port: number) => string);
+}
+
+/** One row against `port`: stored as the default (or pinned), strict when the row says. */
+async function resolveRow(row: PortRow, port: number): Promise<void> {
+  if (!row.pinned) {
+    const patch: GlobalPatch = { "daemon.port": port };
+    if (row.strict) patch["daemon.strict-port"] = true;
+    new CopilotEnvConfig().set(patch);
+  }
+  const resolved = resolveStartPort(
+    row.pinned ? port : undefined,
+    false,
+    null,
+    false,
+    new CopilotEnvConfig(),
+  );
+  if (typeof row.outcome === "function") {
+    await expect(resolved).rejects.toThrow(row.outcome(port));
+    return;
+  }
+  const chosen = await resolved;
+  if (row.outcome === "same") {
+    expect({ name: row.name, chosen }).toEqual({ name: row.name, chosen: port });
+    return;
+  }
+  expect(chosen).not.toBe(port);
+  expect(chosen).toBeGreaterThan(port);
+}
+
 // (pinned or configured default, busy or free, strict-port) -> the port used or the refusal. A wrong
 // row moves a start off its pinned port, or auto-increments where the operator forbade it.
 test("resolveStartPort: a pin is used or refused as-is; a busy default moves unless strict-port forbids it", async () => {
-  const rows: Array<{
-    name: string;
-    pinned: boolean;
-    busy: boolean;
-    strict: boolean;
-    outcome: "same" | "moved" | ((port: number) => string);
-  }> = [
+  const rows: PortRow[] = [
     { name: "pinned free port", pinned: true, busy: false, strict: false, outcome: "same" },
     {
       name: "pinned busy port",
@@ -116,32 +156,7 @@ test("resolveStartPort: a pin is used or refused as-is; a busy default moves unl
   for (const row of rows) {
     dir = removeDir(dir);
     tmpHome();
-    const run = async (port: number): Promise<void> => {
-      if (!row.pinned) {
-        new CopilotEnvConfig().set({
-          "daemon.port": port,
-          ...(row.strict ? { "daemon.strict-port": true } : {}),
-        });
-      }
-      const resolved = resolveStartPort(
-        row.pinned ? port : undefined,
-        false,
-        null,
-        false,
-        new CopilotEnvConfig(),
-      );
-      if (typeof row.outcome === "function") {
-        await expect(resolved).rejects.toThrow(row.outcome(port));
-        return;
-      }
-      const chosen = await resolved;
-      if (row.outcome === "same") {
-        expect({ name: row.name, chosen }).toEqual({ name: row.name, chosen: port });
-      } else {
-        expect(chosen).not.toBe(port);
-        expect(chosen).toBeGreaterThan(port);
-      }
-    };
+    const run = (port: number): Promise<void> => resolveRow(row, port);
     if (row.busy) await withBusyPort(run);
     else await run(await freePort());
   }

@@ -11,6 +11,7 @@ import { parseEveryCandidate } from "../../src/usage/contribution.ts";
 import { canonicalModelName } from "../../src/usage/pricing.ts";
 import type { ModelUsage, ReadonlyUsageTotals } from "../../src/usage/usage.ts";
 import { must } from "../../src/utils/assert.ts";
+import { byCodeUnit } from "../../src/utils/order.ts";
 import { MILLISECONDS_PER_DAY } from "../../src/utils/time.ts";
 import { expect, tempDir, test } from "../helpers/testing.ts";
 import {
@@ -120,9 +121,10 @@ test("generateUsageTree writes the pinned bytes, and the readers return exactly 
   const pinnedRoot = tempDir("usage-fixtures-");
   const pinned = await generateUsageTree({ root: pinnedRoot, mb: 1, seed: 7, days: 5 });
   const hash = createHash("sha256");
-  for (const entry of pinned.files
+  const entries = pinned.files
     .map((f) => ({ rel: relative(pinnedRoot, f.path).replaceAll("\\", "/"), path: f.path }))
-    .sort((a, b) => (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0))) {
+    .sort((a, b) => byCodeUnit(a.rel, b.rel));
+  for (const entry of entries) {
     hash.update(`${entry.rel}\n`);
     hash.update(
       entry.rel.endsWith(".zst")

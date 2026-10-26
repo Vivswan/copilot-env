@@ -1,3 +1,4 @@
+import { afterEach } from "bun:test";
 import {
   discoverServableClaudeModels,
   forgetDiscoveryAnswers,
@@ -9,7 +10,7 @@ import {
 } from "../../src/copilot_api/integration_identity.ts";
 import { withDryRun } from "../../src/utils/dry_run.ts";
 import { envSnapshot, isolateProxyHome } from "../helpers/env.ts";
-import { afterEach, expect, test } from "../helpers/testing.ts";
+import { expect, test } from "../helpers/testing.ts";
 
 // Verification verdicts persist in the shared state store, so every test isolates its own home.
 const restoreEnv = envSnapshot();
@@ -51,49 +52,59 @@ interface StubOptions {
   calls?: string[];
 }
 
+/** GET /models under the identity the header names; 403 for one the stub has no catalog for. */
+function catalogAnswer(opts: StubOptions, headers: Headers): Response {
+  const identity = headers.get("Copilot-Integration-Id") ?? "none";
+  opts.calls?.push(`catalog:${identity}`);
+  const ids = opts.catalogs[identity];
+  if (ids === undefined) return new Response("{}", { status: 403 });
+  return Response.json({ data: ids.map((id) => ({ id })) });
+}
+
+/** POST /responses: 200 for a candidate that serves, else the 400 whose message carries the
+ *  allowlist, or not. */
+function oracleAnswer(opts: StubOptions, model: string): Response {
+  opts.calls?.push(`oracle:${model}`);
+  if (opts.oracleServable?.includes(model)) return new Response("{}", { status: 200 });
+  const message =
+    opts.allowlist === undefined
+      ? "The requested model is not supported."
+      : `The requested model is not available for integrator "x". Available models: [${opts.allowlist.join(
+          " ",
+        )}]`;
+  return new Response(JSON.stringify({ error: { message } }), { status: 400 });
+}
+
+/** POST /v1/messages: the small ping vs the oversized 1m probe, by prompt size. */
+function pingAnswer(
+  opts: StubOptions,
+  body: { model: string; messages?: { content: string }[] },
+): Response {
+  const big = (body.messages?.[0]?.content.length ?? 0) > 100_000;
+  opts.calls?.push(`${big ? "probe1m" : "ping"}:${body.model}`);
+  if (opts.transient?.includes(body.model) || (big && opts.transient1m?.includes(body.model))) {
+    return new Response("busy", { status: 503 });
+  }
+  if (!big && opts.odd?.includes(body.model)) {
+    return new Response("{}", { status: 201 });
+  }
+  const ok = (big ? opts.oneM : opts.servable)?.includes(body.model) ?? false;
+  return new Response(ok ? "{}" : JSON.stringify({ error: { message: "nope" } }), {
+    status: ok ? 200 : 400,
+  });
+}
+
 function stubFetch(opts: StubOptions): ProbeFetch {
   return (input, init) => {
     const url = String(input);
     const headers = new Headers(init?.headers as HeadersInit | undefined);
-    if (url.endsWith("/models")) {
-      const identity = headers.get("Copilot-Integration-Id") ?? "none";
-      opts.calls?.push(`catalog:${identity}`);
-      const ids = opts.catalogs[identity];
-      if (ids === undefined) return Promise.resolve(new Response("{}", { status: 403 }));
-      return Promise.resolve(Response.json({ data: ids.map((id) => ({ id })) }));
-    }
+    if (url.endsWith("/models")) return Promise.resolve(catalogAnswer(opts, headers));
     const body = JSON.parse(String(init?.body)) as {
       model: string;
       messages?: { content: string }[];
     };
-    if (url.endsWith("/responses")) {
-      opts.calls?.push(`oracle:${body.model}`);
-      if (opts.oracleServable?.includes(body.model)) {
-        return Promise.resolve(new Response("{}", { status: 200 }));
-      }
-      const message =
-        opts.allowlist === undefined
-          ? "The requested model is not supported."
-          : `The requested model is not available for integrator "x". Available models: [${opts.allowlist.join(
-              " ",
-            )}]`;
-      return Promise.resolve(new Response(JSON.stringify({ error: { message } }), { status: 400 }));
-    }
-    // /v1/messages: the small ping vs the oversized 1m probe, by prompt size.
-    const big = (body.messages?.[0]?.content.length ?? 0) > 100_000;
-    opts.calls?.push(`${big ? "probe1m" : "ping"}:${body.model}`);
-    if (opts.transient?.includes(body.model) || (big && opts.transient1m?.includes(body.model))) {
-      return Promise.resolve(new Response("busy", { status: 503 }));
-    }
-    if (!big && opts.odd?.includes(body.model)) {
-      return Promise.resolve(new Response("{}", { status: 201 }));
-    }
-    const ok = (big ? opts.oneM : opts.servable)?.includes(body.model) ?? false;
-    return Promise.resolve(
-      new Response(ok ? "{}" : JSON.stringify({ error: { message: "nope" } }), {
-        status: ok ? 200 : 400,
-      }),
-    );
+    if (url.endsWith("/responses")) return Promise.resolve(oracleAnswer(opts, body.model));
+    return Promise.resolve(pingAnswer(opts, body));
   };
 }
 

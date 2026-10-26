@@ -1,3 +1,4 @@
+import { afterEach } from "bun:test";
 import { configDefaultNumber } from "../../src/copilot_api/config_registry.ts";
 import { CopilotEnvConfig } from "../../src/copilot_api/env_config.ts";
 import {
@@ -9,7 +10,7 @@ import {
   proxyPortRange,
 } from "../../src/copilot_api/port.ts";
 import { envSnapshot, isolateProxyHome } from "../helpers/env.ts";
-import { afterEach, expect, test } from "../helpers/testing.ts";
+import { expect, test } from "../helpers/testing.ts";
 
 const restoreEnv = envSnapshot();
 

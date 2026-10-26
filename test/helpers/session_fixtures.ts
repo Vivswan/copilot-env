@@ -33,8 +33,8 @@ export function sessionMeta(
     session_id: id,
     timestamp,
     cwd: "/tmp",
-    ...(opts.provider !== undefined ? { model_provider: opts.provider } : {}),
-    ...(opts.forkedFrom !== undefined ? { forked_from_id: opts.forkedFrom } : {}),
+    ...(opts.provider === undefined ? {} : { model_provider: opts.provider }),
+    ...(opts.forkedFrom === undefined ? {} : { forked_from_id: opts.forkedFrom }),
   });
 }
 

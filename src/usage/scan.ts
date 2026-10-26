@@ -81,6 +81,24 @@ function releaseBuffer(buffer: Buffer, bufferBytes: number | undefined): void {
   }
 }
 
+/** The up to TAIL_PROBE_BYTES bytes before `fromByte`, as many as the source yields. */
+function seedProbe(readAt: ReadAt, fromByte: number): Uint8Array {
+  const want = Math.min(TAIL_PROBE_BYTES, fromByte);
+  const seed = new Uint8Array(want);
+  let got = 0;
+  for (;;) {
+    const n = readAt(seed.subarray(got), fromByte - want + got);
+    if (n === 0) {
+      break;
+    }
+    got += n;
+    if (got === want) {
+      break;
+    }
+  }
+  return seed.subarray(0, got);
+}
+
 /** Exported so tests can drive it with sources that read short. The needles are the readers' string
  *  constants: non-empty ASCII without a line feed, so each matches the same bytes in the latin1
  *  search string and the UTF-8 text and lies within one line. */
@@ -91,26 +109,9 @@ export function scanSource(
   onLine: (hit: ScanHit) => void,
   options: ScanOptions,
 ): ScanResult {
-  let bytesRead = 0;
   // A resume starts with the bytes before `fromByte`, which only the source has.
-  let probe: Uint8Array = new Uint8Array(0);
-  if (fromByte > 0) {
-    const want = Math.min(TAIL_PROBE_BYTES, fromByte);
-    const seed = new Uint8Array(want);
-    let got = 0;
-    for (;;) {
-      const n = readAt(seed.subarray(got), fromByte - want + got);
-      if (n === 0) {
-        break;
-      }
-      got += n;
-      if (got === want) {
-        break;
-      }
-    }
-    bytesRead += got;
-    probe = seed.subarray(0, got);
-  }
+  let probe: Uint8Array = fromByte > 0 ? seedProbe(readAt, fromByte) : new Uint8Array(0);
+  let bytesRead = probe.length;
   let buffer = takeBuffer(options.bufferBytes);
   let base = fromByte; // file offset of buffer[0]
   let filled = 0;

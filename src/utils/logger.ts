@@ -84,7 +84,9 @@ function firstLineLead(logObj: LogObject, fancy: boolean): number {
   const tag = bracketed(logObj.tag);
   if (!fancy) return bracketed(logObj.type) + tag;
   const badge = logObj.badge === true || (logObj.badge === undefined && logObj.level < 2);
-  return (badge ? bracketed(logObj.type) : logObj.type === "log" ? 0 : ICON_LEAD) + tag;
+  if (badge) return bracketed(logObj.type) + tag;
+  if (logObj.type === "log") return tag;
+  return ICON_LEAD + tag;
 }
 
 /** Lays a message out for the width of the stream consola will write it to (stderr below level

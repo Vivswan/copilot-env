@@ -48,6 +48,40 @@ function isStringListRecord(value: unknown): value is Record<string, string[]> {
   );
 }
 
+/** Every name under `edges`, a source or a target, is a layer. */
+function assertEdgesNameLayers(
+  layers: Record<string, string[]>,
+  edges: Record<string, string[]>,
+): void {
+  for (const [from, targets] of Object.entries(edges)) {
+    for (const name of [from, ...targets]) {
+      if (!Object.hasOwn(layers, name)) {
+        throw new Error(`${ARCHITECTURE_FILE}: edges name "${name}", which is not a layer`);
+      }
+    }
+  }
+}
+
+/** Whether two owned paths claim a common file: equal, or one a directory holding the other. */
+function overlaps(a: string, b: string): boolean {
+  return a === b || (a.endsWith("/") && b.startsWith(a)) || (b.endsWith("/") && a.startsWith(b));
+}
+
+/** No two layers own one path. */
+function assertLayersDisjoint(layers: Record<string, string[]>): void {
+  const owned = Object.entries(layers).flatMap(([layer, paths]) =>
+    paths.map((path) => ({ layer, path })),
+  );
+  for (const [i, a] of owned.entries()) {
+    for (const b of owned.slice(i + 1)) {
+      if (a.layer === b.layer || !overlaps(a.path, b.path)) continue;
+      throw new Error(
+        `${ARCHITECTURE_FILE}: layers ${a.layer} and ${b.layer} overlap; a file has one owner`,
+      );
+    }
+  }
+}
+
 /** The declaration under `root`, shape-checked: a typo in a layer name under `edges`, or two layers
  *  claiming one path, is an error here rather than a silent pass. */
 export function readArchitecture(root: string): Architecture {
@@ -65,30 +99,8 @@ export function readArchitecture(root: string): Architecture {
   if (!isStringListRecord(edges)) {
     throw new Error(`${ARCHITECTURE_FILE}: edges must map each layer name to a list of layers`);
   }
-  for (const [from, targets] of Object.entries(edges)) {
-    for (const name of [from, ...targets]) {
-      if (!Object.hasOwn(layers, name)) {
-        throw new Error(`${ARCHITECTURE_FILE}: edges name "${name}", which is not a layer`);
-      }
-    }
-  }
-  const owned = Object.entries(layers).flatMap(([layer, paths]) =>
-    paths.map((path) => ({ layer, path })),
-  );
-  for (const [i, a] of owned.entries()) {
-    for (const b of owned.slice(i + 1)) {
-      if (a.layer === b.layer) continue;
-      const overlap =
-        a.path === b.path ||
-        (a.path.endsWith("/") && b.path.startsWith(a.path)) ||
-        (b.path.endsWith("/") && a.path.startsWith(b.path));
-      if (overlap) {
-        throw new Error(
-          `${ARCHITECTURE_FILE}: layers ${a.layer} and ${b.layer} overlap; a file has one owner`,
-        );
-      }
-    }
-  }
+  assertEdgesNameLayers(layers, edges);
+  assertLayersDisjoint(layers);
   return { layers, exclude, edges };
 }
 
@@ -99,6 +111,50 @@ function owns(paths: readonly string[], file: string): boolean {
 /** `file` is repo-relative, as the graph's keys are. */
 function layerOf(arch: Architecture, file: string): string | undefined {
   return Object.entries(arch.layers).find(([, paths]) => owns(paths, file))?.[0];
+}
+
+/** The layer edges one file draws (`from -> to`, each with its site `file -> target`); an import
+ *  target no layer owns is a problem instead. */
+function edgesFrom(
+  arch: Architecture,
+  file: string,
+  from: string,
+  targets: readonly string[],
+  problems: string[],
+): [string, string][] {
+  const edges: [string, string][] = [];
+  for (const target of targets) {
+    const to = layerOf(arch, target);
+    if (to === undefined) {
+      problems.push(`${target} (imported by ${file}) belongs to no layer in ${ARCHITECTURE_FILE}`);
+      continue;
+    }
+    if (to !== from) edges.push([`${from} -> ${to}`, `${file} -> ${target}`]);
+  }
+  return edges;
+}
+
+/** The cross-layer edges `graph` draws, `from -> to` -> the import sites drawing it; a file no
+ *  layer owns is a problem instead. */
+function drawnEdges(
+  arch: Architecture,
+  graph: ImportGraph,
+  files: readonly string[],
+  problems: string[],
+): Map<string, string[]> {
+  const drawn = new Map<string, string[]>();
+  for (const file of files) {
+    if (owns(arch.exclude, file)) continue;
+    const from = layerOf(arch, file);
+    if (from === undefined) {
+      problems.push(`${file} belongs to no layer in ${ARCHITECTURE_FILE}`);
+      continue;
+    }
+    for (const [key, site] of edgesFrom(arch, file, from, graph.get(file) ?? [], problems)) {
+      drawn.set(key, [...(drawn.get(key) ?? []), site]);
+    }
+  }
+  return drawn;
 }
 
 /**
@@ -115,26 +171,7 @@ export function lintArchitecture(arch: Architecture, graph: ImportGraph): string
       }
     }
   }
-  const drawn = new Map<string, string[]>();
-  for (const file of files) {
-    if (owns(arch.exclude, file)) continue;
-    const from = layerOf(arch, file);
-    if (from === undefined) {
-      problems.push(`${file} belongs to no layer in ${ARCHITECTURE_FILE}`);
-      continue;
-    }
-    for (const target of graph.get(file) ?? []) {
-      const to = layerOf(arch, target);
-      if (to === undefined) {
-        problems.push(
-          `${target} (imported by ${file}) belongs to no layer in ${ARCHITECTURE_FILE}`,
-        );
-      } else if (to !== from) {
-        const key = `${from} -> ${to}`;
-        drawn.set(key, [...(drawn.get(key) ?? []), `${file} -> ${target}`]);
-      }
-    }
-  }
+  const drawn = drawnEdges(arch, graph, files, problems);
   const declared = new Set(
     Object.entries(arch.edges).flatMap(([from, targets]) =>
       targets.map((to) => `${from} -> ${to}`),

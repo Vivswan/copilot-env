@@ -9,6 +9,7 @@ import {
   type EcmaScriptModule,
   type Program,
   parseSync,
+  type StaticExportEntry,
   Visitor,
   type VisitorObject,
 } from "oxc-parser";
@@ -67,11 +68,23 @@ export function resolveRelative(from: string, specifier: string): string | null 
 }
 
 /**
- * The names `path` exports, values and types alike: a local declaration under its exported name,
- * `export { a as b }` as b, `export * as ns` as ns, and `export * from` carrying the target's
- * names (a star never re-exports a default). A star onto a module outside the checkout (a bare
- * specifier) carries nothing: the reader's claims name repository files.
+ * The names one export entry of `path` contributes: a local declaration under its exported
+ * name, `export { a as b }` as b, `export * as ns` as ns, a default as `default`, and
+ * `export * from` carrying the target's names (a star never re-exports a default). A star onto
+ * a module outside the checkout (a bare specifier) carries nothing: the reader's claims name
+ * repository files.
  */
+function exportEntryNames(path: string, entry: StaticExportEntry, seen: Set<string>): string[] {
+  const { exportName, importName, moduleRequest } = entry;
+  if (exportName.kind === "Name" && exportName.name !== null) return [exportName.name];
+  if (exportName.kind === "Default") return ["default"];
+  if (importName.kind !== "AllButDefault" || moduleRequest === null) return [];
+  const target = resolveRelative(path, moduleRequest.value);
+  if (target === null) return [];
+  return [...exportedNames(target, seen)].filter((name) => name !== "default");
+}
+
+/** The names `path` exports, values and types alike, a star re-export followed once. */
 export function exportedNames(path: string, seen = new Set<string>()): Set<string> {
   const names = new Set<string>();
   if (seen.has(path)) return names;
@@ -79,18 +92,7 @@ export function exportedNames(path: string, seen = new Set<string>()): Set<strin
   const parsed = parseModule(path);
   for (const statement of parsed.module.staticExports) {
     for (const entry of statement.entries) {
-      const { exportName, importName, moduleRequest } = entry;
-      if (exportName.kind === "Name" && exportName.name !== null) {
-        names.add(exportName.name);
-      } else if (exportName.kind === "Default") {
-        names.add("default");
-      } else if (importName.kind === "AllButDefault" && moduleRequest !== null) {
-        const target = resolveRelative(path, moduleRequest.value);
-        if (target === null) continue;
-        for (const name of exportedNames(target, seen)) {
-          if (name !== "default") names.add(name);
-        }
-      }
+      for (const name of exportEntryNames(path, entry, seen)) names.add(name);
     }
   }
   return names;

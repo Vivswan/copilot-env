@@ -2,6 +2,7 @@
 // against a target, and the rendered block, all against fixed clocks so the
 // numbers are exact.
 
+import { describe } from "bun:test";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { runCredits, runCreditsEverywhere } from "../../src/commands/credits.ts";
@@ -18,7 +19,7 @@ import {
 } from "../../src/usage/credits.ts";
 import { envSnapshot, isolateProxyHome } from "../helpers/env.ts";
 import { captureChannels } from "../helpers/output.ts";
-import { describe, expect, test } from "../helpers/testing.ts";
+import { expect, test } from "../helpers/testing.ts";
 
 const BODY = {
   login: "octocat",

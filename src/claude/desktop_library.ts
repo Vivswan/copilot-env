@@ -188,6 +188,26 @@ function isSafeEntryId(id: string): boolean {
   return !WINDOWS_DEVICE_NAME_RE.test(stem.toLowerCase());
 }
 
+/** Null for any row this module does not fully understand. Duplicate ids would make path-keyed
+ *  removal delete a config a surviving foreign row still references. Folded case: Windows and
+ *  default macOS filesystems make `Foo.json` and `foo.json` one file. */
+function parseDesktopMetaEntries(rows: readonly unknown[]): DesktopMetaEntry[] | null {
+  const entries: DesktopMetaEntry[] = [];
+  const seen = new Set<string>();
+  for (const entry of rows) {
+    if (!isRecord(entry) || typeof entry.id !== "string" || typeof entry.name !== "string") {
+      return null;
+    }
+    if (!isSafeEntryId(entry.id)) return null;
+    const folded = entry.id.toLowerCase();
+    if (seen.has(folded)) return null;
+    seen.add(folded);
+    const { id, name, ...extra } = entry;
+    entries.push({ id, name, extra });
+  }
+  return entries;
+}
+
 /** FAIL-CLOSED: any shape this module does not fully understand is null, and the caller leaves the
  *  library alone (it is the app's file, not ours to repair). Fields beyond the understood ones ride
  *  through `extra` so a save never drops them. */
@@ -204,22 +224,8 @@ export function parseDesktopMeta(raw: string | null): DesktopMeta | null {
   if (doc.appliedId !== undefined && typeof doc.appliedId !== "string") return null;
   if (doc.appliedId !== undefined && !isSafeEntryId(doc.appliedId)) return null;
   if (doc.entries !== undefined && !Array.isArray(doc.entries)) return null;
-  const entries: DesktopMetaEntry[] = [];
-  const seen = new Set<string>();
-  for (const entry of Array.isArray(doc.entries) ? doc.entries : []) {
-    if (!isRecord(entry) || typeof entry.id !== "string" || typeof entry.name !== "string") {
-      return null;
-    }
-    if (!isSafeEntryId(entry.id)) return null;
-    // Duplicate ids would make path-keyed removal delete a config a surviving foreign row still
-    // references. Folded case: Windows and default macOS filesystems make `Foo.json` and `foo.json`
-    // one file.
-    const folded = entry.id.toLowerCase();
-    if (seen.has(folded)) return null;
-    seen.add(folded);
-    const { id, name, ...extra } = entry;
-    entries.push({ id, name, extra });
-  }
+  const entries = parseDesktopMetaEntries(Array.isArray(doc.entries) ? doc.entries : []);
+  if (entries === null) return null;
   const { appliedId: _a, entries: _e, ...extra } = doc;
   return { appliedId: typeof doc.appliedId === "string" ? doc.appliedId : null, entries, extra };
 }

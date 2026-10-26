@@ -10,6 +10,7 @@ import {
   type ConfigGroup,
   type ConfigKeyDef,
   type ConfigScope,
+  type ConfigValue,
   type ConfigValueTypes,
   configDefaultValue,
   configGroup,
@@ -26,6 +27,7 @@ import {
   formatConfigValue,
   isStoredSource,
   isStoredValueInert,
+  type ResolvedSetting,
   resolveSettingIn,
   type SettingSource,
   type SettingTarget,
@@ -315,6 +317,12 @@ const RESTART_LINE = "restart the proxy to apply";
 /** Between the header's parts, on one line. */
 const HEADER_GAP = "  |  ";
 
+/** What reads a profile-default group's value for the profile: the PROFILE heading's note. */
+const PROFILE_DEFAULT_CONSUMER: Partial<Record<ConfigGroup, string>> = {
+  probe: "this profile's Direct probe",
+  proxy: "this profile's daemon",
+};
+
 /** Never splits an item: one longer than `columns` stands on its own line. The one wrap rule for
  *  the header's parts, the description's words, and the right column's cells alike. */
 function packToWidth<T>(items: T[], length: (item: T) => number, columns: number, gap = 1): T[][] {
@@ -334,9 +342,33 @@ function packToWidth<T>(items: T[], length: (item: T) => number, columns: number
   return lines;
 }
 
+type Paint = ReturnType<typeof paintFor>;
+
+const plainText = (text: string): string => text;
+
 interface Cell {
   text: string;
   paint: (text: string) => string;
+}
+
+/** A key as the listing reads it for the view: its resolution, whether it is stored, its
+ *  built-in default, the value as shown, and the width of its `key=value` lead. */
+interface ConfigRow {
+  def: ConfigKeyDef;
+  resolved: ResolvedSetting<ConfigValue>;
+  stored: boolean;
+  fallback: ConfigValue | undefined;
+  value: string;
+  indent: number;
+  leadLength: number;
+}
+
+/** Where the right column starts, how wide it is, and its indent under a lead that did not fit. */
+interface TableColumns {
+  width: number;
+  column: number;
+  rightWidth: number;
+  indent: string;
 }
 
 interface ConfigTableOptions {
@@ -359,18 +391,20 @@ interface ConfigTableOptions {
   color: boolean;
 }
 
-/** The listing a keyless `get` prints, and `agent config --help` in the config view. The config
- *  view: a SHARED DEFAULTS banner for the profile-default groups as every profile inherits them,
- *  then a GLOBAL banner for the machine's keys, grouped by the key's group. A profile's view: a
- *  PROFILE banner for every key its daemon and wiring consume (its own keys, then the
- *  profile-default groups resolved for it). Prose breaks between words; a value wider than its
- *  column (a URL) splits at the edge. */
-export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions): string {
-  const plain = (text: string): string => text;
-  const paint = paintFor(opts.color);
+/** What every row and banner shares: the view and the daemons (`opts`), the columns, the palette,
+ *  and the shared layer a profile override hides (the global map's value, else the built-in
+ *  default). */
+interface TableContext {
+  opts: ConfigTableOptions;
+  columns: TableColumns;
+  paint: Paint;
+  globalLayer: Partial<ConfigValueTypes>;
+}
+
+function configRows(data: CopilotEnvConfigData, opts: ConfigTableOptions): ConfigRow[] {
   const profile = viewProfile(opts.view);
   const excludedScope: ConfigScope = opts.view.kind === "config" ? "profile" : "global";
-  const rows = CONFIG_REGISTRY.filter((def) => def.scope !== excludedScope).map((def) => {
+  return CONFIG_REGISTRY.filter((def) => def.scope !== excludedScope).map((def) => {
     const resolved = resolveSettingIn(data, def.key, { profile });
     const stored = isStoredSource(resolved.source);
     const fallback = configDefaultValue(def);
@@ -386,99 +420,116 @@ export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions
       leadLength: indent + 2 + stringWidth(`${def.key}=${value}`),
     };
   });
-  // The key=value column is the longest lead that still leaves the right column
-  // MIN_RIGHT_COLUMNS; a longer one (a URL) gets its own line, split at the width when it is
-  // wider still, with its right column below. When none fits, every right column stacks at
-  // STACKED_INDENT and takes what is left of the width.
+}
+
+/** The key=value column is the longest lead that still leaves the right column
+ *  MIN_RIGHT_COLUMNS; a longer one (a URL) gets its own line, split at the width when it is
+ *  wider still, with its right column below. When none fits, every right column stacks at
+ *  STACKED_INDENT and takes what is left of the width. */
+function tableColumns(rows: readonly ConfigRow[], width: number): TableColumns {
   const fitting = rows
     .map((row) => row.leadLength)
-    .filter((n) => n + 2 + MIN_RIGHT_COLUMNS <= opts.width);
+    .filter((n) => n + 2 + MIN_RIGHT_COLUMNS <= width);
   const column = fitting.length > 0 ? Math.max(...fitting) + 2 : STACKED_INDENT;
-  const rightWidth = Math.max(opts.width - column, 1);
-  const indent = " ".repeat(column);
-  const fit = (text: string, width: number): string[] =>
-    wrapMessage(text, Number.isFinite(width) ? width : null).split("\n");
-  /** A lead with its right column beside it when it fits, below it when not; a cell wider than
-   *  the right column (a URL) splits at its edge. */
-  const layout = (lead: string, leadLength: number, right: string[]): string[] => {
-    const [first = "", ...rest] = right.flatMap((line) => fit(line, rightWidth));
-    if (leadLength + 2 > column) {
-      return [...fit(lead, opts.width), ...[first, ...rest].map((line) => indent + line)];
-    }
-    return [
-      `${lead}${" ".repeat(column - leadLength)}${first}`,
-      ...rest.map((line) => indent + line),
-    ];
-  };
-  const wrapNote = (note: string): string[] =>
-    packToWidth(note.split(" "), stringWidth, rightWidth).map((words) =>
-      paint.dim(words.join(" ")),
-    );
+  return { width, column, rightWidth: Math.max(width - column, 1), indent: " ".repeat(column) };
+}
 
-  // The shared layer a profile override hides: the global map's value, else the built-in default.
-  const globalLayer: Partial<ConfigValueTypes> = data.global;
-  const renderRow = (row: (typeof rows)[number]): string[] => {
-    const { def } = row;
-    const cells: Cell[] = [{ text: `[${def.type}]`, paint: plain }];
-    // In a profile's view a profile-default row names where its value came from: the shared
-    // default (`(shared default)`), or its own section, which then names the layer it hides once:
-    // the shared default's value, or the built-in default in place of the `default` cell. In the
-    // config view the row IS the shared default, and the star alone says it is stored.
-    const inherits = def.scope === "profile-default" && opts.view.kind === "profile";
-    const overrides = inherits && row.resolved.source === "profile";
-    const shared = inherits ? globalLayer[def.key] : undefined;
-    if (row.stored && row.fallback !== undefined && !(overrides && shared === undefined)) {
-      cells.push({
-        text: `default ${formatConfigValue(row.fallback)}`,
-        paint: (text) => paint.dim(paint.green(text)),
-      });
-    }
-    if (overrides) {
-      cells.push({
-        text:
-          shared !== undefined
-            ? `(overrides the shared default ${formatConfigValue(shared)})`
-            : `(overrides the built-in default ${
-                row.fallback === undefined ? UNSET_VALUE : formatConfigValue(row.fallback)
-              })`,
-        paint: paint.dim,
-      });
-    } else if (inherits && row.resolved.source === "global") {
-      cells.push({ text: "(shared default)", paint: paint.dim });
-    }
-    if (isStoredValueInert(def, row.resolved, opts.platform)) {
-      cells.push({ text: "(inert on this platform)", paint: paint.dim });
-    }
-    const right = packToWidth(cells, (cell) => stringWidth(cell.text), rightWidth).map((line) =>
-      line.map((cell) => cell.paint(cell.text)).join(" "),
-    );
-    const daemonReads = isProxyProjected(def) || def.restartToApply === true;
-    const up = row.resolved.source === "profile" ? opts.profileDaemonUp : opts.daemonUp;
-    if (row.stored && up && daemonReads) right.push(paint.dim(paint.green(RESTART_LINE)));
-    right.push(...wrapNote(def.describe));
-    const shownValue =
-      row.value === UNSET_VALUE
-        ? paint.dim(UNSET_VALUE)
-        : row.stored
-          ? paint.bold(paint.green(row.value))
-          : paint.green(row.value);
-    const lead = `${" ".repeat(row.indent)}${row.stored ? paint.green("*") : " "} ${paint.cyan(
-      def.key,
-    )}=${shownValue}`;
-    return layout(lead, row.leadLength, right);
-  };
+function fit(text: string, width: number): string[] {
+  return wrapMessage(text, Number.isFinite(width) ? width : null).split("\n");
+}
 
-  // The groups the banners name are the ones whose scope every profile inherits, so a new
-  // profile-default group reaches them on its own.
-  const inherited = [
-    ...new Set(
-      CONFIG_REGISTRY.filter((def) => def.scope === "profile-default").map(
-        (def) => `${configGroup(def.key)}.*`,
-      ),
-    ),
-  ].join(" / ");
+/** A lead with its right column beside it when it fits, below it when not; a cell wider than
+ *  the right column (a URL) splits at its edge. */
+function layoutRow(
+  lead: string,
+  leadLength: number,
+  right: readonly string[],
+  columns: TableColumns,
+): string[] {
+  const [first = "", ...rest] = right.flatMap((line) => fit(line, columns.rightWidth));
+  if (leadLength + 2 > columns.column) {
+    return [...fit(lead, columns.width), ...[first, ...rest].map((line) => columns.indent + line)];
+  }
+  return [
+    `${lead}${" ".repeat(columns.column - leadLength)}${first}`,
+    ...rest.map((line) => columns.indent + line),
+  ];
+}
+
+function wrapNote(note: string, ctx: TableContext): string[] {
+  return packToWidth(note.split(" "), stringWidth, ctx.columns.rightWidth).map((words) =>
+    ctx.paint.dim(words.join(" ")),
+  );
+}
+
+/** What an override hides: the shared default's value, else the built-in default. */
+function overrideNote(shared: ConfigValue | undefined, fallback: ConfigValue | undefined): string {
+  if (shared === undefined) {
+    const builtIn = fallback === undefined ? UNSET_VALUE : formatConfigValue(fallback);
+    return `(overrides the built-in default ${builtIn})`;
+  }
+  return `(overrides the shared default ${formatConfigValue(shared)})`;
+}
+
+/** The row's cells before its description: the type, the default it hides, where its value came
+ *  from, and whether it is inert here. In a profile's view a profile-default row names where its
+ *  value came from: the shared default (`(shared default)`), or its own section, which then names
+ *  the layer it hides once: the shared default's value, or the built-in default in place of the
+ *  `default` cell. In the config view the row IS the shared default, and the star alone says it
+ *  is stored. */
+function rowCells(row: ConfigRow, ctx: TableContext): Cell[] {
+  const { def } = row;
+  const { paint } = ctx;
+  const cells: Cell[] = [{ text: `[${def.type}]`, paint: plainText }];
+  const inherits = def.scope === "profile-default" && ctx.opts.view.kind === "profile";
+  const overrides = inherits && row.resolved.source === "profile";
+  const shared = inherits ? ctx.globalLayer[def.key] : undefined;
+  if (row.stored && row.fallback !== undefined && !(overrides && shared === undefined)) {
+    cells.push({
+      text: `default ${formatConfigValue(row.fallback)}`,
+      paint: (text) => paint.dim(paint.green(text)),
+    });
+  }
+  if (overrides) {
+    cells.push({ text: overrideNote(shared, row.fallback), paint: paint.dim });
+  } else if (inherits && row.resolved.source === "global") {
+    cells.push({ text: "(shared default)", paint: paint.dim });
+  }
+  if (isStoredValueInert(def, row.resolved, ctx.opts.platform)) {
+    cells.push({ text: "(inert on this platform)", paint: paint.dim });
+  }
+  return cells;
+}
+
+/** The value as the lead shows it: dim when unset, bold green when stored, green when a default. */
+function shownValue(row: ConfigRow, paint: Paint): string {
+  if (row.value === UNSET_VALUE) return paint.dim(UNSET_VALUE);
+  if (row.stored) return paint.bold(paint.green(row.value));
+  return paint.green(row.value);
+}
+
+function renderRow(row: ConfigRow, ctx: TableContext): string[] {
+  const { def } = row;
+  const { paint, columns, opts } = ctx;
+  const right = packToWidth(
+    rowCells(row, ctx),
+    (cell) => stringWidth(cell.text),
+    columns.rightWidth,
+  ).map((line) => line.map((cell) => cell.paint(cell.text)).join(" "));
+  const daemonReads = isProxyProjected(def) || def.restartToApply === true;
+  const up = row.resolved.source === "profile" ? opts.profileDaemonUp : opts.daemonUp;
+  if (row.stored && up && daemonReads) right.push(paint.dim(paint.green(RESTART_LINE)));
+  right.push(...wrapNote(def.describe, ctx));
+  const star = row.stored ? paint.green("*") : " ";
+  const lead = `${" ".repeat(row.indent)}${star} ${paint.cyan(def.key)}=${shownValue(row, paint)}`;
+  return layoutRow(lead, row.leadLength, right, columns);
+}
+
+/** The header: the count of set keys, the face's own verbs, then where the keys it does not list
+ *  live. A part wider than the terminal stands alone on its line; its words then wrap like prose. */
+function tableHeader(rows: readonly ConfigRow[], opts: ConfigTableOptions, paint: Paint): string {
+  const profile = viewProfile(opts.view);
   const storedCount = rows.filter((row) => row.stored).length;
-  // The face's own verbs, then where the keys it does not list live.
   const face =
     opts.view.kind === "config"
       ? "agent config"
@@ -491,8 +542,7 @@ export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions
       ? "a profile's own keys: agent profile [<name>] set|unset|get"
       : "this machine's keys: agent config get",
   ];
-  // A part wider than the terminal stands alone on its line; its words then wrap like prose.
-  const header = packToWidth(headerParts, stringWidth, opts.width, HEADER_GAP.length)
+  return packToWidth(headerParts, stringWidth, opts.width, HEADER_GAP.length)
     .flatMap((parts) => {
       const [only = ""] = parts;
       return parts.length === 1 && only.length > opts.width
@@ -501,59 +551,29 @@ export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions
     })
     .map((line) => paint.dim(line))
     .join("\n");
-
-  /** A bold title whose note is its right column: on the shared column, or under the title
-   *  when the title runs past it. */
-  const banner = (title: string, note: string): string =>
-    layout(paint.bold(title), stringWidth(title), wrapNote(`(${note})`)).join("\n");
-  const groupIndent = " ".repeat(GROUP_INDENT);
-
-  const groupBlocks = (scope: ConfigScope, heading: (group: ConfigGroup) => string): string[] =>
-    CONFIG_GROUPS.flatMap((group): string[] => {
-      const lines = rows
-        .filter((row) => row.def.scope === scope && configGroup(row.def.key) === group)
-        .flatMap(renderRow);
-      return lines.length === 0 ? [] : [[heading(group), ...lines].join("\n")];
-    });
-
-  if (opts.view.kind === "profile") {
-    const profileBlock = [
-      [
-        banner(
-          `PROFILE ${profileKey(profile)}`,
-          `this profile's keys; another profile: agent profile <name> get`,
-        ),
-        ...rows.filter((row) => row.def.scope === "profile").flatMap(renderRow),
-      ].join("\n"),
-      ...groupBlocks("profile-default", (group) =>
-        banner(
-          `${groupIndent}${group}:`,
-          `${profileDefaultConsumer(group)}; the shared default is agent config's`,
-        ),
-      ),
-    ].join("\n\n");
-    return [header, profileBlock].join("\n\n");
-  }
-  const sharedBlock = [
-    banner(
-      "SHARED DEFAULTS",
-      `${inherited}: every profile's default; a named profile overrides its own with ` +
-        "agent profile <name> set",
-    ),
-    ...groupBlocks("profile-default", (group) => paint.bold(`${groupIndent}${group}:`)),
-  ].join("\n");
-  const globalBlock = [
-    banner("GLOBAL", "this machine, every profile"),
-    groupBlocks("global", (group) => paint.bold(`${groupIndent}${group}:`)).join("\n\n"),
-  ].join("\n");
-  return [header, sharedBlock, globalBlock].join("\n\n");
 }
 
-/** What reads a profile-default group's value for the profile: the PROFILE heading's note. */
-const PROFILE_DEFAULT_CONSUMER: Partial<Record<ConfigGroup, string>> = {
-  probe: "this profile's Direct probe",
-  proxy: "this profile's daemon",
-};
+/** A bold title whose note is its right column: on the shared column, or under the title when
+ *  the title runs past it. */
+function banner(title: string, note: string, ctx: TableContext): string {
+  const lead = ctx.paint.bold(title);
+  return layoutRow(lead, stringWidth(title), wrapNote(`(${note})`, ctx), ctx.columns).join("\n");
+}
+
+/** One block per group with a row of `scope`: the group's heading, then its rows. */
+function groupBlocks(
+  rows: readonly ConfigRow[],
+  scope: ConfigScope,
+  heading: (group: ConfigGroup) => string,
+  ctx: TableContext,
+): string[] {
+  return CONFIG_GROUPS.flatMap((group): string[] => {
+    const lines = rows
+      .filter((row) => row.def.scope === scope && configGroup(row.def.key) === group)
+      .flatMap((row) => renderRow(row, ctx));
+    return lines.length === 0 ? [] : [[heading(group), ...lines].join("\n")];
+  });
+}
 
 /** A group with no profile-default key needs no entry; one that gains such a key must add its, or
  *  this throws (the table test renders every group). */
@@ -561,6 +581,84 @@ function profileDefaultConsumer(group: ConfigGroup): string {
   const consumer = PROFILE_DEFAULT_CONSUMER[group];
   if (consumer === undefined) throw new Error(`no PROFILE heading note for the ${group} group`);
   return consumer;
+}
+
+/** A profile's view: a PROFILE banner for every key its daemon and wiring consume (its own keys,
+ *  then the profile-default groups resolved for it, each heading naming its consumer). */
+function profileView(rows: readonly ConfigRow[], ctx: TableContext): string {
+  const profile = viewProfile(ctx.opts.view);
+  const groupIndent = " ".repeat(GROUP_INDENT);
+  return [
+    [
+      banner(
+        `PROFILE ${profileKey(profile)}`,
+        `this profile's keys; another profile: agent profile <name> get`,
+        ctx,
+      ),
+      ...rows.filter((row) => row.def.scope === "profile").flatMap((row) => renderRow(row, ctx)),
+    ].join("\n"),
+    ...groupBlocks(
+      rows,
+      "profile-default",
+      (group) =>
+        banner(
+          `${groupIndent}${group}:`,
+          `${profileDefaultConsumer(group)}; the shared default is agent config's`,
+          ctx,
+        ),
+      ctx,
+    ),
+  ].join("\n\n");
+}
+
+/** The config view: a SHARED DEFAULTS banner for the profile-default groups as every profile
+ *  inherits them, then a GLOBAL banner for the machine's keys, grouped by the key's group. */
+function configView(rows: readonly ConfigRow[], ctx: TableContext): string {
+  const groupIndent = " ".repeat(GROUP_INDENT);
+  const groupHeading = (group: ConfigGroup): string => ctx.paint.bold(`${groupIndent}${group}:`);
+  // The groups the banners name are the ones whose scope every profile inherits, so a new
+  // profile-default group reaches them on its own.
+  const inherited = [
+    ...new Set(
+      CONFIG_REGISTRY.filter((def) => def.scope === "profile-default").map(
+        (def) => `${configGroup(def.key)}.*`,
+      ),
+    ),
+  ].join(" / ");
+  const sharedBlock = [
+    banner(
+      "SHARED DEFAULTS",
+      `${inherited}: every profile's default; a named profile overrides its own with ` +
+        "agent profile <name> set",
+      ctx,
+    ),
+    ...groupBlocks(rows, "profile-default", groupHeading, ctx),
+  ].join("\n");
+  const globalBlock = [
+    banner("GLOBAL", "this machine, every profile", ctx),
+    groupBlocks(rows, "global", groupHeading, ctx).join("\n\n"),
+  ].join("\n");
+  return [sharedBlock, globalBlock].join("\n\n");
+}
+
+/** The listing a keyless `get` prints, and `agent config --help` in the config view. The config
+ *  view: a SHARED DEFAULTS banner for the profile-default groups as every profile inherits them,
+ *  then a GLOBAL banner for the machine's keys, grouped by the key's group. A profile's view: a
+ *  PROFILE banner for every key its daemon and wiring consume (its own keys, then the
+ *  profile-default groups resolved for it). Prose breaks between words; a value wider than its
+ *  column (a URL) splits at the edge. */
+export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions): string {
+  const rows = configRows(data, opts);
+  const paint = paintFor(opts.color);
+  const ctx: TableContext = {
+    opts,
+    columns: tableColumns(rows, opts.width),
+    paint,
+    globalLayer: data.global,
+  };
+  const header = tableHeader(rows, opts, paint);
+  const body = opts.view.kind === "profile" ? profileView(rows, ctx) : configView(rows, ctx);
+  return [header, body].join("\n\n");
 }
 
 /** The one string a keyless `agent config get` and `agent config --help` both print, so their

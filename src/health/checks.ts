@@ -2,11 +2,22 @@
 // gathered by probe.ts, so each check is independently unit-testable.
 
 import { configGetCommand, configSetCommand } from "../copilot_api/env_config.ts";
-import { type StoredCredential, storedCredentialKind } from "../copilot_api/env_state.ts";
+import {
+  type AuthProvider,
+  type ProfileMode,
+  type StoredCredential,
+  storedCredentialKind,
+} from "../copilot_api/env_state.ts";
 import { lastActivityMs } from "../copilot_api/idle_watchdog.ts";
-import { agentAuthCommand, agentStartCommand, agentStopCommand } from "../copilot_api/profile.ts";
+import {
+  agentAuthCommand,
+  agentStartCommand,
+  agentStopCommand,
+  type Profile,
+} from "../copilot_api/profile.ts";
 import { PROXY_PACKAGE_NAME, type ProxyVersionStatus } from "../copilot_api/version.ts";
 import { assertNever } from "../utils/assert.ts";
+import { byCodeUnit } from "../utils/order.ts";
 import { formatDuration, SECONDS_PER_DAY } from "../utils/time.ts";
 import { filterByScope } from "./aggregate.ts";
 import {
@@ -33,6 +44,8 @@ import type {
 } from "./facts.ts";
 import type { CheckOutcome, CheckResult, HealthScope } from "./types.ts";
 import { meta, profileAddFix, SETUP_SCOPES as SETUP } from "./types.ts";
+
+type DefaultAuthFacts = Extract<AuthFacts, { profile: null }>;
 
 /** THE predicate of checkAuth, for both targets: a stored token resolves by presence, gh-cli by
  *  the live gh probe, none never. */
@@ -104,6 +117,61 @@ export function checkNodeModules(f: BootstrapFacts): CheckResult {
   return { ...base, status: "ok", detail: "installed and up to date", value };
 }
 
+function floatCooldownLabel(seconds: number | null): string {
+  if (seconds === null) return "cooldown: unknown";
+  if (seconds === 0) return "no cooldown";
+  if (seconds % SECONDS_PER_DAY === 0) return `cooldown ${seconds / SECONDS_PER_DAY}d`;
+  return `cooldown ${seconds}s`;
+}
+
+/** A missing package: in a checkout a broken install (the fix always works); in a compiled
+ *  install the normal pre-start state, since it ships no node_modules and the float installs the
+ *  proxy into the proxy home at `agent start`. */
+function missingProxyOutcome(f: ProxyFacts): CheckOutcome {
+  if (!f.standalone) {
+    return {
+      status: "fail",
+      detail: `${PROXY_PACKAGE_NAME} is not installed`,
+      fix: "bun install --frozen-lockfile",
+    };
+  }
+  if (f.floatSkips) {
+    return {
+      status: "ok",
+      detail: `${PROXY_PACKAGE_NAME} not resolved; not required (Codex + Claude are both direct, so the proxy is unused)`,
+    };
+  }
+  return {
+    status: "ok",
+    detail: `${PROXY_PACKAGE_NAME} not resolved yet; \`agent start\` floats it in`,
+  };
+}
+
+/** The verdict of the version bounds alone, before the float-skips exemption. */
+function proxyBoundsOutcome(f: ProxyFacts, bounds: ProxyVersionStatus): CheckOutcome {
+  if (bounds.ok) {
+    // Version and cooldown as separate lines: the report renders each as its own sub-item.
+    const cooldown = floatCooldownLabel(f.cooldownSeconds);
+    return { status: "ok", detail: `${PROXY_PACKAGE_NAME} ${bounds.version}\nfloat ${cooldown}` };
+  }
+  switch (bounds.reason) {
+    case "missing":
+      return missingProxyOutcome(f);
+    case "belowFloor":
+      return {
+        status: "fail",
+        detail: `proxy ${bounds.version} is below the floor ${bounds.floor}`,
+        fix: "bun install --frozen-lockfile",
+      };
+    case "aboveCeiling":
+      return {
+        status: "warn",
+        detail: `proxy ${bounds.version} is above the ceiling ${bounds.ceiling}`,
+        fix: "agent update",
+      };
+  }
+}
+
 export function checkProxyPackage(f: ProxyFacts): CheckResult {
   const base = { ...meta("proxy.package"), profile: null };
   // An unreadable config means the bounds cannot be judged; that is the failure, rather than an
@@ -118,55 +186,14 @@ export function checkProxyPackage(f: ProxyFacts): CheckResult {
     };
   }
   const bounds: ProxyVersionStatus = f.bounds;
-  let outcome: CheckOutcome;
-  let standaloneMissing = false;
-  if (bounds.ok) {
-    // Version and cooldown as separate lines: the report renders each as its own sub-item.
-    outcome = {
-      status: "ok",
-      detail: `${PROXY_PACKAGE_NAME} ${bounds.version}\nfloat ${floatCooldownLabel(
-        f.cooldownSeconds,
-      )}`,
-    };
-  } else if (bounds.reason === "missing") {
-    if (f.standalone) {
-      // A compiled install ships no node_modules: the float installs the proxy into the proxy
-      // home at `agent start`, so "missing" is the normal pre-start state, not a broken
-      // install.
-      standaloneMissing = true;
-      outcome = {
-        status: "ok",
-        detail: f.floatSkips
-          ? `${PROXY_PACKAGE_NAME} not resolved; not required (Codex + Claude are both direct, so the proxy is unused)`
-          : `${PROXY_PACKAGE_NAME} not resolved yet; \`agent start\` floats it in`,
-      };
-    } else {
-      // In a checkout a missing package is a broken install; the fix always works.
-      outcome = {
-        status: "fail",
-        detail: `${PROXY_PACKAGE_NAME} is not installed`,
-        fix: "bun install --frozen-lockfile",
-      };
-    }
-  } else if (bounds.reason === "belowFloor") {
-    outcome = {
-      status: "fail",
-      detail: `proxy ${bounds.version} is below the floor ${bounds.floor}`,
-      fix: "bun install --frozen-lockfile",
-    };
-  } else {
-    outcome = {
-      status: "warn",
-      detail: `proxy ${bounds.version} is above the ceiling ${bounds.ceiling}`,
-      fix: "agent update",
-    };
-  }
-  let exempted = false;
-  if (!bounds.ok && bounds.reason !== "missing" && f.floatSkips) {
-    // The float itself skips (proxyFloatSkips: proxy unused, no env pin), so the bounds are
-    // unenforceable (the suggested fixes would not move the version) and must not read as a
-    // failure. A proxy rewire or a proxy profile re-enables the float, which enforces them again.
-    exempted = true;
+  const missing = !bounds.ok && bounds.reason === "missing";
+  const standaloneMissing = missing && f.standalone;
+  // The float itself skips (proxyFloatSkips: proxy unused, no env pin), so the bounds are
+  // unenforceable (the suggested fixes would not move the version) and must not read as a
+  // failure. A proxy rewire or a proxy profile re-enables the float, which enforces them again.
+  const exempted = !bounds.ok && !missing && f.floatSkips;
+  let outcome = proxyBoundsOutcome(f, bounds);
+  if (exempted) {
     outcome = {
       status: "ok",
       detail: `${outcome.detail}; not enforced (Codex + Claude are both direct, so the proxy float skips)`,
@@ -184,13 +211,6 @@ export function checkProxyPackage(f: ProxyFacts): CheckResult {
       ...(standaloneMissing ? { standalone: true } : {}),
     },
   };
-}
-
-function floatCooldownLabel(seconds: number | null): string {
-  if (seconds === null) return "cooldown: unknown";
-  if (seconds === 0) return "no cooldown";
-  if (seconds % SECONDS_PER_DAY === 0) return `cooldown ${seconds / SECONDS_PER_DAY}d`;
-  return `cooldown ${seconds}s`;
 }
 
 /** Not resolved yet reads ok: the proxy waits for `agent start` to float it in. A RECORDED version
@@ -391,9 +411,9 @@ export function checkRuntimeIdentity(f: RuntimeTarget, p: DaemonProbeFacts): Che
   const base = { ...meta("runtime.identity"), profile: f.profile };
   if (!p.reachable || p.identityConfirmed === null) {
     // Nothing reachable (runtime.port owns that verdict) or identity not probed.
-    const notProbed = !f.proxyExpected
-      ? `not probed (no agent routes to port ${f.port}; Codex + Claude are both direct)`
-      : "identity not probed";
+    const notProbed = f.proxyExpected
+      ? "identity not probed"
+      : `not probed (no agent routes to port ${f.port}; Codex + Claude are both direct)`;
     return {
       ...base,
       status: "ok",
@@ -485,6 +505,20 @@ export function checkRuntimeOrphan(f: RuntimeTarget, p: DaemonProbeFacts): Check
   }
 }
 
+/** The ok line once slot and home agree: a proxy slot with no port recorded on this host says so,
+ *  because its daemon was not probed. */
+function profileAgreementDetail(f: NamedRuntimeTarget): string {
+  if (f.slot.mode === "proxy" && !f.portPersisted) {
+    return (
+      "store slot (proxy) and daemon home agree; no port recorded on this host yet, " +
+      `so the daemon was not probed (${agentStartCommand(f.profile)} records one)`
+    );
+  }
+  if (f.slot.mode === "proxy") return "store slot (proxy) and daemon home agree";
+  if (f.homeExists) return "store slot (direct); the leftover daemon home is unused";
+  return "store slot (direct); no daemon home needed";
+}
+
 /**
  * NAMED targets only: do the store slot (credential + mode, the source of truth) and the on-disk
  * daemon home (derived, proxy mode only) agree? Only the slot write is atomic; `agent profile`
@@ -543,16 +577,7 @@ export function checkProfileConsistency(f: NamedRuntimeTarget): CheckResult {
       fix: profileAddFix(name),
     };
   }
-  const detail =
-    slot.mode === "proxy"
-      ? f.portPersisted
-        ? "store slot (proxy) and daemon home agree"
-        : "store slot (proxy) and daemon home agree; no port recorded on this host yet, " +
-          `so the daemon was not probed (${agentStartCommand(name)} records one)`
-      : homeExists
-        ? "store slot (direct); the leftover daemon home is unused"
-        : "store slot (direct); no daemon home needed";
-  return { ...base, status: "ok", detail };
+  return { ...base, status: "ok", detail: profileAgreementDetail(f) };
 }
 
 export function checkShellIntegration(f: ShellFacts): CheckResult {
@@ -636,6 +661,132 @@ export function checkCli(c: CliFacts): CheckResult {
   }
 }
 
+/** The default's trailing lines: its named profiles, and the identity pin that overrides the
+ *  per-credential identity probe (the knob a fine-grained PAT needs, copilot-developer-cli, when
+ *  auto-detection is off). */
+function defaultAuthTail(f: DefaultAuthFacts): string[] {
+  const tail: string[] = [];
+  const profileEntries = Object.entries(f.profiles).sort(([a], [b]) => byCodeUnit(a, b));
+  if (profileEntries.length > 0) {
+    const summary = profileEntries
+      .map(([entry, s]) => `${entry} (${s.provider ?? "no auth"}, ${s.mode ?? "no mode"})`)
+      .join(", ");
+    tail.push(`named profiles: ${summary}`);
+  }
+  if (f.pinnedIntegrationId !== null) {
+    const getCommand = configGetCommand("identity");
+    tail.push(`Copilot integration id pinned to '${f.pinnedIntegrationId}' (\`${getCommand}\`)`);
+  }
+  return tail;
+}
+
+/** No provider chosen (or, for a named profile, no slot at all): a warn, never OK. */
+function noProviderAuthOutcome(
+  name: Profile,
+  slot: ProfileAuthFacts | null,
+  tail: string[],
+): CheckOutcome {
+  if (name === null) {
+    return {
+      status: "warn",
+      detail: [
+        "not authenticated: no credential provider is configured",
+        "run `agent auth` (neither Direct nor `agent start` works without one)",
+        ...tail,
+      ].join("\n"),
+      fix: agentAuthCommand(name),
+    };
+  }
+  // A slot with no recorded mode (or none at all) needs an explicit mode flag on the re-add;
+  // with a mode recorded the bare re-add keeps it (sticky).
+  const fix =
+    slot === null || slot.mode === null
+      ? `agent profile ${name} add --direct|--proxy`
+      : profileAddFix(name);
+  return {
+    status: "warn",
+    detail: [
+      `no credential recorded for profile '${name}'`,
+      "named profiles never fall back to the default credential",
+    ].join("\n"),
+    fix,
+  };
+}
+
+/** Why nothing resolves, naming the account on the gh lines (no hidden information). */
+function unresolvedAuthReason(f: AuthFacts, provider: AuthProvider, unproven: boolean): string {
+  if (provider !== "gh-cli") {
+    return f.profile === null
+      ? "the stored token is missing"
+      : "the slot's stored token is missing";
+  }
+  const pin = f.ghUser ?? null;
+  const accountClause = ghAccountClause(pin, f.ghActiveLogin ?? null);
+  if (unproven) return ghCouldNotCheck(f.ghDetail, accountClause);
+  if (pin === null) return `\`gh\` is unauthenticated (${accountClause})`;
+  return `\`gh\` is not authenticated as account '${pin}'`;
+}
+
+/** A proven gh miss's fix: gh's login, or the default's other way out (another provider); a named
+ *  slot is re-provisioned instead. */
+function ghLoginFix(f: AuthFacts): string {
+  const name = f.profile;
+  const pin = f.ghUser ?? null;
+  let orElse: string;
+  if (name !== null) {
+    orElse = `\`${agentAuthCommand(name)}\` to re-provision the profile`;
+  } else if (pin === null) {
+    orElse = "`agent auth` to switch provider";
+  } else {
+    orElse = "`agent auth` to switch";
+  }
+  if (pin === null) return `\`gh auth login\`, or ${orElse}`;
+  return `\`gh auth login\` for that account, or ${orElse}`;
+}
+
+/** A chosen provider nothing resolves for. An unproven gh probe keeps this warn arm (nothing was
+ *  shown to resolve) but must not claim gh IS unauthenticated: `gh auth token` never ran to
+ *  completion, so the `gh auth login` advice would be handed out unearned. */
+function unresolvedAuthOutcome(f: AuthFacts, provider: AuthProvider, tail: string[]): CheckOutcome {
+  const name = f.profile;
+  const unproven = provider === "gh-cli" && f.ghAuthUnproven === true;
+  const where = name === null ? "is selected" : `is recorded for profile '${name}'`;
+  const headline = unproven
+    ? `provider 'gh-cli' ${where} but its credential could not be checked`
+    : `provider '${provider}' ${where} but no credential resolves`;
+  const fix = provider === "gh-cli" && !unproven ? ghLoginFix(f) : agentAuthCommand(name);
+  return {
+    status: "warn",
+    detail: [headline, unresolvedAuthReason(f, provider, unproven), ...tail].join("\n"),
+    fix,
+  };
+}
+
+/** How the credential is minted: the gh call that serves it, naming the account, or the stored
+ *  token. */
+function credentialSource(f: AuthFacts, provider: AuthProvider): string {
+  if (provider !== "gh-cli") return "stored GitHub token";
+  const pin = f.ghUser ?? null;
+  const followed = f.ghActiveLogin ?? null;
+  if (pin !== null && f.ghCommand === undefined) return `gh CLI (\`gh auth token --user ${pin}\`)`;
+  if (pin !== null) return `gh CLI (\`${f.ghCommand}\`, account ${pin})`;
+  if (followed !== null) return `gh CLI (\`gh auth token\`, AUTO - currently account ${followed})`;
+  return "gh CLI (`gh auth token`, AUTO - follows gh's active account)";
+}
+
+/** Where the resolved credential goes: Direct's resolver, the daemon, or both. */
+function credentialUsage(name: Profile, mode: ProfileMode | null): string {
+  if (name === null) {
+    return "resolved by `agent auth --get` for Direct; passed to the proxy on `agent start`";
+  }
+  const authFix = agentAuthCommand(name);
+  if (mode === "proxy") {
+    return `resolved by \`${authFix} --get\`; passed to the profile's daemon on \`${agentStartCommand(name)}\``;
+  }
+  if (mode === "direct") return `resolved by \`${authFix} --get\` for Direct`;
+  return `resolved by \`${authFix} --get\``;
+}
+
 /**
  * One credential line per target. The default's status is driven by the store's default
  * credential; named profiles surface there as a detail line only, because a named profile never
@@ -652,29 +803,7 @@ export function checkAuth(f: AuthFacts): CheckResult {
     ghAuthenticated: f.ghAuthenticated,
     ...(f.ghAuthUnproven ? { ghAuthUnproven: true } : {}),
   };
-  // The default's trailing lines: its named profiles, and the identity pin that overrides the
-  // per-credential identity probe (the knob a fine-grained PAT needs, copilot-developer-cli, when
-  // auto-detection is off).
-  const tail: string[] = [];
-  if (f.profile === null) {
-    const profileEntries = Object.entries(f.profiles).sort(([a], [b]) =>
-      a < b ? -1 : a > b ? 1 : 0,
-    );
-    if (profileEntries.length > 0) {
-      tail.push(
-        `named profiles: ${profileEntries
-          .map(([entry, s]) => `${entry} (${s.provider ?? "no auth"}, ${s.mode ?? "no mode"})`)
-          .join(", ")}`,
-      );
-    }
-    if (f.pinnedIntegrationId !== null) {
-      tail.push(
-        `Copilot integration id pinned to '${f.pinnedIntegrationId}' (\`${configGetCommand(
-          "identity",
-        )}\`)`,
-      );
-    }
-  }
+  const tail = f.profile === null ? defaultAuthTail(f) : [];
   const base = {
     ...meta("setup.auth"),
     profile: name,
@@ -688,112 +817,24 @@ export function checkAuth(f: AuthFacts): CheckResult {
           }
         : { provider: slot?.provider ?? null, mode: slot?.mode ?? null, ...resolution },
   };
-  const authFix = agentAuthCommand(name);
   // Provider classification is storedCredentialKind()'s (env_state.ts); a chosen-but-unresolved
   // provider is a warn, not OK.
   if (slot === null || slot.provider === null) {
-    if (name === null) {
-      return {
-        ...base,
-        status: "warn",
-        detail: [
-          "not authenticated: no credential provider is configured",
-          "run `agent auth` (neither Direct nor `agent start` works without one)",
-          ...tail,
-        ].join("\n"),
-        fix: authFix,
-      };
-    }
-    // A slot with no recorded mode (or none at all) needs an explicit mode flag on the re-add;
-    // with a mode recorded the bare re-add keeps it (sticky).
-    return {
-      ...base,
-      status: "warn",
-      detail: [
-        `no credential recorded for profile '${name}'`,
-        "named profiles never fall back to the default credential",
-      ].join("\n"),
-      fix:
-        slot === null || slot.mode === null
-          ? `agent profile ${name} add --direct|--proxy`
-          : profileAddFix(name),
-    };
+    return { ...base, ...noProviderAuthOutcome(name, slot, tail) };
   }
   const provider = slot.provider;
   const resolves = credentialResolves(
     storedCredentialKind(provider, f.storedToken),
     f.ghAuthenticated,
   );
-  // Always name the account (no hidden information), on the failing and unproven lines too.
-  const pin = f.ghUser ?? null;
-  const followed = f.ghActiveLogin ?? null;
-  const accountClause = ghAccountClause(pin, followed);
-  if (!resolves) {
-    // An unproven gh probe keeps this warn arm (nothing was shown to resolve) but must not claim
-    // gh IS unauthenticated: `gh auth token` never ran to completion, so the `gh auth login`
-    // advice would be handed out unearned.
-    const unproven = provider === "gh-cli" && f.ghAuthUnproven === true;
-    const where = name === null ? "is selected" : `is recorded for profile '${name}'`;
-    // The default's other way out is another provider; a named slot is re-provisioned.
-    const orElse =
-      name === null
-        ? pin === null
-          ? "`agent auth` to switch provider"
-          : "`agent auth` to switch"
-        : `\`${authFix}\` to re-provision the profile`;
-    const ghLoginFix =
-      pin === null
-        ? `\`gh auth login\`, or ${orElse}`
-        : `\`gh auth login\` for that account, or ${orElse}`;
-    return {
-      ...base,
-      status: "warn",
-      detail: [
-        unproven
-          ? `provider 'gh-cli' ${where} but its credential could not be checked`
-          : `provider '${provider}' ${where} but no credential resolves`,
-        provider === "gh-cli"
-          ? unproven
-            ? ghCouldNotCheck(f.ghDetail, accountClause)
-            : pin === null
-              ? `\`gh\` is unauthenticated (${accountClause})`
-              : `\`gh\` is not authenticated as account '${pin}'`
-          : name === null
-            ? "the stored token is missing"
-            : "the slot's stored token is missing",
-        ...tail,
-      ].join("\n"),
-      fix: provider === "gh-cli" && !unproven ? ghLoginFix : authFix,
-    };
-  }
-  const how =
-    provider === "gh-cli"
-      ? pin !== null
-        ? f.ghCommand === undefined
-          ? `gh CLI (\`gh auth token --user ${pin}\`)`
-          : `gh CLI (\`${f.ghCommand}\`, account ${pin})`
-        : followed !== null
-          ? `gh CLI (\`gh auth token\`, AUTO - currently account ${followed})`
-          : "gh CLI (`gh auth token`, AUTO - follows gh's active account)"
-      : "stored GitHub token";
-  const usage =
-    name === null
-      ? "resolved by `agent auth --get` for Direct; passed to the proxy on `agent start`"
-      : slot.mode === "proxy"
-        ? `resolved by \`${authFix} --get\`; passed to the profile's daemon on \`${agentStartCommand(
-            name,
-          )}\``
-        : slot.mode === "direct"
-          ? `resolved by \`${authFix} --get\` for Direct`
-          : `resolved by \`${authFix} --get\``;
+  if (!resolves) return { ...base, ...unresolvedAuthOutcome(f, provider, tail) };
+  const mode = name === null ? "" : `, mode: ${slot.mode ?? "none"}`;
   return {
     ...base,
     status: "ok",
     detail: [
-      `credential: ${how} (provider: ${provider}${
-        name === null ? "" : `, mode: ${slot.mode ?? "none"}`
-      })`,
-      usage,
+      `credential: ${credentialSource(f, provider)} (provider: ${provider}${mode})`,
+      credentialUsage(name, slot.mode),
       ...tail,
     ].join("\n"),
   };
@@ -825,8 +866,35 @@ export function checkAutoupdate(f: AutoupdateStatus): CheckResult {
   return { ...base, status: "ok", detail };
 }
 
-export function evaluateAll(scope: HealthScope, facts: HealthFacts): CheckResult[] {
+/** One target's runtime block. Per-daemon rows render exactly for the targets whose daemon was
+ *  interrogated (the probe's `probed` arm), so a row can never describe a probe that did not
+ *  happen. */
+function runtimeChecks(target: RuntimeTarget): CheckResult[] {
+  const out: CheckResult[] = [];
+  if (target.profile !== null) out.push(checkProfileConsistency(target));
+  const probe = target.probe;
+  if (probe.kind === "skipped") return out;
+  out.push(checkRuntimePort(target, probe), checkRuntimePid(target, probe));
+  out.push(checkRuntimePaths(target), checkRuntimeWatchdog(target));
+  out.push(checkRuntimeIdentity(target, probe), checkRuntimeOrphan(target, probe));
+  return out;
+}
+
+/** The agent rows in report order: each agent's wiring, then its live probe, with Codex's host
+ *  farm and the Claude Desktop library between. */
+function agentChecks(facts: HealthFacts): CheckResult[] {
   const runProfile = facts.profile ?? null;
+  const out: CheckResult[] = [];
+  if (facts.codex) out.push(checkCodex(facts.codex, runProfile));
+  if (facts.codexLive) out.push(checkAgentLive("codex", facts.codexLive, runProfile));
+  if (facts.codexHost) out.push(checkCodexHost(facts.codexHost));
+  if (facts.claude) out.push(checkClaude(facts.claude, runProfile));
+  if (facts.claudeDesktop) out.push(checkClaudeDesktop(facts.claudeDesktop));
+  if (facts.claudeLive) out.push(checkAgentLive("claude", facts.claudeLive, runProfile));
+  return out;
+}
+
+export function evaluateAll(scope: HealthScope, facts: HealthFacts): CheckResult[] {
   const out: CheckResult[] = [];
   if (facts.bootstrap) {
     out.push(
@@ -835,31 +903,13 @@ export function evaluateAll(scope: HealthScope, facts: HealthFacts): CheckResult
       checkNodeModules(facts.bootstrap),
     );
   }
-  if (facts.proxy) {
-    out.push(checkProxyPackage(facts.proxy), checkProxyResolved(facts.proxy));
-  }
-  // One runtime block per target, in gather order. Per-daemon rows render exactly for the
-  // targets whose daemon was interrogated (the probe's `probed` arm), so a row can never
-  // describe a probe that did not happen.
-  for (const target of facts.runtimes ?? []) {
-    if (target.profile !== null) out.push(checkProfileConsistency(target));
-    const probe = target.probe;
-    if (probe.kind === "skipped") continue;
-    out.push(checkRuntimePort(target, probe), checkRuntimePid(target, probe));
-    out.push(checkRuntimePaths(target), checkRuntimeWatchdog(target));
-    out.push(checkRuntimeIdentity(target, probe), checkRuntimeOrphan(target, probe));
-  }
-  if (facts.shell) {
-    out.push(checkShellIntegration(facts.shell), checkLaunchers(facts.shell));
-  }
+  if (facts.proxy) out.push(checkProxyPackage(facts.proxy), checkProxyResolved(facts.proxy));
+  // One runtime block per target, in gather order.
+  for (const target of facts.runtimes ?? []) out.push(...runtimeChecks(target));
+  if (facts.shell) out.push(checkShellIntegration(facts.shell), checkLaunchers(facts.shell));
   for (const c of facts.clis ?? []) out.push(checkCli(c));
   if (facts.auth) out.push(checkAuth(facts.auth));
-  if (facts.codex) out.push(checkCodex(facts.codex, runProfile));
-  if (facts.codexLive) out.push(checkAgentLive("codex", facts.codexLive, runProfile));
-  if (facts.codexHost) out.push(checkCodexHost(facts.codexHost));
-  if (facts.claude) out.push(checkClaude(facts.claude, runProfile));
-  if (facts.claudeDesktop) out.push(checkClaudeDesktop(facts.claudeDesktop));
-  if (facts.claudeLive) out.push(checkAgentLive("claude", facts.claudeLive, runProfile));
+  out.push(...agentChecks(facts));
   if (facts.autoupdate) out.push(checkAutoupdate(facts.autoupdate));
   // The single source of the scope rule, shared with the --json path and the unit tests.
   return filterByScope(out, scope);

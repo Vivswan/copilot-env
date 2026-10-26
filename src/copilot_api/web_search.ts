@@ -251,37 +251,69 @@ export async function webSearch(query: string, opts: WebSearchOptions = {}): Pro
   return parseResponsesOutput(await res.json());
 }
 
-/** Exported for fixture tests. The `output` array carries `web_search_call` items (ignored) and
- *  `message` items whose `output_text` parts may carry `url_citation` annotations. */
-export function parseResponsesOutput(body: unknown): string {
+/** The `output_text` parts of the body's `message` items, in order; `web_search_call` items and
+ *  malformed entries are skipped. */
+function outputTextParts(body: unknown): Record<string, unknown>[] {
   const output = isRecord(body) && Array.isArray(body.output) ? body.output : [];
-  const texts: string[] = [];
-  const sources = new Map<string, string>();
+  const parts: Record<string, unknown>[] = [];
   for (const item of output) {
     if (!isRecord(item) || item.type !== "message" || !Array.isArray(item.content)) continue;
     for (const part of item.content) {
       if (!isRecord(part) || part.type !== "output_text") continue;
-      if (typeof part.text === "string" && part.text.trim() !== "") texts.push(part.text);
-      if (!Array.isArray(part.annotations)) continue;
-      for (const annotation of part.annotations) {
-        if (!isRecord(annotation) || annotation.type !== "url_citation") continue;
-        if (typeof annotation.url !== "string" || annotation.url === "") continue;
-        const title = typeof annotation.title === "string" ? annotation.title : "";
-        if (!sources.has(annotation.url)) sources.set(annotation.url, title);
-      }
+      parts.push(part);
     }
   }
-  const answer = texts.join("\n").trim();
-  if (answer === "") {
-    const status = isRecord(body) && typeof body.status === "string" ? body.status : null;
-    throw new Error(
-      "the /responses body carried no answer text (no message output items)" +
-        (status !== null && status !== "completed" ? ` - response status: ${status}` : ""),
-    );
+  return parts;
+}
+
+/** A `url_citation` annotation as its url and title ("" when it carries none); null for any other
+ *  or malformed annotation. */
+function citation(annotation: unknown): { url: string; title: string } | null {
+  if (!isRecord(annotation) || annotation.type !== "url_citation") return null;
+  if (typeof annotation.url !== "string" || annotation.url === "") return null;
+  const title = typeof annotation.title === "string" ? annotation.title : "";
+  return { url: annotation.url, title };
+}
+
+/** url -> title over every citation, the first title seen for a url kept. */
+function citedSources(parts: readonly Record<string, unknown>[]): Map<string, string> {
+  const sources = new Map<string, string>();
+  for (const part of parts) {
+    if (!Array.isArray(part.annotations)) continue;
+    for (const annotation of part.annotations) {
+      const cited = citation(annotation);
+      if (cited === null || sources.has(cited.url)) continue;
+      sources.set(cited.url, cited.title);
+    }
   }
+  return sources;
+}
+
+/** The no-answer error, naming the response status when it is not `completed`. */
+function noAnswerError(body: unknown): Error {
+  const status = isRecord(body) && typeof body.status === "string" ? body.status : null;
+  const unfinished = status !== null && status !== "completed";
+  return new Error(
+    "the /responses body carried no answer text (no message output items)" +
+      (unfinished ? ` - response status: ${status}` : ""),
+  );
+}
+
+/** Exported for fixture tests. The `output` array carries `web_search_call` items (ignored) and
+ *  `message` items whose `output_text` parts may carry `url_citation` annotations. */
+export function parseResponsesOutput(body: unknown): string {
+  const parts = outputTextParts(body);
+  const texts: string[] = [];
+  for (const part of parts) {
+    if (typeof part.text === "string" && part.text.trim() !== "") texts.push(part.text);
+  }
+  const answer = texts.join("\n").trim();
+  if (answer === "") throw noAnswerError(body);
+
+  const sources = citedSources(parts);
   if (sources.size === 0) return answer;
   const lines = [...sources.entries()].map(([sourceUrl, title]) =>
-    title !== "" ? `- ${title}: ${sourceUrl}` : `- ${sourceUrl}`,
+    title === "" ? `- ${sourceUrl}` : `- ${title}: ${sourceUrl}`,
   );
   return `${answer}\n\nSources:\n${lines.join("\n")}`;
 }

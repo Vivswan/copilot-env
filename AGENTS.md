@@ -26,6 +26,7 @@ copilot-env: Points the Codex and Claude CLIs at GitHub Copilot: a managed copil
 
 - bun: `bun install`, `bun run <script>` (scripts in `package.json`)
 - `.bun-version` is managed by sync; pin another version in a repo-owned workflow's version input, not in the dotfile.
+- `biome.json` is managed by sync and holds the fleet's lint floor; the repository's own biome settings and per-path exceptions go in `biome.local.jsonc`.
 
 ## Repository-specific guidance
 

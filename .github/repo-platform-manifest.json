@@ -11,7 +11,7 @@
     ".github/copilot-instructions.md": {"class": "mirror", "kind": "symlink", "hash": "79909577a70fc4971a7fcfd3cbec6a1af7182ca2dadc87f2979dce5e28f93ca0"},
     ".github/dependabot.yml": {"class": "managed", "hash": "08797f7ab8d963e4b940fe249ac348e778e16591e7508cbc4e26be57738b7ce8"},
     ".github/instructions/review.instructions.md": {"class": "managed", "hash": "89d5c9bc2bea185a076b37a4cefb5ffea25a37f050c4e39512b875b95e2db380"},
-    ".github/repo-platform-manifest.json": {"class": "managed", "hash": null, "commit": "b0343f64d30923fea312ab9e0ff691d21b0d55f6"},
+    ".github/repo-platform-manifest.json": {"class": "managed", "hash": null, "commit": "97a01e940f427f98473a9be6d3a8e82a575faf43"},
     ".github/settings.local.yml": {"class": "starter"},
     ".github/settings.yml": {"class": "managed", "hash": "945ba51b2884b7c7bf6c1ce53a5970ba54a53814f6d00f6ede8b3bdf83595c2f"},
     ".github/workflows/auto-assign.yml": {"class": "managed", "hash": "42534cbfecfcc71acbee7f232d2c2b6c03b523e8158fdbac354d25a27aaf6510"},
@@ -31,8 +31,10 @@
     ".release-please-manifest.json": {"class": "starter"},
     ".typography-allow": {"class": "managed", "hash": "768ce791aa89e0061a7ccce09ee389478c45062d28d0c256e09b9e7160455ac3"},
     ".yamllint": {"class": "managed", "hash": "5a32565bac44b0b6b2bc8741b2962d2b07ff3afcd2c4ea832ec5cab63af5f3ed"},
-    "AGENTS.md": {"class": "split", "grammar": "managed-region", "begin": "<!-- BEGIN REPO-PLATFORM MANAGED -->", "end": "<!-- END REPO-PLATFORM MANAGED -->", "hash": "a0630907421c277afc6ade3a93b37298782b5ee6c17fb05b5f1cb7e24c90cdca"},
+    "AGENTS.md": {"class": "split", "grammar": "managed-region", "begin": "<!-- BEGIN REPO-PLATFORM MANAGED -->", "end": "<!-- END REPO-PLATFORM MANAGED -->", "hash": "19eb538e10e76528dbb6e16c66d47c7deda23b5d0ed2cfad25f307167d3ef646"},
     "CLAUDE.md": {"class": "mirror", "kind": "symlink", "hash": "a54ff182c7e8acf56acfd6e4b9c3ff41e2c41a31c9b211b2deb9df75d9a478f9"},
+    "biome.json": {"class": "managed", "hash": "9409dfcb662acc191da623346272f722cdfe4cffaf7dd22f61384338a55451ef"},
+    "biome.local.jsonc": {"class": "starter"},
     "release-please-config.json": {"class": "starter"}
   }
 }

@@ -12,12 +12,10 @@ import { fileURLToPath } from "node:url";
 
 export type LintKind = "sh" | "ps";
 
-/** Directory names never linted, at any depth below the root (`.husky/_` is husky's
- *  generated runner), case-insensitively like the suffixes. */
+/** Never linted at any depth, matched case-insensitively like the suffixes; `.husky/_` is husky's generated runner. */
 const EXCLUDED_DIR_NAMES = ["node_modules", ".git", ".claude", ".husky/_"];
 
-/** What each kind discovers: the suffixes, plus the extensionless scripts a suffix walk
- *  cannot see (the `bin/agent` launcher and the `.githooks/pre-commit` gate). */
+/** Per kind, the suffixes plus the extensionless scripts a suffix walk cannot see: the launcher and the hook gate. */
 const DISCOVERY: Record<LintKind, { suffixes: string[]; always: string[] }> = {
   sh: { suffixes: [".sh", ".bashrc"], always: ["bin/agent", ".githooks/pre-commit"] },
   ps: { suffixes: [".ps1"], always: [] },

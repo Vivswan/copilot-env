@@ -26,6 +26,8 @@ import { expect, removeDir, tempDir, test } from "../helpers/testing.ts";
 
 // Every literal carries the required credential, so the pair is the ONE thing each directive rejects.
 const COMMAND = { kind: "command" } as const;
+
+// Every fake pair's host; the identity half is what the cases vary.
 const HOST = "https://api.githubcopilot.com";
 
 test("a ManagedWrite carries a Direct pair only as the branded DirectWiring, never on the proxy arm", () => {
@@ -76,10 +78,11 @@ test("a ManagedWrite carries a Direct pair only as the branded DirectWiring, nev
 // Direct on the strength of being stored; now the probe decides, so its scratch config must carry
 // the same identity the real write bakes, or that PAT fails the smoke call and lands on the proxy.
 
+/** What the fake adapter saw. `probeTokens` is the credential detectDirect received: the CLI-less
+ *  endpoint smoke dies silently without it. */
 type Recorded = {
   identityCalls: number;
   probeIds: (string | null)[];
-  /** The credential detectDirect received: the CLI-less endpoint smoke dies silently without it. */
   probeTokens: (string | null)[];
   writes: ManagedWrite[];
 };
@@ -121,7 +124,6 @@ const CASES: {
   mode: RequestedMode;
   identity: () => Promise<string | null>;
   probe: boolean;
-  /** The landing's rejection; absent, the landing resolves and the write runs. */
   rejects?: string;
   expected: Recorded;
 }[] = [
@@ -196,6 +198,7 @@ const CASES: {
 ];
 
 test("a landing resolves the identity once, before the probe, per mode", async () => {
+  // A case with `rejects` expects the landing to reject; otherwise it resolves and the write runs.
   for (const c of CASES) {
     const { adapter, recorded } = fakeAdapter(c.identity, c.probe);
     const landing = resolveDefaultMode(adapter, c.mode, "ghp_x");

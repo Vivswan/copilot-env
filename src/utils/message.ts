@@ -19,17 +19,21 @@ type Paint = (text: string) => string;
 /** What a printer takes and a collector keeps: prose, or a scannable the printer lays out. */
 export type Message = string | ScannableMessage;
 
-/** What a message is made of, in print order; a caller fills the parts it has. */
+/** What a message is made of, in print order; a caller fills the parts it has. An evidence line
+ *  with parts of its own is a collected failure, framed by caught. */
 export interface ScannableParts {
   /** One sentence that states the fact; a caller paints an identifier in it with paintFor(color). */
   headline: string;
-  /** One fact per line, printed indented under the headline. A fact with parts of its own (a
-   *  collected failure, framed by caught) is laid out there whole, one indent deeper. */
+
+  /** A fact per line under the headline; one with its own parts lays out whole, a level deeper. */
   evidence?: Message[];
+
   /** Printed only above actions. */
   lead?: Lead;
+
   /** Command or step, then what it does; the second column wraps under itself. */
   actions?: [string, string][];
+
   /** The command edge's colorEnabled(); the argument is the test override. */
   color?: boolean;
 }

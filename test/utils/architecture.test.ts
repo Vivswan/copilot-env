@@ -24,7 +24,9 @@ const arch = readArchitecture(PROJECT_ROOT);
  * in the resolver: a graph that silently dropped it would read a broken import as a missing edge.
  */
 interface Graphs {
+  /** Repo-relative src file -> the repo-relative src files its specifiers resolve to, sorted. */
   graph: ImportGraph;
+
   /** Repo-relative src file -> the bare (package and `node:`) specifiers it names. */
   packages: ReadonlyMap<string, readonly string[]>;
 }

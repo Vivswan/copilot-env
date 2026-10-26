@@ -8,7 +8,9 @@
 // (src/copilot_api/process.ts) orders the `--preload` flags.
 //   ENV_KEY duplicates DAEMON_GH_TOKEN_ENV there    -> this preload stays import-free
 //   the proxy's GITHUB_TOKEN_PATH file is unwritten -> one credential, resolved from our state
+
 const ENV_KEY = "COPILOT_ENV_DAEMON_GH_TOKEN";
+
 const FLAG = "--github-token";
 
 const token = process.env[ENV_KEY];

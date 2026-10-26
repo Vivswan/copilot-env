@@ -5,14 +5,13 @@
 // four token counts, and the daemon's clock within OVERLAP_WINDOW_MS of the client's lines. The
 // client's record is the richer one (cache buckets, session attribution), so the proxy's row is the
 // one dropped. The client side is what the session folds counted, reported by the folds themselves,
-// so a run with and without the usage index pairs the same requests.
+// so a run with and without the usage index pairs the same requests. The token counts do the
+// discriminating: two requests with identical counts in all four buckets within a minute of each
+// other are not seen in practice.
 
 import type { CountedUsage, OnCounted, TokenBuckets, UsageRequest } from "./usage.ts";
 
-/** Both sides stamp a request when its response completes, on the same machine, so the two clocks
- *  sit seconds apart; the minute absorbs a stalled write on either side. The token counts do the
- *  discriminating: two requests with identical counts in all four buckets within a minute of each
- *  other are not seen in practice. */
+/** Both stamp at completion on one machine, seconds apart; the minute absorbs a stalled write. */
 const OVERLAP_WINDOW_MS = 60_000;
 
 /** The client's clock over the lines that make up one request: a Codex token_count is one line, a

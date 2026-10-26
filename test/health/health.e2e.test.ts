@@ -217,6 +217,7 @@ test("proxy package: the version bounds decide status and fix, the cooldown the 
     version: null,
     bounds: { ok: false, reason: "missing", version: null },
   };
+  // `value` leaves for --json consumers, asserted key by key (undefined pins an absent stamp).
   const rows: {
     name: string;
     facts: Partial<ProxyFacts>;
@@ -225,7 +226,6 @@ test("proxy package: the version bounds decide status and fix, the cooldown the 
     noFix?: true;
     detail?: string;
     detailNot?: string;
-    /** `value` leaves for --json consumers, asserted key by key (undefined pins an absent stamp). */
     value?: Record<string, unknown>;
   }[] = [
     { name: "missing", facts: missing, status: "fail" },
@@ -421,12 +421,13 @@ test("runtime port + pid verdicts over the probe states of a default target", ()
     detail?: string;
     value?: Record<string, unknown>;
   };
+  // `exitCode` is exitCodeFor over the runtime scope, `fullExitCode` the full one when it should
+  // agree.
   const rows: {
     name: string;
     target: DefaultRuntimeTarget;
     port?: Verdict;
     pid?: Verdict;
-    /** exitCodeFor over the runtime scope, and the full one when it should agree. */
     exitCode?: number;
     fullExitCode?: number;
   }[] = [
@@ -785,6 +786,9 @@ test("gatherFacts probes identity only in an identity-probing scope and only whe
   // the probe back and a foreign responder earns the warning. The fast `runtime` scope never
   // spends the extra request.
   const directHost = "https://api.githubcopilot.com";
+  // `proxyAnswers` is what the identity probe answers when it fires: ours (true) or a foreign
+  // service (false). `whenDown` is the same wiring with the daemon down: the port and pid verdicts
+  // (auto-start defaults off).
   const rows: {
     name: string;
     scope: HealthScope;
@@ -792,12 +796,10 @@ test("gatherFacts probes identity only in an identity-probing scope and only whe
     claude: ClaudeSettingsOptions | null;
     identityCalls: number;
     proxyExpected: boolean;
-    /** What the identity probe answers when it fires: ours (true) or a foreign service (false). */
     proxyAnswers: boolean;
     identityConfirmed: boolean | null;
     identity: { status: CheckStatus; detail?: string };
     sweep?: CheckStatus;
-    /** The same wiring with the daemon down: the port and pid verdicts (auto-start defaults off). */
     whenDown?: { port: { status: CheckStatus; fix: string }; pid: CheckStatus };
   }[] = [
     {

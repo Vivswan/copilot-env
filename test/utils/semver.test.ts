@@ -63,9 +63,14 @@ test("sameVersion: one release under any spelling, a prefix no match, build meta
   expect(sameVersion("stable", "1.0.98")).toBeNull();
 });
 
+/** The clock every age below is measured from, fixed so the rows never drift. */
 const NOW = Date.parse("2026-06-05T00:00:00.000Z");
+
+/** A version's publish instant `daysAgo` days before NOW, as npm prints it. */
 const iso = (daysAgo: number): string =>
   new Date(NOW - daysAgo * MILLISECONDS_PER_DAY).toISOString();
+
+/** A cooldown of `n` days, in the milliseconds pickAgedVersion takes. */
 const days = (n: number): number => n * MILLISECONDS_PER_DAY;
 
 // The shape of `npm view <pkg> time --json`: created/modified bookkeeping keys ride alongside the versions.

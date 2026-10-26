@@ -27,22 +27,31 @@ const PRINTER_METHODS = new Set([
   "verbose",
   "notify",
 ]);
-/** A free function whose name says it prints: the message and table printers, and any `printX`
- *  or `logX` helper. */
+
+/** A free function whose name says it prints: the message and table printers, any `printX` or `logX` helper. */
 const PRINTER_FUNCTION = /^(print|log)[A-Z]/;
+
+/** The process streams whose `.write` is a printer. */
 const STREAMS = new Set(["stdout", "stderr"]);
+
 /** The list methods a collector fills, called on any receiver. */
 const COLLECTOR_METHODS = new Set(["push", "unshift"]);
+
 /** The functions a catch binding is handed as its parameter: `function (e)` and `(e) =>`. */
 const FUNCTIONS = new Set(["FunctionExpression", "ArrowFunctionExpression", "FunctionDeclaration"]);
+
 /** The loops that bind each element of what they iterate. */
 const ELEMENT_LOOPS = new Set(["ForOfStatement", "ForInStatement"]);
+
 /** The message helpers that take the caught error first and keep its parts. */
 const CONVERTERS = new Set(["caught", "rethrown"]);
+
 /** The message makers whose parts may hold a converter's result, called or constructed. */
 const COMPOSERS = new Set(["scannable", "ScannableError", "ScannableMessage"]);
+
 /** A member whose non-computed key is a name, not a read. */
 const KEYED = new Set(["Property", "MethodDefinition", "PropertyDefinition", "AccessorProperty"]);
+
 /** The TypeScript nodes wrapping a value: their `expression` is read, their type is not. */
 const TYPED_EXPRESSIONS = new Set([
   "TSAsExpression",
@@ -51,12 +60,14 @@ const TYPED_EXPRESSIONS = new Set([
   "TSTypeAssertion",
   "TSInstantiationExpression",
 ]);
+
+/** The one finding with fixed text: a `throw` that reaches the caught error without passing it on whole. */
 const THROWN_AS_TEXT = "throw rebuilds the caught error as text: throw it, or rethrown(e, frame)";
 
 type Node = Record<string, unknown> & { type: string; start: number; end: number };
 
+/** One finding; `start` is the offset of the printer call (or the throw) in the source. */
 interface PrinterFinding {
-  /** Offset of the printer call in the source. */
   start: number;
   message: string;
 }

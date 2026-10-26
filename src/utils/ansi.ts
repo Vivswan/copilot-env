@@ -21,8 +21,7 @@ export function colorEnabled(): boolean {
 
 type Paint = (text: string) => string;
 
-/** SGR open/close pairs; a tone's open code is reachable on its own for a painter that must
- *  re-open the tone after an inner close (the logger's message body around an inline cyan). */
+/** SGR open/close pairs; sgrOpen reads a tone's open code alone. */
 const SGR = {
   bold: [1, 22],
   dim: [2, 22],
@@ -36,10 +35,14 @@ const SGR = {
 
 export type Tone = keyof typeof SGR;
 
+/** ESC then `[`: the CSI introducer, so every sequence here is this, a code, and `m`. */
 const ESC = "\x1b[";
+
 /** The close every foreground tone shares. */
 export const FG_CLOSE = `${ESC}39m`;
 
+/** A tone's open code alone, for a painter that must re-open the tone after an inner close (the
+ *  logger's message body around an inline cyan). */
 export function sgrOpen(tone: Tone): string {
   return `${ESC}${SGR[tone][0]}m`;
 }
@@ -49,8 +52,7 @@ function sgr(tone: Tone): Paint {
   return (text: string): string => `${ESC}${open}m${text}${ESC}${close}m`;
 }
 
-/** The palette ungated: for a renderer that resolves colorEnabled() once at its edge (the survey of
- *  `agent profile identity`), so a test can force color on and pin what the escapes wrap. */
+/** The palette ungated, for a renderer that resolves colorEnabled() once at its edge (paintFor). */
 export const palette: Record<Tone, Paint> = {
   bold: sgr("bold"),
   dim: sgr("dim"),
@@ -68,7 +70,9 @@ const plainPalette: Record<Tone, Paint> = Object.fromEntries(
 ) as Record<Tone, Paint>;
 
 /** The palette a renderer resolves once from its `color` argument (the command edge's
- *  colorEnabled(), or a test's override): never the gated helpers, which read the environment. */
+ *  colorEnabled(), or a test's override): never the gated helpers, which read the environment. The
+ *  survey of `agent profile identity` is one such renderer, so a test can force color on and pin
+ *  what the escapes wrap. */
 export function paintFor(color: boolean): Record<Tone, Paint> {
   return color ? palette : plainPalette;
 }
@@ -84,9 +88,6 @@ export const gray = gated(palette.gray);
 export const green = gated(palette.green);
 export const red = gated(palette.red);
 
-/** The tone of a status word that is data, not a log level: what `agent health` rows, the profile
- *  table, and the start/stop lines say about a thing. Green is healthy, yellow needs a hand, red
- *  failed, dim is absent or idle; any other word keeps its color. */
 const STATUS_TONES: ReadonlyArray<readonly [RegExp, Tone]> = [
   // `registered (current)` ends in a non-word character, where `\b` cannot sit.
   [/^(ok|up|running|accepted|authenticated|wired|complete)\b|^registered \(current\)/i, "green"],
@@ -98,8 +99,10 @@ const STATUS_TONES: ReadonlyArray<readonly [RegExp, Tone]> = [
   [/^(down|stopped|-|none|unset|<unset>)$/i, "dim"],
 ];
 
-/** `color` is the command edge's colorEnabled(), so a renderer never reads the environment and a
- *  test can force the escapes on. */
+/** The tone of a status word that is data, not a log level: what `agent health` rows, the profile
+ *  table, and the start/stop lines say about a thing. Green is healthy, yellow needs a hand, red
+ *  failed, dim is absent or idle; any other word keeps its color. `color` is the command edge's
+ *  colorEnabled(): a renderer never reads the environment, and a test can force the escapes on. */
 export function statusPaint(word: string, color: boolean): string {
   if (!color) return word;
   const tone = STATUS_TONES.find(([pattern]) => pattern.test(word))?.[1];

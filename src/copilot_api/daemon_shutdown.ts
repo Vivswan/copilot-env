@@ -14,18 +14,15 @@ interface DrainableServer {
   stop(closeActiveConnections?: boolean): Promise<void>;
 }
 
-/** A SIGTERM listener replaces the runtime's default terminate-on-signal, so without a deadline a
- *  wedged drain would leave `agent stop` (one SIGTERM, no SIGKILL) unable to stop the daemon. Every
- *  escalating teardown (start --force, uninstall, de-auth, profile <name> del) SIGKILLs after a 2000ms
- *  grace, so this must sit under that. */
+/** A wedged drain ends here, since `agent stop` sends one SIGTERM and no SIGKILL (budget: shutdownDaemon). */
 export const DRAIN_DEADLINE_MS = 1_500;
 
-/** After the drain, a held-back listener that exits on its own (copilot-api's, once its async
- *  cleanups settle) gets this long before the daemon exits anyway. The drain and this together
- *  stay under the 2000ms SIGKILL grace. */
+/** After the drain, copilot-api's replayed listener gets this long to exit itself before the daemon does. */
 export const LATE_LISTENER_GRACE_MS = 300;
 
+/** `agent stop` sends the first, a foreground run's Ctrl-C the second; both drain the same way. */
 const SIGNALS = ["SIGTERM", "SIGINT"] as const;
+
 type Signal = (typeof SIGNALS)[number];
 type SignalListener = (signal: string) => void;
 
@@ -35,9 +32,7 @@ let daemonServer: DrainableServer | null = null;
 // tripping mid-drain, joins this promise instead of starting a rival drain.
 let shuttingDown: Promise<void> | null = null;
 
-/** Listeners for the two signals registered after installTerminationHandler, held back until the
- *  drain is over: copilot-api's own `process.once("SIGTERM", ...)` exits as soon as its cleanups
- *  settle, which in the same emit as our listener would sever the responses the drain protects. */
+/** Signal listeners registered after installTerminationHandler, which replays them only once the drain is over. */
 const deferredListeners: Array<{ signal: Signal; listener: SignalListener }> = [];
 
 /** The most recent server wins; the daemon opens only one. The shape check is there because the
@@ -96,7 +91,15 @@ function exitAfterDeferredListeners(code: number, arrived: Signal | null): void 
 }
 
 /** Resolves once the exit is under way (at once, or after the late listeners' grace): nothing a
- *  caller does after it can still land. `arrived` is the signal that started it, if one did. */
+ *  caller does after it can still land. `arrived` is the signal that started it, if one did.
+ *
+ *  Our SIGTERM listener replaces the runtime's terminate-on-signal, so the drain needs a deadline:
+ *  `agent stop` sends one SIGTERM and no SIGKILL, and a wedged drain would leave it unable to stop
+ *  the daemon. Every escalating teardown (start --force, uninstall, de-auth, profile <name> del)
+ *  SIGKILLs after a 2000ms grace, so DRAIN_DEADLINE_MS plus LATE_LISTENER_GRACE_MS stays under it.
+ *
+ *  That grace is process.ts's DAEMON_SIGKILL_GRACE_MS, a separate literal here because the daemon
+ *  imports no CLI module; test/copilot_api/daemon_spawn.e2e.test.ts pins the two in order. */
 export function shutdownDaemon(code = 0, arrived: Signal | null = null): Promise<void> {
   if (shuttingDown !== null) return shuttingDown;
   const server = daemonServer;
@@ -115,7 +118,11 @@ const REGISTRARS = ["on", "once", "addListener", "prependListener", "prependOnce
 
 /** POSIX only: on Windows node's `process.kill(pid, "SIGTERM")` is TerminateProcess, which no
  *  in-process handler can intercept. The Windows daemon keeps the hard kill; SQLite WAL recovery is
- *  what makes that safe. SIGINT is the foreground run's Ctrl-C, drained the same way. */
+ *  what makes that safe. SIGINT is the foreground run's Ctrl-C, drained the same way.
+ *
+ *  Listeners for the two signals registered after this are held back until the drain is over:
+ *  copilot-api's own `process.once("SIGTERM", ...)` exits as soon as its cleanups settle, which in
+ *  the same emit as our listener would sever the responses the drain protects. */
 export function installTerminationHandler(): void {
   if (process.platform === "win32") return;
   for (const signal of SIGNALS) {

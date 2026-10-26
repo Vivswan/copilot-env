@@ -16,10 +16,13 @@ import { COPILOT_ENV_USER_AGENT } from "../utils/user_agent.ts";
 export interface CopilotCredits {
   /** The login the endpoint reports, when it does. */
   login: string | null;
+
   /** Premium requests the plan grants per period. */
   entitlement: number;
+
   /** Premium requests spent so far this period. */
   used: number;
+
   /** `YYYY-MM-DD`; the period ends at 00:00 UTC on this day. */
   resetDate: string;
 }
@@ -136,26 +139,44 @@ export async function fetchCopilotCredits(
 
 /** GitHub bills AI credits at 100 to the dollar. */
 const CREDITS_PER_USD = 100;
+
+/** Exact: the table's `usd` rounds it to two decimals, the JSON keeps the full figure. */
 const creditsUsd = (credits: number): number => credits / CREDITS_PER_USD;
 
 export interface CreditsPace {
+  /** The GitHub login the endpoint reports; null when it reports none. */
   login: string | null;
+
+  /** Premium requests the plan grants per period, in AI credits (100 to the dollar). */
   entitlement: number;
+
+  /** Premium requests spent so far this period, in the same credits. */
   used: number;
+
   /** The `cost.credits-target` ceiling; null without one, and then no target bar or row is drawn. */
   target: number | null;
-  /** Period bounds, ms since the epoch (UTC midnights). */
+
+  /** One calendar month before `resetMs`, ms since the epoch (UTC midnight). */
   periodStartMs: number;
+
+  /** 00:00 UTC on `quota_reset_date`, ms since the epoch. */
   resetMs: number;
-  /** Day of the period, 1-based, and the period's length in days. */
+
+  /** Day of the period, 1-based. */
   day: number;
+
+  /** The period's length in days, 28 to 31. */
   daysTotal: number;
+
   /** Elapsed share of the period, 0..1. */
   elapsed: number;
-  /** Where an even spend would sit right now against the target (null without one) and
-   *  against the entitlement. */
+
+  /** Where an even spend of the target would sit right now; null without a target. */
   targetMark: number | null;
+
+  /** Where an even spend of the entitlement would sit right now. */
   totalMark: number;
+
   /** Null before any time has elapsed: the one owner of that reason. */
   projected: number | null;
 }
@@ -224,16 +245,17 @@ const pct = (share: number): string => `${Math.round(share * 100)}%`;
 const clamp = (n: number, lo: number, hi: number): number => Math.min(Math.max(n, lo), hi);
 const delta = (n: number): string => (n > 0 ? `${BAD} +${commas(n)}` : `${OK} ${commas(n)}`);
 
-/** Colour goes on after every width is settled, so padding never counts an escape. */
 const paintBar = (bar: string): string =>
   bar.replace(/#+/g, blue).replace(/\++/g, cyan).replace(/>$/, red);
+
 const paintDelta = (cell: string): string =>
   cell.includes(BAD) ? red(cell) : cell.includes(OK) ? green(cell) : cell;
 
 /** ghco's layout, kept cell for cell so the two read the same. A share past 100%
  *  closes the bar with `>`: an overrun must never look like a full month. Without a
  *  target the target bar, row, and marker are absent and the projection is judged
- *  against the entitlement. */
+ *  against the entitlement. Colour goes on after every width is settled, so padding
+ *  never counts an escape. */
 export function renderCredits(pace: CreditsPace): string[] {
   const { used, target, entitlement: total, projected } = pace;
   const reach = projected ?? used;

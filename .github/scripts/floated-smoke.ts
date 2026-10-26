@@ -18,8 +18,10 @@ import { cli, fail, requireDisposableHome, runnerOs } from "./smoke-support.ts";
 export interface FloatedSmokeEvidence {
   /** `agent start`'s stdout and stderr together; its exit code is expected nonzero. */
   startOutput: string;
+
   /** The daemon's proxy log, or null when it wrote none under the data home. */
   proxyLog: string | null;
+
   /** Whether `~/.local/share/copilot-api` (the npm package's own default home) exists. */
   legacyHomeExists: boolean;
 }

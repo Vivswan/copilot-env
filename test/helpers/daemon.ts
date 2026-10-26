@@ -43,13 +43,14 @@ export async function launchAuth(
   );
 }
 
-/** Every daemon carries a credential and a host (a launch without one is refused); the fake proxy
- *  reads neither, so the spawn fixtures share one placeholder pair. */
+/** A launch without a credential and a host is refused; the fake proxy reads neither, so fixtures share these. */
 export const FAKE_DAEMON_CREDENTIAL: DaemonCredential = {
   kind: "token",
   token: "gho_fake_daemon",
   clientHeaders: daemonClientHeaders("copilot-env-test/0", null),
 };
+
+/** The host half of the placeholder pair; the fake proxy reads it no more than the credential. */
 export const FAKE_DAEMON_HOST = DEFAULT_COPILOT_API_BASE;
 
 /** The fake proxy as a file entry under the resolved root home's proxy home, the shape
@@ -216,6 +217,8 @@ export async function withUnprovablePidProbe(body: () => Promise<void>): Promise
 interface RefusedStopFixture {
   /** The live local pid the marker and run state both name (never a daemon). */
   bystanderPid: number;
+
+  /** Kills the bystander, releases this process's lock, and waits for the pid to go. */
   teardown: () => Promise<void>;
 }
 

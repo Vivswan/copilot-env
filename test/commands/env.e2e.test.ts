@@ -23,8 +23,7 @@ import { afterEach, expect, removeDir, tempDir, test } from "../helpers/testing.
 const restoreEnv = envSnapshot();
 let dir = "";
 
-// The per-host farm needs POSIX symlinks; on Windows the `codex-host` key always
-// reads off, so the CODEX_HOME export tests run on Linux/macOS only.
+// The farm needs POSIX symlinks and the `codex.host` key always reads off on Windows, so the export tests skip there.
 const skipWin = test.skipIf(process.platform === "win32");
 
 afterEach(() => {
@@ -167,15 +166,26 @@ skipWin(
     const unrecorded = (hostHome: string): string =>
       `no completed wiring pass is recorded for the per-host CODEX_HOME farm at ${hostHome}`;
     const cases: {
+      // The states of the key, the farm and the shell, as the assertion messages name the row.
       name: string;
+
+      // The keys set before the run; `root` sets `codex.home` to an explicit root the farm sits under.
       config: { "codex.host"?: boolean; root?: boolean };
+
+      // What layFarm leaves at the host home before the run.
       farm: Farm;
-      // The run-state record is what a successful wiring pass leaves; without it the farm is
-      // not active.
+
+      // The run-state record is what a successful wiring pass leaves; without it the farm is not active.
       recorded: boolean;
-      exported: boolean; // the shell already carries OUR export
+
+      // Whether the shell already carries OUR export of CODEX_HOME.
+      exported: boolean;
+
+      // The export lines expected on stdout, per host home.
       stdout: (hostHome: string) => string[];
-      stderr: ((hostHome: string) => string) | null; // null: silent
+
+      // The drift line expected on stderr, per host home; null: silent.
+      stderr: ((hostHome: string) => string) | null;
     }[] = [
       // The key is the switch: unset exports nothing even for an activated farm and clears OUR
       // spelling at once.

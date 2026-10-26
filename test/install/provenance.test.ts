@@ -17,15 +17,24 @@ import { fileSha256 } from "../../src/install/checksums.ts";
 import { verifyReleaseProvenance } from "../../src/install/provenance.ts";
 import { describe, expect, tempDir, test } from "../helpers/testing.ts";
 
+/** The v4.0.0 bundle, checksums, and trust root; the header says why they never expire. */
 const FIXTURES = join(import.meta.dirname, "..", "fixtures", "provenance", "v4.0.0");
+
+/** The release's Sigstore bundle (ATTESTATION_NAME), the text verifyReleaseProvenance parses. */
 const BUNDLE = readFileSync(join(FIXTURES, ATTESTATION_NAME), "utf8");
+
+/** Passed in so no case reaches the TUF mirror; the control that omits it fails the fetch. */
 const TRUSTED_ROOT = TrustedRoot.fromJSON(
   JSON.parse(readFileSync(join(FIXTURES, "trusted_root.json"), "utf8")),
 );
+
+/** The release the bundle attests; the failure messages name it. */
 const TAG = "v4.0.0";
+
 /** The identity that signed the fixture: the repository's own release workflow on main. */
 const FIXTURE_SIGNER =
   "https://github.com/Vivswan/copilot-env/.github/workflows/release.yml@refs/heads/main";
+
 /** The fleet publish leg that signs releases now: another repository of the same owner, a tag. */
 const FLEET_SIGNER =
   "https://github.com/Vivswan/repo-platform/.github/workflows/fleet-release-publish.yml@refs/tags/stable";

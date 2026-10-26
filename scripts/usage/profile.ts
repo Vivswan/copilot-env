@@ -1,6 +1,7 @@
 // Measure this machine's Codex and Claude session logs, read-only, into the DISTRIBUTIONS the
 // generator (test/helpers/usage_fixtures.ts) samples from: quantile tables, shares and schema
-// words only, never text, ids or paths. Invoked as `bun run usage:profile --out FILE`.
+// words only, never text, ids or paths. Invoked as `bun run usage:profile --out FILE`. Only what
+// each reader would price is measured: a file the readers skip never shapes the profile.
 //
 // The output is personal data (one machine's usage fingerprint), so `--out` is required and
 // must point outside the repository: a path inside this checkout is refused before any log is
@@ -44,15 +45,18 @@ import {
   type UsageSource,
 } from "../../test/helpers/usage_profile_contract.ts";
 
+/** Samples a distribution keeps (Algorithm R past it), so quantiles come from a bounded sample. */
 const RESERVOIR_SIZE = 200_000;
-/**
- * What each reader would price, and nothing else: Codex rollouts by the reader's own filename
- * pattern no deeper than sessions/YYYY/MM/DD, Claude transcripts as any plain .jsonl down to
- * the subagent workflow depth. A file the readers skip must not shape the profile.
- */
+
+/** The Codex reader's own walk depth: rollouts sit at sessions/YYYY/MM/DD, never deeper. */
 const CODEX_MAX_DEPTH = 4;
+
+/** The Claude reader takes any plain .jsonl, so the profile does too. */
 const CLAUDE_FILE = /\.jsonl$/;
+
+/** The Claude reader's own walk depth, down to the subagent workflow files. */
 const CLAUDE_MAX_DEPTH = 8;
+
 /** This checkout, symlinks resolved: the one place the profile must never be written. */
 const REPO_ROOT = realpathSync(fileURLToPath(new URL("../..", import.meta.url)));
 

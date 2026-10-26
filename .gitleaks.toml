@@ -24,3 +24,11 @@ paths = ['''(^|/)(bun\.lock|bun\.lockb|package-lock\.json|deno\.lock|uv\.lock|Ca
 description = "known-fake GitHub-token test fixture in immutable history"
 regexTarget = "secret"
 regexes = ['''^ghp_secret123$''']
+
+# The OAuth client id of VS Code's Copilot app, which copilot-api logs in
+# as (src/copilot_api/github_login.ts): a public identifier, not a secret.
+# Exact value only, so the file stays fully scanned.
+[[allowlists]]
+description = "the public OAuth client id of VS Code's Copilot app"
+regexTarget = "secret"
+regexes = ['''^Iv1\.b507a08c87ecfe98$''']

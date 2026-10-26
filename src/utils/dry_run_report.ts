@@ -29,12 +29,19 @@ interface AttributeRow {
 }
 
 export interface FileChange {
+  /** As the run first spelled it: what the command named, not where a link led. */
   path: string;
+
+  /** A tree diff's verdict, never an operation's: a file rewritten with its own bytes is `same`. */
   verdict: FileVerdict;
+
+  /** A directory row; a fresh one's lost children follow it as `delete` rows of their own. */
   directory: boolean;
+
+  /** The JSON or TOML leaves by dotted key, each with its status; none for other files or a secret file. */
   attributes: AttributeRow[];
-  /** A planned file's text against the disk's (null: absent), for the line diff a file without
-   *  attribute rows prints. */
+
+  /** Planned text against the disk's (null: absent): the line diff of a file without leaf rows. */
   text?: { before: string | null; after: string };
 }
 
@@ -252,6 +259,7 @@ function renderValue(value: unknown, secret: boolean): string {
   return JSON.stringify(value) ?? String(value);
 }
 
+/** The printed word per verdict; only `same` differs from its name, printing as "unchanged". */
 const VERDICT_LABEL: Record<FileVerdict, string> = {
   create: "create",
   rewrite: "rewrite",

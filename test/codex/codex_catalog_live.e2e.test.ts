@@ -18,12 +18,15 @@ import { envSnapshot, isolateAgentHomes } from "../helpers/env.ts";
 import { runSync } from "../helpers/run.ts";
 import { afterEach, expect, test } from "../helpers/testing.ts";
 
-// Opted in: the test RUNS, and a missing codex is a failure (CI installs it right
-// before), never a skip that lets the gate pass vacuously.
+// Opted in: the test RUNS and a missing codex FAILS it (CI installs one right before), never a vacuous skip.
 const LIVE_ENV = "COPILOT_ENV_LIVE_CODEX";
+
+// Without LIVE_ENV in the environment (the CI job that installs codex sets it) the live tests skip.
 const live = test.skipIf(!process.env[LIVE_ENV]);
 
+// The live test clears the no-live-lookups seam for the real probe; this puts it back.
 const restoreEnv = envSnapshot([CI_NO_LIVE_LOOKUPS_ENV]);
+
 let dir = "";
 
 afterEach(() => {
@@ -32,11 +35,15 @@ afterEach(() => {
 
 type Model = Record<string, unknown>;
 
+// The checked-in Copilot `/models` body; the live test overlays one of THIS Codex's bundled models on it.
 const FIXTURE_BODY = JSON.parse(
   readFileSync(join(PROJECT_ROOT, "test", "fixtures", "copilot-models.json"), "utf8"),
 ) as { data: Model[] };
+
 // The fixture's Copilot-only model: a numbered gpt slug no Codex release bundles.
 const FIXTURE_ONLY = "gpt-5.4-fixture";
+
+// The window the overlay gives the bundled model, asserted back from the generated catalog.
 const OVERLAY_WINDOW = 1_050_000;
 
 /** The fixture body plus one entry for a model THIS Codex bundles (its first numbered

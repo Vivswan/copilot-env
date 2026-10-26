@@ -26,27 +26,32 @@ import {
 import { v501DenoLeftovers, v501OsLockSidecars } from "./5.0.1.ts";
 import { v502SmallModelKey } from "./5.0.2.ts";
 
-/** One step, named for the release it migrates AWAY FROM (authored against the current release,
- *  with no future number to predict). It runs when an update leaves that version behind:
- *  oldVersion <= version < newVersion. `run` must be IDEMPOTENT: an update can be retried. */
+/**
+ * One step, named for the release it migrates AWAY FROM (authored against the current release, with
+ * no future number to predict). It runs when an update leaves that version behind:
+ * oldVersion <= version < newVersion. `run` must be IDEMPOTENT: an update can be retried.
+ *
+ *   `layout`       -> RELOCATES the shared stores the others read, so dueMigrations hoists every
+ *                     selected one to the FRONT of the run, ahead of older versions' steps too, which
+ *                     read those stores through the NEW code and so at the new paths;
+ *                     version-then-registry order still applies within each half
+ *   `installRoot`  -> the runner's own, as every other install-root write takes it from its caller
+ */
 export interface Migration {
   /** The release this migrates away from, as a bare "X.Y.Z" (the file name). */
   version: SemverString;
+
   /** One line shown when the migration runs. */
   description: string;
-  /** This step RELOCATES the shared stores the others read. dueMigrations hoists every selected
-   *  layout step to the FRONT of the run, ahead of older versions' steps too, which read those
-   *  stores through the NEW code and so at the new paths. Version-then-registry order still
-   *  applies within each half. */
+
+  /** Relocates the shared stores the other steps read; dueMigrations runs every layout step first. */
   layout?: true;
-  /** `installRoot` is the root whose machine state (`.autoupdate`) the step may touch: the
-   *  runner's, as every other install-root write takes it from its caller. */
+
+  /** `installRoot` is the root whose machine state (`.autoupdate`) the step may touch. */
   run: (installRoot: string) => void | Promise<void>;
 }
 
-/** Ascending version order; a release with several INDEPENDENT fix-ups registers them all under
- *  its version, and registry order is their run order within it. The earliest step leaves 4.0.0:
- *  an install older than that is not migrated (reinstall). */
+/** Ascending versions, registry order within one; the earliest leaves 4.0.0, so an older install reinstalls. */
 const MIGRATIONS: Migration[] = [
   v400ShellFence,
   v400CodexWiring,

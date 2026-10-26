@@ -99,11 +99,19 @@ const mig = (version: SemverString): Migration => ({
   description: version,
   run: () => {},
 });
+
+// Three steps the dueMigrations rows select among.
 const LIST = [mig("1.2.1"), mig("1.2.5"), mig("1.3.0")];
+
+// The named profile the store fixtures wire and the rewrites must move.
 const WORK = parseProfileName("work");
+
+// A second named profile, so a rewrite's reach is seen to stop at its target.
 const OTHER = parseProfileName("other");
 
+// Taken at load, before any test touches the env; afterEach restores it.
 const restoreEnv = envSnapshot();
+
 let dir = "";
 
 /** state.json written and read raw (fixtures the typed API cannot produce). */

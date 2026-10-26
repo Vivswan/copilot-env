@@ -25,20 +25,28 @@ function isolate(): void {
 interface StubOptions {
   /** /models ids per identity; key "none" = no Copilot-Integration-Id header. */
   catalogs: Record<string, string[]>;
+
   /** The oracle 400's allowlist (absent = the oracle errors unrecognizably). */
   allowlist?: string[];
+
   /** Models whose 1-token /v1/messages ping returns 200. */
   servable?: string[];
+
   /** Models whose oversized-prompt probe returns 200 (the 1m verdict). */
   oneM?: string[];
+
   /** Models whose pings answer 503 (transient trouble, never a verdict). */
   transient?: string[];
+
   /** Models whose 1m probe ONLY answers 503 (the small ping still succeeds). */
   transient1m?: string[];
+
   /** Models whose small ping answers 201 (a 2xx that is not the exact 200). */
   odd?: string[];
+
   /** Candidates whose oracle completion answers 200 (the candidate itself served: one billed token). */
   oracleServable?: string[];
+
   /** Spy log, every request: "catalog:<identity>", "oracle:<id>", "ping:<id>", "probe1m:<id>". */
   calls?: string[];
 }

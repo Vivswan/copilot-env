@@ -25,8 +25,13 @@ function tmp(name: string): string {
   return join(dir, name);
 }
 
-const DEAD_PID = 2_147_483_646; // never a live process
-const OTHER_PID = process.pid + 1; // another process, as the injected liveness says
+/** Never a live process. */
+const DEAD_PID = 2_147_483_646;
+
+/** Another process, as the injected liveness says. */
+const OTHER_PID = process.pid + 1;
+
+/** The lock file's whole text: the holder's pid and clock, one per line. */
 const marker = (pid: number, ts: number): string => `${pid}\n${ts}\n`;
 
 test("acquire, contend against a fresh live holder, release, re-acquire", () => {

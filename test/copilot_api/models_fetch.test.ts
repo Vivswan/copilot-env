@@ -33,9 +33,9 @@ afterEach(() => {
 /** A duplicate id and an id-less entry: three raw entries, one model. */
 const SEAM_BODY = { data: [{ id: "a" }, { id: "a" }, {}] };
 
+/** One request the stub saw; the header keys are lowercased, as the server reads them. */
 interface SeenRequest {
   url: string;
-  /** Lowercased keys, as the server reads them. */
   headers: Record<string, string>;
 }
 

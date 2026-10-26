@@ -13,14 +13,14 @@ export type CodexTomlRead =
   | { kind: "ok"; doc: Record<string, unknown> }
   | { kind: "unparseable"; error: string };
 
-// Blank is TOML's own insignificant whitespace (spaces, tabs, LF/CRLF) after the one leading BOM
-// parseToml also drops. NOT String.trim(): trim also eats an NBSP or a lone CR, which the parser
-// rejects, and a rejected file must read as "unparseable" (refuse to clobber), never as "absent".
+// TOML's own insignificant whitespace (spaces, tabs, LF/CRLF) after the one leading BOM parseToml also drops.
 const BLANK_TOML = /^\ufeff?(?:[ \t\n]|\r\n)*$/;
 
 /** Any filesystem error but ENOENT THROWS raw, so a caller cannot mistake an unreadable config for
  *  a missing one. A blank document reads as "absent": it carries nothing worth preserving, and
- *  the seed-a-default site (loadOrCreateConfig) treats it like a missing file. Read through the
+ *  the seed-a-default site (loadOrCreateConfig) treats it like a missing file. Blank is BLANK_TOML,
+ *  NOT String.trim(): trim also eats an NBSP or a lone CR, which the parser rejects, and a rejected
+ *  file must read as "unparseable" (refuse to clobber), never as "absent". Read through the
  *  facade, so a dry run's planned content answers in place of the disk. */
 export function readCodexToml(path: string): CodexTomlRead {
   let text: string;

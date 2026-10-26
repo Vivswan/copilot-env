@@ -11,12 +11,19 @@ import { rethrown } from "../utils/message.ts";
 import { COPILOT_ENV_USER_AGENT } from "../utils/user_agent.ts";
 import type { ProbeFetch } from "./integration_identity.ts";
 
+/** Where the viewer lookup goes; one GraphQL query reads the same for every token kind. */
 export const GITHUB_GRAPHQL_URL = "https://api.github.com/graphql";
-/** The OAuth app copilot-api logs in as (VS Code's Copilot app): the daemon's Copilot token exchange
- *  accepts a `gho_` minted for it, and `read:user` is all the exchange needs. */
-export const COPILOT_OAUTH_CLIENT_ID = "Iv1.b507a08c87ecfe98"; // gitleaks:allow - a public OAuth client id, not a secret
+
+/** VS Code's Copilot app, the OAuth app copilot-api logs in as: the daemon's token exchange accepts its `gho_`. */
+export const COPILOT_OAUTH_CLIENT_ID = "Iv1.b507a08c87ecfe98";
+
+/** All the daemon's Copilot token exchange needs of a `gho_`. */
 export const COPILOT_OAUTH_SCOPE = "read:user";
+
+/** The login lookup; `viewer` is whoever the token belongs to. */
 const VIEWER_QUERY = "query { viewer { login } }";
+
+/** The viewer lookup's budget; a miss is a label miss, never a gate (GithubLoginLook). */
 const LOOKUP_TIMEOUT_MS = 5000;
 
 // A module-level seam so `runAuth` and `addProfile` stay hermetic in tests without threading a fetch through
@@ -85,7 +92,9 @@ interface DeviceCode {
 }
 
 interface DeviceFlowDeps {
+  /** Absent = the module seam (setGithubLoginFetch). */
   fetchImpl?: ProbeFetch;
+
   /** Tells the user where to go and what to type; runs once, before polling starts. */
   announce: (code: DeviceCode) => void;
 }

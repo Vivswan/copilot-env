@@ -48,7 +48,9 @@ import { afterEach, expect, tempDir, test } from "../helpers/testing.ts";
 // A pid no real process holds (far above any OS pid ceiling we run on).
 const DEAD_PID = 2_147_483_646;
 
+// Taken at module load, before any test touches the environment; afterEach restores it.
 const restoreEnv = envSnapshot();
+
 let dir = "";
 afterEach(() => {
   restoreEnv();

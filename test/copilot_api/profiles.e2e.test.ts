@@ -83,8 +83,8 @@ const TYPO = parseProfileName("typo");
 const COMMAND = { kind: "command" } as const;
 
 const restoreEnv = envSnapshot();
-/** The process's real fetch: a case that stubs the global for model discovery is reset here. */
 const REAL_FETCH = globalThis.fetch;
+
 let dir = "";
 
 // A direct-profile add probes the Copilot integration identity over the network; stub it
@@ -99,6 +99,7 @@ beforeEach(() => {
 afterEach(() => {
   setIntegrationProbeFetch(null);
   setGithubLoginFetch(null);
+  // A case that stubs the global fetch for model discovery is reset to the process's real one here.
   globalThis.fetch = REAL_FETCH;
   restoreEnv();
   // A check test's exit 1/2 must never leak into the whole test run.
@@ -144,13 +145,13 @@ test("parseProfileName accepts kebab names and rejects reserved/invalid ones", (
 // --- credential store slots -----------------------------------------------------
 
 test("a named credential slot per state: a write needs the committed profile (no slot or a home-only half is a rejection, never an auto-created half), a committed slot re-auths and de-auths in place, and the default is never read or touched", () => {
+  // `before` is resolve() before the write (the slot's own token or null, never the default's);
+  // `known` is whether the store knows the profile after the write.
   const rows: {
     name: string;
     arrange: (state: CopilotEnvState) => void;
-    /** resolve() before the write: the slot's own token or null, never the default's. */
     before: string | null;
     write: { throws: RegExp } | { lands: string };
-    /** Whether the store knows the profile after the write. */
     known: boolean;
   }[] = [
     {

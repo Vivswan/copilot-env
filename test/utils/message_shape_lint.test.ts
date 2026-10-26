@@ -9,10 +9,13 @@ import { expect, test } from "../helpers/testing.ts";
 import { tsFilesUnder } from "../helpers/tree.ts";
 import { type Rule, scanMessageShape } from "../lint/message_shape.ts";
 
+/** The path the specimens are scanned under; the scanner uses it to parse, never to filter. */
 const SPECIMEN = "src/commands/example.ts";
-/** The budget's edges as literals, never derived from the scanner's constants: 71 columns pass,
- *  72 fail. */
+
+/** The budget's edges as literals, never derived from the scanner's constants: 71 columns pass. */
 const H71 = "the default profile could not be wired for either agent; nothing moved.";
+
+/** One column more than H71: 72 fail. */
 const H72 = "the default profile could not be wired for either agent; nothing stayed.";
 
 function rules(source: string): Rule[] {

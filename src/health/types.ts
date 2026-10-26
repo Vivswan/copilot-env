@@ -5,8 +5,7 @@ import type { ProfileName } from "../copilot_api/profile.ts";
 
 export type CheckStatus = "ok" | "warn" | "fail";
 
-/** Which diagnostic surface a `agent health` run targets. Declaration order doubles as the
- *  help/text-report ordering for scopes. */
+/** The surfaces `agent health` targets; declaration order is the help and text-report order. */
 export const HEALTH_SCOPES = [
   "full",
   "runtime",
@@ -22,34 +21,46 @@ export type HealthScope = (typeof HEALTH_SCOPES)[number];
 // SINGLE SOURCE for scope membership, shared by the fact-gatherer (probe.ts gates which facts to
 // collect) and the check descriptors below (which stamp CheckResult.scopes), so the two cannot
 // drift. Every set includes "full".
+
+/** The daemon rows; `runtime` is the fast probe, whose row set and exit code are a contract. */
 export const RUNTIME_SCOPES: readonly HealthScope[] = ["full", "proxy", "runtime"];
+
+/** The version, dependency, and proxy-package rows; the identity probe fires only in these. */
 export const BOOTSTRAP_SCOPES: readonly HealthScope[] = ["full", "proxy"];
+
+/** The account-wide setup rows: shell, launchers, the CLI census, the host farm, autoupdate. */
 export const SETUP_SCOPES: readonly HealthScope[] = ["full", "setup"];
-// The GitHub credential underpins Direct for both agents but gets its own section rather than
-// crowding the narrow per-agent scopes.
+
+/** The GitHub credential backs both agents' Direct: a section of its own, not a per-agent one. */
 export const AUTH_SCOPES: readonly HealthScope[] = ["full", "auth", "setup"];
+
+/** An agent's wiring row renders under `setup` too, so that scope shows both agents at once. */
 export const CODEX_SCOPES: readonly HealthScope[] = ["full", "setup", "codex"];
+
+/** As CODEX_SCOPES, for Claude's wiring row. */
 export const CLAUDE_SCOPES: readonly HealthScope[] = ["full", "setup", "claude"];
-// `--live` end-to-end prompts run only in the agent-focused scopes (never setup).
+
+/** `--live` end-to-end prompts run only in the agent-focused scopes (never setup). */
 export const CODEX_LIVE_SCOPES: readonly HealthScope[] = ["full", "codex"];
+
+/** As CODEX_LIVE_SCOPES, for Claude: a live prompt never runs under `setup`. */
 export const CLAUDE_LIVE_SCOPES: readonly HealthScope[] = ["full", "claude"];
 
 /** Section a check renders under (fixed render order lives in report.ts). */
 export type CheckGroup = "bootstrap" | "proxy" | "runtime" | "setup" | "auth" | "codex" | "claude";
 
+/** One row of CHECK_DESCRIPTORS. The ids and labels are external contracts, so never rename them:
+ *  `--json` consumers key on the ids, and the labels are the report's row headers.
+ *
+ *   setup.auth          -> checkAuth: one credential line per target (the default, a named profile)
+ *   setup.cli.<command> -> the one id minted outside this table; the CLI list is runtime data */
 interface CheckDescriptor {
   readonly label: string;
   readonly group: CheckGroup;
   readonly scopes: readonly HealthScope[];
 }
 
-/**
- * The ids and labels are external contracts, so never rename them: `--json` consumers key on the
- * ids, and the labels are the report's row headers.
- *
- *   setup.auth          -> checkAuth: one credential line per target (the default, a named profile)
- *   setup.cli.<command> -> the one id minted outside this table; the CLI list is runtime data
- */
+/** Every registered check by id; CheckDescriptor says why nothing here may be renamed. */
 const CHECK_DESCRIPTORS = {
   "bootstrap.version": {
     label: "copilot-env version",
@@ -122,12 +133,22 @@ export type CheckResult = {
 } & CheckOutcome;
 
 export interface HealthJson {
+  /** The scope the run was asked for (`--scope`), as HEALTH_SCOPES spells it. */
   scope: HealthScope;
+
   /** The profile the run was narrowed to (null = the default/whole environment). */
   profile: string | null;
-  ok: boolean; // no `fail` present
-  status: CheckStatus; // worst status across checks
+
+  /** No check failed; a warn keeps it true. */
+  ok: boolean;
+
+  /** The worst status across the checks. */
+  status: CheckStatus;
+
+  /** The process exit code the run ends with: 1 on any `fail`. */
   exitCode: 0 | 1;
+
+  /** The scope-filtered checks, each minus its `scopes`: a filter input, not report data. */
   checks: {
     id: string;
     label: string;

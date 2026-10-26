@@ -27,21 +27,25 @@ import {
   utcPinnable,
 } from "../helpers/usage_goldens.ts";
 
-/** runCost cuts days in the system zone, so every run needs the process pinned to UTC; a
- *  Windows host outside UTC cannot be pinned and skips the file. */
+/** runCost cuts days in the system zone: pin UTC, or skip (a Windows host outside UTC cannot). */
 const UTC = utcPinnable();
 
 interface Golden {
+  /** The case, as GOLDEN_MATRIX lists it. */
   entry: GoldenCase;
+
   /** What the old cli printed. */
   golden: Record<string, unknown>;
+
+  /** The case's tree, rebuilt in a temp dir; its digest must match the recording's. */
   generated: GoldenTree;
 }
 
-/** A case's golden and its tree, loaded once. The digest check reports a generator drift as
- *  such rather than as a cost mismatch; the events check keeps a golden from pinning nothing. */
+/** One load per case, shared by every test over it. */
 const loaded = new Map<string, Promise<Golden>>();
 
+/** The digest check reports a generator drift as such rather than as a cost mismatch; the events
+ *  check keeps a golden from pinning nothing. */
 function loadGolden(entry: GoldenCase): Promise<Golden> {
   let promise = loaded.get(entry.name);
   if (promise === undefined) {

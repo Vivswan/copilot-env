@@ -7,10 +7,10 @@ import { isRecord } from "./json.ts";
 
 export { stringify } from "smol-toml";
 
-/** Exactly one leading U+FEFF is an editor's encoding mark, not content, so it is dropped before
- *  the text is judged. Everything after it, an NBSP or a lone CR included, is the parser's to judge. */
+/** One leading U+FEFF is an editor's mark, not content; what follows is the parser's to judge. */
 const LEADING_BOM = /^\ufeff/;
 
+/** Drops the one BOM, then parses; an NBSP or a lone CR after it is the parser's to judge. */
 export function parseToml(text: string): Record<string, unknown> {
   return parse(text.replace(LEADING_BOM, ""));
 }

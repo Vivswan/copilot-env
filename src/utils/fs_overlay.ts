@@ -46,11 +46,15 @@ export type OverlayEntry =
   | { kind: "gone" };
 
 interface OverlayWrite {
+  /** Recorded here for the report, never set on the volume (memfs would enforce the bits). */
   mode?: number;
-  /** The write lands a fresh inode (a staged file renamed over the path), so the file takes a fresh
-   *  inode's mode even when it exists. */
+
+  /** A staged file renamed over the path: a fresh inode's mode, even when the file exists. */
   replace?: boolean;
+
+  /** Dotted keys the report prints as `<redacted>`; once declared for a path, kept for the run. */
   secretKeys?: Iterable<string>;
+
   /** The whole file holds secrets (a settings bundle): the report prints its verdict alone. */
   secret?: boolean;
 }
@@ -60,8 +64,10 @@ type Seen = { kind: "own"; stats: EntryStats } | { kind: "disk"; stats: Stats };
 /** The kernel's bound on a chain of links. */
 const MAX_LINK_HOPS = 40;
 
+/** Case folding, the drive-letter mapping, and the errno table switch on it. */
 const WINDOWS = process.platform === "win32";
 
+/** `ignoreBOM` keeps a leading BOM in the decoded text, so a planned file prints as written. */
 const DECODER = new TextDecoder("utf-8", { ignoreBOM: true });
 
 /** A fresh overlay on a fresh volume. memfs is loaded here, not at import: its module builds a
@@ -137,39 +143,48 @@ function foldKey(key: string): string {
   return WINDOWS ? key.toLowerCase() : key;
 }
 
+/** The union of the volume and the disk, keyed by canonical path. The tables below hold what the
+ *  volume cannot: `rows` lists every key the run planned (the volume holds it) or tombstoned, in
+ *  first-touch order (a re-touch keeps its place; a key a tree removal dropped and a later write
+ *  re-created takes the later place), and `hidden` the keys under the run's own scratch, which
+ *  goes before exit and was never the user's.
+ *
+ *  On Windows an entry's true-case name has two owners: the disk's spelling for an entry the disk
+ *  holds (absorbed, or written over), and the mutation's own walk for one the run creates
+ *  (`walked`: the component that produced the key, so a link's target names the entry, never the
+ *  alias). A lookup never names anything; a case-only rename and a move set it outright. */
 export class Overlay {
-  /** The report's rows, by canonical key in first-touch order: every key the run planned (the
-   *  volume holds it) or tombstoned. A re-touch keeps its place; a key a tree removal dropped and
-   *  a later write re-created takes the later place. */
+  /** The report's rows, by canonical key in first-touch order; a re-touch keeps its place. */
   private readonly rows = new Set<string>();
+
   /** Planned deletions: a read sees nothing there, whatever the disk holds. */
   private readonly gone = new Set<string>();
-  /** Directories the run made (or moved) where the disk did not speak: nothing the disk holds
-   *  below one is visible. */
+
+  /** Directories the run made or moved where the disk did not speak: the disk below is hidden. */
   private readonly fresh = new Set<string>();
-  /** Files the run wrote as text, so the report may decode them; a byte write or a carried disk
-   *  file is never decoded. */
+
+  /** Written as text, so the report may decode them; a byte write or carried disk file never is. */
   private readonly texts = new Set<string>();
+
   /** The mode each planned file or directory reports (a link reports 0777, as node's lstat does). */
   private readonly modes = new Map<string, number>();
-  /** The path as the first write to each key spelled it: what the report prints, so a user sees
-   *  the path the command named rather than where a link led. */
+
+  /** The path as the first write spelled it: what the report prints, not where a link led. */
   private readonly names = new Map<string, string>();
-  /** Windows only: each planned key's own name in its true case, what a listing and a moved
-   *  tree's rows print. Two owners: the disk's spelling for an entry the disk holds (absorbed, or
-   *  written over), and the mutation's own walk for one the run creates (`walked`: the component
-   *  that produced the key, so a link's target names the entry, never the alias). A lookup never
-   *  names anything; a case-only rename and a move set it outright. */
+
+  /** Windows only: each planned key's true-case name, for listings and a moved tree's rows. */
   private readonly spellings = new Map<string, string>();
-  /** Windows only: the component each key was last walked through, the spelling `set()` takes
-   *  for a key the run creates. Scratch: every walk overwrites it. */
+
+  /** Windows only: the component each key was last walked through; every walk overwrites it. */
   private readonly walked = new Map<string, string>();
-  /** Per key, every attribute a write declared secret, kept across the run's later writes to the
-   *  same path: a key once declared never prints, whether or not a later writer repeats it. */
+
+  /** Per key, every attribute any write declared secret; omitting it later changes nothing. */
   private readonly secrets = new Map<string, Set<string>>();
+
+  /** Keys declared secret as a whole: the report prints their verdict alone. */
   private readonly secretFiles = new Set<string>();
-  /** Keys the run landed under its own scratch (a move or copy into it): the report never names
-   *  them, since scratch goes before exit and was never the user's. */
+
+  /** Landed under the run's own scratch (a move or copy into it): the report never names them. */
   private readonly hidden = new Set<string>();
 
   constructor(private readonly vol: Volume) {}

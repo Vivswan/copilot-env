@@ -6,10 +6,13 @@ import { spawnSync } from "node:child_process";
 import { RetryError, retry } from "@std/async";
 import { errMessage } from "../../src/utils/error.ts";
 
+/** Two attempts, ten seconds apart: the second is for the gallery failure the header names. */
 const RETRY = { maxAttempts: 2, minTimeout: 10_000, jitter: 0 };
+
 /** One module download from the gallery, well under a minute on a healthy runner. */
 const PWSH_TIMEOUT_MS = 300_000;
 
+/** Registers PSGallery when the runner left none, trusts it, installs; 'Stop' makes any error a nonzero exit. */
 const SETUP = [
   "$ErrorActionPreference = 'Stop'",
   "if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) { Register-PSRepository -Default }",

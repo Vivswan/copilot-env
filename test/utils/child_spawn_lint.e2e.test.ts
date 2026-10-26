@@ -9,10 +9,10 @@ import { expect, test } from "../helpers/testing.ts";
 // A no-op rule passes `biome ci` exactly as quietly as a clean tree does, so the rule's teeth
 // and the scope biome.json gives it are pinned here rather than assumed.
 
+/** The rule under test: its grit file, checkout-relative. */
 const PLUGIN = "biome/no_unmanaged_child_spawn.grit";
 
-// Every route to a child process, and the sanctioned helper beside them: one diagnostic per
-// construction or import of the banned modules, none for anything else.
+// Every route to a child process beside the sanctioned helper: one diagnostic per construction or import, none else.
 const SOURCES: [source: string, diagnostics: number][] = [
   // Every spelling of the spawn entry points.
   'Bun.spawn(["x"]);',

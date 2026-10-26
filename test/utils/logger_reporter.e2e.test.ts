@@ -10,10 +10,11 @@ import { expect, tempDir, test } from "../helpers/testing.ts";
 
 /** Refused before any state is read, so the line is the same in an empty home. */
 const ARGS = ["profile", "show", "nosuch"];
+
+/** The refusal's text, as the CLI words it; the two reporters frame it differently. */
 const MESSAGE = "the profile name goes before the verb: `agent profile nosuch show ...`";
 
-/** The runner's own keys scrubbed, so the child sees the case's env alone; COLUMNS too, so the
- *  line is never wrapped. */
+/** The runner's own keys scrubbed, so the child sees the case's env alone; COLUMNS too, so the line never wraps. */
 const CLEAN: Record<string, string | undefined> = {
   CI: undefined,
   GITHUB_ACTIONS: undefined,
@@ -27,8 +28,11 @@ const CLEAN: Record<string, string | undefined> = {
 
 /** The fancy reporter paints a backtick span and drops the backticks; the basic one keeps them. */
 const BADGE = `\n ERROR  ${MESSAGE.replaceAll("`", "")}\n\n`;
+
+/** The basic reporter's line: the level in brackets, the backticks kept. */
 const BRACKET = `[error] ${MESSAGE}\n`;
 
+/** One child run per row; its env is spread over CLEAN, so a key here wins. */
 const CASES = [
   { name: "a pipe, nothing set", env: {}, stderr: BADGE },
   { name: "CI=1", env: { CI: "1" }, stderr: BRACKET },

@@ -5,16 +5,17 @@ import { resolveAgentCli } from "../agents/cli_install.ts";
 import { CODEX_EXEC_USER_AGENT } from "../copilot_api/integration_identity.ts";
 import { createStderrLogger, narrationMuted } from "../utils/logger.ts";
 
+// Warns on stderr, once per process, when codex resolves to an npm shim (sayShimNote).
 const logger = createStderrLogger();
 
 // Local-only runs (no network) that may still cold-start the CLI.
 export const CODEX_VERSION_TIMEOUT_MS = 1000;
 
-/** Any non-empty value disables the live lookups (the installed codex's version, the catalog
- *  probe in catalog.ts), which then read as unavailable or unverifiable. The test suite sets it so
- *  no test depends on the developer's codex install. */
+/** Any non-empty value turns the live lookups off (the installed codex's version, catalog.ts's probe). */
 export const CI_NO_LIVE_LOOKUPS_ENV = "COPILOT_ENV_CI_NO_LIVE_LOOKUPS";
 
+/** Off, the version reads as unavailable and the catalog probe as unverifiable. The test suite sets
+ *  CI_NO_LIVE_LOOKUPS_ENV so no test depends on the machine's codex install. */
 export function liveLookupsDisabled(): boolean {
   return Boolean(process.env[CI_NO_LIVE_LOOKUPS_ENV]);
 }
@@ -65,14 +66,13 @@ export function resetCodexVersionMemo(): void {
   unsaidShimNote = null;
 }
 
-/** Copilot's Anthropic surface REJECTS some models (claude-fable-5, verified live) for a
- *  version-LESS `codex_exec` UA while accepting any versioned form (the gate is the shape, not the
- *  value), so the managed identity must never go bare: the version a machine without codex
- *  (Claude-only Direct) sends. A real release keeps it plausible. */
+/** The version a machine without codex (Claude-only Direct) sends; a real release keeps it plausible. */
 export const FALLBACK_CODEX_UA_VERSION = "0.152.0";
 
 /** Both agents' Direct headers carry this: the installed codex's version, a stronger
- *  editor-client identity than the baked fallback, else the fallback. */
+ *  editor-client identity than the baked fallback, else the fallback. Never bare: Copilot's
+ *  Anthropic surface REJECTS some models (claude-fable-5, verified live) for a version-LESS
+ *  `codex_exec` UA while accepting any versioned form (the gate is the shape, not the value). */
 export function codexUserAgent(): string {
   return `${CODEX_EXEC_USER_AGENT}/${installedCodexVersion() ?? FALLBACK_CODEX_UA_VERSION}`;
 }

@@ -2,6 +2,10 @@
 // (test/install/installer_pinning.e2e.test.ts) never carries a prompt library: the daemon never
 // prompts. Every frame is drawn on stderr like the rest of the narration: stdout carries results
 // (`agent auth --get`'s token), so a redirected stdout never swallows a question.
+//
+// Not consola's own prompt: its bundled clack 0.10 sinks readline into a tty.WriteStream on fd 0
+// whose `_write` override Bun writes past, so under Bun every arrow key reached the terminal and
+// each redraw landed a row low (and a read-only fd 0, as under tmux, failed with EBADF).
 
 import { confirm, isCancel, multiselect, password, select, text } from "@clack/prompts";
 import type { ConsolaInstance } from "consola";
@@ -15,7 +19,9 @@ type Choices = Extract<PromptOptions, { options: unknown[] }>["options"];
  *  the library (proxy-token's start question, read at EOF as a shell's `read -r`). */
 type EofPolicy = "cancel" | "default";
 
+/** The error a `cancel: "reject"` caller gets on Ctrl-C or a closed stdin. */
 const CANCELLED = "Prompt cancelled.";
+
 /** Ctrl-D in a raw-mode terminal: a keypress, not a stream end. */
 const EOT = "\u0004";
 
@@ -101,11 +107,7 @@ function cancelled(options: PromptOptions): unknown {
   }
 }
 
-/**
- * Not consola's own prompt: its bundled clack 0.10 sinks readline into a tty.WriteStream on fd 0
- * whose `_write` override Bun writes past, so under Bun every arrow key reached the terminal and
- * each redraw landed a row low (and a read-only fd 0, as under tmux, failed with EBADF).
- */
+/** consola's signature over @clack/prompts: consola's own bundled clack misdraws under Bun. */
 export const prompt = (async (
   message: string,
   options: PromptOptions = {},

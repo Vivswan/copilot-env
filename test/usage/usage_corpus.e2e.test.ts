@@ -213,11 +213,10 @@ describe("usage corpus scrub", () => {
   });
 });
 
-// The recorder runs the real CLIs through five turns each with a minute-boundary wait, so it is
-// its own opt-in: COPILOT_ENV_LIVE_CORPUS, set by the session-log-drift job in checks.yml (the
-// job that owns the corpus), never by the matrix legs. Opted in, a missing CLI is a failure the
-// driver names ("<cli> is not on PATH"), never a skip.
+// Set by checks.yml's session-log-drift job, which owns the corpus, never by the matrix legs.
 const LIVE_CORPUS_ENV = "COPILOT_ENV_LIVE_CORPUS";
+
+// Opted in, a missing CLI is a failure the driver names ("<cli> is not on PATH"), never a skip.
 const LIVE_CORPUS = Boolean(process.env[LIVE_CORPUS_ENV]);
 
 /** The head of every kept turn output under `<out>/home/turns`, for a failed run's message: the
@@ -234,6 +233,8 @@ function turnTails(out: string): string {
     .join("\n");
 }
 
+// The recorder runs the real CLIs through five turns each with a minute-boundary wait, so it is
+// its own opt-in (LIVE_CORPUS_ENV).
 describe("usage corpus recorder", () => {
   test.skipIf(!LIVE_CORPUS)(
     "records both CLIs against the fake and agent cost over the kept home matches what was served",

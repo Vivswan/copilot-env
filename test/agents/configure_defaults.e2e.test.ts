@@ -361,10 +361,14 @@ async function initOn(
 
 /** The default's probe runs against the resolver command; a named profile's against its token. */
 const PROBED = ["probe:claude:command", "probe:codex:command"];
+
+/** A named profile's probe events, its baked token in each (adapter order: claude, then codex). */
 const PROBED_AS = (token: string) => [
   `probe:claude:static:${token}`,
   `probe:codex:static:${token}`,
 ];
+
+/** Both writes of one landing, in adapter order. */
 const WROTE = (mode: string) => [`write:claude:${mode}`, `write:codex:${mode}`];
 
 test("`agent init` probes every run: an agreeing verdict re-wires, a differing one keeps the record headless (with the hint) and moves with --yes; no flag is --auto", async () => {

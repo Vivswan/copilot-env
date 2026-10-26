@@ -9,8 +9,7 @@ import { removeDir, tempDir } from "./testing.ts";
 
 // --- env snapshot / restore ---------------------------------------------------
 
-// Every snapshot covers the whole union, so a file whose tests poke one key still restores the
-// rest.
+// Every snapshot covers the whole union: a file whose tests poke one key still restores the rest.
 const TEST_ENV_KEYS = [
   "HOME",
   "USERPROFILE",
@@ -30,9 +29,7 @@ const TEST_ENV_KEYS = [
   "GITHUB_TOKEN",
 ] as const;
 
-// COPILOT_GITHUB_TOKEN is FIRST in the gh-token env precedence (GH_TOKEN_ENV_VARS);
-// a runner that exports any of these could leak a real credential into "no token"
-// tests and silently make them pass, so isolation always clears the trio.
+// The gh-token env precedence trio (GH_TOKEN_ENV_VARS); freshMachine says why isolation always clears it.
 const CREDENTIAL_ENV_KEYS = ["COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"] as const;
 
 export function envSnapshot(extraKeys: readonly string[] = []): () => void {
@@ -60,12 +57,19 @@ export function resetExitCode(): void {
 // --- the agent-home env -------------------------------------------------------
 
 interface AgentHomeEnv {
+  /** What node:os homedir() resolves from on POSIX; the agent dot-directories default under it. */
   HOME: string;
-  /** node:os homedir() resolves from it on Windows, so HOME alone would leave every
-   *  homedir()-based sweep pointed at the real profile there. */
+
+  /** homedir() reads it on Windows, so HOME alone would leave every sweep on the real profile there. */
   USERPROFILE: string;
+
+  /** The copilot-api home: the config, state, and credential stores; the home itself by default. */
   COPILOT_API_HOME: string;
+
+  /** Where claude reads settings.json; `<home>/.claude` by default. */
   CLAUDE_CONFIG_DIR: string;
+
+  /** Where codex reads config.toml; `<home>/.codex` by default. */
   CODEX_HOME: string;
 }
 
@@ -91,7 +95,10 @@ export function agentHomeEnv(home: string, layout: AgentHomeLayout = {}): AgentH
 // --- temp homes -----------------------------------------------------------------
 
 /** A fresh home is a fresh machine: no inherited credential or root-home override, and none of
- *  the answers this process already got from Copilot (they go with the store). */
+ *  the answers this process already got from Copilot (they go with the store). The credential
+ *  trio always goes: COPILOT_GITHUB_TOKEN is FIRST in the gh-token env precedence, and a runner
+ *  that exports any of the three could leak a real credential into "no token" tests and silently
+ *  make them pass. */
 function freshMachine(): void {
   for (const key of CREDENTIAL_ENV_KEYS) delete process.env[key];
   delete process.env.COPILOT_ENV_ROOT_HOME;

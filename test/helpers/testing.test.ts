@@ -4,9 +4,10 @@
 import { delay } from "@std/async";
 import { expect, step, test, withDeadline } from "./testing.ts";
 
+/** Between marks, so each earlier step's measured duration is well above zero. */
 const GAP_MS = 20;
-// Far above the marks' total, so an event-loop pause on a loaded runner cannot fire the deadline
-// before the last mark lands.
+
+/** Far above the marks' total: a loaded runner's event-loop pause cannot fire it before the last mark lands. */
 const DEADLINE_MS = 1500;
 
 function stalling(marks: string[]): () => Promise<void> {

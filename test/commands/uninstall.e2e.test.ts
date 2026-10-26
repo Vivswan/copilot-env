@@ -57,13 +57,16 @@ import { afterEach, expect, test } from "../helpers/testing.ts";
 
 // A branded fixture name: parseProfileName is the only mint for ProfileName.
 const WORK = parseProfileName("work");
+
+// The command-shaped credential wiring: the config names a copilot-env command, not a baked value.
 const COMMAND = { kind: "command" } as const;
 
+// Taken at module load, before any test touches the environment; afterEach restores it.
 const restoreEnv = envSnapshot();
+
 let dir = "";
 
-// The delete step chdir's out of the doomed directory; every other test file that
-// reads a cwd-relative path would inherit that move, so put it back.
+// The delete step chdir's out of the doomed directory; other files' cwd-relative reads would inherit the move: undo it.
 const startCwd = process.cwd();
 
 afterEach(() => {

@@ -7,6 +7,9 @@
 // GROWS across them (`output_tokens` rises until the final line; the input buckets never change);
 // resume/fork copies finished lines into new files. So a message counts once, at the running
 // per-bucket max over every occurrence.
+//
+// Transcript filenames carry no date, so `--days` skips a file by its mtime, which an append
+// refreshes: a resumed session is never dropped.
 
 import { type Dirent, readdirSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
@@ -43,14 +46,13 @@ import {
 /** Error placeholders carry this model id and no real usage attribution. */
 export const SYNTHETIC_MODEL = "<synthetic>";
 
+/** The scan's byte filter: usage sits only on assistant lines, so no other line is decoded. */
 const CLAUDE_NEEDLES: readonly string[] = ['"type":"assistant"'];
 
-/** Headroom over the deepest observed layout:
- *  projects/<slug>/<session>/subagents/workflows/<wf>/agent-<id>.jsonl */
+/** Headroom over the deepest layout seen: projects/<slug>/<session>/subagents/workflows/<wf>/agent-<id>.jsonl */
 const MAX_WALK_DEPTH = 8;
 
-/** Transcript filenames carry no date, so `--days` skipping leans on the mtime (appends refresh it,
- *  so a resumed session is never dropped) with a day of slack for clock skew. */
+/** A day of slack on the mtime cutoff, for clock skew. */
 const MTIME_CUTOFF_SLACK_MS = MILLISECONDS_PER_DAY;
 
 /** There is one Claude home, but the injectable list keeps the shape of discoverCodexSessionRoots,
@@ -100,6 +102,7 @@ export function walkClaudeSessions(roots: string[], sinceMs: number | undefined)
   return files;
 }
 
+/** A fresh contribution from byte 0; a missing, stale, or unmatched index row dispatches here. */
 export const parseClaudeWhole: ParseWhole<ClaudeContribution> = (file) => {
   return parseClaudeFrom(file, 0, { v: CONTRIBUTION_VERSION, occurrences: [] });
 };

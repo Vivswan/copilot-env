@@ -37,8 +37,7 @@ import { createStderrLogger } from "../utils/logger.ts";
 import { caught } from "../utils/message.ts";
 import { type CliCommand, classifyAgentCli } from "./cli_install.ts";
 
-// Narration goes to stderr, never stdout: the machine-readable `--check` / `env` paths must
-// stay clean.
+// Narration goes to stderr, never stdout: the machine-readable `--check` / `env` paths stay clean.
 const logger = createStderrLogger();
 
 /** The trivial read-only prompt both CLIs run for the smoke test. */
@@ -67,25 +66,23 @@ function isModelRejection(detail: string | undefined, model: string): boolean {
  *  user's real launch, and builds its own argv in src/health/live_launch.ts; an isolating flag
  *  added here must never be copied there. */
 export interface ProbeDescriptor {
+  /** Looked up on PATH, classified by classifyAgentCli, and named in narration and the refusal. */
   cli: CliCommand;
+
+  /** Re-set to the throwaway home AFTER the provider-prefix clear, which otherwise drops it. */
   homeEnvVar: string;
-  /** `home` is the temp config dir the probe points the CLI at; `model` pins the call to the
-   *  catalog pick (null = the CLI's own choice). The per-CLI notes below say how. */
+
+  /** `home` is the temp config dir; `model` pins the catalog pick (null = the CLI's own choice). */
   args: (prompt: string, home: string, model: string | null) => string[];
+
   /** What the too-old refusal (CliTooOldError) tells the user to run. */
   updateCommand: string;
 }
 
-/** Stripped from the probe child so a stray export (an api key, an org, a base url, a config
- *  override) cannot steer the test away from the throwaway config.
- *
- *    OPENAI_ / ANTHROPIC_ / CODEX_ / CLAUDE_ -> dropped; the home var is re-set AFTER the clear
- *    GH_ / GITHUB_                           -> kept: a gh-cli credential still resolves through gh
- *
- *  The health probe (src/health/probe.ts) strips none of these; it tests the real environment,
- *  dropping only ANTHROPIC_BASE_URL for a named profile (claudeLiveOmitEnv). */
+/** Stripped from the probe child: a stray export cannot steer the test off the throwaway config. */
 const PROVIDER_ENV_PREFIXES = ["OPENAI_", "ANTHROPIC_", "CODEX_", "CLAUDE_"];
 
+/** The Codex start: a read-only sandboxed `exec`, trusted outside any git repo. */
 export const CODEX_PROBE: ProbeDescriptor = {
   cli: "codex",
   homeEnvVar: "CODEX_HOME",
@@ -106,6 +103,7 @@ export const CODEX_PROBE: ProbeDescriptor = {
   ],
 };
 
+/** The Claude start: `--bare` auth through the apiKeyHelper alone, read as stream-json. */
 export const CLAUDE_PROBE: ProbeDescriptor = {
   cli: "claude",
   homeEnvVar: "CLAUDE_CONFIG_DIR",
@@ -132,9 +130,7 @@ export const CLAUDE_PROBE: ProbeDescriptor = {
   ],
 };
 
-/** Copilot's reply when the CLI that made the call is older than the model needs ("Claude Code
- *  2.1.181 does not support this model; version 2.1.251 or newer is required. Run 'claude update'
- *  ..."), read by shape: the two versions around the fixed phrase, never a version literal. */
+/** Copilot's too-old reply, by shape: the versions around the fixed phrase, never a literal. */
 const CLI_TOO_OLD_RE =
   /(\d+(?:\.\d+)+) does not support this model; version (\d+(?:\.\d+)+) or newer is required/i;
 
@@ -152,8 +148,10 @@ export class CliTooOldError extends Error {
   }
 }
 
-/** Throws CliTooOldError when `detail` carries Copilot's too-old reply; every other detail is the
- *  caller's to weigh (a model hop, or the proxy verdict). */
+/** Throws CliTooOldError when `detail` carries Copilot's reply to a CLI older than the model needs
+ *  ("Claude Code 2.1.181 does not support this model; version 2.1.251 or newer is required. Run
+ *  'claude update' ..."); every other detail is the caller's to weigh (a model hop, or the proxy
+ *  verdict). */
 function refuseTooOldCli(descriptor: ProbeDescriptor, detail: string | undefined): void {
   const match = detail === undefined ? null : CLI_TOO_OLD_RE.exec(detail);
   if (match === null) return;
@@ -170,17 +168,18 @@ export interface ProbeOutcome {
 
 /** Injectable I/O so unit tests decide the probe outcome without real model calls. */
 export interface DirectProbeDeps {
+  /** The PATH lookup behind classifyAgentCli; a fake decides whether a CLI is present at all. */
   findCommand?: (cmd: string) => CommandLook;
-  /** Run the agent CLI's read-only smoke prompt at its RESOLVED path (ok = exit 0), with `cwd`
-   *  the throwaway home the probe spawns from. */
+
+  /** Runs the smoke prompt at the RESOLVED path (ok = exit 0); `cwd` is the throwaway home. */
   runProbe?: (
     cliPath: string,
     args: string[],
     env: Record<string, string>,
     cwd: string,
   ) => ProbeOutcome | Promise<ProbeOutcome>;
-  /** Threaded by detect* into the Copilot smoke (src/copilot_api/endpoint_smoke.ts), never read
-   *  here, so its tests fetch nothing real. */
+
+  /** Threaded to the Copilot smoke (endpoint_smoke.ts), never read here, so tests fetch nothing. */
   fetchImpl?: ProbeFetch;
 }
 
@@ -350,7 +349,13 @@ function binDir(found: string): string | null {
  *  model for BOTH arms; its ping decides ONLY when no CLI ran, since a CLI that ran and failed is
  *  the final verdict (an endpoint that answers cannot prove the CLI's own auth path). Null (no
  *  credential) leaves nothing to smoke with, so it is the proxy. Any failure inside the temp home
- *  is caught as false; its removal is best effort (removeScratchDir reports a path left behind). */
+ *  is caught as false; its removal is best effort (removeScratchDir reports a path left behind).
+ *
+ *  The child's environment: the PROVIDER_ENV_PREFIXES families are dropped (an api key, an org, a
+ *  base url, a config override) and the home var re-set after the clear; GH_ / GITHUB_ stay, so a
+ *  gh-cli credential still resolves through gh. The health probe (src/health/probe.ts) strips none
+ *  of these; it tests the real environment, dropping only ANTHROPIC_BASE_URL for a named profile
+ *  (claudeLiveOmitEnv). */
 export async function probeDirectWorks(
   descriptor: ProbeDescriptor,
   writeDirectConfig: (tmpHome: string) => void,
@@ -409,7 +414,7 @@ export async function probeDirectWorks(
     tmpHome = scratchDir(join(tmpdir(), `copilot-env-${descriptor.cli}-`));
     writeDirectConfig(tmpHome);
     const home: ScratchDir = tmpHome;
-    // Provider families stripped (why: PROVIDER_ENV_PREFIXES); gh's dir leads PATH (why: above).
+    // Provider families stripped and gh's dir leading PATH: the doc above says why.
     const probeEnv = childEnv({
       leadPath: ghDir === null ? [] : [ghDir],
       extra: { [descriptor.homeEnvVar]: tmpHome },

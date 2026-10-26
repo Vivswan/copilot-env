@@ -5,16 +5,16 @@
 import { isRecord } from "../utils/json.ts";
 import type { CatalogWire } from "./config_registry.ts";
 
+/** Copilot's display-only suffix on a 1M-context sibling; parseCatalogModels folds it into `is1m`, listings keep it. */
 export const ONE_M_SUFFIX = "[1m]";
 
-/** Copilot's `/responses` marker in an entry's `supported_endpoints`: the only wire Codex speaks,
- *  and the one a web-search model must serve. Upstream contract: do not rename. */
+/** The `supported_endpoints` marker of Codex's only wire, which a web-search model must serve; upstream contract. */
 export const RESPONSES_ENDPOINT = "/responses";
 
+/** The context window that marks a 1M entry whose id carries no suffix. */
 const ONE_M_TOKENS = 1_000_000;
 
-/** Copilot's own cost tiers of a picker model (`model_picker_category`), cheapest first; a tier
- *  outside the list, or none, sorts after them. Upstream contract strings: do not rename. */
+/** Copilot's `model_picker_category` tiers, cheapest first; an absent or unknown tier sorts last. Upstream strings. */
 const PICKER_CATEGORY_RANK = ["lightweight", "versatile", "powerful"];
 
 /** `id` has the display-only `[1m]` suffix stripped. */
@@ -43,9 +43,12 @@ export function parseCatalogModels(body: unknown): CatalogModel[] {
 
 /** A chat model the credential can pick, in catalog order. */
 export interface AvailableModel {
+  /** As listed, `[1m]` suffix and all: what a client addresses. */
   id: string;
+
   /** `model_picker_category`, Copilot's cost tier; null when the entry carries none. */
   category: string | null;
+
   /** `supported_endpoints` as listed; empty when the entry carries none. */
   endpoints: string[];
 }
@@ -120,26 +123,19 @@ interface ParsedModel {
   is1m: boolean;
 }
 
-// The version accepts dash or dot (the live catalog returns `claude-opus-4-8`; a hand-built
-// `claude-opus-4.8` is also valid) and an optional minor part capped at two digits.
-//   claude-sonnet-5            -> version 5, no qualifier
-//   claude-haiku-4-5           -> version 4.5 (greedy), not version 4 with qualifier 5
-//   claude-fable-5-1m          -> version 5, qualifier 1m (backtracks)
-//   claude-fable-5-20251001    -> version 5, qualifier 20251001, not version 5.20251001 (the 2-digit cap)
+// A dash-or-dot version with an optional two-digit minor, then a qualifier; parseClaudeModels shows the splits.
 const MODEL_ID_PATTERN = /^claude-([a-z]+)-(\d+(?:[.-]\d{1,2})?)(?:-(.+))?$/;
+
+// The version and qualifier tokens newestGpt and isReducedGpt read; a minor is dotted, never dashed.
 const GPT_ID_PATTERN = /^gpt-(\d+(?:\.\d+)?)(?:-(.+))?$/;
 
-// Most capable first; `claude-latest` is the newest of the first family present. Reduced families
-// (sonnet, haiku) are excluded on purpose: with no frontier family there is no `claude-latest`.
-// Upstream id contracts: do not rename.
+// Most capable first; `claude-latest` is the newest of the first family present. Upstream id contracts.
 const CLAUDE_FAMILY_RANK = ["fable", "opus"];
 
-/** The picker order Claude Desktop shows, most capable first; families outside it follow
- *  alphabetically. */
+/** The picker order Claude Desktop shows, most capable first; families outside it follow alphabetically. */
 const CLAUDE_PICKER_ORDER = [...CLAUDE_FAMILY_RANK, "sonnet", "haiku"];
 
-// Matched as whole dash-separated qualifier tokens, so `terra-preview` is excluded but a qualifier
-// merely containing `mini` is not. Upstream id contracts: do not rename.
+// Whole qualifier tokens, so `terra-preview` is reduced but a token merely containing `mini` is not; upstream ids.
 const REDUCED_GPT_TIERS = new Set(["mini", "nano", "luna", "terra"]);
 
 function compareVersion(a: string, b: string): number {
@@ -159,7 +155,9 @@ function compareVersion(a: string, b: string): number {
  *   claude-opus-4-7-high            -> claude-opus-4.7-high
  *   claude-opus-4-7[1m]             -> the family+version's 1m sibling, else the base id
  *   <family>, <family>[1m]          -> newest of that family, preferring its 1m sibling
- *   claude-latest                   -> newest of the most capable frontier family present (CLAUDE_FAMILY_RANK)
+ *   claude-latest                   -> newest of the most capable frontier family present (CLAUDE_FAMILY_RANK);
+ *                                      reduced families (sonnet, haiku) never qualify, so with no frontier
+ *                                      family there is no `claude-latest`
  *   gpt-latest                      -> newest non-reduced GPT; bare beats qualified on ties
  */
 export function generateAliases(catalog: CatalogModel[]): Record<string, string> {
@@ -288,7 +286,15 @@ function newestGpt(catalog: CatalogModel[]): string | undefined {
   return best?.id;
 }
 
-/** Non-Claude ids are skipped: clients address those directly. The ONE place MODEL_ID_PATTERN is applied. */
+/**
+ * Non-Claude ids are skipped: clients address those directly. The ONE place MODEL_ID_PATTERN is
+ * applied: the version accepts dash or dot (the live catalog returns `claude-opus-4-8`; a hand-built
+ * `claude-opus-4.8` is also valid) and an optional minor part capped at two digits.
+ *   claude-sonnet-5            -> version 5, no qualifier
+ *   claude-haiku-4-5           -> version 4.5 (greedy), not version 4 with qualifier 5
+ *   claude-fable-5-1m          -> version 5, qualifier 1m (backtracks)
+ *   claude-fable-5-20251001    -> version 5, qualifier 20251001, not version 5.20251001 (the 2-digit cap)
+ */
 function parseClaudeModels(catalog: CatalogModel[]): ParsedModel[] {
   const parsed: ParsedModel[] = [];
   for (const model of catalog) {
@@ -307,11 +313,14 @@ function parseClaudeModels(catalog: CatalogModel[]): ParsedModel[] {
   return parsed;
 }
 
+/** One row of the Claude picker list; `familyDefault` marks the same pick the `<family>` alias makes. */
 export interface ClaudeCatalogRow {
   family: string;
+
   id: string;
+
   is1m: boolean;
-  /** The same pick the `<family>` alias makes. */
+
   familyDefault: boolean;
 }
 
@@ -372,16 +381,27 @@ function newestPreferring1m(parsed: ParsedModel[], family: string): ParsedModel 
 }
 
 export interface ModelListEntry {
+  /** Upstream `id`, VERBATIM (`[1m]` suffix included); duplicates merge field-wise. */
   id: string;
+
+  /** Upstream `name`; null when absent or empty. */
   name: string | null;
+
+  /** Upstream `vendor`; null when absent or empty. */
   vendor: string | null;
+
   /** Upstream `capabilities.type` ("chat", "embeddings", ...). */
   type: string | null;
+
   /** Upstream `capabilities.limits.max_context_window_tokens`. */
   contextWindow: number | null;
+
   /** Upstream `capabilities.limits.max_output_tokens`. */
   maxOutput: number | null;
+
+  /** Upstream `preview`; absent parses as false, so a merge keeps any true. */
   preview: boolean;
+
   /** Not advertised by the catalog but VERIFIED servable by discovery.ts. parseModelList never sets it. */
   unlisted?: boolean;
 }

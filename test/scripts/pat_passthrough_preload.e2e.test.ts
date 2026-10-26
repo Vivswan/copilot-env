@@ -4,12 +4,12 @@ import { CHILD_VALUES, childValuesEnv, ROOT } from "../helpers/run.ts";
 import { expect, test } from "../helpers/testing.ts";
 
 // The shim reads its token from argv and wraps globalThis.fetch, so it is exercised as a real
-// `--preload` subprocess under the running bun, the way launchDaemon loads it.
-const SHIM = join(ROOT, "src", "scripts", "pat_passthrough_preload.ts");
-
-// Port 1 is refused, so the outcome is decided without a server:
+// `--preload` subprocess under the running bun, the way launchDaemon loads it. Port 1 is refused,
+// so the outcome is decided without a server:
 //   intercepted    -> synthetic body, socket untouched
 //   passed through -> connection refused, the target prints PASSTHROUGH
+
+const SHIM = join(ROOT, "src", "scripts", "pat_passthrough_preload.ts");
 const EXCHANGE_URL = "http://127.0.0.1:1/copilot_internal/v2/token";
 const OTHER_URL = "http://127.0.0.1:1/other";
 

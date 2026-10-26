@@ -5,17 +5,22 @@ import { consola } from "consola";
 import { deferWriteReports, flushWriteReports } from "../../src/utils/report_write.ts";
 
 interface CapturedOutput {
+  /** The process.stdout writes and the console.log output, in order. */
   stdout: string;
+
+  /** The process.stderr writes, the console.error output, and the held write reports when asked. */
   stderr: string;
+
   /** Both channels interleaved in write order. */
   all: string;
 }
 
+/** The seam's write reports (src/utils/report_write.ts) bypass process.stderr, so a capture that
+ *  wants them in the narration must ask with `writeReports`. */
 interface CaptureOptions {
-  /** Hold the seam's write reports (src/utils/report_write.ts) for the span and append them to
-   *  stderr at the end, one per line: they bypass process.stderr, so a capture that wants them
-   *  in the narration must ask. */
+  /** Hold the seam's write reports for the span and append them to stderr at the end, one per line. */
   writeReports?: boolean;
+
   /** Sees each stdout chunk as it lands, so a test can order output against its own events. */
   onStdout?: (chunk: string) => void;
 }

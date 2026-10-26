@@ -32,8 +32,7 @@ function reporterChoice(): ConsolaCreateOptions {
 const REPORTER = reporterChoice();
 consola.options.reporters = createConsola(REPORTER).options.reporters;
 
-/** Every logger made here, so one scope can silence them all (withNarrationMuted); a logger made
- *  inside that scope joins it silenced. */
+/** Every logger made here, so withNarrationMuted can silence them all, late-made ones included. */
 const INSTANCES: ConsolaInstance[] = [consola];
 
 /** The active mute: each silenced logger's level from before it. */
@@ -65,17 +64,22 @@ export function narrationMuted(): boolean {
 type ReporterContext = Parameters<ConsolaReporter["log"]>[1];
 type WidthOf = (stream: NodeJS.WriteStream) => number | null;
 
-/** consola's fancy reporter decorates a message's first line with an icon and a space, or with
- *  the ` TYPE ` badge and a space when the level is below 2 (error, fatal, warn) or `badge` is set;
- *  `log` has no icon. Its basic reporter (a `fancy: false` instance) prefixes `[type] ` instead, and
- *  ` > ` on every box line. A tag adds `[tag] ` to either. */
+/** The fancy reporter's icon and space before a first line; `log` has no icon. */
 const ICON_LEAD = 2;
+
+/** The basic reporter's ` > ` on every box line. */
 const BASIC_BOX_LEAD = 3;
+
 /** A fancy box line is margin + border + padding + text + padding + border. */
 const BOX_FRAME = 7;
 
+/** The width of a `[text] ` affix: the badge, the basic reporter's `[type] `, a `[tag] `. */
 const bracketed = (text: string): number => (text === "" ? 0 : text.length + 3);
 
+/** consola's fancy reporter decorates a message's first line with an icon and a space, or with
+ *  the ` TYPE ` badge and a space when the level is below 2 (error, fatal, warn) or `badge` is set;
+ *  `log` has no icon. Its basic reporter (a `fancy: false` instance) prefixes `[type] ` instead,
+ *  and ` > ` on every box line. A tag adds `[tag] ` to either. */
 function firstLineLead(logObj: LogObject, fancy: boolean): number {
   const tag = bracketed(logObj.tag);
   if (!fancy) return bracketed(logObj.type) + tag;

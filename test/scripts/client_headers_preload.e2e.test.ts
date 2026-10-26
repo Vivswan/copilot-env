@@ -11,7 +11,9 @@ import { expect, tempDir, test } from "../helpers/testing.ts";
 // unit-tested directly; the wiring runs as a real `--preload` subprocess, the way launchDaemon
 // loads it. What would drift silently: bun's undici binds its WebSocket export natively, so only
 // a handshake opened through `import { WebSocket } from "undici"` proves the identity reaches it.
+
 const SHIM = join(ROOT, "src", "scripts", "client_headers_preload.ts");
+
 const IDENTITY_MODULE = join(ROOT, "src", "scripts", "undici_identity.ts");
 const UA = "codex_exec/1.2.3";
 

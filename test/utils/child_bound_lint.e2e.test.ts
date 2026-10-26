@@ -9,10 +9,10 @@ import { expect, test } from "../helpers/testing.ts";
 // A no-op rule passes `biome ci` exactly as quietly as a clean tree does, so the rule's teeth and
 // the scope biome.json gives it are pinned here rather than assumed.
 
+/** The rule under test: its grit file, checkout-relative. */
 const PLUGIN = "biome/no_unbounded_child_spawn.grit";
 
-// Every entry point with no bound the rule can see, and beside them the bounded calls and the
-// sanctioned excuse: one diagnostic per unbounded call, none for anything else.
+// Unbounded entry points beside bounded calls and the sanctioned excuse: one diagnostic per unbounded call, none else.
 const SOURCES: [source: string, diagnostics: number][] = [
   // Each entry point, bare and as a member, with no options or options that carry no bound.
   'spawnSync("ps", ["-U"]);',

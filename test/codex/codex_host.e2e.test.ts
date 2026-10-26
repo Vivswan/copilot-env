@@ -33,9 +33,13 @@ import { afterEach, expect, removeDir, test } from "../helpers/testing.ts";
 
 // The farm needs POSIX symlinks; Windows CI still runs the path-derivation test and the Windows-only guard.
 const skipWin = test.skipIf(process.platform === "win32");
+
+// The Windows-only guard: the key cannot be set there, reads off, and the derivation is inert.
 const onlyWin = test.skipIf(process.platform !== "win32");
 
+// isolate() points PATH at an empty bin so no codex is found; this puts it back.
 const restoreEnv = envSnapshot(["PATH"]);
+
 let dir = "";
 
 afterEach(() => {
@@ -45,7 +49,9 @@ afterEach(() => {
 
 // The farm layout contract buildCodexSymlinkFarm writes (pinned as literals on
 // purpose: renaming an entry is an on-disk layout change, not a refactor).
+
 const LOCAL_DIRS = [".tmp", "log", "tmp"];
+
 const SHARED_DIRS = [
   "ambient-suggestions",
   "archived_sessions",
@@ -71,6 +77,7 @@ const OPTIONAL_SHARED_FILES = ["installation_id", "shell-init.sh"];
 interface Farm {
   /** The shared Codex root the farm links into: <home>/.codex */
   sharedRoot: string;
+
   /** The per-host CODEX_HOME the farm builds: <home>/.codex/hosts/<hostname> */
   hostHome: string;
 }

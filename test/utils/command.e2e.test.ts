@@ -10,9 +10,15 @@ import { pathLedBy } from "../helpers/env.ts";
 import { runSync } from "../helpers/run.ts";
 import { afterEach, expect, step, tempDir, test } from "../helpers/testing.ts";
 
+/** Restored after each case: the rows lead or replace it. */
 const SAVED_PATH = process.env.PATH;
+
+/** Whether `Path` was its own key before the run, so the restore deletes it rather than leaving an empty one. */
 const HAD_PATH_CASE = Object.hasOwn(process.env, "Path");
+
+/** The `Path` spelling's own value, restored only under HAD_PATH_CASE. */
 const SAVED_PATH_CASE = process.env.Path;
+
 // On Windows the two spellings are one variable, so both saves and both restores agree there.
 const SAVED_PSMODULEPATH = [
   ["PSModulePath", process.env.PSModulePath],
@@ -33,12 +39,18 @@ afterEach(() => {
 
 // A key mapped to null must be absent from the child env, not merely empty.
 const CHILD_ENV_ROWS: {
+  /** The row's label in a failed expectation. */
   name: string;
+
   /** Set on process.env before the call. */
   parent: Record<string, string>;
+
+  /** childEnv's argument; omitted = the bare call. */
   opts?: Parameters<typeof childEnv>[0];
+
   /** A thunk where the expectation reads the parent just set. */
   keys: Record<string, string | null> | (() => Record<string, string | null>);
+
   /** The PATH value under whichever casing the child env carries it. */
   pathAnyCase?: string | null;
 }[] = [
@@ -89,8 +101,7 @@ test("childEnv copies the parent env, leads or replaces PATH when asked, applies
   }
 });
 
-// The env map is a plain object: on Windows it carries the variable under the casing the runner
-// stored it (PSMODULEPATH, PsModulePath), so every read of it goes by case-insensitive match.
+// On Windows the map carries the variable under the runner's casing (PSMODULEPATH, PsModulePath): match any case.
 const psModulePathIn = (env: Record<string, string | undefined>) =>
   Object.fromEntries(Object.entries(env).filter(([key]) => /^psmodulepath$/i.test(key)));
 

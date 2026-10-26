@@ -237,6 +237,7 @@ test("a deleted transcript leaves the next report and the database", async () =>
 
 // ---------- the whole command ----------
 
+/** Never fetched for real: pricedFetch answers under it. */
 const PRICE_URL = "https://pricing.example/models";
 
 /** A fetch serving one priced model per source so the JSON carries dollar amounts too. */

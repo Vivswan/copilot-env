@@ -63,11 +63,10 @@ import {
 import { type CodexTomlRead, readCodexToml, saveCodexToml } from "./toml_io.ts";
 import { codexUserAgent } from "./user_agent.ts";
 
+// Warnings and the check's failure go to stderr; the check's key-value report (printKeyValue) owns stdout.
 const logger = createStderrLogger();
 
-/** What one `agent auth --get` (the `gh` look and the token print, nothing else) has before Codex
- *  gives up. It sits in every install's config; the gh look's own budget (GH_AUTH_TIMEOUT_MS) stays
- *  far under it. */
+/** Codex's wait on one `agent auth --get` (the gh look, the token print); GH_AUTH_TIMEOUT_MS stays far under it. */
 const DIRECT_AUTH_TIMEOUT_MS = 30000;
 
 /** Proxy ALWAYS carries a base URL: a proxy write without one is unrepresentable, so nothing
@@ -125,13 +124,14 @@ function credentialTables(
 }
 
 // The command shape re-runs `auth.command` every `refresh_interval_ms`, so the token tracks the
-// current credential.
+// current credential; the command's timeout (DIRECT_AUTH_TIMEOUT_MS) sits in every install's config.
 function managedDirectProvider(
   credential: CredentialWiring,
   profile: Profile = null,
   directIntegrationId?: string | null,
   // Resolved per WRITE (a default parameter runs at the call), so importing this module spawns
-  // nothing; MANAGED_PROVIDER_KEYS below passes a placeholder for the same reason.
+  // nothing; MANAGED_PROVIDER_KEYS below passes a placeholder for the same reason, and its placeholder
+  // base URL is only embedded, never fetched.
   userAgent: string = codexUserAgent(),
   directBaseUrl: string = DEFAULT_COPILOT_API_BASE,
 ) {
@@ -190,12 +190,10 @@ function managedProviderForMode(request: CodexModeRequest, profile: Profile = nu
   return managedProxyProvider(request.baseUrl, profile, request.credential);
 }
 
-// Codex rejects `auth` + `env_key` on one provider, so a managed table must never carry an env_key
-// (whoever put it there). Derived from the factories so a new mode-specific managed key can never
-// reintroduce cross-mode bleed on the shared table; the placeholder base URL is only embedded,
-// never fetched. The command shape emits every managed key (a static write then strips a stale
-// `auth`, a command write a stale static `http_headers`).
+// Emits every managed key: a static write then strips a stale `auth`, a command write a stale static `http_headers`.
 const COMMAND_SHAPE: CredentialWiring = { kind: "command" };
+
+// Derived from the factories, so a new mode-specific managed key can never reintroduce cross-mode bleed.
 const MANAGED_PROVIDER_KEYS: ReadonlySet<string> = new Set([
   ...Object.keys(managedDirectProvider(COMMAND_SHAPE, null, undefined, "codex_exec/0")),
   ...Object.keys(managedProxyProvider("http://managed-keys.invalid", null, COMMAND_SHAPE)),
@@ -341,7 +339,8 @@ export function configureCodexConfig(codexHome: string, request: CodexWriteReque
 
   // Both modes share ONE table per profile, so every managed key is stripped BEFORE the mode's own
   // land: toggling modes can never bleed the OTHER mode's keys, and the managed keys settle after
-  // the user's own, which survive.
+  // the user's own, which survive. `env_key` goes whoever put it there: Codex rejects `auth` +
+  // `env_key` on one provider, so a managed table must never carry one.
   const table = tableAt(tableAt(doc, "model_providers"), providerId);
   for (const key of MANAGED_PROVIDER_KEYS) delete table[key];
   for (const [key, value] of Object.entries(managedProviderForMode(request, profile))) {
@@ -478,9 +477,10 @@ function checkCodexConfig(): void {
   }
 }
 
-// Copilot Direct's answer to Codex's `service_tier`: `default` and `flex` are accepted, `priority`
-// (Codex's fast-mode default) is rejected ("service_tier is not supported").
+// The `service_tier` values Copilot Direct accepts from Codex.
 const COPILOT_ACCEPTED_SERVICE_TIERS: ReadonlySet<string> = new Set(["default", "flex"]);
+
+// Codex's fast-mode default; Copilot Direct rejects it ("service_tier is not supported").
 const COPILOT_REJECTED_SERVICE_TIER = "priority";
 
 /** The line is the user's knob and is never rewritten; with the opt-in catalog on, its stripped
@@ -575,9 +575,7 @@ export function removeCodexDefaultWiring(codexHome: string): void {
   }
 }
 
-/** `codexServable` is the catalog's own "codex can drive it" mark (chat, picker-enabled, served on
- *  /responses), so the smoke pings a model the generated catalog would offer; a reduced tier first,
- *  for the same reason cheapestClaudeModel gives. */
+/** Pings a model the catalog would offer (codexServable); a reduced tier first, as cheapestClaudeModel does. */
 export const CODEX_ENDPOINT_SMOKE: EndpointSmoke = {
   wire: "responses",
   pickModel: (body) => {
@@ -588,18 +586,19 @@ export const CODEX_ENDPOINT_SMOKE: EndpointSmoke = {
   },
 };
 
-/** The throwaway config's selector, NOT the managed id. The table's `auth.command` runs `agent auth
- *  --get` in the child, which prints the token and writes nothing. The distinct selector keeps the
- *  reference sync (a wiring write or a launch run with $CODEX_HOME pointing here) from adding
- *  `model_catalog_json` to, and ledgering, a config removeScratchDir deletes: the sync touches only
- *  configs that select the managed provider, by its own contract. */
+/** The probe config's selector, NOT the managed id, so the reference sync passes it by (writeCodexProbeConfig). */
 const CODEX_PROBE_PROVIDER_ID = `${CODEX_PROVIDER_ID}-probe`;
 
 /** The detect probe's throwaway config: the Direct provider table and its selector, nothing else.
  *  The real write's top-level extras (`web_search`, the generated `model_catalog_json`) belong to
  *  the user's wiring, not to Direct, and a catalog file produced under another credential would
  *  colour the verdict. Shares managedDirectProvider, so the table is byte-identical to the real one;
- *  `credential` is the probe subject's (the resolver command, or a named profile's token baked). */
+ *  `credential` is the probe subject's (the resolver command, or a named profile's token baked).
+ *  The table's `auth.command` runs `agent auth --get` in the child, which prints the token and
+ *  writes nothing. The distinct selector keeps the reference sync (a wiring write or a launch run
+ *  with $CODEX_HOME pointing here) from adding `model_catalog_json` to, and ledgering, a config
+ *  removeScratchDir deletes: the sync touches only configs that select the managed provider, by its
+ *  own contract. */
 function writeCodexProbeConfig(
   tmpHome: string,
   direct: DirectWiring,

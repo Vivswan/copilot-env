@@ -47,8 +47,11 @@ import {
 
 const restoreEnv = envSnapshot(["PATH"]);
 let dir = "";
-/** The longest profile name and gh login the grammars allow: the widest labels a message carries. */
+
+/** The longest profile name the grammar allows: the widest profile label a message carries. */
 const LONGEST = parseProfileName("p".repeat(32));
+
+/** The longest gh login GH_LOGIN_RE allows: the widest login label a message carries. */
 const LOGIN = "l".repeat(39);
 
 afterEach(() => {
@@ -874,15 +877,19 @@ test("auth --get/--del/--check on a named profile per slot state: nonexistent hi
   // Asserted without backticks: consola renders code spans, stripping them.
   const addCommand = "agent profile ghost add --direct|--proxy";
   const rows: {
+    /** The slot state, as the assertion messages name the row. */
     name: string;
-    /** Stages the slot and returns the needle --check's hint must carry (for the half-created
-     *  slot, the store's WHOLE message folded like the captured output, so a rewording on either
-     *  side fails here). */
+
+    /** Stages the slot and returns the needle --check's hint must carry. */
     arrange: () => string;
+
     /** Needles every verb's output carries. */
     says: string[];
+
     /** A needle --get and --del never carry: the other slot state's hint. */
     never: string;
+
+    /** A needle --del alone carries: its nothing-to-clear line. */
     delSays: string;
   }[] = [
     {
@@ -997,8 +1004,10 @@ test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
 
 // --- the device flow -----------------------------------------------------------------------------
 
-// GitHub's two device-flow endpoints, where the library's requests leave the program.
+// The first of GitHub's two device-flow endpoints, where the library's requests leave the program.
 const GITHUB_DEVICE_CODE_URL = "https://github.com/login/device/code";
+
+// The second: the library polls it for the token, and stubDeviceFlow answers per `polls`.
 const GITHUB_ACCESS_TOKEN_URL = "https://github.com/login/oauth/access_token";
 
 /** GitHub's two device-flow endpoints, answering per `polls` in order (the last answer repeats). */

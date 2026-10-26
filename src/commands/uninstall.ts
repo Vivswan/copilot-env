@@ -87,26 +87,50 @@ async function stopAllDaemons(profiles: ProfileName[]): Promise<void> {
 /** Resolved once before any step runs: the dry run plans exactly these and the live run removes
  *  exactly these, so neither can name (or take) a path the other did not. */
 interface UninstallTargets {
+  /** The Claude Desktop entries and helper scripts the ownership ledger says are ours. */
   desktop: ClaudeDesktopOwnedArtifacts;
+
   /** Named on its own because the float's cache may sit OUTSIDE the root home. */
   floatArtifacts: string[];
+
   /** Null on Windows, or when none is recorded. */
   codexHostFarm: string | null;
+
+  /** The rc files holding our block (ownedShellTargets). */
   shellFiles: string[];
+
+  /** Every named profile with its Claude artifacts; deleted one step each. */
   profiles: { name: ProfileName; claudeArtifacts: string[] }[];
+
+  /** Non-null when the MCP registration is ours to remove (plannedClaudeMcpRemoval). */
   claudeMcpRegistration: string | null;
 }
 
 interface UninstallContext {
+  /** Every named profile (allProfileNames): one deletion step each, and their Codex tables in every home. */
   profiles: ProfileName[];
+
+  /** EVERY known Codex home, farm homes included: a profile wired while one was active left its tables there. */
   codexHomes: string[];
+
+  /** False when ~/.codex/hosts could not be fully enumerated; the Codex step warns. */
   codexSweepComplete: boolean;
+
+  /** Where the default Claude wiring and the profiles' settings files live. */
   claudeHome: string;
+
+  /** The copilot-api home, removed after everything that reads from it. */
   rootHome: string;
+
+  /** Resolved once, so the plan and the removal name the same paths. */
   targets: UninstallTargets;
+
+  /** The DELETE target: a versioned install's TOP root, not its `current` link. */
   installRoot: RootMode;
+
   /** A protected root (a source checkout) without `--force`. */
   skipRootDelete: boolean;
+
   /** Set by the install-root step when its removal could not finish. */
   rootRemains: boolean;
 }

@@ -33,13 +33,10 @@ function platformEssentials(): Record<string, string> {
   return out;
 }
 
-/** A path no executable occupies, so the spawn fails rather than running something.
- *  Built from the temp dir so it is absolute-and-absent on every platform. */
+/** Under the temp dir: absolute and absent on every platform, so the spawn fails rather than running something. */
 const UNSPAWNABLE = join(tempDir("copilot-env-definitely-not-"), "not-a-binary");
 
-// Each row plants a parent value under `key` first, so a merge over the parent's env shows as
-// the value leaking into the child, and a clearing span that never restores shows as the parent
-// losing it afterwards.
+// Each row plants a parent value under `key` first: a merge leaks it into the child, an unrestored span loses it.
 const ENV_SHAPES: {
   shape: string;
   key: string;
@@ -147,6 +144,7 @@ test("both spawns put the temp root on the child, whatever the caller's env says
 /** Stands in for a width the runner exported; the preload leaves the test process with none. */
 const RUNNER_COLUMNS = "81";
 
+/** The child program: its COLUMNS as JSON, or null when it has none. */
 const READ_COLUMNS = "console.log(JSON.stringify(process.env.COLUMNS ?? null))";
 
 /** `passed` is the env the caller hands the helper, or none; the essentials ride along under

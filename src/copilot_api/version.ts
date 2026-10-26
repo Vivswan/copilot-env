@@ -19,7 +19,9 @@ export type ProxyVersionStatus =
 
 /** An installed copy of the proxy under `<root>/node_modules`, as its own manifest describes it. */
 export interface InstalledProxyPackage {
+  /** The manifest's own `version`, which the floor and ceiling checks judge. */
   version: string;
+
   /** The absolute path of the package's `bin` entry: what the daemon runs. */
   entry: string;
 }

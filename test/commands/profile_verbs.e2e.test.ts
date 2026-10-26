@@ -21,6 +21,7 @@ import { expect, test } from "../helpers/testing.ts";
 /** This file's own daemon port: the files run as concurrent processes, so a shared literal would collide. */
 const PORT = await freePort();
 
+/** A fresh data home and agent homes, pinned to PORT (test/helpers/scratch_home.ts). */
 const scratchHome = () => scratchHomeOf("copilot-profile-verbs-", PORT);
 
 test("the verbs are reserved words, a flag before the verb is refused, and `help <verb>` works", () => {

@@ -58,12 +58,21 @@ function directDefault(): void {
 /** A scratch Direct wiring with no identity header on the generic host: today's default bytes. */
 const DIRECT_NONE = directWiring(null, DEFAULT_COPILOT_API_BASE);
 
+/** The launcher spelling the assertions expect: agent.ps1 on Windows, bin/agent elsewhere. */
 const WIN = process.platform === "win32";
+
+/** The one named profile the cases wire beside the default. */
 const WORK = parseProfileName("work");
+
+/** The command credential shape every write uses unless a row says otherwise. */
 const COMMAND = { kind: "command" } as const;
+
+/** The static-key shape; its token must never appear in a printed line (the redaction rows). */
 const STATIC = { kind: "static", token: "ghu_baked_value" } as const;
 
+/** Taken at load; afterEach restores it, so a case's env edits never leak into the next. */
 const restoreEnv = envSnapshot();
+
 let dir = "";
 
 afterEach(() => {

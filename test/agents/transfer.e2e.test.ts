@@ -518,23 +518,15 @@ for (const { name, bundleUrl, expected } of [
   });
 }
 
-/** A redacted bundle carries no token: each slot lands only if the target machine already
- *  resolves a credential for it (the resulting-slot rule), and the marker never reaches the store.
- *  Proxy default wiring needs no credential (`agent start` resolves its own), so it re-derives
- *  regardless. */
+/** A redacted bundle has no token: slots land only where the machine resolves one; `skipped` = skip-hint substrings. */
 const REDACTED_LANDINGS: {
   name: string;
-  /** The bundle; an export is built on its own machine first. */
   bundle: () => Promise<SettingsBundle>;
-  /** The target machine's stores before the import. */
   local: () => void;
-  /** Substrings of the skip hints; none means nothing was skipped. */
   skipped: string[];
   modes: ImportOutcome["modes"];
   wiredProfiles: ProfileName[];
-  /** The whole profile map after the import, by name. */
   profiles: ProfileName[];
-  /** The imported prefs land whatever the slots did: the bundle's `daemon.auto-start` after. */
   autoStart: boolean | undefined;
   defaultCredential: StoredCredential;
   workSlot: ProfileSlot;
@@ -610,6 +602,9 @@ const REDACTED_LANDINGS: {
 
 for (const row of REDACTED_LANDINGS) {
   test(`a redacted bundle over ${row.name}`, async () => {
+    // The resulting-slot rule: a slot lands only if this machine already resolves a credential for
+    // it, and the marker never reaches the store; proxy default wiring needs no credential (`agent
+    // start` resolves its own), so it re-derives regardless; the prefs land whatever the slots did.
     const bundle = await row.bundle();
     const machine = isolate();
     row.local();
@@ -1013,16 +1008,12 @@ test("a profile wiring failure lands in failures, printed at stderr's width with
   });
 });
 
-/** One writer fails: the failure is one outcome.failures entry naming what failed, and the rest
- *  of the import proceeds. */
+/** One writer fails: one outcome.failures entry names it (`failure` is a substring); the import proceeds. */
 const FAILING_WRITERS: {
   name: string;
-  /** Stages the plan on a fresh machine with the failure planted. */
   plan: (machine: AgentHomes) => ImportPlan;
-  /** A substring of the one failures entry. */
   failure: string;
   wiredProfiles: ProfileName[];
-  /** The profiles in the store afterwards. */
   profiles: ProfileName[];
 }[] = [
   {

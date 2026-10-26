@@ -31,8 +31,7 @@ export type Doc = Record<string, unknown>;
 
 // --- paths + detection ---------------------------------------------------------
 
-/** Test seam. When set it also GOVERNS detection: the dir's existence means Desktop is installed,
- *  so the suite floor points it at a non-created dir and the whole suite sees no Desktop. */
+/** Test seam that also GOVERNS detection: the dir's existence means Desktop is installed. */
 export const CLAUDE_DESKTOP_DIR_ENV = "COPILOT_ENV_CI_CLAUDE_DESKTOP_DIR";
 
 interface DesktopEnv {
@@ -136,6 +135,8 @@ export function desktopAppInstalledFor(
   return [dirs.data, dirs.standard, ...dirs.app].some((path) => path !== null && exists(path));
 }
 
+/** Under the seam, the dir's existence alone: the suite floor points it at a non-created dir, so
+ *  the whole suite sees no Desktop. */
 export function claudeDesktopInstalled(): boolean {
   const seam = seamDir();
   if (seam !== null) return fs.exists(seam);
@@ -157,27 +158,30 @@ export function sameBaseUrl(a: unknown, b: string): boolean {
 
 // --- library IO ------------------------------------------------------------------
 
+/** One `_meta.json` row; `extra` is every OTHER field the app keeps on it, preserved verbatim on
+ *  save. */
 export interface DesktopMetaEntry {
   id: string;
   name: string;
-  /** Every OTHER field the app keeps on this row, preserved verbatim on save. */
   extra: Record<string, unknown>;
 }
 
+/** `_meta.json` as read; `extra` is every OTHER top-level field, preserved verbatim on save. */
 export interface DesktopMeta {
   appliedId: string | null;
   entries: DesktopMetaEntry[];
-  /** Every OTHER top-level field of _meta.json, preserved verbatim on save. */
   extra: Record<string, unknown>;
 }
 
+/** The app's library index; an entry id must never collide with it (SAFE_ENTRY_ID). */
 export const META_FILENAME = "_meta.json";
 
-/** Ids become `<id>.json` filenames, so a hand-mangled id must neither escape the library dir nor
- *  collide with _meta.json: no separators, no leading dot or underscore, and no Windows reserved
- *  device name (`CON.json` is a device path there). */
+/** Ids become `<id>.json`: no separator, no leading dot or underscore (devices: isSafeEntryId). */
 const SAFE_ENTRY_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
+/** A hand-mangled id must neither escape the library dir nor collide with _meta.json, so beyond
+ *  SAFE_ENTRY_ID's charset no Windows reserved device name passes (`CON.json` is a device path
+ *  there). */
 function isSafeEntryId(id: string): boolean {
   if (!SAFE_ENTRY_ID.test(id)) return false;
   const stem = id.split(".", 1)[0] ?? id;
@@ -287,7 +291,11 @@ export function removeFile(path: string, detail?: string): void {
 
 /** The app's process name, for the running scan. */
 const CLAUDE_DESKTOP_PROCESS = "Claude";
+
+/** Holds the user's MCP servers and preferences beside the keys we merge (prepareAppFileMerge). */
 const APP_CONFIG_FILENAME = "claude_desktop_config.json";
+
+/** Read from the standard (claude.ai) data dir even in third-party mode (DesktopDirs says why). */
 const DEVELOPER_SETTINGS_FILENAME = "developer_settings.json";
 
 type DesktopDeploymentMode = "3p" | "1p";

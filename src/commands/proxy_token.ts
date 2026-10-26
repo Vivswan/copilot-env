@@ -30,10 +30,13 @@ import { runDryRun } from "./dry_run.ts";
 import { runStart } from "./start.ts";
 
 interface ProxyTokenFlags {
+  /** Never prompt: a down unmanaged proxy exits 1 rather than offering a start. */
   yes?: boolean;
+
+  /** The daemon whose key is printed; unset is the default profile. */
   profile?: string;
-  /** Print the daemon start and the store writes the resolve would make (the minted API key
-   *  redacted) and do none of them; the key is not printed, since none is stored. */
+
+  /** Print the daemon start and the store writes (minted key redacted) and do none; no key is printed, none stored. */
   dryRun?: boolean;
 }
 
@@ -48,16 +51,22 @@ export type LaunchOutput = "suppressed" | "visible";
  *  preference. */
 export interface ProxyTokenDeps {
   proxyUp(profile: Profile): Promise<boolean>;
+
   autoStartEnabled(): boolean;
+
   /** In a dry run, the start's own preview (`agent start --dry-run`, in process): the same port
    *  resolution and refusals the child would make. */
   launchProxy(profile: Profile, output: LaunchOutput): void | Promise<void>;
+
   /** Asks on stderr; yes, or a closed stdin, means start. */
   confirmStart(question: string): Promise<boolean>;
+
   recordHeartbeat(profile: Profile): void;
+
   /** runPrintProxyToken in production. `agent profile launch` injects a keyless variant that runs the
    *  Codex catalog refresh instead: launch needs reachability, not the credential. */
   printProxyToken(profile: Profile): Promise<void>;
+
   /** stderr, never stdout. */
   notify(line: string | ScannableMessage): void;
 }

@@ -14,11 +14,13 @@ import { PROJECT_ROOT } from "../../src/utils/root.ts";
 import { expect, test } from "../helpers/testing.ts";
 import { tsFilesUnder as sourceFiles } from "../helpers/tree.ts";
 
+/** The scanned tree: every string literal under it is read, bar the registry's own file and import specifiers. */
 const SRC = join(PROJECT_ROOT, "src");
+
+/** Owns the key descriptions, so the string scans skip it. */
 const REGISTRY_FILE = join(SRC, "copilot_api", "config_registry.ts");
 
-/** Dotted tokens with a key-group prefix that are NOT config keys: file names and health check ids
- *  that happen to share the shape. A new key never lands here; a new file name or check id does. */
+/** Non-keys under a key group's prefix (file names, health check ids); a new key never lands here, a new name does. */
 const NOT_KEYS = new Set([
   "daemon.lock",
   "update.lock",
@@ -46,20 +48,24 @@ function stringLiterals(source: string): string[] {
   return literals.map((lit) => lit.slice(1, -1).replace(/\$\{[^}]*\}/g, " "));
 }
 
+/** Every registered key; a dotted token in neither this nor NOT_KEYS is an offence. */
 const KEYS: ReadonlySet<string> = new Set(CONFIG_REGISTRY.map((def) => def.key));
+
+/** The prefixes before the first dot of the dotted keys; an undotted key such as `identity` yields none. */
 const GROUPS = [...new Set(CONFIG_REGISTRY.map((def) => def.key.split(".")[0]))].filter((group) =>
   CONFIG_REGISTRY.some((def) => def.key.startsWith(`${group}.`)),
 );
+
+/** A dotted token under a known group: the shape a key cited bare in a string takes. */
 const DOTTED_KEY_SHAPE = new RegExp(
   `\\b(?:${GROUPS.join("|")})\\.[a-z][a-z-]*(?:\\.[a-z][a-z-]*)*\\b`,
   "g",
 );
-/** `agent config [set|unset|get] <key> ...` or `agent profile [<name>] set|unset|get <key> ...`; a
- *  `<placeholder>`, a bare verb, or a verb menu (`set|unset|get`) is not a key. The name may be a
- *  template hole (blanked to a space by stringLiterals) or the documented `<name>` / `[<name>]`
- *  placeholder, so any run of spaces precedes the verb. */
+
+/** `agent config [set|unset|get] <key> ...` or `agent profile [<name>] set|unset|get <key> ...`, hand-spelled. */
 const HAND_SPELLED_HINT =
   /agent (?:config (?:(?:set|unset|get) )?|profile(?: (?:[a-z0-9][a-z0-9-]*|<name>|\[<name>\]))? +(?:set|unset|get) )(?!<|(?:set|unset|get)\b)[a-z][a-z0-9.-]*/g;
+
 /** "the <key> config key", "`<key>` config key", or a dotted/dashed "<key> config key". */
 const KEY_MENTION = /(?:(?:the |`)([a-z][a-z0-9.-]*)`?|([a-z0-9]+(?:[.-][a-z0-9]+)+)) config key/g;
 
@@ -69,6 +75,9 @@ test("no source string spells an `agent config` hint by hand or names a dotted k
     if (file === REGISTRY_FILE) continue;
     const where = relative(PROJECT_ROOT, file);
     for (const literal of stringLiterals(readFileSync(file, "utf8"))) {
+      // In HAND_SPELLED_HINT a `<placeholder>`, a bare verb, or a verb menu (`set|unset|get`) is not a
+      // key, and the profile name may be a template hole (blanked to a space by stringLiterals) or the
+      // documented `<name>` / `[<name>]` placeholder, so any run of spaces precedes the verb.
       for (const hint of literal.match(HAND_SPELLED_HINT) ?? []) {
         offences.push(`${where}: hand-spelled hint \`${hint}\` (use configSetCommand and friends)`);
       }
@@ -138,16 +147,12 @@ function everyFile(dir: string): string[] {
   return out;
 }
 
-/** The old CLI spellings the 4.0.9 migration renames, from its own table; a spelling the rename kept
- *  (`passthrough`, `static-key`) is not old. */
+/** The 4.0.9 migration's old spellings, from its table; one it kept (`passthrough`, `static-key`) is not old. */
 const OLD_KEY_NAMES = PREFERENCE_RENAMES.filter(([, cli, key]) => cli !== key).map(
   ([, cli]) => cli,
 );
 
-/** A key is cited in backticks, alone or with one value word (`` `codex-host` ``, `` `claude-desktop false` ``,
- *  the backticks escaped inside a template literal or not), or named by an `agent config` flag
- *  (`--set codex-host true`, even when the hint wraps onto a comment's next line). A template literal's
- *  own opening backtick (`` `port ${n} is busy` ``) is not a citation: `${` is no word. */
+/** A retired key in backticks, alone or with one value word, escaped or not, or after a --set/--del/--get flag. */
 const OLD_KEY_CITATION = new RegExp(
   `\\\\?\`(?:${OLD_KEY_NAMES.map(escapeRegExp).join("|")})( [\\w-]+)?\\\\?\`` +
     `|--(?:set|del|get) (?:${OLD_KEY_NAMES.map(escapeRegExp).join("|")})\\b`,
@@ -165,8 +170,11 @@ test("no source file, comments included, cites a config key by a spelling the 4.
     });
   }
   expect(offences).toEqual([]);
-  // Negative controls: the citation shapes are seen, a template literal's opening backtick and a
-  // dotted or flag spelling are not, and the list really comes from the migration's table.
+  // Negative controls: the citation shapes are seen (`` `codex-host` ``, `` `claude-desktop false` ``, the
+  // backticks escaped inside a template literal or not, `--set codex-host true` even when the hint wraps
+  // onto a comment's next line), a template literal's own opening backtick (`` `port ${n} is busy` ``:
+  // `${` is no word) and a dotted or flag spelling are not, and the list really comes from the
+  // migration's table.
   expect("the `codex-host` key".match(OLD_KEY_CITATION)).toEqual(["`codex-host`"]);
   expect(" *  --set update-cooldown N` takes effect".match(OLD_KEY_CITATION)).toEqual([
     "--set update-cooldown",

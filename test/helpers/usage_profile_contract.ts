@@ -10,17 +10,13 @@ export type UsageSource = "codex" | "claude";
 /** Milliseconds a gap must reach before a session counts as resumed. */
 export const RESUME_GAP_MS = 60 * 60 * 1000;
 
-// ---------- the closed label sets a profile may name ----------
-
 /** The label for a line whose type words are not in the reviewed set, and for a torn line. */
 export const OTHER_LINE_TYPE = "other";
+
+/** The profiler's label for a line that is not valid JSON (a torn tail), counted by its bytes alone. */
 export const TORN_LINE_TYPE = "torn";
 
-/**
- * The Codex line types a profile may name, the type words the Codex CLI writes: a CLOSED set, so a
- * type word carrying anything else folds to OTHER_LINE_TYPE before it can reach a committed
- * file. Extend deliberately when the writer adds a type.
- */
+/** The type words the Codex CLI writes, a CLOSED set: extend deliberately when the writer adds a type. */
 const CODEX_LINE_TYPES: ReadonlySet<string> = new Set([
   "compacted",
   "event_msg/agent_message",
@@ -91,15 +87,19 @@ const CLAUDE_LINE_TYPES: ReadonlySet<string> = new Set([
   "worktree-state",
 ]);
 
-/** Vendor model ids are dotted, dashed identifiers; anything else folds to OTHER_MODEL. */
+/** Where a model id outside the vendor-id pattern (MODEL_ID) folds. */
 const OTHER_MODEL = "other";
+
+/** Vendor model ids: dotted, dashed identifiers of at most 64 characters, case-insensitive. */
 const MODEL_ID = /^[a-z0-9][a-z0-9._:/-]{0,63}$/i;
 
-// ---------- profile schema ----------
-
+/** The profile schema's building block for a count or a byte or token figure: never below zero. */
 const nonNegative = v.pipe(v.number(), v.minValue(0));
+
+/** A fraction of a whole, 0 to 1 inclusive. */
 const share = v.pipe(v.number(), v.minValue(0), v.maxValue(1));
 
+/** The quantile table both sides speak; the check holds it non-decreasing from p5 to p99. */
 const QuantilesSchema = v.pipe(
   v.strictObject({
     count: v.pipe(v.number(), v.integer(), v.minValue(0)),
@@ -115,6 +115,7 @@ const QuantilesSchema = v.pipe(
     "quantiles must be non-decreasing from p5 to p99",
   ),
 );
+
 export type Quantiles = v.InferOutput<typeof QuantilesSchema>;
 
 const ShareTableSchema = v.record(v.string(), share);
@@ -188,6 +189,7 @@ function sourceProfileSchema(lineTypes: ReadonlySet<string>) {
 
 /** The Codex instance stands for the shape; both sources parse to the same type. */
 const SourceProfileSchema = sourceProfileSchema(CODEX_LINE_TYPES);
+
 export type SourceProfile = v.InferOutput<typeof SourceProfileSchema>;
 
 const ProfileSchema = v.strictObject({
@@ -247,6 +249,8 @@ export function quantiles(values: number[]): Quantiles {
 
 // ---------- line classification (shared with the profiler) ----------
 
+/** The profile label of a Codex line: `type`, `type/payload.type`, or `type/message/role`; a word
+ *  outside CODEX_LINE_TYPES folds to OTHER_LINE_TYPE before it can reach a committed file. */
 export function codexLineType(line: Record<string, unknown>): string {
   const type = typeof line.type === "string" ? line.type : "";
   const payload = isRecord(line.payload) ? line.payload : {};

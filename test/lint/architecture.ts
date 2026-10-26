@@ -11,21 +11,22 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
+/** The declaration, read from the `root` readArchitecture is given. */
 const ARCHITECTURE_FILE = "architecture.json";
 
-/** A package one module wraps for the rest of src/: package -> the one file that may import it.
- *  @clack/prompts draws every question through src/utils/prompt.ts, which owns the output stream,
- *  the cancel mapping, and the closed-stdin answer. */
+/** A package one module wraps for the rest of src/: package -> the one file that may import it. */
 const CONFINED_PACKAGES: Readonly<Record<string, string>> = {
+  // Every question draws through prompt.ts: it owns the output stream, the cancel mapping, and the closed-stdin answer.
   "@clack/prompts": "src/utils/prompt.ts",
 };
 
 interface Architecture {
   /** layer -> the repo-relative paths it owns; a trailing slash means a directory. */
   readonly layers: Readonly<Record<string, readonly string[]>>;
-  /** Paths (same grammar as a layer's) that are not SOURCES of the graph; an import into one is
-   *  still an edge. */
+
+  /** Paths (a layer's grammar) that are not SOURCES of the graph; an import into one is still an edge. */
   readonly exclude: readonly string[];
+
   /** from -> the layers it may import; a layer absent here imports nothing outside itself. */
   readonly edges: Readonly<Record<string, readonly string[]>>;
 }

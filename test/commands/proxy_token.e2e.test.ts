@@ -38,10 +38,16 @@ interface Recorded {
 }
 
 interface FakeOptions {
+  /** Whether a daemon already answers when the command starts (default false). */
   up?: boolean;
+
+  /** What autoStartEnabled, the one account-wide preference, answers (default false). */
   autoStart?: boolean;
+
   /** The answer confirmStart resolves (true is the yes/closed-stdin shape). */
   answer?: boolean;
+
+  /** Whether the launch leaves the daemon up (default true); false is a start that failed. */
   launchBringsUp?: boolean;
 }
 

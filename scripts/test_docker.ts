@@ -8,16 +8,29 @@
 //                                                    (needs the network; no credential required)
 //
 // $CONTAINER_ENGINE picks "docker" or "podman".
+//
+// Every run has --init: a reaping pid 1, as a developer machine has. Without it the suite's own
+// entry is pid 1, and a killed child's orphans stay zombies that a signal-0 probe reads as alive.
+// Every run but the floated lifecycle has --network=none: the netns keeps loopback, so daemon
+// lifecycle tests work, while anything reaching for the real network fails loudly; the floated
+// lifecycle exists precisely to exercise the float against the live registry.
 import { spawn, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+/** The checkout: the build context, and the cwd of the build and run calls. */
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
+
+/** The local tag the build writes and every run launches. */
 const IMAGE = "copilot-env-test";
+
 /** The image's bun: the platform sync writes this file, and the Dockerfile has no default. */
 const BUN_VERSION_FILE = ".bun-version";
+
+/** Tried in this order when CONTAINER_ENGINE is unset; the override must name one of them. */
 const ENGINES = ["podman", "docker"] as const;
+
 type Engine = (typeof ENGINES)[number];
 
 function isEngine(v: string): v is Engine {
@@ -84,13 +97,10 @@ if (buildCode !== 0) {
   process.exit(buildCode);
 }
 
-// --network=none: the netns keeps loopback, so daemon lifecycle tests work,
-// while anything reaching for the real network fails loudly. The floated
-// lifecycle is the one mode that opts out - it exists precisely to exercise the
-// float against the live registry.
-// --init: a reaping pid 1, as a developer machine has. Without it the suite's own entry is
-// pid 1, and a killed child's orphans stay zombies that a signal-0 probe reads as alive.
+// Every mode's flags; the header says why --init, and when --network=none joins below.
 const runArgs = ["run", "--rm", "--init"];
+
+// The mode flag or the first test file, then what the mode forwards.
 const [first, ...rest] = process.argv.slice(2);
 
 let command: string[];

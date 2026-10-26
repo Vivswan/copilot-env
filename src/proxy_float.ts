@@ -53,8 +53,7 @@ function isExactVersion(value: string): boolean {
   return toSemverString(value) === value;
 }
 
-/** The full document: its `time` map carries the publish times the cooldown needs; the abbreviated
- *  install doc lacks it. */
+/** The full document: its `time` map carries the publish times the cooldown needs; the abbreviated doc lacks it. */
 const PROXY_REGISTRY_URL = `https://registry.npmjs.org/${PROXY_PKG.replaceAll("/", "%2F")}`;
 
 /** The config read is the store's STRICT one: an unreadable prefs store throws rather than read as
@@ -96,8 +95,7 @@ function formatReleaseAge(seconds: number): string {
 
 // --- Registry document: fetch + parse boundary --------------------------------
 
-/** npm's install-time scripts, which the proxy home's `bun install` never runs. External
- *  contract. */
+/** npm's install-time scripts, which the proxy home's `bun install` never runs. External contract. */
 const NPM_LIFECYCLE_SCRIPT_KEYS = ["preinstall", "install", "postinstall"] as const;
 
 interface ProxyRelease {
@@ -413,12 +411,22 @@ interface FloatContext {
 }
 
 export interface ProxyFloatDeps {
+  /** Defaults to the resolved root home; a test points it at a scratch one. */
   rootHome?: string;
+
+  /** Defaults to the checkout's own project config (readProjectConfig). */
   config?: ProjectConfig;
+
   /** Seconds; unset defers to env > config > built-in default. */
   cooldownSeconds?: number;
+
+  /** Defaults to the global fetch; a test answers the registry document from a stub. */
   fetchLike?: FetchLike;
+
+  /** Defaults to the real `bun install` runner; a test records the calls instead. */
   runner?: InstallRunner;
+
+  /** The float's clock; defaults to Date.now(). */
   nowMs?: number;
 }
 

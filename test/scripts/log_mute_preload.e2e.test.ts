@@ -15,6 +15,7 @@ import { expect, tempDir, test } from "../helpers/testing.ts";
 
 // The shim patches `node:fs` at import, so any import would show it; the subprocess proves it
 // loads the way production does, through `--preload` (src/copilot_api/process.ts).
+
 const SHIM = join(ROOT, "src", "scripts", "log_mute_preload.ts");
 
 function runPreloaded(home: string, script: string): string {

@@ -7,7 +7,9 @@ import { resolveCommand } from "../../../src/utils/command.ts";
 import { isRecord } from "../../../src/utils/json.ts";
 import { log, writeFile } from "./cli.ts";
 
+/** The deadline for one scripted turn; past it the child tree is killed and the turn fails. */
 const TURN_TIMEOUT_MS = 40_000;
+
 /** How long a killed child tree may take to report its exit before that counts as a failure. */
 const KILL_GRACE_MS = 5_000;
 
@@ -32,6 +34,7 @@ const BASE_ENV_KEYS = [
   "PROGRAMDATA",
   "USERNAME",
 ];
+
 /** Passed through only under --real, where the CLIs must reach their real backends. */
 const REAL_ENV_KEYS = [
   "ANTHROPIC_API_KEY",
@@ -69,8 +72,12 @@ function childEnvironment(
 }
 
 interface TurnResult {
+  /** Exit 0 in time; false past the deadline, on another exit, a spawn error, or a stopped run. */
   ok: boolean;
+
+  /** The whole captured stdout, also kept as `<turnsDir>/<label-slug>.stdout`. */
   stdout: string;
+
   /** The child (or its tree) survived the kill: the run is no longer clean. */
   stuck: boolean;
 }
@@ -79,10 +86,16 @@ interface TurnResult {
  *  leads its own process group, which outlives it: a turn-end group kill reaches a descendant
  *  left behind by a normal exit. Windows' `taskkill /t` reaches descendants only via a live leader. */
 class ChildRegistry {
+  /** Children whose `close` has not fired yet; a kill waits on these. */
   private readonly live = new Set<ChildProcess>();
+
+  /** Leader pids not yet retired; killAll sweeps them, exited or not, for what a child left. */
   private readonly groups = new Set<number>();
+
+  /** Set by killAll; from then on runTurn refuses new work. */
   private stopped = false;
 
+  /** True once killAll ran: a turn started after that fails at once, and arm() stops waiting. */
   get stopping(): boolean {
     return this.stopped;
   }

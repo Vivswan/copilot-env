@@ -84,12 +84,30 @@ export function pinSoleGhAccount(
   for (const profile of unpinned) pinSlot(state, profile, login);
 }
 
+/** The header's pin-or-ask rule over every pin-less gh-cli slot, the default's and each profile's. */
 export const v402GhAccountPin: Migration = {
   version: "4.0.2",
   description:
     "pin pin-less gh-cli credentials (default + named profiles) to the machine's sole gh account",
   run: () => pinSoleGhAccount(),
 };
+
+/** Old basename -> new basename: the three stores the root home carried dot-prefixed. */
+const STORE_RENAMES: ReadonlyArray<readonly [string, string]> = [
+  [".copilot-env-state.json", "credentials.json"],
+  [".copilot-env-config.json", "preferences.json"],
+  [".copilot-env-ownership.json", "ownership.json"],
+];
+
+/** Lock debris of the old layout at the root: the markers and permanent .oslock sidecars live under `locks/` now. */
+const LOCK_DEBRIS: readonly string[] = [
+  ".copilot-env-state.json.lock",
+  ".copilot-env-config.json.lock",
+  ".copilot-env-ownership.json.lock",
+  ".copilot-env-ownership.json.ops.lock",
+  ".profile-ports.lock",
+  "github_token.login.lock",
+].flatMap((name) => [name, `${name}.oslock`]);
 
 // --- root-home layout ------------------------------------------------------------
 //
@@ -99,24 +117,6 @@ export const v402GhAccountPin: Migration = {
 //
 //   store renames -> a `layout` step, so every later step reads the stores at their new names
 //   helper move   -> LAST: its wiring pass reads agent configs the v400 rewrites normalize first
-
-/** The three store renames, old basename -> new basename. */
-const STORE_RENAMES: ReadonlyArray<readonly [string, string]> = [
-  [".copilot-env-state.json", "credentials.json"],
-  [".copilot-env-config.json", "preferences.json"],
-  [".copilot-env-ownership.json", "ownership.json"],
-];
-
-/** Root-level lock debris the old layout left beside the stores: the markers and
- *  the permanent .oslock sidecars now live under `locks/`. */
-const LOCK_DEBRIS: readonly string[] = [
-  ".copilot-env-state.json.lock",
-  ".copilot-env-config.json.lock",
-  ".copilot-env-ownership.json.lock",
-  ".copilot-env-ownership.json.ops.lock",
-  ".profile-ports.lock",
-  "github_token.login.lock",
-].flatMap((name) => [name, `${name}.oslock`]);
 
 /** The layout step (hoisted; see the section comment). The Desktop helper move is its own LAST
  *  step (moveDesktopHelpers): reconciling this early, before the wiring rewrites, could misread

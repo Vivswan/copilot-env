@@ -48,8 +48,7 @@ test("formatTable pads and aligns per column, separates header and footer rows, 
 
 // --- terminal width ---------------------------------------------------------------------------
 
-/** The `agent profile identity` table: three fixed columns whose headers carry a host, and a
- *  free-text note column. */
+/** The `agent profile identity` table: three fixed columns whose headers carry a host, and a free-text note. */
 const IDENTITIES = {
   body: [
     [
@@ -79,6 +78,7 @@ const IDENTITIES = {
   },
 };
 
+/** At the natural width (161 columns): nothing wraps, every record on its own row. */
 const WIDE = [
   "identity                   Direct (api.githubcopilot.com)  Proxy (api.enterprise.githubcopilot.com)  note",
   "-------------------------  ------------------------------  ----------------------------------------  " +
@@ -92,8 +92,7 @@ const WIDE = [
     "proxy default (copilot-api's own identity)",
 ];
 
-// The note column gives way first, down to its longest word; the fixed columns keep every body
-// cell and only their headers wrap; the underline follows the shrunken widths.
+// 120: the note yields first (to its longest word); fixed columns keep cells, wrap only headers; underline follows.
 const WRAPPED_AT_120 = [
   "identity                   Direct                       Proxy                               note",
   "                           (api.githubcopilot.com)      (api.enterprise.githubcopilot.com)",
@@ -121,8 +120,7 @@ const WRAPPED_AT_160 = [
   WIDE[5] ?? "",
 ];
 
-// The floors (25 + 23 + 34 + 22 + gaps) exceed 100 columns: one block per record, empty cells
-// skipped, a blank line between records; 80 stacks the same blocks.
+// Floors (25 + 23 + 34 + 22 + gaps) exceed 100 and 80 alike: a block per record, empty cells skipped, a blank between.
 const STACKED = [
   "identity: codex",
   "  Direct (api.githubcopilot.com): rejected (400)",

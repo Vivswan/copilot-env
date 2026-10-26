@@ -36,9 +36,7 @@ function tmpHome(): void {
   isolateProxyHome("copilot-idle-");
 }
 
-/** The exit stub's throw: the real process.exit never returns, and a stub that returned would arm
- *  the shutdown path's late-listener timer, whose exit the restored real process.exit would carry
- *  out between tests. */
+/** The exit stub throws this (the real exit never returns); a returning stub would arm the late-listener timer. */
 const stubbedExit = new Error("process.exit stubbed");
 
 /**
@@ -52,6 +50,8 @@ async function idleCheckExit(startedAtMs: number, timeoutMs: number): Promise<nu
   let exitCode: number | null = null;
   process.exit = ((code?: number): never => {
     exitCode = code ?? 0;
+    // A stub that returned would arm the shutdown path's late-listener timer, whose exit the restored
+    // real process.exit would carry out between tests.
     throw stubbedExit;
   }) as typeof process.exit;
   try {

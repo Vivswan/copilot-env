@@ -27,16 +27,22 @@ import { effectiveCodexHome } from "./host.ts";
 import { CODEX_PROVIDER_ID, codexConfigPath } from "./paths.ts";
 import { codexBearerLeaf } from "./toml_io.ts";
 
+// Narration to stderr, the pairing's instruction boxes included.
 const logger = createStderrLogger();
 
+// The desktop app's name as `open -a`, osascript, pgrep/pkill, Get-Process, and Get-StartApps see it.
 const APP_NAME = "Codex";
 
 /** The one leaf a preview of the pairing's config writes must redact. */
 const CONFIG_SECRETS: readonly string[] = [codexBearerLeaf(CODEX_PROVIDER_ID)];
+
+// Between process looks after the quit request; only a PROVEN absence ends the wait (quitApp).
 const QUIT_POLL_MS = 500;
+
+// Past it quitApp force-quits by name, claiming nothing about whether the app was running.
 const QUIT_TIMEOUT_MS = 8000;
-/** `open` and `osascript` hand a request to LaunchServices or the app and answer in under a second;
- *  an app parked on a dialog can hold the quit request. */
+
+/** `open` and `osascript` hand off to LaunchServices or the app in under a second; a dialog can hold the quit. */
 const APP_COMMAND_TIMEOUT_MS = 10_000;
 
 // --- pure config toggle (unit-tested) ---------------------------------------

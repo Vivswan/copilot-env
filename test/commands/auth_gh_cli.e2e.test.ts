@@ -121,12 +121,17 @@ test("ghTokenLookFromSpawn: completed exits prove, a dead spawn stays unproven",
   });
 });
 
+/** The selection that follows gh's active account, with no listing yet naming one. */
 const AUTO = { kind: "auto", activeLogin: null } as const;
+
+/** The selection `--gh-user work` records: one account by name. */
 const PINNED_WORK = { kind: "pinned", login: "work" } as const;
+
+/** gh's own answer to the pinned look when the account is missing, quoted back in the refusal. */
 const WORK_MISS_DETAIL =
   "`gh auth token --user work --hostname github.com` exited 1: no oauth token found";
-/** The refusal as the user reads it, every line: the headline, gh's own answer, the ways out with
- *  the command first. The lines are what a user acts on, so the whole message is the contract. */
+
+/** The refusal line by line: headline, gh's answer, the ways out (command first); the whole message is the contract. */
 const WORK_REFUSAL = [
   "gh cannot serve the pinned account by name.",
   "  account: work",
@@ -275,9 +280,9 @@ function thrownBy(run: () => unknown): string {
 }
 
 // --- the pinned look: one gh call, quoted back on a miss ------------------------------------
+// The check marks in the status fixtures are gh's own output, fine inside a fixture literal.
 
-/** A remote Linux box: a hosts.yml login and a missing-scope warning that makes `gh auth status`
- *  exit 1. The check marks are gh's output, fine inside a fixture literal. */
+/** A remote Linux box: a hosts.yml login and a missing-scope warning that makes `gh auth status` exit 1. */
 const HOSTS_YML_STATUS = `github.com
   \u2713 Logged in to github.com account work-bot (/home/user/.config/gh/hosts.yml)
   - Active account: true
@@ -381,7 +386,8 @@ test.skipIf(process.platform === "win32")(
 
 // The production path end to end through a fake `gh` on PATH: status listing -> pin -> the pinned
 // look, then the recorded slot resolves through the same code every `--get` runs.
-// (POSIX shell scripts; the Windows .cmd dispatch is covered by the launch tests.)
+
+// The fake `gh` shims are POSIX shell scripts; the Windows .cmd dispatch is covered by the launch tests.
 const onPosix = test.skipIf(process.platform === "win32");
 
 function fakeGhOnPath(script: string): void {
@@ -659,10 +665,9 @@ onPosix(
 );
 
 // --- gh multi-account selection (choice menu only, never an auth verdict) ------
+// The check marks in the status fixtures are gh's own output, fine inside a fixture literal.
 
-// Real `gh auth status` shape (gh >= 2.40): per-host blocks, one "Logged in to"
-// line per account, the active one flagged on its own line. The check mark is
-// gh's output, fine inside a fixture literal.
+/** gh 2.40+'s `gh auth status`: per-host blocks, a "Logged in to" line per account, the active one flagged below it. */
 const TWO_ACCOUNT_STATUS = `github.com
   ✓ Logged in to github.com account octocat (keyring)
   - Active account: true

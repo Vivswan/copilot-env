@@ -186,8 +186,13 @@ test("isDue is false under a day, true at/after a day", () => {
 // The update lock is the shared file lock under UPDATE_LOCK_POLICY at autoupdateLockFile(); these
 // pin, at a hermetic path, the behaviours the preflight and `agent update` rely on.
 
-const DEAD_PID = 2_147_483_646; // never alive -> pidAlive() returns false
+// Never alive, so pidAlive() reads it as dead.
+const DEAD_PID = 2_147_483_646;
+
+// The lock file's content: the holder's pid, then the acquisition time, one per line.
 const marker = (pid: number, ts: number): string => `${pid}\n${ts}\n`;
+
+// withUpdateLock's acquisition, aimed at a hermetic path.
 const lockAt = <T>(path: string, nowMs: number, fn: (outcome: LockOutcome) => T | Promise<T>) =>
   withFileLock(path, { ...UPDATE_LOCK_POLICY, nowMs }, fn);
 
@@ -214,10 +219,16 @@ test("the update lock holds across fn, reports a nested acquire not-held, releas
 test("the update lock takes over an aged, dead-owner, or malformed leftover; release spares a marker another pid wrote", async () => {
   const now = 100_000_000;
   const rows: {
+    // Names the row in each assertion.
     name: string;
+
+    // The marker file's content before the acquire.
     seed: string;
+
     // Runs inside the held scope; the successor row overwrites the marker there.
     inside?: (path: string) => void;
+
+    // Whether the marker survives the release: only another pid's does.
     leftBehind: boolean;
   }[] = [
     {

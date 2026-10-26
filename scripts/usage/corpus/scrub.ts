@@ -21,9 +21,12 @@ import {
 } from "./scrub_vocabulary.ts";
 import { ROLLOUT_FILE_RE, type Source, walkJsonl } from "./transcripts.ts";
 
+/** What every content string becomes; an unknown key becomes `SCRUBBED_KEY_n` from it. */
 const PLACEHOLDER = "SCRUBBED";
+
 /** The number every other number becomes. */
 const NUMBER_PLACEHOLDER = 0;
+
 /** The key of a value with no owning key: the root record, an array element. */
 const NO_KEY = "";
 
@@ -33,7 +36,9 @@ const MIN_PSEUDONYM_TAIL = 8;
 /** Deterministic per-run pseudonyms that keep an id's shape, so linkage survives the scrub. */
 export class IdMap {
   private readonly seen = new Map<string, string>();
+
   private readonly assigned = new Set<string>();
+
   constructor(private readonly salt: string = randomUUID()) {}
 
   /** At least `length` hex characters, from as many digest blocks as that takes. */
@@ -143,10 +148,18 @@ function scrubValue(
 }
 
 export interface ScrubbedText {
+  /** Line for line with the source; an unparseable line becomes one placeholder record. */
   text: string;
+
+  /** Non-empty lines, the unparseable ones included. */
   lines: number;
+
+  /** Lines `isUsageLine` accepted before the scrub: what the readers would price. */
   usageLines: number;
+
+  /** Replaced strings and numbers, renamed keys, and unparseable lines; pseudonyms do not count. */
   scrubbedValues: number;
+
   /** Distinct `YYYY-MM-DDTHH:MM` minutes the records' own timestamps fall in. */
   minutes: number;
 }
@@ -271,10 +284,18 @@ function scrubbedRelativePath(
 }
 
 export interface SourceSummary {
+  /** Every JSONL file walkJsonl found under the source root. */
   files: number;
+
+  /** ScrubbedText.lines summed over the files. */
   lines: number;
+
+  /** ScrubbedText.usageLines summed over the files. */
   usageLines: number;
+
+  /** ScrubbedText.scrubbedValues summed over the files. */
   scrubbedValues: number;
+
   /** Files whose timestamps fall in two or more distinct minutes. */
   sessionsSpanningMinutes: number;
 }

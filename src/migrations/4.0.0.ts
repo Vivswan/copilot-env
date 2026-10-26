@@ -37,18 +37,18 @@ export function failIfAny(failed: readonly string[]): void {
 }
 
 // --- the shell rc block ----------------------------------------------------------
+//
+// Two blocks the old releases wrote under their own markers: the main block (MARKER, still written
+// by src/shell/integration.ts) and the launchers block, frozen here and fenced like the main one;
+// its launchers are `agent profile env` emissions now (the `launchers` config key).
 
-/** The launchers block every pre-4.0.0 release wrote, frozen here: the launchers are `agent env`
- *  emissions now (the `launchers` config key). Fenced like the main block below; the 4.0.9 step
- *  removes it. */
+/** The launchers block every pre-4.0.0 release wrote; the 4.0.9 step strips it from the rc files. */
 export const LAUNCHERS_MARKER = "# copilot-env launchers";
+
+/** Its end fence, spelled as MARKER_END spells the main block's. */
 export const LAUNCHERS_MARKER_END = `${LAUNCHERS_MARKER} end`;
 
-/** The [assignment, guard] pair every 3.5.6-or-older release (and the pre-TS installers) wrote
- *  under each rc marker, frozen here: how an UNFENCED block is bounded without eating user
- *  lines. Order matters: a lookalike in the guard position must not be consumed. Only the
- *  assignment VALUE varied, so assignments match on prefix; guards match whole, in both their
- *  spellings (with and without -LiteralPath). */
+/** Per marker, the [assignment, guard] pair every 3.5.6-or-older release and the pre-TS installers wrote under it. */
 const UNFENCED_BLOCKS: Record<
   string,
   { end: string; pairs: readonly (readonly [RegExp, RegExp])[] }
@@ -71,6 +71,7 @@ const UNFENCED_BLOCKS: Record<
     ],
   },
 };
+
 /** Every marker and end-marker line the rc blocks ever used: an extent search stops at any of them. */
 export const FENCE_LINES: readonly string[] = [
   MARKER,
@@ -82,7 +83,10 @@ export const FENCE_LINES: readonly string[] = [
 /** An unfenced marker block whose two body lines are its release's pair gets the end fence
  *  inserted after the guard, so the current writer (fenced blocks only) refreshes or strips it
  *  like any other. Anything else is left byte-identical. CR-tolerant; the fence adopts the
- *  marker line's ending. */
+ *  marker line's ending. The pair is how an UNFENCED block is bounded without eating user lines:
+ *  only the assignment VALUE varied, so assignments match on prefix, while guards match whole, in
+ *  both their spellings (with and without -LiteralPath); the order matters, as a lookalike in the
+ *  guard position must not be consumed. */
 export function fenceUnfencedBlocks(content: string): string {
   const lines = content.split("\n");
   const bare = (i: number): string | null =>
@@ -140,11 +144,10 @@ export const v400ShellFence: Migration = {
   run: fenceShellBlocks,
 };
 
-// --- the Codex provider tables -----------------------------------------------------
-
-/** The `.env` key an older direct-mode release baked the Copilot bearer into (frozen
- *  here; no current writer knows it). */
+/** The `.env` key an older direct-mode release baked the Copilot bearer into; no current writer knows it. */
 const LEGACY_DIRECT_ENV_KEY = "COPILOT_ENV_GH_TOKEN";
+
+// --- the Codex provider tables -----------------------------------------------------
 
 /** Returns whether the file changed; an absent file or key changes nothing (the file is never
  *  created or rewritten needlessly). Kept lines are rejoined with LF and a final newline, the
@@ -408,18 +411,17 @@ export function rewriteClaudeWiring(): void {
   failIfAny(failed);
 }
 
-/** Claude's apiKeyHelper moves from the helper FILE 3.5.6 wrote to the current inline
- *  command. */
+/** Claude's apiKeyHelper moves from the helper FILE 3.5.6 wrote to the current inline command. */
 export const v400ClaudeWiring: Migration = {
   version: "4.0.0",
   description: "rewrite Claude's helper-file apiKeyHelper to the inline command",
   run: rewriteClaudeWiring,
 };
 
-// --- the autoupdate state file -----------------------------------------------------
-
 /** The state-file key that carried the preference before the `auto-update` config key. */
 const LEGACY_ENABLED_KEY = "enabled";
+
+// --- the autoupdate state file -----------------------------------------------------
 
 /** The strict read is the decision to skip: an unreadable file throws instead of reading as
  *  "nothing to drop". An absent file, or one without the field, is left untouched. */

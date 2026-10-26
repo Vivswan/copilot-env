@@ -38,8 +38,7 @@ export function ghTokenFromEnv(env: NodeJS.ProcessEnv = process.env): string | n
 /** Shared by every "is gh authenticated?" probe. */
 const GH_AUTH_TIMEOUT_MS = 5000;
 
-/** Every gh token call names this host: a pin is chosen from its logins, and a bare
- *  `gh auth token` would follow a GH_HOST override to another host's credential. */
+/** Named on every gh token call: a bare `gh auth token` follows GH_HOST to another host's credential. */
 export const GH_COPILOT_HOST = "github.com";
 
 /** A GitHub login: 1-39 alphanumerics and dashes, plus underscore for EMU accounts ("user_shortcode"). */
@@ -99,16 +98,23 @@ export function ghAuthStatusSpawnSpec(ghPath: string): GhSpawnSpec {
   };
 }
 
+/** One `gh auth status` entry. `source` never proves that `gh auth token --user` can serve the
+ *  account: an env var SHADOWS a saved keyring credential for the same login, so loginWithGhCli
+ *  verifies that at selection time. */
 export interface GhAccount {
+  /** As gh prints it; only GH_COPILOT_HOST entries can be pinned. */
   host: string;
+
+  /** "" when gh's per-host env-token failure wording names no login. */
   login: string;
+
+  /** gh's "Active account: true" marker; older gh marked none, which activeGhLogin's only-login rule covers. */
   active: boolean;
-  /** The WINNING source only (`keyring`, a config path, an env var name; blank when gh printed none).
-   *  An env var SHADOWS a saved keyring credential for the same login here, so the source never proves
-   *  whether `gh auth token --user` can serve the account; loginWithGhCli verifies that at selection time. */
+
+  /** The WINNING source only: `keyring`, a config path, or an env var name; blank when gh printed none. */
   source: string;
-  /** A FAILED login is never offered in the picker but is kept so its active marker still names the
-   *  account gh's auto resolution follows. gh's per-host env-token failure wording carries no login (""). */
+
+  /** A FAILED login, never in the picker, kept so its active marker still names the account gh auto-follows. */
   broken?: true;
 }
 

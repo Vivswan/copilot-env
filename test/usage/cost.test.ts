@@ -701,6 +701,7 @@ test("runCost discovers roots before it opens the index, so a failing discovery 
     expect(existsSync(indexDir)).toBe(true);
   }));
 
+/** A custom list URL with a secret segment; no message may ever print it. */
 const STORED_URL = "https://stored.example/with-secret-token/models";
 
 /** The one stderr message of a run that fetched neither source: a headline and a line per source. */
@@ -711,21 +712,33 @@ const PRICES_OFF_MESSAGE = [
   "  OpenRouter's price list: pricing request failed",
 ].join("\n");
 
-/** How the price list was loaded and the stderr message that earns: the turn (10 in at $15/M +
- *  20 out at $75/M) is priced by a list fetched today or by its last cached copy, and no message
- *  ever names the URL, which a custom one may carry a token in. */
+/** How the list loaded and the stderr that earns; the turn: 10 in at $15/M + 20 out at $75/M. */
 const PRICE_LIST_WARNINGS: {
+  /** Finishes the test title, "runCost warns when ...". */
   name: string;
+
   /** The URL the run resolves, stored under the config key or passed as the flag. */
   url: string;
+
+  /** True stores `url` under `cost.pricing-url`; false passes it as the flag. */
   stored: boolean;
+
   /** What the run finds on disk before it starts, in the copilot-api home. */
   seed: (home: string) => Promise<void> | void;
+
+  /** Runs with --no-index; `runtime.indexed` must report it. */
   noIndex?: boolean;
+
+  /** The network for both sources. */
   fetchImpl: typeof fetch;
+
+  /** Each must appear in stderr, in any order. */
   lines: string[];
+
   /** The run prints at 80 columns: `lines` is the scannable message's layout, not its words. */
   layout?: boolean;
+
+  /** The Claude block's total in the JSON payload, priced by whichever copy of the list served. */
   totalUsd: number;
 }[] = [
   {

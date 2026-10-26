@@ -32,49 +32,81 @@ const COMMENT_MARKER = "<!-- cost-metrics -->";
 
 /** The hand-off through --out/--in; the workflow reads the comment path from the COMMENT_OUTPUT step output. */
 const COMMENT_FILE = "comment.md";
+
+/** The recorded verdict beside COMMENT_FILE; `verdict --in` reads it back as the exit status. */
 const VERDICT_FILE = "verdict";
+
+/** The step output `measure` sets to the comment file's path. */
 const COMMENT_OUTPUT = "comment";
 
+/** The `agent cost` run measured on each checkout; a window's own args, and NO_INDEX_FLAG for its third run, follow. */
 const COST_ARGS = ["run", "src/cli.ts", "cost", "--json", "--per-day"];
 
 /** The one top-level key that describes the run, not the cost; dropped before the comparison. */
 const RUNTIME_KEY = "runtime";
 
+/** The unit the tree's day span and the window's days are counted in. */
 const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
 
+/** The `cost` flag that bypasses the usage index; a base may predate it (Checkout.noIndex). */
 const NO_INDEX_FLAG = "--no-index";
-/** Bounds on the RENDERED diff section of the comment (heading, fence and note included). */
+
+/** Line bound on the RENDERED diff section of the comment (heading, fence and note included). */
 const DIFF_SECTION_LINES = 60;
+
+/** Byte bound on the same rendered diff section, heading, fence and note included. */
 const DIFF_SECTION_BYTES = 16 * 1024;
-/** Bounds on the RENDERED failure summary (marker, heading, fence and note included). */
+
+/** Line bound on the RENDERED failure summary (marker, heading, fence and note included). */
 const FAILURE_SUMMARY_LINES = 200;
+
+/** Byte bound on the same rendered failure summary, marker, heading, fence and note included. */
 const FAILURE_SUMMARY_BYTES = 8 * 1024;
+
+/** The synthetic tree's size when --mb and COPILOT_ENV_USAGE_FIXTURE_MB are both absent. */
 const DEFAULT_TREE_MB = 1024;
+
+/** The generator's seed when --seed is absent. */
 const DEFAULT_SEED = 1;
+
+/** The tree generator, relative to this checkout, when --fixtures and COST_METRICS_FIXTURES_SCRIPT are absent. */
 const DEFAULT_FIXTURES_SCRIPT = "scripts/usage/fixtures.ts";
+
 /** A child that outlives this has wedged; `bun install` and a 1 GB scan both finish well inside. */
 const DEFAULT_CHILD_TIMEOUT_MS = 20 * 60 * 1000;
 
+/** This checkout, from the script's own location: the head side, and the default cwd of every child. */
 const REPO_ROOT = resolve(fileURLToPath(new URL("../../", import.meta.url)));
 
+/** What --head-sha / HEAD_SHA and a resolved --base must look like. */
 const SHA = /^[0-9a-f]{7,40}$/;
 
 /** `intended` is a differing JSON the PR declared on purpose with INTENDED_LABEL: a pass. */
 type Verdict = "match" | "differs" | "intended";
 
-/** The PR label that declares a differing JSON intended, and with it a base that produces no
- *  payload at all (its install or its cost run fails: the head is then measured alone); the
- *  workflow passes the PR's labels in PR_LABELS, comma-separated, so `measure` never asks GitHub. */
+/** The PR label that declares a differing JSON intended; `measure` reads it from PR_LABELS, never from GitHub. */
 const INTENDED_LABEL = "cost-metrics: intended";
 
 interface MeasureOptions {
+  /** --out: where COMMENT_FILE and VERDICT_FILE land. */
   out: string;
+
+  /** --base or BASE_SHA: the commit the base worktree is checked out at. */
   base: string;
+
+  /** --head-sha or HEAD_SHA: the PR head, named in the comment when the measured merge commit differs. */
   headSha: string | undefined;
+
+  /** --mb or COPILOT_ENV_USAGE_FIXTURE_MB: the synthetic tree's size. */
   mb: number;
+
+  /** --seed: the generator's seed, echoed in the comment. */
   seed: number;
+
+  /** --fixtures or COST_METRICS_FIXTURES_SCRIPT: the generator, relative to REPO_ROOT. */
   fixturesScript: string;
-  /** The PR carries INTENDED_LABEL. */
+
+  /** The PR carries INTENDED_LABEL (--labels or PR_LABELS). */
   intended: boolean;
 }
 
@@ -83,8 +115,12 @@ interface VerdictOptions {
 }
 
 interface Checkout {
+  /** "base" or "head": names the side's fresh homes and its failures. */
   label: string;
+
+  /** The working tree: cwd of the `cost --help` probe and of every measured run. */
   dir: string;
+
   /** Whether this checkout's `cost` knows NO_INDEX_FLAG (a base may predate the index). */
   noIndex: boolean;
 }
@@ -97,18 +133,24 @@ interface Measurement {
 
 /** One side's numbers for a window; undefined where the checkout could not produce one. */
 export interface SideMetrics {
+  /** The first run in a fresh home: it builds whatever the checkout caches. */
   coldMs: number;
+
+  /** The second run in the same home, reading what the cold run built. */
   warmMs: number;
+
+  /** A third run there with the index bypassed; undefined when the checkout's `cost` lacks NO_INDEX_FLAG. */
   noIndexMs: number | undefined;
+
   /** The warm run's `runtime.index.bytesRead`, when its payload carried it. */
   bytesRead: number | undefined;
 }
 
-/** The generator's summary line, validated: only these fields ever reach the comment. */
+/** The generator's summary line, validated: only these fields ever reach the comment. The days are
+ *  inclusive local-day keys (YYYY-MM-DD) of the tree's first and last day. */
 interface TreeSummary {
   files: number;
   bytes: number;
-  /** Inclusive local-day keys (YYYY-MM-DD) of the tree's first and last day. */
   firstDay: string;
   lastDay: string;
 }
@@ -131,11 +173,18 @@ type Outcome =
   | { kind: "head-only"; reason: string };
 
 export interface WindowResult {
+  /** The Window's label, as the comment's notes and diff headings name it. */
   window: string;
+
   /** Undefined when the base produced no payload. */
   base: SideMetrics | undefined;
+
+  /** Always measured, even when the base produced no payload. */
   head: SideMetrics;
+
+  /** `differs` alone fails the job; a `head-only` reason is listed in the comment. */
   outcome: Outcome;
+
   /** Whether any run's payload carried RUNTIME_KEY (dropped before the comparison). */
   runtimeKeyPresent: boolean;
 }
@@ -217,11 +266,15 @@ export interface RunResult {
 }
 
 export interface RunOptions {
+  /** The child's working directory; REPO_ROOT when absent. */
   cwd?: string;
+
   /** The child's WHOLE environment; nothing of this process's is inherited. */
   env: Record<string, string>;
+
   /** Hard kill for a wedged child (default DEFAULT_CHILD_TIMEOUT_MS). */
   timeoutMs?: number;
+
   /** Kills the child when aborted, on top of the timeout. */
   signal?: AbortSignal;
 }
@@ -718,12 +771,22 @@ async function unifiedDiff(scratch: string, baseText: string, headText: string):
 interface Bench {
   /** The base checkout, or the reason it produced no payload before any window ran. */
   base: { kind: "ran"; value: Checkout } | { kind: "no-payload"; reason: string };
+
+  /** This checkout, measured even when the base produced no payload. */
   head: Checkout;
-  /** The PR carries INTENDED_LABEL: a base that fails to produce a payload reads as absent. */
+
+  /** The PR carries INTENDED_LABEL: a base whose install or cost run fails reads as absent; the head stands alone. */
   intended: boolean;
+
+  /** HOME for every measured run: the sealed synthetic tree, both agents' homes beneath it. */
   treeHome: string;
+
+  /** bun's transpiler cache, pinned outside the fresh homes so every run shares it (treeEnv). */
   cache: string;
+
+  /** The temp root under everything else: the base worktree, the homes, the diffed payloads. */
   scratch: string;
+
   /** A copilot-env home nobody has used yet: cold by construction. */
   freshHome: (name: string) => string;
 }

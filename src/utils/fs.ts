@@ -32,8 +32,7 @@ export function isEnoentOrNotdir(e: unknown): boolean {
   return isRecord(e) && (e.code === "ENOENT" || e.code === "ENOTDIR");
 }
 
-/** What Windows surfaces when another process holds the file open (the daemon, antivirus, the
- *  search indexer, a scanner on a just-released lock marker). */
+/** Windows' answer while another process holds the file open: the daemon, antivirus, an indexer. */
 const OPEN_HANDLE_REFUSAL_CODES: ReadonlySet<string> = new Set(["EPERM", "EBUSY", "EACCES"]);
 
 export function isOpenHandleRefusal(e: unknown): boolean {
@@ -41,7 +40,8 @@ export function isOpenHandleRefusal(e: unknown): boolean {
 }
 
 /** A POSIX rename or unlink over an open file always succeeds; Windows transiently refuses it while
- *  another process holds the handle, so `op` gets a few more chances there. */
+ *  another process holds the handle (a scanner on a just-released lock marker, say), so `op` gets a
+ *  few more chances there. */
 export function retryOpenHandleRefusal(op: () => void, attempts = 5): void {
   for (let i = 0; ; i++) {
     try {

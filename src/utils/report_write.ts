@@ -14,14 +14,16 @@ import { sleepSync } from "./time.ts";
 
 type WriteKind = "created" | "rewritten" | "deleted" | "moved" | "linked";
 
+/** The kinds already printed per path; a delete clears the path's set and so re-arms it. */
 const REPORTED = new Map<string, Set<WriteKind>>();
 
+/** Scratch this process minted (trackScratch): writes under one are never the user's, so silent. */
 const SCRATCH_ROOTS = new Set<string>();
 
-/** Registered by each home's owner when it loads: src/copilot_api/paths.ts, src/utils/root.ts.
- *  Resolved per report, because a home follows the environment. */
+/** Registered by each home's owner as it loads; thunks, because a home follows the environment. */
 const INTERNAL_ROOTS: (() => string)[] = [];
 
+/** Each home's owner calls this as it loads: src/copilot_api/paths.ts, src/utils/root.ts. */
 export function hideWritesUnder(root: () => string): void {
   INTERNAL_ROOTS.push(root);
 }

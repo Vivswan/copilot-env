@@ -1,3 +1,14 @@
+// Where copilot-env runs from, and what it may read there. PROJECT_ROOT is the on-disk root every
+// path handed to another program is built from: in a versioned layout it is the `<top>/current`
+// link, the one prefix that survives updates and version GC, and the installer
+// (src/install/installer.ts) builds that layout from the same VERSIONS_DIR and CURRENT_LINK names
+// root detection reads.
+//
+// ASSET_ROOT is distinct because an install materializes only some assets onto disk
+// (`copilot-env.config` in particular is read out of the binary): the compile step
+// (scripts/compile.ts) bundles every module into one file at the virtual root and embeds the
+// assets beside it at their repository paths, so under a standalone this module's own directory
+// IS the asset root.
 import { basename, dirname, join, resolve } from "node:path";
 import type { Profile } from "../copilot_api/profile.ts";
 import { powershellFileArgs } from "./command.ts";
@@ -22,12 +33,10 @@ export type RootMode =
 /** For relocatable and staged installs. */
 const ROOT_OVERRIDE_ENV = "COPILOT_ENV_INSTALL_ROOT";
 
-/** `<top>/versions/vX.Y.Z`. Owned here because root detection reads the layout; the installer
- *  (src/install/installer.ts) builds it from these same names. */
+/** `<top>/versions/vX.Y.Z`; the installer builds the layout root detection reads from this name. */
 export const VERSIONS_DIR = "versions";
 
-/** `<top>/current`: a POSIX symlink or a Windows junction, and the one path prefix that survives
- *  updates and version GC, so it IS the compiled root in a versioned layout. */
+/** `<top>/current`, a symlink or junction: the one path prefix surviving updates and version GC. */
 export const CURRENT_LINK = "current";
 
 /** A junction's target reads back in the Win32 extended-length spelling (`\\?\C:\...`); the
@@ -73,17 +82,10 @@ export function isStandaloneBinary(): boolean {
   return Bun.isStandaloneExecutable;
 }
 
-/** This module's place in the source tree (`src/utils/`), so in a checkout the asset root is two
- *  steps up. */
+/** This module sits at `src/utils/`, so in a checkout the asset root is two steps up. */
 const ASSET_ROOT_FROM_HERE = ["..", ".."] as const;
 
-/** The compiled binary's embedded virtual filesystem, or the checkout root in dev. Readable
- *  in-process only: never hand an ASSET_ROOT path to another program, and never write under it.
- *  Distinct from PROJECT_ROOT because an install materializes only some assets onto disk;
- *  `copilot-env.config` in particular is read out of the binary. The compile step
- *  (scripts/compile.ts) bundles every module into one file at the virtual root and embeds the
- *  assets beside it at their repository paths, so under a standalone this module's own directory
- *  IS the asset root. */
+/** The embedded files, or the checkout root: read in-process only, never written or handed out. */
 export const ASSET_ROOT: string = isStandaloneBinary()
   ? import.meta.dir
   : resolve(import.meta.dir, ...ASSET_ROOT_FROM_HERE);
@@ -139,13 +141,10 @@ export function isProtectedRoot(mode: RootMode = rootMode()): boolean {
   return mode.kind === "checkout";
 }
 
-/** `bin` alone would not identify a root: ~/.local/bin/copilot-env would resolve its root to
- *  ~/.local, which has one. Exported so the installer's tests can assert it produces exactly this
- *  layout. */
+/** `bin` alone is no proof: ~/.local/bin/copilot-env would make ~/.local, which has one, a root. */
 export const INSTALL_ROOT_MARKERS = ["bin", "shell", join("src", "scripts")] as const;
 
-/** A checkout never has one, so a valid manifest is positive proof a root is an install. An
- *  external contract: renaming it would make every existing install look pre-manifest again. */
+/** A checkout never has one, so it proves an install; renamed, every install reads pre-manifest. */
 export const INSTALL_MANIFEST_FILE = ".copilot-env-install.json";
 
 export interface InstallManifest {
@@ -197,7 +196,8 @@ function looksLikeVersionedInstallTop(resolved: string): boolean {
 /** `agent uninstall` removes the resolved root wholesale, and that root is derived (two levels up
  *  from the binary, or an env override), so a binary copied somewhere unexpected would otherwise
  *  aim `rm -rf` at an unrelated directory. The mirror image of install.sh's refusal to install into
- *  `$HOME` or a filesystem root. */
+ *  `$HOME` or a filesystem root. INSTALL_ROOT_MARKERS is exported so the installer's tests can
+ *  assert it produces exactly that layout. */
 export function looksLikeInstallRoot(root: string): boolean {
   const resolved = resolve(root);
   if (resolved === dirname(resolved)) return false; // a filesystem root
@@ -213,15 +213,19 @@ export function looksLikeInstallRoot(root: string): boolean {
   return INSTALL_ROOT_MARKERS.every((marker) => fs.exists(join(resolved, marker)));
 }
 
+/** The bash `agent` shim a program spawns directly; on Windows it is not executable. */
 const AGENT_LAUNCHER: string = join(PROJECT_ROOT, "bin", "agent");
+
+/** The Windows twin, run through PowerShell with powershellFileArgs. */
 const AGENT_LAUNCHER_PS1: string = join(PROJECT_ROOT, "bin", "agent.ps1");
 
-/** One spelling so the write sites (Codex `auth.command`, Claude apiKeyHelper) and the health
- *  verify site stay byte-identical; if they drift, health stops recognizing the config the writer
- *  just wrote. The default profile's resolver (`agent auth` is the default's alias of `agent
- *  profile auth`); a named profile's puts its name after `profile`. */
+/** One spelling for the write sites and health's verify, or health misreads a fresh config. */
 const AGENT_AUTH_GET_ARGS: readonly string[] = ["auth", "--get"];
 
+/** The resolver argv the write sites (Codex `auth.command`, Claude apiKeyHelper) and the health
+ *  verify site share byte for byte; if they drift, health stops recognizing the config the writer
+ *  just wrote. `agent auth` is the default profile's alias of `agent profile auth`; a named
+ *  profile's puts its name after `profile`. */
 export function agentAuthGetArgs(profile: Profile = null): string[] {
   return profile === null ? [...AGENT_AUTH_GET_ARGS] : ["profile", profile, "auth", "--get"];
 }

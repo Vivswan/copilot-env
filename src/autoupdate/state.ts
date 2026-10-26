@@ -20,8 +20,7 @@ export function autoupdateDir(root: string = PROJECT_ROOT): string {
   return join(installStateRoot(root), ".autoupdate");
 }
 
-/** The autoupdate throttle file's basename: named for what it holds, not "state" (that word is
- *  the account-wide store's, src/copilot_api/state_store.ts). */
+/** Named for what it holds, not "state": that word is the account-wide store's (src/copilot_api/state_store.ts). */
 export const AUTOUPDATE_FILENAME = "autoupdate.json";
 
 export function autoupdateStateFile(root: string = PROJECT_ROOT): string {
@@ -45,6 +44,7 @@ export function effectiveUpdateCooldownDays(): number {
 export interface AutoupdateData {
   /** Epoch ms of the last completed check (0 if never). */
   lastCheckMs: number;
+
   /** Human summary of the last check, e.g. "updated v1.2.3" / "up to date". */
   lastResult: string;
 }
@@ -56,6 +56,7 @@ const AUTOUPDATE_SCHEMA = v.object({
 
 export class AutoupdateState {
   private readonly store: CopilotApiConfig;
+
   readonly path: string;
 
   constructor(path?: string) {

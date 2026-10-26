@@ -76,9 +76,7 @@ function managedMcpServers(profile: Profile, existing: unknown): Record<string, 
   return [...foreign, { name: MCP_SERVER_NAME, transport: "stdio", command: command, args: args }];
 }
 
-/** The Direct client header names, the ONE strip both payload branches apply, so a stale managed
- *  header survives neither a mode switch nor a credential rotation. Names only: any placeholder
- *  value yields the same key set, so no UA lookup runs at import. */
+/** Both payload branches strip these, so a stale one outlives no mode switch or rotation. */
 const MANAGED_HEADER_NAMES: readonly string[] = Object.keys(directClientHeaders("x", "x"));
 
 /** How the entry obtains its credential. Desktop's helper is a FILE path (unlike Claude Code's
@@ -88,12 +86,21 @@ export type DesktopCredential =
   | { kind: "static"; token: string };
 
 type DesktopPayloadOptions = ManagedMode & {
+  /** Null is the default profile; managedMcpServers' row serves this profile's credential. */
   profile: Profile;
+
+  /** The gateway Desktop discovers models at (`<baseUrl>/v1/models`); Copilot Direct 404s that. */
   baseUrl: string;
+
+  /** A helper FILE path (unlike Claude Code's inline command), or the token to bake. */
   credential: DesktopCredential;
+
   /** The `claude.desktop-effort` preference, resolved once by the caller. */
   effort: DesktopEffortLevel;
+
+  /** The entry's inferenceModels: Direct's whole list, a proxy entry's 1m annotations beside discovery. */
   models?: readonly DesktopModelSpec[];
+
   /** The entry's current document; foreign keys survive the merge. */
   existing?: Record<string, unknown>;
 };
@@ -103,7 +110,8 @@ export const DESKTOP_SECRETS: readonly string[] = ["inferenceGatewayApiKey"];
 
 /** Every key below is an external contract (Desktop's documented flat config vocabulary): never
  *  rename. The entry's current document with the managed keys written over it; foreign keys
- *  survive. */
+ *  survive. MANAGED_HEADER_NAMES is names only (any placeholder value yields the same key set), so
+ *  no UA lookup runs at import. */
 export function desktopConfigPayload(opts: DesktopPayloadOptions): Record<string, unknown> {
   const existing = opts.existing ?? {};
   const doc: Doc = structuredClone(existing);

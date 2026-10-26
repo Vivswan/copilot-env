@@ -7,18 +7,17 @@ import { type ScanHit, type ScanResult, TAIL_PROBE_BYTES } from "./contribution.
 /** Single rollouts of several hundred MB exist, so a file is never read into one string. */
 const DEFAULT_SCAN_BUFFER_BYTES = 64 * 1024 * 1024;
 
+// A CR before the LF is part of the terminator, never of the delivered line.
 const CR = 0x0d;
 
-// WHATWG "latin1" is windows-1252, which still maps every byte to one BMP code
-// point; that one-to-one property is all the search needs.
+// WHATWG "latin1" is windows-1252, still one BMP code point per byte: all the search needs.
 const SEARCH_DECODER = new TextDecoder("latin1");
-// Byte-faithful: a line starting with a BOM keeps it and fails JSON.parse; the default decoder
-// would eat it.
+
+// Byte-faithful: a BOM-led line keeps the BOM and fails JSON.parse; the default decoder eats it.
 const LINE_DECODER = new TextDecoder("utf-8", { ignoreBOM: true });
 
 interface ScanOptions {
-  /** A floor, not a limit: a longer line grows the buffer. Small values drive the chunk-boundary
-   *  paths in tests. */
+  /** A floor, not a limit (a longer line grows it); small values drive the chunk-boundary tests. */
   bufferBytes?: number;
 }
 

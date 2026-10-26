@@ -79,8 +79,7 @@ function runGhSpec(s: GhSpawnSpec): GhSpawnResult {
   });
 }
 
-/** How long a settled child's pipes get to hand over their last bytes when something else still
- *  holds them open. */
+/** A settled child's pipes get this long to hand over their last bytes while another holder keeps them open. */
 const PIPE_HANDOVER_GRACE_MS = 100;
 
 /**
@@ -204,6 +203,7 @@ export function ghAccountsLook(): GhAccountsLook {
  */
 export class Credential {
   private readonly state: CopilotEnvState;
+
   private readonly profile: Profile;
 
   constructor(state: CopilotEnvState = new CopilotEnvState(), profile: Profile = null) {

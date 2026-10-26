@@ -6,6 +6,7 @@ import { afterEach, expect, tempDir, test } from "../helpers/testing.ts";
 
 // The contract's function type and the implementation must stay assignable.
 const asContract: ScanLines = scanLines;
+
 void asContract;
 
 const dirs: string[] = [];
@@ -66,8 +67,7 @@ function hexOfTail(content: string, parsedThrough: number): string {
     .toString("hex");
 }
 
-/** Whole-file scans: what a line must contain to be delivered, and the bytes it spans. Every
- *  file here ends in a terminator, so the whole file is parsed and the probe is its tail. */
+/** Whole-file scans: what a line must contain to be delivered, and the bytes it spans. */
 const LINE_CONTENT: {
   name: string;
   content: string;
@@ -163,6 +163,7 @@ const LINE_CONTENT: {
   ];
 })();
 
+// Every file here ends in a terminator, so the whole file is parsed and the probe is its tail.
 for (const { name, content, needles, bufferBytes, hits: expected } of LINE_CONTENT) {
   test(`scanLines delivers ${name}`, () => {
     const path = writeTemp(content);
@@ -177,8 +178,7 @@ for (const { name, content, needles, bufferBytes, hits: expected } of LINE_CONTE
   });
 }
 
-/** A partial scan (a small read buffer, a resume offset, one-byte reads) must reproduce the
- *  whole-file default-buffer scan from `fromByte` on, and seed the same probe. */
+/** A small buffer, an offset, one-byte reads: each must equal the default scan from `fromByte`. */
 const PARTIAL_SCANS: {
   name: string;
   content: string;
@@ -242,6 +242,7 @@ const PARTIAL_SCANS: {
   ];
 })();
 
+// A partial scan also seeds the same probe as the whole one.
 for (const { name, content, fromByte = 0, bufferBytes, oneByteReads, lines } of PARTIAL_SCANS) {
   test(`scanLines reproduces the whole scan through ${name}`, () => {
     const path = writeTemp(content);
@@ -268,8 +269,7 @@ for (const { name, content, fromByte = 0, bufferBytes, oneByteReads, lines } of 
   });
 }
 
-/** Where parsedThrough and the probe land at the end of a file: an unterminated fragment is
- *  never delivered and parsedThrough stops before it; a complete or empty file is probed whole. */
+/** The file's end: an unterminated fragment is never delivered; parsedThrough stops before it. */
 const TAIL_BOUNDARIES: {
   name: string;
   content: string;
@@ -299,6 +299,7 @@ const TAIL_BOUNDARIES: {
   },
 ];
 
+// A complete or empty file is probed whole.
 for (const { name, content, bufferBytes, lines, parsedThrough } of TAIL_BOUNDARIES) {
   test(`scanLines: ${name}`, () => {
     const { hits, result } = collect(writeTemp(content), ["TOKEN"], 0, bufferBytes);

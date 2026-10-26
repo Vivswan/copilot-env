@@ -13,11 +13,13 @@ import { pidAlive } from "../../src/utils/pid.ts";
 import { bunRunArgs, CHILD_VALUES, childValuesEnv, ROOT, runSync } from "../helpers/run.ts";
 import { expect, tempDir, test } from "../helpers/testing.ts";
 
+/** Spawned as a child under the running bun (bunRunArgs); tests read its exit code, output, and leftovers. */
 const LAUNCHER = join(ROOT, "scripts", "run_tests.ts");
+
+/** The launcher's budget override, so the budget rows need no ten-minute wait. */
 const FILE_BUDGET_ENV = "COPILOT_ENV_TEST_FILE_BUDGET_MS";
 
-/** The CI markers the launcher reads, each absent: a run of this file in CI must not open the
- *  gate for the rows that expect it shut. */
+/** Both CI markers absent, so a run of this file in CI does not open the gate for the rows that expect it shut. */
 const OUTSIDE_CI = { GITHUB_ACTIONS: undefined, CI: undefined };
 
 function testFile(dir: string, name: string, expected: number): string {

@@ -271,9 +271,7 @@ test("round trip: a second run reuses every row and reads no bytes", () => {
   expect(second.records[1]?.contribution).toEqual(expectedContribution(b));
 });
 
-/** One way a session file can differ from its stored row, and how the next run must read it:
- *  from its tail (prior contribution + new bytes) or whole. `change` returns the bytes that run
- *  must read; a sibling file `b` is walked alongside and always reused. */
+/** A file's change against its row, and the read owed: the tail (prior + new bytes), or whole. */
 const FILE_CHANGES: {
   name: string;
   file?: string;
@@ -354,6 +352,7 @@ const FILE_CHANGES: {
   },
 ];
 
+// `change` returns the bytes the run must read; sibling `b` is walked alongside and always reused.
 for (const { name, file = "a.jsonl", resumable = true, initial, change, parsed } of FILE_CHANGES) {
   test(name, () => {
     setup();
@@ -478,8 +477,7 @@ test("a parse that throws is one failure: warned, row deleted, others untouched"
   );
 });
 
-/** A stored database and the stamp the next opener carries: the rows are adopted only when the
- *  file is a sound database this parser stamped; anything else is rebuilt, with one info line. */
+/** A stored database and the opener's stamp: rows survive only in a sound database it stamped. */
 const OPENERS: {
   name: string;
   seedFingerprint?: string;
@@ -540,6 +538,7 @@ const OPENERS: {
   },
 ];
 
+// Anything but a sound database this parser stamped is rebuilt, with one info line.
 for (const { name, seedFingerprint, sabotage, openFingerprint, rebuilds, line } of OPENERS) {
   test(`opening a stored index: ${name}`, async () => {
     setup();
@@ -797,9 +796,7 @@ test("rows are scoped per source: a claude walk never deletes codex rows", () =>
   expect(storedRows().map((r) => r.path)).toEqual([a, c]);
 });
 
-/** A stored record is this program's own: it is trusted once it parses as JSON under the current
- *  contribution version. One from another version, or text that is not JSON, reads as no row: the
- *  file parses whole and the row is rewritten. */
+/** A record counts only as JSON under the current version; else a whole parse rewrites the row. */
 const REWRITTEN_RECORDS: { name: string; rewrite: (record: string) => string; reused: boolean }[] =
   [
     { name: "the same text (control)", rewrite: (record) => record, reused: true },
@@ -812,6 +809,7 @@ const REWRITTEN_RECORDS: { name: string; rewrite: (record: string) => string; re
     { name: "text that is not JSON", rewrite: () => "{not json", reused: false },
   ];
 
+// The record is this program's own, so it is trusted once it parses.
 for (const { name, rewrite, reused } of REWRITTEN_RECORDS) {
   test(`a stored row holding ${name} is ${reused ? "reused" : "parsed whole"}`, () => {
     setup();

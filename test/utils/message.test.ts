@@ -11,9 +11,13 @@ import {
 import { withColumns } from "../helpers/columns.ts";
 import { expect, test } from "../helpers/testing.ts";
 
+/** The SGR open the colored action column is painted in. */
 const CYAN = "\x1b[36m";
+
+/** The SGR close that restores the default foreground. */
 const CLOSE = "\x1b[39m";
 
+/** A gh account refusal with two actions: the headline, lead, and table shape. */
 const PICK_ONE: ScannableParts = {
   headline: "gh cannot serve account 'octocat' by name.",
   lead: "Pick one:",

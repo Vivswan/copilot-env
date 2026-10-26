@@ -31,16 +31,20 @@ import { bunRunArgs, ROOT, resolvePackageDir, spawnChild } from "./run.ts";
 
 /** The header aimock matches a fixture's `context` against, exact string match. */
 export const SCENARIO_HEADER = "X-AIMock-Context";
+
 /** What a request with no matching scenario gets. */
 const DEFAULT_REPLY = "The fake model endpoint answered.";
+
 /** A hang or a pace can never exceed this, so a leaked scenario cannot wedge the run. */
 const MAX_LATENCY_MS = 10_000;
+
+/** aimock's budget to print its listening line before awaitListening rejects. */
 const START_TIMEOUT_MS = 60_000;
+
+/** A journal fetch aborts after this, so a dead aimock fails the asking test instead of hanging it. */
 const JOURNAL_TIMEOUT_MS = 10_000;
 
-/** Inherited variables a child needs to run at all; everything else stays out (the allowlist
- *  scripts/usage/corpus applies), so a developer shell's own agent variables, wrapper hooks,
- *  NODE_OPTIONS or an AIMOCK_* override cannot steer aimock or a CLI under test. */
+/** Inherited variables a child needs to run at all: the allowlist scripts/usage/corpus applies. */
 const BASE_ENV_KEYS = [
   "PATH",
   "HOME",
@@ -64,7 +68,9 @@ const BASE_ENV_KEYS = [
   "USERNAME",
 ];
 
-/** A complete child env: the allowlist above from this process, then `extra` over it. */
+/** A complete child env: the allowlist above from this process, then `extra` over it. Everything
+ *  else stays out, so a developer shell's own agent variables, wrapper hooks, NODE_OPTIONS or an
+ *  AIMOCK_* override cannot steer aimock or a CLI under test. */
 export function hermeticEnv(extra: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
@@ -129,9 +135,7 @@ function fixtureFile(scenarios: Scenarios): { fixtures: Record<string, unknown>[
   return { fixtures };
 }
 
-/** Copilot's `/models` entries: one id per family both smokes can pick (cheapestClaudeModel
- *  takes the haiku, CODEX_ENDPOINT_SMOKE the reduced gpt), with the picker fields the catalog
- *  parsers read (src/codex/catalog.ts, src/copilot_api/models.ts). */
+/** Copilot's `/models` entries: one id per family both smoke pickers can take; catalogBody shapes them. */
 const CATALOG: readonly {
   id: string;
   name: string;
@@ -179,6 +183,9 @@ const CATALOG: readonly {
   },
 ];
 
+/** The catalog in Copilot's shape: cheapestClaudeModel takes the haiku, CODEX_ENDPOINT_SMOKE the
+ *  reduced gpt, and the picker fields are the ones the catalog parsers read (src/codex/catalog.ts,
+ *  src/copilot_api/models.ts). */
 function catalogBody(): unknown {
   return {
     object: "list",
@@ -211,26 +218,39 @@ type Route = "models" | "messages" | "responses" | "chat";
 
 /** One request the fake answered, in one shape whichever side journaled it. */
 interface FakeRequest {
+  /** "" when aimock's journal entry carries none. */
   method: string;
+
   /** As received, query included. */
   path: string;
+
+  /** aimock REDACTS authorization and x-api-key in its entries; the front's /models entries carry them in full. */
   headers: Record<string, string>;
+
   /** The parsed body (aimock adds `_endpointType` and `_context`), or null. */
   body: unknown;
+
+  /** 0 when aimock's entry records no response status; the front's catalog answer is always 200. */
   status: number;
+
   /** aimock cut the stream (a truncate scenario). */
   interrupted: boolean;
 }
 
 export interface FakeModelEndpoint {
+  /** The front's listener: the one URL a CLI or the smoke is pointed at. */
   baseUrl: string;
-  /** aimock's own listener behind the front (the front is this process's), so a test can see
-   *  aimock serve, or stop serving, from outside the process that started it. */
+
+  /** aimock's listener behind the front (this process's), so a test can see it serve, or stop, from outside. */
   aimockUrl: string;
+
   /** aimock's process, for that test's cleanup. */
   pid: number;
+
   journal(): Promise<FakeRequest[]>;
+
   lastRequest(route: Route): Promise<FakeRequest | null>;
+
   close(): Promise<void>;
 }
 

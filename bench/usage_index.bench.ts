@@ -11,9 +11,12 @@ if (!Number.isFinite(MB) || MB <= 0) {
   throw new Error("COPILOT_ENV_USAGE_FIXTURE_MB must be a positive number");
 }
 
-// Both live under the isolate root testing.ts removes on unload.
+// The seeded tree, under the isolate root testing.ts removes on unload.
 const root = tempDir("usage-index-bench-");
+
+// The index homes, cold and warm, under the same isolate root.
 const homes = tempDir("usage-index-bench-home-");
+
 await generateUsageTree({ root, mb: MB, seed: 1 });
 
 const warmHome = join(homes, "warm");

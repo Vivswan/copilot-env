@@ -1,7 +1,10 @@
 // The typed key registry behind `agent config`: every key's name (the CLI spelling AND the stored
 // JSON key), value type, scope, domain, default, and description, stated ONCE per entry and pinned
 // total over ConfigValueTypes at compile time. The store that reads and writes the keys is
-// env_config.ts; this module never touches the state file.
+// env_config.ts; this module never touches the state file. CODEX_IDENTITY_NAME is owned here, beside
+// the pin domain that refuses it, because this module sits in the daemon shims' import closure
+// (test/install/installer_pinning.e2e.test.ts pins it) and the identity module does not;
+// OPENROUTER_MODELS_URL is here rather than in src/usage/pricing.ts for the same reason.
 import * as path from "node:path";
 import * as v from "valibot";
 import { SECONDS_PER_DAY } from "../utils/time.ts";
@@ -10,14 +13,18 @@ type PassthroughPref = "auto" | "on" | "off";
 
 /** Which agents' configs carry the credential VALUE (`static-key`); the rest name the resolver command. */
 const STATIC_KEY_SCOPES = ["none", "claude", "codex", "all"] as const;
+
 export type StaticKeyScope = (typeof STATIC_KEY_SCOPES)[number];
 /** An agent a scope can single out; the same ids as src/agents/configure.ts's ManagedAgentId. */
 export type StaticKeyAgent = Exclude<StaticKeyScope, "none" | "all">;
+
+/** No agent carries the value until the user opts in. */
 const STATIC_KEY_DEFAULT: StaticKeyScope = "none";
 
-/** Claude Desktop's documented `defaultModelEffort` levels (2.110.0+), the only values the app
- *  reads; the entry writer (src/claude/desktop_payload.ts) lands the resolved one. */
+/** Claude Desktop's documented `defaultModelEffort` levels (2.110.0+), the only values the app reads. */
 const DESKTOP_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
+
+/** The resolved level the entry writer (src/claude/desktop_payload.ts) lands. */
 export type DesktopEffortLevel = (typeof DESKTOP_EFFORT_LEVELS)[number];
 const DESKTOP_EFFORT_DEFAULT: DesktopEffortLevel = "high";
 
@@ -95,6 +102,7 @@ export const CONFIG_GROUPS = [
   "update",
   "cost",
 ] as const;
+
 export type ConfigGroup = (typeof CONFIG_GROUPS)[number];
 
 type GroupOf<K extends ConfigKey> = K extends `${infer G}.${string}` ? G : "profile";
@@ -111,28 +119,28 @@ export function configGroup(key: ConfigKey): ConfigGroup {
 /** The keys the proxy reads from its config.json; only these may be projected. */
 type ProxyGroupKey = Extract<ConfigKey, `proxy.${string}`>;
 
-// Generous ceilings: anything larger is a typo, not a setting.
+// A generous ceiling on the seconds keys (daemon.idle-timeout, daemon.release-cooldown): past a year is a typo.
 const MAX_SECONDS = 365 * SECONDS_PER_DAY;
+
+// A generous ceiling on cost.credits-target: anything larger is a typo, not a setting.
 const MAX_CREDITS = 1_000_000_000_000;
+
+// A generous ceiling on proxy.claude-token-multiplier: anything larger is a typo, not a setting.
 const MAX_TOKEN_MULTIPLIER = 1000;
+
+// A generous ceiling on update.cooldown: past ten years is a typo, not a setting.
 const MAX_DAYS = 3650;
 
+/** The `passthrough` key's picklist: send a PAT as-is (`on`), never (`off`), or `auto` detects. */
 const PASSTHROUGH_VALUES = ["auto", "on", "off"] as const;
 
-/**
- * The value is interpolated into HTTP headers (newline-separated ANTHROPIC_CUSTOM_HEADERS, Codex
- * `http_headers`), so only a header-safe token may pass either boundary that feeds them: the pin here
- * and the settings-bundle identities (src/agents/transfer.ts). The `auto` sentinel matches.
- */
+/** Header-safe tokens only: the value lands in ANTHROPIC_CUSTOM_HEADERS and Codex `http_headers`; `auto` fits too. */
 export const INTEGRATION_ID_RE = /^[A-Za-z0-9._-]{1,64}$/;
 
-/** A lowercase sha256 hex digest, as the stores persist one (the accepted catalog's digest in
- *  state.json, the price-list cache's URL digest). */
+/** A lowercase sha256 hex digest as the stores persist it (the accepted catalog's, the price cache's URL digest). */
 export const SHA256_HEX_SCHEMA = v.pipe(v.string(), v.regex(/^[0-9a-f]{64}$/));
 
-/** Direct's default identity (integration_identity.ts): Codex CLI impersonation with NO id header.
- *  Owned here, beside the pin domain that refuses it, because this module sits in the daemon shims'
- *  import closure and the identity module does not. */
+/** Direct's default identity (integration_identity.ts): Codex CLI impersonation with NO id header. */
 export const CODEX_IDENTITY_NAME = "codex";
 
 /** A key path into the proxy config.json document, e.g. `["contextManagement", "responses"]`. */
@@ -142,14 +150,24 @@ export type ProxyConfigPath = readonly [string, ...string[]];
  *  again (accepted by `set`, stripped by the folded read schema). `scope` is required, and its type
  *  follows the name (ScopeFor), so a new key without one, or grouped as a profile key, does not compile. */
 interface ConfigKeyDefCore<K extends ConfigKey = ConfigKey> {
+  /** The CLI spelling AND the stored JSON key; a dotted prefix is the key's group (CONFIG_GROUPS). */
   key: K;
+
+  /** Which maps may hold the key; ScopeFor fixes the type from the name, so a wrong scope does not compile. */
   scope: ScopeFor<K>;
+
+  /** The config table's description cell (src/commands/config.ts). */
   describe: string;
+
   /** The config table's `[type]` cell: `bool`, `1-65535`, `model id`, ... */
   type: string;
+
   /** The single source CONFIG_SCHEMA folds; `parse` is derived from it by the domain builders. */
   schema: v.GenericSchema<unknown, ConfigValueTypes[K]>;
+
+  /** `set`'s string-to-value step, derived from `schema` by the domain builders. */
   parse: (raw: string) => ConfigValueTypes[K];
+
   /** `agent config set` refuses the key on Windows. */
   posixOnly?: true;
 }
@@ -161,16 +179,18 @@ interface DefaultSpec<K extends ConfigKey = ConfigKey> {
 }
 
 /** What a `set`/`unset` prints about when a change takes effect; projected keys already get
- *  the restart hint, and a key with neither applies immediately. */
+ *  the restart hint, and a key with neither applies immediately. `restartToApply` marks a key read
+ *  only when a daemon launches, though not projected into config.json; `applyHint` replaces the
+ *  proxy-restart hint for keys that apply through another mechanism. */
 type ApplySpec =
   | {
-      /** Read only when a daemon launches, though not projected into config.json. */
       restartToApply: true;
+
       applyHint?: undefined;
     }
   | {
-      /** Replaces the proxy-restart hint for keys that apply through another mechanism. */
       applyHint: string;
+
       restartToApply?: undefined;
     }
   | { restartToApply?: undefined; applyHint?: undefined };
@@ -203,14 +223,17 @@ type InternalConfigKeyDef<K extends ConfigKey = ConfigKey> = ConfigKeyDefCore<K>
     catalogFallback?: undefined;
   };
 
-/** Always written at `agent start` as `resolved ?? proxyDefault`, for keys copilot-env has an opinion on. */
+/** Always written at `agent start` as `resolved ?? proxyDefault`, for keys copilot-env has an opinion on.
+ *  Only a model-id key can fall back over the catalog (`catalogFallback`). */
 type ForceProjectedConfigKeyDef<K extends ConfigKey = ConfigKey> = ConfigKeyDefCore<K> &
   ApplySpec &
   ProjectedKeyFields & {
     proxyDefault: ConfigValueTypes[K];
+
     defaultValue?: undefined;
+
     proxyProjected?: undefined;
-    /** Only a model-id key can fall back over the catalog. */
+
     catalogFallback?: ConfigValueTypes[K] extends string ? CatalogFallback : undefined;
   };
 
@@ -349,14 +372,14 @@ function nonEmptyDomain(type: string): ConfigDomain<string> {
     type,
   );
 }
+
+/** Any non-empty id: the catalog, not the registry, judges a model. */
 const MODEL_ID_DOMAIN = nonEmptyDomain("model id");
+
+/** A version or a dist-tag, resolved by the proxy float; nothing is judged here. */
 const PROXY_VERSION_DOMAIN = nonEmptyDomain("version|tag");
 
-/** The rejection never echoes the value: junk pasted here can be a token. An invalid stored pin reads
- *  as unset, so reads fall back to the probe rather than baking a header-splitting value.
- *  `codex` is refused because that identity IS the absence of the header: a pin is always sent as
- *  the header's value, so no pin can express it, and `auto` already selects it whenever Direct
- *  accepts the credential under it. */
+/** Never echoes the value, which can be a pasted token; `codex` is refused since no header value can express it. */
 const INTEGRATION_ID_DOMAIN: ConfigDomain<string> = domain(
   v.pipe(
     v.string(),
@@ -375,17 +398,23 @@ const INTEGRATION_ID_DOMAIN: ConfigDomain<string> = domain(
   "id|auto",
 );
 
-/** The one validator behind `agent profile [<name>] set identity` and `identity --set`. */
+/** The one validator behind `agent profile [<name>] set identity` and `identity --set`. The value is
+ *  interpolated into HTTP headers (newline-separated ANTHROPIC_CUSTOM_HEADERS, Codex `http_headers`),
+ *  so only a header-safe token (INTEGRATION_ID_RE) may pass either boundary that feeds them: the pin
+ *  here and the settings-bundle identities (src/agents/transfer.ts).
+ *
+ *  An invalid stored pin reads as unset, so reads fall back to the probe rather than baking a
+ *  header-splitting value. `codex` is refused because that identity IS the absence of the header: a
+ *  pin is always sent as the header's value, so no pin can express it, and `auto` already selects it
+ *  whenever Direct accepts the credential under it. */
 export function parseIntegrationIdPin(raw: string): string {
   return INTEGRATION_ID_DOMAIN.parse(raw);
 }
 
-/** Lives here rather than in src/usage/pricing.ts because this module sits in the daemon shims' import
- *  closure and the usage layer must not (test/install/installer_pinning.e2e.test.ts). */
+/** Here, not in src/usage/pricing.ts: the daemon shims' import closure must not reach the usage layer. */
 export const OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models";
 
-/** The data file behind GitHub's Copilot models-and-pricing docs page: the page renders this list
- *  through a Liquid loop, so the file IS the table the page shows. */
+/** The data file GitHub's Copilot models-and-pricing page renders through a Liquid loop: the file IS the table. */
 export const GITHUB_RATE_CARD_URL =
   "https://raw.githubusercontent.com/github/docs/main/data/tables/copilot/models-and-pricing.yml";
 
@@ -410,6 +439,7 @@ export function canonicalPricingUrl(raw: string): string {
   return new URL(raw).href;
 }
 
+/** The price-source URL keys: pricingUrlRejection's rules, stored in canonical spelling (canonicalPricingUrl). */
 const HTTPS_URL_DOMAIN: ConfigDomain<string> = domain(
   v.pipe(
     v.string(),
@@ -427,15 +457,19 @@ const HTTPS_URL_DOMAIN: ConfigDomain<string> = domain(
   "url",
 );
 
-/** `auto` = the derived home. The path is used as typed: `~` is the shell's expansion and never
- *  happens here, so `~/x` is refused rather than written as a directory named `~` under the cwd. On
- *  Windows a rooted-but-driveless `\Codex` is refused too: path.isAbsolute accepts it, yet it lands on
- *  whichever drive the process runs from. */
+/** `auto` = the derived home; anything else must be fully qualified (isFullyQualifiedPath). */
 const CODEX_HOME_AUTO = "auto";
+
+/** The path is used as typed: `~` is the shell's expansion and never happens here, so `~/x` is
+ *  refused rather than written as a directory named `~` under the cwd. On Windows a
+ *  rooted-but-driveless `\Codex` is refused too: path.isAbsolute accepts it, yet it lands on
+ *  whichever drive the process runs from. */
 function isFullyQualifiedPath(p: string): boolean {
   if (!path.isAbsolute(p)) return false;
   return process.platform !== "win32" || path.parse(p).root.length > 1;
 }
+
+/** The `codex.home` domain: `auto`, or a fully qualified path used as typed. */
 const ABSOLUTE_PATH_DOMAIN: ConfigDomain<string> = domain(
   v.pipe(
     v.string(),
@@ -449,9 +483,7 @@ const ABSOLUTE_PATH_DOMAIN: ConfigDomain<string> = domain(
   "path|auto",
 );
 
-/** `auto` (probed per credential by the select*IdentityAndHost pair, integration_identity.ts) or an https origin
- *  (a GitHub Enterprise Server serves Copilot at `https://copilot-api.<ghe-domain>`). Stored as the
- *  origin alone: a path, query, or userinfo is a typo, not a host. */
+/** `auto` = probed per credential (select*IdentityAndHost, integration_identity.ts); else an https origin. */
 export const COPILOT_HOST_AUTO = "auto";
 
 /** THE one loopback test for a URL's hostname (as `new URL().hostname` spells it): the whole
@@ -475,6 +507,8 @@ export function isLoopbackHostname(hostname: string): boolean {
   return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(v4);
 }
 
+/** An https origin, stored as the origin alone: a path, query, or userinfo is a typo, not a host.
+ *  A GitHub Enterprise Server serves Copilot at `https://copilot-api.<ghe-domain>`. */
 function copilotHostRejection(raw: string): string | null {
   const expected = "expected `auto` or an https:// origin";
   if (!URL.canParse(raw)) return expected;
@@ -488,6 +522,7 @@ function copilotHostRejection(raw: string): string | null {
   return null;
 }
 
+/** The `host` key: copilotHostRejection's rules, stored as the bare origin. */
 const COPILOT_HOST_DOMAIN: ConfigDomain<string> = domain(
   v.pipe(
     v.string(),
@@ -506,16 +541,18 @@ const COPILOT_HOST_DOMAIN: ConfigDomain<string> = domain(
   "url|auto",
 );
 
+/** The apply hint of keys the wiring passes bake; a set alone changes no agent file. */
 const WIRING_HINT =
   "Applies at the next wiring: `agent init`, `agent profile <name> add`, or `agent profile [<name>] sync`";
+
 /** A re-render of a recorded mode never probes, so only the auto-detect landing reads the key. */
 const PROBE_HINT = "Read by the next Direct probe: `agent init` with neither --direct nor --proxy";
+
 /** The Desktop entries are outputs of the wiring passes: no key write touches them directly. */
 const DESKTOP_HINT =
   "Applies at the next wiring (`agent init`, `agent profile <name> add`, `agent profile [<name>] sync`); setting the key writes no Desktop files itself.";
 
-/** Ordered ALPHABETICALLY by key: that is `--help`'s order within a group, and a test pins it, so
- *  insert new keys in place. */
+/** ALPHABETICAL by key: `--help`'s order within a group, pinned by a test, so a new key goes in place. */
 const CONFIG_REGISTRY_LITERAL = [
   {
     key: "claude.desktop",
@@ -877,8 +914,8 @@ export type ProfileConfigData = { [K in ProfileMapKey]?: ConfigValueTypes[K] };
 export interface CodexHomePrefs {
   /** The `codex.home` path; null for `auto` or unset, when the derivation starts at ~/.codex. */
   explicit: string | null;
-  /** The `codex.host` farm is in effect. Always false on Windows whatever a bundle imported: no farm
-   *  without POSIX symlinks. */
+
+  /** The `codex.host` farm is in effect; always false on Windows, whatever a bundle imported: no POSIX symlinks. */
   hostFarm: boolean;
 }
 

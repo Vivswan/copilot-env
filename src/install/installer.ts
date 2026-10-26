@@ -14,6 +14,10 @@
 //
 // Every path that outlives a release goes through `<top>/current/...`, so flipping the link is
 // the whole commit of an update and old version dirs can be garbage-collected safely.
+//
+// A spawned binary is aimed at the root it must manage through INSTALL_ROOT_ENV: `agent update`
+// aims `install --assets-only` inside the staged version root, and every post-flip spawn at
+// `<top>/current`.
 import { type StdioOptions, spawnSync } from "node:child_process";
 import { basename, dirname, join, resolve } from "node:path";
 import { consola } from "consola";
@@ -43,12 +47,7 @@ import {
 } from "../utils/targets.ts";
 import { packageVersion } from "../utils/version.ts";
 
-/** Embedded AND materialized: something outside this process opens these by path (the daemon's
- *  `--preload` shims, the shell payload the rc block sources, the plugin/skill surface other
- *  tools read). `src/scripts` is materialized WHOLE: the daemon loads a per-credential subset of
- *  the daemon shims (src/copilot_api/shims.ts) whose entrypoints import siblings, so copying
- *  the directory covers the in-dir ones; imports reaching OUTSIDE it are
- *  MATERIALIZED_ASSET_FILES. */
+/** Embedded AND materialized whole: something outside this process opens them by path. */
 export const MATERIALIZED_ASSET_DIRS = [
   "src/scripts",
   "shell",
@@ -56,10 +55,7 @@ export const MATERIALIZED_ASSET_DIRS = [
   ".claude-plugin",
 ] as const;
 
-/** Materialized as individual files: the `src/scripts` shims import these, and the daemon's bun
- *  resolves them on real disk in the install root, so a missing one kills the daemon at module
- *  load. The shims' full local import closure OUTSIDE the materialized dirs, pinned
- *  bidirectionally by test/install/installer_pinning.e2e.test.ts. */
+/** Single files the src/scripts shims import; a missing one kills the daemon at module load. */
 export const MATERIALIZED_ASSET_FILES = [
   "src/copilot_api/config.ts",
   "src/copilot_api/config_registry.ts",
@@ -90,21 +86,13 @@ export const MATERIALIZED_ASSET_FILES = [
   "src/utils/time.ts",
 ] as const;
 
-/** Embedded and NEVER materialized: read in-process through ASSET_ROOT (the binary's embedded
- *  virtual filesystem), a copy in the install root would be read by nothing and drift from the
- *  binary. Still verified present at plan time: absent from the binary means a broken build.
- *
- *    copilot-env.config -> readProjectConfig (the float bounds)
- *    bunfig.toml        -> readInstallMinimumReleaseAge (the float's default release cooldown) */
+/** NEVER materialized: read in-process through ASSET_ROOT; a copy would drift from the binary. */
 export const BUNDLED_ONLY_ASSETS = ["copilot-env.config", "bunfig.toml"] as const;
 
-// --- The versioned layout ---------------------------------------------------------
-
-/** root.ts's install-root override (ROOT_OVERRIDE_ENV there, unexported): how a SPAWNED binary
- *  is aimed at the exact root it must manage (`agent update` aims `install --assets-only` inside
- *  the staged version root, and every post-flip spawn at `<top>/current`). An external
- *  contract; never rename. */
+/** root.ts's ROOT_OVERRIDE_ENV: aims a SPAWNED binary at the root it must manage; never rename. */
 export const INSTALL_ROOT_ENV = "COPILOT_ENV_INSTALL_ROOT";
+
+// --- The versioned layout ---------------------------------------------------------
 
 export function versionDirName(version: string): string {
   return `v${stripV(version)}`;
@@ -263,9 +251,9 @@ function writeShimBestEffort(shim: FileWrite<string>, logger: Logger): void {
   }
 }
 
-/** Idempotent and cheap in the steady state (identical text is never rewritten), so every
- *  install and update commit can refresh the shims, which is also what heals a crash that
- *  flipped `current` but got no further. */
+/** Idempotent and cheap in the steady state (identical text with its exec bit intact is never
+ *  rewritten), so every install and update commit can refresh the shims, which is also what heals a
+ *  crash that flipped `current` but got no further. */
 export function writeTopLevelShims(top: string, logger: Logger = consola): void {
   for (const shim of topLevelShims(top)) writeShimBestEffort(shim, logger);
 }
@@ -324,54 +312,52 @@ export function removeVersionDirsExcept(top: string, keep: ReadonlySet<string>):
 
 // --- Launcher shim texts ---------------------------------------------------------
 
-/** Per-version bin/agent, INSIDE each version root; agent configs reach it as
- *  `<top>/current/bin/agent`, so the version it dispatches is always the live one. The
- *  checkout's bin/agent is the dev variant, and an install never overwrites a checkout, so the
- *  two texts never compete for one file. */
+/** Per-version bin/agent INSIDE the version root; configs reach it as `<top>/current/bin/agent`. */
 const POSIX_SHIM = `#!/bin/sh
 # copilot-env launcher (installed): dispatch to the compiled agent binary.
 HERE="$(cd "$(dirname "$0")" && pwd)"
 exec "$HERE/${INSTALLED_BINARY_POSIX}" "$@"
 `;
 
+/** POSIX_SHIM's Windows twin; exported so the installer test can pin the written text. */
 export const POWERSHELL_SHIM = `# copilot-env launcher (installed): dispatch to the compiled agent binary.
 $Here = Split-Path -Parent $MyInvocation.MyCommand.Path
 & (Join-Path $Here '${INSTALLED_BINARY_WINDOWS}') @args
 exit $LASTEXITCODE
 `;
 
-/** Top-level bin/agent: the stable PATH entry of a versioned install. One release-independent
- *  hop through the `current` link, so an update never has to touch the file a user's PATH points
- *  at; the post-flip shim refresh rewrites it only when its text differs or its exec bit is lost. */
+/** Top-level bin/agent, the PATH entry: a hop through `current`, rewritten only when its text or exec bit drifted. */
 export const POSIX_CURRENT_SHIM = `#!/bin/sh
 # copilot-env launcher (installed): dispatch through the current version link.
 HERE="$(cd "$(dirname "$0")" && pwd)"
 exec "$HERE/../${CURRENT_LINK}/bin/${INSTALLED_BINARY_POSIX}" "$@"
 `;
 
-/** Top-level bin/agent.ps1 (Windows twin of POSIX_CURRENT_SHIM; the junction
- *  resolves through every Win32 path API, PowerShell 5.1 included). */
+/** POSIX_CURRENT_SHIM's Windows twin; a junction resolves in every Win32 path API, 5.1 included. */
 const POWERSHELL_CURRENT_SHIM = `# copilot-env launcher (installed): dispatch through the current version link.
 $Here = Split-Path -Parent $MyInvocation.MyCommand.Path
 & (Join-Path (Split-Path -Parent $Here) '${CURRENT_LINK}\\bin\\${INSTALLED_BINARY_WINDOWS}') @args
 exit $LASTEXITCODE
 `;
 
+/** The install's knobs. `assetsOnly` is how `agent update` runs the NEW binary INSIDE the staged
+ *  version root, so the release that owns the assets writes them before the `current` flip makes it
+ *  live. */
 export interface InstallOptions {
+  /** Skips the shell integration pass; 'agent shell' adds it later (the epilogue says so). */
   noShellIntegration: boolean;
+
+  /** Wires the all-hosts PowerShell profile (profile.ps1) instead of the per-host one on Windows. */
   allHosts: boolean;
-  /** The embedded assets and launcher shims into the aimed root and nothing else: no layout
-   *  work, no shell wiring, no epilogue. `agent update` runs the NEW binary this way INSIDE the
-   *  staged version root, so the release that owns the assets writes them before the `current`
-   *  flip makes it live. */
+
+  /** Only the assets and shims, into the aimed root: no layout work, shell wiring, or epilogue. */
   assetsOnly: boolean;
-  /** Print every runtime file, shim, and link the install would write and the passes it would
-   *  run through the installed binary; write nothing. */
+
+  /** Print each file, shim, link, and installed-binary pass the install would do; write nothing. */
   dryRun?: boolean;
 }
 
-/** Files only a source checkout carries at its root. With `.git` beside them they mark a live
- *  checkout an installed-mode plan must refuse to clobber. */
+/** Only a checkout has these at its root; beside `.git` they mark one that no plan may clobber. */
 export const CHECKOUT_MARKERS = ["package.json", "bun.lock"] as const;
 
 /** One shell-integration pass (Windows may need two: per-host and all-hosts profiles are
@@ -393,6 +379,12 @@ interface Materialization {
   writes: FileWrite[];
 }
 
+/** The plan applyInstallPlan runs. In the versioned arm, `binary` is null when the binary already
+ *  sits in the version root or no standalone binary is running (a dev process aimed at a foreign
+ *  root has none); `migration` is null when nothing was live (a fresh install) or the same version
+ *  is refreshed in place; `shellWires` run through the INSTALLED binary because this process may be
+ *  rooted at the top itself (the bootstrap), so its own PROJECT_ROOT-derived rc paths would not
+ *  survive the layout change. */
 export type InstallPlan =
   | { kind: "in-place"; root: string; shell: ShellWiring | null }
   | {
@@ -402,26 +394,37 @@ export type InstallPlan =
       shell: ShellWiring | null;
     }
   | {
+      /** The full install of a compiled binary: the versioned layout at the top root. */
       kind: "versioned";
+
+      /** The layout's top: `<top>/bin` is on the user's PATH, `<top>/current` the live link. */
       top: string;
+
+      /** `v<version>` (versionDirName), the directory under `<top>/versions`. */
       versionName: string;
+
+      /** `<top>/versions/<versionName>`, the root the materialization lands in. */
       versionRoot: string;
+
+      /** The version root's materialization, in landing order (Materialization). */
       writes: FileWrite[];
-      /** Null when the binary is already in the version root, or when no standalone binary is
-       *  running (a dev process aimed at a foreign root has none). */
+
+      /** Null when the binary already sits in the version root, or no standalone binary runs. */
       binary: { from: string; to: string } | null;
+
       /** The commit step (pointCurrentAt). */
       currentLink: { path: string; target: string };
+
+      /** POSIX_CURRENT_SHIM and its Windows twin at `<top>/bin`, written after the flip. */
       topShims: FileWrite<string>[];
+
       /** The bootstrap binary at `<top>/bin`, swept once the top shims dispatch through the link. */
       bootstrapBinaryRemovals: string[];
-      /** The version range this install leaves behind, run post-flip by runPostFlipMigrations: the
-       *  version `current` named before (`from`) to this one (`to`). Null when nothing was live
-       *  (a fresh install) or the same version is refreshed in place. */
+
+      /** runPostFlipMigrations' range: from the version `current` named before, to this one. */
       migration: { from: string; to: string } | null;
-      /** Run through the INSTALLED binary post-flip: this process may be rooted at the top itself
-       *  (the bootstrap), so its own PROJECT_ROOT-derived rc paths would not survive the layout
-       *  change. */
+
+      /** Post-flip, through the INSTALLED binary, never this process (the doc above says why). */
       shellWires: ShellWiring[];
     };
 
@@ -513,6 +516,24 @@ function guardInstalledTarget(root: string): void {
   }
 }
 
+/** The writes of one version root. The per-version shims are the installed variant: the checkout's
+ *  bin/agent is the dev one, and an install never overwrites a checkout, so the two texts never
+ *  compete for one file. What each embedded asset class is for:
+ *    MATERIALIZED_ASSET_DIRS   -> opened by path from outside this process: the daemon's
+ *                                 `--preload` shims, the shell payload the rc block sources, the
+ *                                 plugin/skill surface other tools read; `src/scripts` goes WHOLE
+ *                                 because the daemon loads a per-credential subset of the shims
+ *                                 (src/copilot_api/shims.ts) whose entrypoints import siblings
+ *    MATERIALIZED_ASSET_FILES  -> the shims' local import closure OUTSIDE those dirs, which the
+ *                                 daemon's bun resolves on real disk in the install root; pinned
+ *                                 bidirectionally by test/install/installer_pinning.e2e.test.ts
+ *    BUNDLED_ONLY_ASSETS       -> read in-process through ASSET_ROOT, the binary's embedded virtual
+ *                                 filesystem, so a copy in the install root would be read by
+ *                                 nothing; still verified present here, since absent from the
+ *                                 binary means a broken build (copilot-env.config:
+ *                                 readProjectConfig, the float bounds; bunfig.toml:
+ *                                 readInstallMinimumReleaseAge, the float's default release
+ *                                 cooldown) */
 function planMaterialization(root: string, sourceRoot: string): Materialization {
   const embedded = [
     ...MATERIALIZED_ASSET_DIRS,

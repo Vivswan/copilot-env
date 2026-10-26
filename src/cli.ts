@@ -29,10 +29,10 @@ import { packageVersion } from "./utils/version.ts";
 
 configureConsolaOutput();
 
-// `agent profile <name> <verb>` carries the name in the word position, which Commander has no
-// slot for: it is split off here, before the tree is built, and the profile verbs close over it.
+// `agent profile <name> <verb>`: Commander has no slot for the name word, so the profile verbs close over it.
 const invocation = splitProfileInvocation(process.argv.slice(2));
 
+// Built after the profile name is split off: the verbs registered below close over `invocation`.
 const program = new Command();
 
 program
@@ -46,11 +46,11 @@ program
   .enablePositionalOptions()
   .option("--full-help", "Print help for agent and every subcommand.");
 
-// The option:full-help listener fires during parse, before any "missing command" handling, so it
-// works with no subcommand.
 /** Commander's own help wraps at this width, so the divider never runs past it. */
 const HELP_DIVIDER_COLUMNS = 72;
 
+// The option:full-help listener fires during parse, before any "missing command" handling, so it
+// works with no subcommand.
 program.on("option:full-help", () => {
   const sep = "─".repeat(Math.min(terminalWidth() ?? HELP_DIVIDER_COLUMNS, HELP_DIVIDER_COLUMNS));
   // `helpInformation()` omits `addHelpText('after', ...)` (the `config` key list), which is emitted
@@ -80,9 +80,7 @@ program.on("option:full-help", () => {
   process.exit(0);
 });
 
-// The ansi.ts helpers no-op under NO_COLOR / TERM=dumb / CI / test runs, so these hooks degrade to
-// plain text on their own; Commander still owns all layout and width-wrapping. Every subcommand
-// copies this configuration as it is created, so it is set before any registers.
+// Every subcommand copies this configuration as it is created, so it is set before any registers.
 const HELP_STYLES = {
   styleTitle: bold,
   styleCommandText: cyan,
@@ -90,6 +88,9 @@ const HELP_STYLES = {
   styleSubcommandTerm: cyan,
   styleDescriptionText: gray,
 };
+
+// The ansi.ts helpers no-op under NO_COLOR / TERM=dumb / CI / test runs, so these hooks degrade to
+// plain text on their own; Commander still owns all layout and width-wrapping.
 program.configureHelp(HELP_STYLES);
 
 // Commander renders help groups in first-appearance order, so `init` and `profile` come first.
@@ -104,13 +105,10 @@ registerDaemonAliases(program);
 registerEverywhereCommands(program);
 registerMachineCommands(program);
 
-// The root help lists the profile verbs too, right after the `profile` row, one row per verb as
-// `profile [<name>] <verb>` with the summary `agent profile --help` shows for it. The listing is a
-// private renderer, never the program's configured help: Commander draws its unknown-command
-// suggestions from the configured `visibleCommands`, so a verb there would make `agent env`
-// suggest `env`, a command that does not exist (a verb with a top-level command of its own,
-// `models` say, is that command). The subcommands keep the plain configuration they copied above.
+// The stock renderer the root listing reads its rows and terms from.
 const plainHelp = new Help();
+
+// The root help with the profile verbs after the `profile` row, one row per verb as `profile [<name>] <verb>`.
 const rootListing = Object.assign(new Help(), HELP_STYLES, {
   visibleCommands: (cmd: Command): Command[] => {
     const rows = plainHelp.visibleCommands(cmd);
@@ -126,6 +124,12 @@ const rootListing = Object.assign(new Help(), HELP_STYLES, {
     getGroup: (item: T) => string,
   ): Map<string, T[]> => plainHelp.groupItems(visible, visible, getGroup),
 });
+
+// Each verb row carries the summary `agent profile --help` shows for it. The listing is a private
+// renderer, never the program's configured help: Commander draws its unknown-command suggestions
+// from the configured `visibleCommands`, so a verb there would make `agent env` suggest `env`, a
+// command that does not exist (a verb with a top-level command of its own, `models` say, is that
+// command). The subcommands keep the plain configuration they copied above.
 program.configureHelp({
   ...HELP_STYLES,
   formatHelp: (cmd, helper) => {

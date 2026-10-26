@@ -146,8 +146,12 @@ test("the preload set and its environment derive from the spec, in load order", 
   // The codex identity names the id header as a deletion, so the proxy's own cannot stand in.
   const CODEX_HEADERS = daemonClientHeaders("codex_exec/1", null);
   interface Row {
+    /** Overlaid on BASE. */
     spec: Partial<DaemonSpec>;
+
+    /** The shims the launch names, in order: the always-loaded base, then the spec's optional ones. */
     preloads: string[];
+
     /** Inherited environment -> the keys the daemon must (not) see. */
     env?: Array<{ inherited: Record<string, string>; keys: Record<string, string | undefined> }>;
   }

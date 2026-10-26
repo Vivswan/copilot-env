@@ -9,13 +9,19 @@ const FETCH_TIMEOUT_MS = 5000;
 interface RequestOptions {
   /** The daemon's `/admin/*` routes accept only the admin key. */
   admin?: boolean;
+
+  /** Absent = GET. */
   method?: "GET" | "POST";
+
+  /** Sent as JSON with the matching Content-Type; absent sends no body. */
   body?: unknown;
 }
 
 export class CopilotAdminClient {
   private readonly baseUrl: string;
+
   private readonly apiKey: string;
+
   private readonly adminKey: string;
 
   constructor(opts: { port: number; apiKey: string; adminKey: string }) {

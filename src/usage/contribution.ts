@@ -2,15 +2,16 @@
 // reproduce the cross-file dedup (Codex fork prefixes, Claude streaming repeats) and nothing a
 // session's owner might delete for privacy: no text, no raw ids (every id is hashed), no paths
 // inside the contribution itself. Nothing here pulls in SQLite, the scanner, or a reader.
+//
+// A parser change that alters the output for the same bytes (a new field, a fixed bug in what
+// counts) bumps CONTRIBUTION_VERSION; a pure speedup never does.
 import { createHash } from "node:crypto";
 import { consola } from "consola";
 import { caught } from "../utils/message.ts";
 
 export type UsageSource = "codex" | "claude";
 
-/** Bump when a parser's output for the same bytes changes (a new field, a fixed bug in what
- *  counts): every stored contribution with another version is parsed whole again. Never bump for a
- *  pure speedup. */
+/** Every stored contribution with another version is parsed whole again. */
 export const CONTRIBUTION_VERSION = 3;
 
 /** 128 bits of SHA-256: equality is all the dedup needs, collisions stay out of any realistic
@@ -25,20 +26,25 @@ export function dedupKey(text: string): string {
 interface CodexParseState {
   /** dedupKey of `session_meta.payload.id` (or `.session_id`). */
   sessionIdHash?: string;
+
   /** `session_meta.payload.model_provider`, else the reader's default provider. */
   provider: string;
+
   /** The current raw model (turn_context / thread_settings_applied). */
   model: string;
+
   /** `session_meta` line timestamp, for the parent-missing fork fallback window. */
   metaTsMs?: number;
-  /** The fork rules apply from `knownAfter` on: a token_count that precedes a late `session_meta`
-   *  was seen as an ordinary turn and stays one. */
+
+  /** From `knownAfter` on; a token_count before a late `session_meta` stays an ordinary turn. */
   fork?: CodexFork;
 }
 
 interface CodexFork {
   /** dedupKey of `session_meta.payload.forked_from_id`. */
   parentHash: string;
+
+  /** The events index the fork rules start at: `events.length` when the session_meta was read. */
   knownAfter: number;
 }
 
@@ -55,12 +61,17 @@ export type CodexEvent = [
   cacheRead: number,
 ];
 
+/** `events` keep line order, duplicates and out-of-window events included: the fold, never the
+ *  parser, applies the dedup and then the window, and an out-of-window event must still suppress
+ *  its in-window copies. */
 export interface CodexContribution {
+  /** CONTRIBUTION_VERSION as stored; the index parses a row with another whole again. */
   v: typeof CONTRIBUTION_VERSION;
+
+  /** What a tail parse resumes from; a whole parse starts it fresh. */
   state: CodexParseState;
-  /** Line order, duplicates and out-of-window events included: the fold, never the parser, applies
-   *  the dedup and then the window, and an out-of-window event must still suppress its in-window
-   *  copies. `infoHash` is exactly `dedupKey(JSON.stringify(payload.info))`. */
+
+  /** In line order; `infoHash` is exactly `dedupKey(JSON.stringify(payload.info))`. */
   events: CodexEvent[];
 }
 
@@ -100,25 +111,28 @@ export type ContributionOf<S extends UsageSource> = S extends "codex"
 export interface ScanHit {
   /** Without its terminator; a CR before the LF is stripped too. */
   line: string;
+
+  /** The line's first byte; `byteEnd - byteStart` spans the terminator too. */
   byteStart: number;
+
   /** The byte AFTER the LF; CRLF counts both terminator bytes. */
   byteEnd: number;
 }
 
+/** Both writers end every line they complete in LF, so only an append cut short mid-line leaves a
+ *  fragment, and that fragment is never counted. */
 export interface ScanResult {
+  /** Every byte the source handed over: a resume's probe seed, the chunks, a fragment included. */
   bytesRead: number;
-  /** Just past the LF of the last COMPLETE line: an unterminated final fragment is never delivered
-   *  or counted, and the next run reads it once the writer terminates it. Both writers end every
-   *  line they complete in LF, so only an append cut short mid-line leaves a fragment, and that
-   *  fragment is never counted. */
+
+  /** Just past the LF of the last COMPLETE line; an unterminated fragment waits for a later run. */
   parsedThrough: number;
-  /** Hex of the last `TAIL_PROBE_BYTES` before `parsedThrough`; fewer when it is smaller, empty at
-   *  0. */
+
+  /** Hex of the TAIL_PROBE_BYTES before `parsedThrough`: fewer when it is smaller, empty at 0. */
   tailProbeHex: string;
 }
 
-/** Matching the tail makes a rewrite that happens to preserve the prefix's length very unlikely to
- *  pass as an append; a guard, not a proof of the whole prefix. */
+/** Matching tails make a same-length rewrite unlikely to pass as an append: a guard, not proof. */
 export const TAIL_PROBE_BYTES = 32;
 
 /** Complete lines only, for a whole parse and a tail parse alike, so the two never disagree about a
@@ -138,26 +152,36 @@ export type ScanLines = (
  * Every walked path is reported, candidate or not, so the index can drop rows for files that no
  * longer exist. The reader hands candidates over in FOLD order: Codex ascending by basename (the
  * filename embeds the start time, so a fork's parent precedes the fork), Claude ascending by path.
+ * A live rollout and its same-basename `.zst` are two copies of one session, never both candidates.
  */
 export interface WalkedFile {
+  /** The index keys its row by it; no contribution ever holds it. */
   path: string;
+
+  /** Bytes at walk time; with `mtimeMs` the row's reuse identity. */
   size: number;
+
+  /** At walk time; another value with the same size means a whole parse. */
   mtimeMs: number;
-  /** Inside the window per the skip heuristic (filename date / mtime, with slack, so the fold makes
-   *  the exact cut) AND, for Codex, the survivor of the same-basename live-vs-`.zst` dedup, so two
-   *  copies of one session are never both candidates. */
+
+  /** In the window (slack; the fold cuts exactly) and, for Codex, the live-vs-`.zst` survivor. */
   candidate: boolean;
-  /** False for `.jsonl.zst`, which cannot be read from a byte offset: any change re-parses it
-   *  whole. */
+
+  /** False for `.jsonl.zst`, which cannot resume at an offset: any change re-parses it whole. */
   resumable: boolean;
 }
 
 export interface ParsedFile<C extends Contribution> {
-  /** The FULL contribution as of `parsedThrough`; a tail parse returns prior + new, never a delta.
-   */
+  /** The FULL contribution as of `parsedThrough`: a tail parse returns prior + new, not a delta. */
   contribution: C;
+
+  /** Where the next tail parse resumes; a `.zst` rollout reports its compressed size. */
   parsedThrough: number;
+
+  /** Stored hashed by the index; empty for a `.zst` rollout, reused by size + mtime alone. */
   tailProbeHex: string;
+
+  /** What this parse read, summed into `IndexStats.bytesRead`. */
   bytesRead: number;
 }
 
@@ -208,9 +232,10 @@ export interface FileRecord<C extends Contribution> {
 }
 
 export interface ReconcileResult<C extends Contribution> {
-  /** Every candidate that exists right now and parsed, in `walked` order: the fold order is the
-   *  reader's guarantee, and every Reconcile keeps it. */
+  /** Every candidate that exists and parsed, in `walked` order: the reader's fold order, kept. */
   records: FileRecord<C>[];
+
+  /** This reconcile's own counters; a reader's meter sums them across sources. */
   stats: IndexStats;
 }
 

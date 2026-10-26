@@ -17,17 +17,20 @@ export function daemonLockPath(home: string): string {
   return join(home, DAEMON_LOCK_FILENAME);
 }
 
-// staleMs governs only a second acquire from the SAME process (another process's marker is judged
-// by its pid's liveness, never by its age, see file_lock.ts): 0 lets it refresh the marker rather
-// than read its own hold as a contender.
+// 0: a second acquire from the SAME process refreshes its own marker rather than reading it as a contender.
 const ACQUIRE_STALE_MS = 0;
+
+// The pause between tries while a predecessor is still exiting; a test may pass its own.
 const ACQUIRE_RETRY_MS = 100;
+
+// The whole budget before a marker still there is refused; a test may pass its own.
 const ACQUIRE_WAIT_MS = 5_000;
 
 /** No release exists on purpose: the marker left at death, naming a pid that is gone, IS the
  *  liveness signal, which is why this uses the tryAcquireFileLock primitive rather than scoped
  *  withFileLock (test/utils/file_lock.test.ts pins this module as the primitive's one production
- *  consumer). The knobs are for tests. */
+ *  consumer). The knobs are for tests. staleMs governs only a re-acquire from the same process:
+ *  another process's marker is judged by its pid's liveness, never by its age (file_lock.ts). */
 export function acquireDaemonLockForLife(
   home: string,
   opts: { waitMs?: number; retryMs?: number } = {},

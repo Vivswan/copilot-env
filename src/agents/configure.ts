@@ -27,8 +27,11 @@ const logger = createStderrLogger();
 export interface DirectWiring {
   /** The probed `Copilot-Integration-Id` to bake, or null to send none. */
   readonly directIntegrationId: string | null;
+
   /** The Copilot host to bake as the base URL (selectDirectIdentityAndHost). */
   readonly directBaseUrl: string;
+
+  /** The brand: DIRECT_WIRING is unexported, so only this module's directWiring() can mint one. */
   readonly [DIRECT_WIRING]: true;
 }
 
@@ -142,21 +145,24 @@ export function reservePlannedPort(profile: Profile, plannedPort: string): void 
  *  contradictory pair is rejected before an action exists. */
 export type AgentRunAction = { kind: "check" } | { kind: "configure"; mode: RequestedMode };
 
-/** Cross-cutting knobs of one run (never part of the parsed CLI action). */
+/** Cross-cutting knobs of one run (never part of the parsed CLI action). The settings-bundle import
+ *  passes its plan's already-resolved token as `ghToken`, so the gh-cli provider is shelled out to
+ *  once per import, not once per writer. */
 export interface AgentRunOptions {
-  /** Pre-resolved Direct credential: skips the store resolve. The settings-bundle
-   *  import passes its plan's already-resolved token so the gh-cli provider is
-   *  shelled out to once per import, not once per writer. */
+  /** Pre-resolved Direct credential: skips the store resolve (absent = the writer resolves it). */
   ghToken?: string | null;
 }
 
-/** Knobs of one write; the mode and direct identity travel in the ManagedWrite beside it. */
+/** Knobs of one write; the mode and direct identity travel in the ManagedWrite beside it.
+ *  `directToken` is reused by the Codex catalog seed and Claude Desktop's discovery: a string
+ *  spares a second gh-cli spawn, null (none stored) leaves Desktop's discovery to resolve for
+ *  itself, and absent (a named profile) a static Direct write's own token stands in
+ *  (resolvedDirectToken). */
 interface AgentProfileWriteOptions {
+  /** Threaded to Claude Desktop's wire as its launcher hot path: no discovery, no notices. */
   quiet: boolean;
-  /** The GitHub credential the default's writers already resolved: a string is reused by the
-   *  Codex catalog seed and Claude Desktop's discovery, so gh-cli is never spawned twice; null
-   *  (none stored) leaves Desktop's discovery to resolve for itself. Absent (a named profile), a
-   *  static Direct write's own token stands in (resolvedDirectToken). */
+
+  /** The default writers' already-resolved GitHub credential, so gh-cli is never spawned twice. */
   directToken?: string | null;
 }
 
@@ -166,9 +172,10 @@ interface AgentProfileWriteOptions {
 export type ManagedAgentId = "codex" | "claude";
 
 export interface RemoveProfileOptions {
+  /** Leaves the Desktop entry and helper scripts to a caller removing them itself (uninstall). */
   keepDesktopEntry?: boolean;
-  /** The Claude files to remove, resolved up front by the caller's plan
-   *  (claudeProfileArtifacts); absent = resolve now. */
+
+  /** The caller's planned Claude files to remove (claudeProfileArtifacts); absent = resolve now. */
   claudeArtifacts?: readonly string[];
 }
 
@@ -179,12 +186,16 @@ export interface RemoveProfileOptions {
  * resolved, a named profile's carry none (Claude Desktop's discovery resolves that slot itself).
  */
 export interface AgentAdapter {
+  /** Indexes DefaultAgentRequest and the landed-modes map; `label` is what the user sees. */
   readonly id: ManagedAgentId;
+
   /** The capitalized user-facing label ("Codex"/"Claude") for narration and errors. */
   readonly label: string;
+
   /** Prints the configured provider and sets the exit code (providerModeExitCode). Per-agent
    *  because the printed fields are (CODEX_HOME + config.toml vs settings.json + apiKeyHelper). */
   check(): void;
+
   /** Live Direct probe behind "auto": can `ghToken` use Direct from this machine? The scratch
    *  config bakes `direct` (identity and host) so the smoke call sends the same request the real
    *  wiring would; without it a PAT that needs `copilot-developer-cli` fails the probe. It
@@ -197,10 +208,12 @@ export interface AgentAdapter {
     ghToken: string | null,
     credential: CredentialWiring,
   ): Promise<boolean>;
+
   /** The DEFAULT credential's Direct client identity (config pin, else probe) and host
    *  (`host` literal, else probe). On the adapter because this module must not import the
    *  per-agent probe machinery. */
   resolveDirectWiring(ghToken: string | null): Promise<DirectWiring>;
+
   /** Never probes: the identity arrives inside `write`. Async when the adapter also refreshes
    *  a derived surface (Claude's Desktop config library). */
   configureProfile(
@@ -208,6 +221,7 @@ export interface AgentAdapter {
     write: ManagedWrite,
     options: AgentProfileWriteOptions,
   ): void | Promise<void>;
+
   /** The profile's removal: the files it takes (the settings file, the provider table's keys, the
    *  Desktop entry) go now, each named on stderr. `keepDesktopEntry` leaves the Claude Desktop
    *  entry and helper scripts to a caller that removes them itself (uninstall). */

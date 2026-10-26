@@ -70,22 +70,39 @@ const logger = createStderrLogger();
 // Derived from AUTH_PROVIDERS (env_state.ts owns the list) so the flag hints can never drift.
 const PROVIDER_CHOICES = AUTH_PROVIDERS.join("|");
 
+/** A dry run runs no login and no prompt; the read-only lookups do (gh-cli's `gh auth token`
+ *  resolve and the saved-account look, gh-env's env read), so the slot is planned from what the
+ *  flags and those reads carry (plannedAcquisition), and the flow the real command would run is
+ *  named. */
 export interface AuthArgs {
+  /** One of AUTH_PROVIDERS (asProvider validates); unset with no --set/--gh-user means the picker. */
   provider?: string;
+
+  /** The token to store; implies gh-token, so any other --provider is refused. */
   set?: string;
+
+  /** The gh login to pin, or `auto` (GH_USER_AUTO); implies gh-cli, so --set or another provider is refused. */
   ghUser?: string;
+
+  /** Print the resolved GitHub token on stdout, which carries nothing else. */
   get?: boolean;
+
+  /** Clear the stored token; the one sub-action a dry run previews. */
   del?: boolean;
+
+  /** Exit 0 if a credential resolves, else 1; read-only, like --get. */
   check?: boolean;
+
+  /** The profile whose slot is acted on; unset is the default profile (parseProfileFlag). */
   profile?: string;
+
+  /** Print the identity survey for the credential as a table; a read, never a write. */
   identities?: boolean;
+
   /** `true` is the bare flag (interactive choice); a string is the id to pin, or `auto`. */
   identity?: string | boolean;
-  /** Print what the credential landing would write (the slot, a Direct profile's rebake) and write
-   *  nothing. No login and no prompt run; the read-only lookups do (gh-cli's `gh auth token`
-   *  resolve and the saved-account look, gh-env's env read), so the slot is planned from what the
-   *  flags and those reads carry (plannedAcquisition), and the flow the real command would run is
-   *  named. */
+
+  /** Print what the credential landing would write (the slot, a Direct profile's rebake) and write nothing. */
   dryRun?: boolean;
 }
 
@@ -95,16 +112,15 @@ function asProvider(provider: string): AuthProvider {
   throw new Error(`--provider must be one of: ${AUTH_PROVIDERS.join(", ")} (got '${provider}')`);
 }
 
-/** `auto` is the one `--gh-user` value that is not a login: the user's explicit choice to follow
- *  gh's active account, the same choice as the picker's last entry. A GitHub user of that name
- *  cannot be pinned by this flag. */
+/** The one `--gh-user` value that is not a login: follow gh's active account, the picker's last entry. */
 const GH_USER_AUTO = "auto";
 
 type GhCliAccountChoice = { kind: "pinned"; login: string } | { kind: "auto" } | { kind: "choose" };
 
 /** PINNING IS THE ONLY DEFAULT: the credential never follows an account the user did not choose,
  *  or their Copilot credit would burn on it after a `gh auth login`. Auto comes from two explicit
- *  choices alone, the picker's last option and `--gh-user auto`; `activeLogin` is the account it
+ *  choices alone, the picker's last option and `--gh-user auto` (so a GitHub user named `auto`
+ *  cannot be pinned by the flag); `activeLogin` is the account it
  *  follows right now when the listing named one. The gh looks at write time settle the selection
  *  into the slot (settleGhCliAccount). */
 type GhAccountSelection =

@@ -10,10 +10,10 @@ export type ProfileName = string & {
 
 export type Profile = ProfileName | null;
 
+/** A name is also a store key and a `profiles/<name>` directory (paths.ts), so the grammar stays this narrow. */
 const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
 
-/** The verbs of `agent profile [<name>] <verb>`. Every one matches the name grammar, so they are
- *  reserved names: `agent profile <word>` then routes one way, never by what profiles exist. */
+/** The verbs of `agent profile [<name>] <verb>`; every one fits the name grammar, so every one is a reserved name. */
 export const PROFILE_VERBS = [
   "add",
   "del",
@@ -37,28 +37,23 @@ export const PROFILE_VERBS = [
   "settings",
 ] as const;
 
-/** `list` is `agent list`, and bare `agent profile` lists too; a profile named `list` would make
- *  `agent profile list` ambiguous, so the word stays reserved beside the verbs. */
+/** `list`: `agent list` and bare `agent profile` both list, so a profile of that name would be ambiguous. */
 const RESERVED_PROFILE_WORDS = ["help", "list", ...PROFILE_VERBS] as const;
 
 export type ProfileVerb = (typeof PROFILE_VERBS)[number];
 
 /** The words `agent profile <word>` routes as something other than a name: the verbs and
- *  Commander's `help`. Reserved at CREATION (CopilotEnvState.commitProfile and the `add` verb's
- *  boundary), not at the mint: a profile named before its word became a verb stays readable until
- *  the 4.0.9 migration renames it. */
+ *  Commander's `help`; the routing goes one way, never by what profiles exist. Reserved at CREATION
+ *  (CopilotEnvState.commitProfile and the `add` verb's boundary), not at the mint: a profile named
+ *  before its word became a verb stays readable until the 4.0.9 migration renames it. */
 export function isReservedProfileWord(name: string): boolean {
   return (RESERVED_PROFILE_WORDS as readonly string[]).includes(name);
 }
 
-/** The default profile's name: the key of its store slot (env_state.ts), its daemon home directory
- *  (paths.ts), and its label. Never a named profile's: the constructor below rejects it. */
+/** The default's slot key (env_state.ts), home directory (paths.ts), and label; a named profile cannot take it. */
 export const DEFAULT_PROFILE_NAME = "default";
 
-// The default is the implicit unnamed profile (give no name instead); direct/proxy/all collide with
-// the mode-flag and `stop --all` vocabulary. `prototype` and `constructor` are keys valibot's
-// v.record drops as a prototype-pollution guard, so a slot under either name would vanish on the
-// next store read (env_state.ts and env_config.ts both read `profiles` through v.record).
+// Mode-flag words, `stop --all`, and the two keys valibot's v.record drops; profileNameRejection has the why.
 const RESERVED_PROFILE_NAMES = [
   DEFAULT_PROFILE_NAME,
   "direct",
@@ -68,11 +63,21 @@ const RESERVED_PROFILE_NAMES = [
   "constructor",
 ] as const;
 
-/** Windows cannot create a `profiles/<name>` directory under these names (CreateFile treats them
- *  specially even with an extension), and cross-platform is non-negotiable, so they are invalid
- *  everywhere. Exported for every consumer that turns external strings into filenames (Desktop entry ids). */
+/** Windows cannot create a directory so named, so no platform may; every filename-from-string sink reuses it. */
 export const WINDOWS_DEVICE_NAME_RE = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$/;
 
+/**
+ * Every rejection and its reason; the device names are refused on every platform because
+ * cross-platform is non-negotiable.
+ *   the default's name       -> it is the implicit unnamed profile: give no name instead
+ *   direct, proxy, all       -> the mode-flag and `stop --all` vocabulary
+ *   prototype, constructor   -> keys valibot's v.record drops as a prototype-pollution guard, so a
+ *                               slot under either would vanish on the next store read (env_state.ts
+ *                               and env_config.ts both read `profiles` through v.record)
+ *   a Windows device name    -> CreateFile treats it specially even with an extension, so no
+ *                               `profiles/<name>` directory could exist there; Desktop entry ids
+ *                               run the same check
+ */
 function profileNameRejection(name: string): string | null {
   if ((RESERVED_PROFILE_NAMES as readonly string[]).includes(name)) {
     return `profile name '${name}' is reserved${

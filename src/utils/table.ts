@@ -8,27 +8,43 @@ export type Align = "left" | "right";
  *  under one nest a GAP deeper than the heading. */
 export type TableRow = string[] | { heading: string };
 
+/** How a column meets a narrow terminal (`wrap`, per column; a header may always wrap):
+ *    true    -> free text, wrapped at word boundaries
+ *    "hard"  -> paths and ids, split at the column edge with every character kept, and wrapped at
+ *               word boundaries once the table stacks
+ *    false   -> a command, never split when it stands alone; a header-labeled cell wraps
+ *    unset   -> keeps its widest cell in columns and wraps once the table stacks
+ *  `color` is `agent config`'s palette by construction: the header and headings bold, the key
+ *  column (the first) cyan. */
 export interface TableOptions {
+  /** Bold under `color`, above a rule; its cells may always wrap. */
   header?: string[];
+
+  /** Rows under a closing rule, laid out as records. */
   footer?: string[][];
+
+  /** Per column; "left" where unset. */
   aligns?: Align[];
-  /** How a column meets a narrow terminal. `true`: free text, wrapped at word boundaries. `"hard"`:
-   *  paths and ids, split at the column edge with every character kept, and wrapped at word
-   *  boundaries once the table stacks. `false`: a command, never split when it stands alone; a
-   *  header-labeled cell wraps. An unset entry keeps its widest cell in columns and wraps once the
-   *  table stacks. A header may always wrap. */
+
+  /** Per column: `true` wraps at words, `"hard"` splits at the edge, `false` never splits alone. */
   wrap?: Array<boolean | "hard">;
+
+  /** Before every line; records under a heading nest a GAP deeper still. */
   indent?: string;
+
   /** Visible columns to fit; null never wraps. Defaults to the terminal's. */
   width?: number | null;
-  /** `agent config`'s palette by construction: the header and headings bold, the key column (the
-   *  first) cyan. Defaults to the command edge's colorEnabled(); the argument is the test override. */
+
+  /** Header and headings bold, the first column cyan; colorEnabled() unless a test overrides. */
   color?: boolean;
 }
 
+/** Between columns, and the step records nest deeper than their heading by. */
 const GAP = "  ";
+
 /** A free-text column never wraps narrower than this; a word-wrapped one nor than its longest word. */
 const WRAP_FLOOR = 16;
+
 /** `process.stdout.columns` is 0 on a size-less pty; the same fallback Commander's help uses. */
 const TERMINAL_WIDTH_FALLBACK = 80;
 
@@ -69,8 +85,7 @@ function splitHard(word: string, firstRoom: number, restRoom: number): string[] 
   return more.length === 0 ? [head] : [head, ...cut(more.join(""), restRoom)];
 }
 
-/** A line's leading whitespace, looked for behind any ANSI codes that paint the whole line. The
- *  escape byte comes from fromCharCode: a control character in a regex literal is a lint error. */
+/** Leading whitespace behind whole-line paint; fromCharCode because a control char fails lint. */
 const LEADING = new RegExp(`^((?:${String.fromCharCode(27)}\\[[0-9;]*m)*)(\\s*)`);
 
 /** Every line of a message wrapped to `width` under its own indent with a hanging continuation

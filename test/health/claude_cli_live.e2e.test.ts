@@ -5,6 +5,9 @@
 // Skipped on a machine without the binary. COPILOT_ENV_LIVE_CLIS (set by checks.yml and the
 // fleet nightly after installing the CLIs) opts in: the tests run and a missing claude is a
 // failure, never a skip that lets the gate pass vacuously.
+//
+// A cold CLI start on a loaded CI runner takes a while (the Windows leg has needed two minutes for
+// the first answer); the fake itself answers in milliseconds, hence the three-minute test budget.
 import { join } from "node:path";
 import { CLAUDE_PROBE, PROBE_PROMPT } from "../../src/agents/live_probe.ts";
 import { claudeLiveLaunch } from "../../src/health/live_launch.ts";
@@ -24,8 +27,7 @@ import { afterEach, beforeEach, expect, tempDir, test } from "../helpers/testing
 const LIVE_ENV = "COPILOT_ENV_LIVE_CLIS";
 const claudePath = resolveCommand("claude");
 const live = test.skipIf(claudePath === null && !process.env[LIVE_ENV]);
-/** A cold CLI start on a loaded CI runner takes a while (the Windows leg has needed two minutes
- *  for the first answer); the fake itself answers in milliseconds. */
+
 const TEST_TIMEOUT_MS = 180_000;
 
 let fake: FakeModelEndpoint;

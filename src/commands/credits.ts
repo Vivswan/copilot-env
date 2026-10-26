@@ -25,18 +25,25 @@ import { createStderrLogger } from "../utils/logger.ts";
 const logger = createStderrLogger();
 
 interface CreditsArgs {
+  /** The pace as JSON on stdout instead of the rendered block (creditsJson). */
   json?: boolean;
+
   /** The per-run `--target`; unset defers to COPILOT_CREDITS_TARGET, then the config key. */
   creditsTarget?: string;
+
   /** The profile whose account is metered; unset is the default profile. */
   profile?: string;
 }
 
 /** Test seams; production takes every default. */
 interface CreditsDeps {
+  /** The Copilot fetch; production uses the global fetch. */
   fetchImpl?: CreditsFetch;
+
   /** The credential look for one profile (the default is null). */
   credential?: (profile: Profile) => ReturnType<Credential["resolveWithReason"]>;
+
+  /** The clock the pace is measured against; production uses Date.now. */
   nowMs?: () => number;
 }
 
@@ -57,7 +64,9 @@ export async function runCredits(args: CreditsArgs, deps: CreditsDeps = {}): Pro
 }
 
 interface AccountMeter {
+  /** One account's read against the target; its `login` is what merges two tokens into one meter. */
   pace: CreditsPace;
+
   /** The profiles on this account, `default` first, in profile order. */
   profiles: string[];
 }

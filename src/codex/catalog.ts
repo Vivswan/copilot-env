@@ -38,23 +38,22 @@ import {
   liveLookupsDisabled,
 } from "./user_agent.ts";
 
+// Warnings to stderr: the refresh rides inside a launch or a wiring write and owns no stdout.
 const logger = createStderrLogger();
 
-/** Bump when patchModelCatalog's OUTPUT changes shape: a recorded mismatch bypasses the daily
- *  refresh throttle once, so an existing catalog picks up the new patch on the next refresh instead
- *  of serving the old shape for up to a day after a copilot-env update. */
+/** Bump when patchModelCatalog's OUTPUT changes shape: the mismatch bypasses the daily throttle once. */
 export const CATALOG_PATCH_VERSION = 3;
 
 // A local-only run (no network) that may still cold-start the CLI.
 const BUNDLED_DUMP_TIMEOUT_MS = 5000;
-// One budget for EVERY probe spawn in this process (candidates and their controls, across
-// generation and the reference sync); see probeBudgetLeftMs.
+
+// One budget for EVERY probe spawn in this process, generation and the reference sync alike (probeBudgetLeftMs).
 const CATALOG_PROBE_TIMEOUT_MS = 5000;
-// One deadline over the whole Copilot fetch, identity probes included (a PAT can chain several
-// probes before the GET).
+
+// One deadline over the whole Copilot fetch, identity probes included (a PAT can chain several before the GET).
 const COPILOT_FETCH_BUDGET_MS = 5000;
-// Past the refresh's end-to-end deadline the cache writes (acceptance memo, ownership ledger) are
-// skipped: they are caches.
+
+// Past the refresh's end-to-end deadline the cache writes (acceptance memo, ownership ledger) are skipped.
 const REFRESH_DEADLINE_MS =
   CODEX_VERSION_TIMEOUT_MS +
   COPILOT_FETCH_BUDGET_MS +
@@ -96,13 +95,18 @@ function nonEmpty<T>(list: T[]): NonEmpty<T> | null {
 
 /** One Copilot `/models` entry as the patcher consumes it (parseCopilotModels). */
 export interface CopilotCatalogModel {
+  /** Both required: an entry missing either is skipped (parseCopilotModels). */
   limits: CopilotModelLimits;
+
   /** Copilot's display name, or null when absent. */
   name: string | null;
+
   /** The reasoning efforts Copilot accepts, or null when not advertised. */
   reasoningEfforts: NonEmpty<string> | null;
+
   /** Copilot's `supports.parallel_tool_calls`, or null when not advertised. */
   parallelToolCalls: boolean | null;
+
   /** Codex can drive it: a chat model served on `/responses` and in Copilot's picker. */
   codexServable: boolean;
 }
@@ -168,14 +172,13 @@ function requiredExtras(copilot: CopilotCatalogModel | undefined): Record<string
   return { supports_parallel_tool_calls: copilot?.parallelToolCalls ?? false };
 }
 
-// The numbered OpenAI family, `gpt-<major>[.<minor>[.<patch>]]` with an optional `-<variant>`: the
-// only entries a Copilot-only model can be cloned from, and the only Copilot ids cloned (a codename
-// like gpt-daybreak-* has no version to place it by).
+// The numbered OpenAI family, `gpt-<major>[.<minor>[.<patch>]]` with an optional `-<variant>` (gptVersion).
 const GPT_SLUG = /^gpt-(\d+(?:\.\d+){0,2})(?=-|$)/;
 
 /** One ordered integer: 5.6 -> 5006000, 5.10 -> 5010000, 5.3.1 -> 5003001. Null outside the
- *  numbered family, including a minor or patch past 999, which the encoding could not keep apart.
- */
+ *  numbered family (the only entries a Copilot-only model can be cloned from, and the only Copilot
+ *  ids cloned: a codename like gpt-daybreak-* has no version to place it by), including a minor or
+ *  patch past 999, which the encoding could not keep apart. */
 function gptVersion(slug: string): number | null {
   const match = GPT_SLUG.exec(slug);
   if (match === null) return null;
@@ -233,10 +236,7 @@ function applyLimits(model: Record<string, unknown>, limits: CopilotModelLimits)
   return true;
 }
 
-// Tier advertisements make Codex send `service_tier`, and Copilot's /responses endpoint rejects
-// "priority", Codex's fast-mode default (config.ts names the two tiers it does take); this catalog
-// only ever wires Codex at Copilot. Emptied, never deleted, so the generated entry keeps every key
-// the dump has.
+// Emptied, never deleted, so the generated entry keeps every key the dump has (patchModelCatalog says why).
 const TIER_FIELDS = ["service_tiers", "additional_speed_tiers"] as const;
 
 /** The donor is cloned whole to keep the family's Codex-side shape, then Copilot's identity and
@@ -288,7 +288,9 @@ function cloneForCopilotModel(
 
 /** Every bundled entry is kept with every field (tiers emptied, limits overlaid, known extras
  *  filled); the servable Copilot-only models are appended in id order as clones. Null on a bad
- *  dump. */
+ *  dump. Tiers are emptied because their advertisements make Codex send `service_tier`, and
+ *  Copilot's /responses endpoint rejects "priority", Codex's fast-mode default (config.ts names the
+ *  two tiers it does take); this catalog only ever wires Codex at Copilot. */
 export function patchModelCatalog(
   bundledJson: string,
   copilotModels: Map<string, CopilotCatalogModel>,
@@ -433,16 +435,14 @@ function sha256(text: string): string {
   return createHash("sha256").update(text).digest("hex");
 }
 
-// Verdicts by catalog content, per process: generation and the reference sync judge the same bytes,
-// and the codex binary does not change under one run.
+// Verdicts by catalog content, per process: generation and the sync judge the same bytes with one codex binary.
 const probeVerdicts = new Map<string, boolean | null>();
 
 // Every probe spawn draws on this, so however many files are judged, probing costs at most one
 // budget per process (a wiring write, a launch). Exhausted, verdicts are null (unverifiable).
 let probeBudgetLeftMs = CATALOG_PROBE_TIMEOUT_MS;
 
-/** The suffix a reporting line carries when the installed codex could not judge the catalog (no
- *  codex on PATH, probe budget spent, or a run that proved nothing). */
+/** Appended to a report line when the installed codex could not judge the catalog: absent, budget spent, no proof. */
 export const UNVERIFIED_SUFFIX =
   "; schema acceptance by the installed Codex could not be verified (probe unavailable or inconclusive)";
 
@@ -646,8 +646,9 @@ export function inspectCatalogFile(filePath: string): CatalogFileVerdict {
 }
 
 /** At most one ATTEMPT per day, recorded before generating so a failure cannot retry on every launch;
- *  bypassed by a codex version or patch change (the file REPLACES the bundled catalog). Never
- *  throws. */
+ *  bypassed by a codex version or patch change (the file REPLACES the bundled catalog), so an
+ *  existing catalog picks up a new patch on the next refresh instead of serving the old shape for
+ *  up to a day after a copilot-env update. Never throws. */
 export async function refreshCodexModelCatalogIfStale(source: CatalogSource): Promise<boolean> {
   try {
     if (!new CopilotEnvConfig().codexModelCatalogEnabled()) return false;

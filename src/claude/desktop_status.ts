@@ -71,8 +71,12 @@ export type DesktopTargetResolution =
   | { kind: "unresolvable"; reason: string };
 
 interface DesktopStatusBase {
+  /** The `claude.desktop` key. */
   enabled: boolean;
+
+  /** claudeDesktopInstalled's verdict; with the app absent no target gets a verdict. */
   installed: boolean;
+
   /** Every generated helper script present under the root home (key off: leftovers). */
   helperPaths: string[];
 }
@@ -85,20 +89,28 @@ export type ClaudeDesktopStatus =
    *  document could not be read: no entry is judged and none may be swept as an orphan. */
   | (DesktopStatusBase & { kind: "unjudged"; reason: string })
   | (DesktopStatusBase & {
+      /** The one arm with verdicts; each other arm is a look that could not judge. */
       kind: "inspected";
+
+      /** resolveDesktopLibraryDir's answer: `_meta.json` and the entry files sit directly in it. */
       libraryDir: string;
+
       /** Every owned entry the library lists, whatever the key says. */
       owned: DesktopOwnedEntry[];
+
       /** One verdict per target; empty when the key is off or the app is absent. */
       entries: DesktopEntryStatus[];
+
       /** Owned entries matching no target; empty when the key is off or the app is absent. */
       orphans: DesktopOwnedEntry[];
-      /** Ledger claims under the library `_meta.json` no longer lists (interrupted removals),
-       *  attributed like the listed entries. */
+
+      /** Claims `_meta.json` no longer lists (interrupted removals), attributed like the listed. */
       unlisted: DesktopClaim[];
-      /** The entry `_meta.json` names as applied: the one the app uses at launch. Null when it names
-       *  none or a missing row. */
+
+      /** The row the app uses at launch; null when `_meta.json` names none or a missing row. */
       applied: { path: string; name: string } | null;
+
+      /** What the app does at its next launch, read from its two app files. */
       app: DesktopAppState;
     });
 

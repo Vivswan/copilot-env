@@ -8,13 +8,15 @@ import { expect, test } from "../helpers/testing.ts";
 
 // A no-op rule passes `biome ci` exactly as quietly as a clean tree does, so the rule's teeth
 // and the scope biome.json gives it (every test/ source but the *.e2e.test.ts files and the
-// banned helpers themselves) are pinned here rather than assumed.
+// banned helpers themselves) are pinned here rather than assumed. The sources cover every import
+// form of the helper modules that spawn or listen, the listener and process modules and Bun APIs
+// reached directly, every route to env.ts's two home-sandbox entry points, and beside them the
+// imports a unit file may make.
 
+/** The rule under test: its grit file, checkout-relative. */
 const PLUGIN = "biome/no_e2e_helper_imports.grit";
 
-// Every import form of the helper modules that spawn or listen, the listener and process modules
-// and Bun APIs reached directly, every route to env.ts's two home-sandbox entry points, and
-// beside them the imports a unit file may make.
+// One diagnostic per banned import, none for the imports a unit file may make.
 const SOURCES: [source: string, diagnostics: number][] = [
   'import { runCli } from "../helpers/run.ts";',
   'import { startDaemon } from "../../helpers/daemon.ts";',

@@ -77,14 +77,16 @@ function lowercaseKeys(headers: Record<string, string>): Record<string, string> 
   return Object.fromEntries(Object.entries(headers).map(([k, v]) => [k.toLowerCase(), v]));
 }
 
-/** The survey's row shape (`agent profile identity`): the candidates in the one header set every
- *  mode sends, plus an id no candidate list carries (a pin, or the slot's stored identity). */
+/** An id no candidate list carries: a pin, or the slot's stored identity. */
 const FOREIGN_ID = "my-custom-id";
+
+/** The rows of `agent profile identity`: the candidates in the one header set every mode sends, plus FOREIGN_ID. */
 const SURVEY_ROWS = [
   ...CANDIDATES,
   { name: FOREIGN_ID, headers: directClientHeaders("codex_exec/1", FOREIGN_ID) },
 ];
 
+/** A configured or fixed host; the probe stubs accept every identity there (9 models). */
 const CONFIGURED_API_BASE = "https://copilot.example";
 
 test("surveyIntegrationIdentities: every candidate on every host that matters, no early stop, the exact headers", async () => {
@@ -347,13 +349,13 @@ test("selectDirectIdentityAndHost: every credential is probed through the one ca
         : new Response("upstream", { status: 503 }),
     );
   };
+  // `genericOnly`: every request stays on the generic host's /models, no account-host lookup.
   const cases: {
     name: string;
     token: string;
     fixedHost?: string;
     fetchImpl: ProbeFetch;
     seen?: string[];
-    /** Every request stays on the generic host's /models: no account-host lookup. */
     genericOnly?: true;
     expected: { integrationId: string | null; apiBase: string } | RegExp;
   }[] = [

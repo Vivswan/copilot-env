@@ -92,13 +92,13 @@ const CODEX_PS1 = "https://chatgpt.com/codex/install.ps1";
 const POWERSHELL_ARGS = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"];
 const COPILOT_PACKAGE_DIR =
   "C:\\Users\\user\\AppData\\Local\\Microsoft\\WinGet\\Packages\\GitHub.Copilot_Microsoft.Winget.Source_8wekyb3d8bbwe";
-/** The plan pins winget's scope and package directory, so its own settings move nothing the
- *  ledger names. */
+
 const WINGET_ARGS = [
   "install",
   "--id",
   "GitHub.Copilot",
   "--exact",
+  // The scope and the package directory are pinned, so winget's own settings move nothing the ledger names.
   "--scope",
   "user",
   "--location",
@@ -688,19 +688,29 @@ type Command = AgentCli["command"];
 type Landing = "vendor-dir" | "unversioned" | "broken" | "nowhere";
 
 interface Fixture {
+  /** The temp root holding pathBin, the HOME and the rc dir. */
   dir: string;
+
   /** The first PATH entry: where pre-existing copies sit. */
   pathBin: string;
+
   /** The vendors' install dir under the fixture HOME, on PATH unless the row says otherwise. */
   vendorBin: string;
+
+  /** HOME for the run: the vendors' writes, CODEX_HOME and CLAUDE_CONFIG_DIR all sit under it. */
   home: string;
+
   /** The rc file the wire targets (pre-created so rcFiles picks it). */
   bashrc: string;
+
   /** Every installer command the run handed the fake, in order. */
   runs: InstallerCommand[];
+
+  /** The seams: a recording fake runner, a fetch over the row's releases, the real version and (unless given) look. */
   deps: CliInstallDeps;
 }
 
+/** The unit `release` ages a published_at by. */
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 /** The Claude installer's XDG knobs: cleared per fixture so its writes land under the fixture HOME. */
@@ -725,6 +735,8 @@ const COPILOT_PAGES: unknown[][] = [
     release("v1.0.90", 20),
   ],
 ];
+
+/** openai/codex's page: today's alpha first, the stable release two days behind it. */
 const CODEX_PAGES: unknown[][] = [
   [
     release("rust-v0.164.0-alpha.1", 0, { prerelease: true }),
@@ -733,8 +745,8 @@ const CODEX_PAGES: unknown[][] = [
     release("rust-v0.160.0", 30),
   ],
 ];
-/** A full first page of fresh alphas, the shape openai/codex answers most days, with the week-old
- *  stable release on the page after it. */
+
+/** A full first page of fresh alphas (openai/codex most days); the week-old stable release sits on the page after. */
 const CODEX_PAGED: unknown[][] = [
   Array.from({ length: 100 }, (_, i) =>
     release(`rust-v0.165.0-alpha.${i}`, 0, { prerelease: true }),
@@ -748,17 +760,24 @@ const CODEX_PAGED: unknown[][] = [
  * CODEX_HOME the fixture's so the vendors' write picks are known; the rc seam targets a fresh dir.
  */
 function stageFixture(opts: {
+  /** Where each CLI's installer leaves its binary; "vendor-dir" when absent. */
   lands?: Partial<Record<Command, Landing>>;
+
   /** CLIs whose installer exits 1. */
   fails?: readonly Command[];
+
   /** Copies already on PATH (ahead of the vendors' dir) before the run. */
   preinstalled?: readonly Command[];
+
   /** Copies already on PATH whose `--version` exits 1. */
   brokenOnPath?: readonly Command[];
+
   /** The vendors' install dir is NOT on PATH: a fresh host whose installer edit lands in new shells. */
   vendorOffPath?: boolean;
+
   /** `owner/name` -> its release pages, or the HTTP status its lookup answers. */
   releases?: Record<string, unknown[][] | number>;
+
   /** The PATH look, where a row needs an answer no POSIX PATH can give (a `.cmd` shim). */
   look?: CliInstallDeps["look"];
 }): Fixture {
@@ -820,6 +839,7 @@ function stageFixture(opts: {
   return { dir, pathBin, vendorBin, home, bashrc, runs, deps };
 }
 
+/** The keys a row's own snapshot restores: PATH and SHELL as stageFixture rewrites them, the XDG knobs it clears. */
 const CLI_ENV_EXTRAS = ["PATH", "Path", "SHELL", ...XDG_HOMES] as const;
 
 /** The Codex installer's bash profile pick on this platform (pick_profile in its install.sh). */

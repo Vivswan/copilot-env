@@ -13,13 +13,13 @@ import { agentAuthGetArgs, agentLauncherCommand, proxyTokenCommand } from "../ut
 import { parseToml } from "../utils/toml.ts";
 import { codexProviderId } from "./paths.ts";
 
-// OPENAI_API_KEY is the same OpenAI-wire name `env.ts` exports; the inspector reports whether the
-// user's `.env` or environment carries it as a fact about the home (no managed wiring needs it).
+// The same OpenAI-wire name `env.ts` exports, reported as a fact about the home: no managed wiring needs it.
 export const CODEX_ENV_KEY = "OPENAI_API_KEY";
 
-/** The header a static write carries; Codex sends `http_headers` verbatim, so the value is the
- *  full `Bearer <token>` (the one header name Codex would otherwise fill from `auth`/`env_key`). */
+/** The static write's header; Codex sends `http_headers` verbatim, so the value is the full `Bearer <token>`. */
 export const AUTHORIZATION_HEADER = "Authorization";
+
+// A bare token or an empty bearer is not the static shape: without the managed `auth.command`, the table reads "none".
 const STATIC_AUTHORIZATION_SHAPE = /^Bearer \S+$/;
 
 /** The unified table doesn't encode mode in its name, so mode is read from base_url's SHAPE: an https
@@ -51,7 +51,8 @@ function isManagedProxyAuth(auth: unknown, profile: Profile = null): boolean {
 }
 
 /** The static shape: a bearer in `http_headers` and NO `auth` table (a table carrying both would
- *  make Codex run the command as well, which no writer of ours produces). */
+ *  make Codex run the command as well, which no writer of ours produces). Authorization is the one
+ *  header name Codex would otherwise fill from `auth`/`env_key`. */
 function isStaticAuthorization(table: unknown): boolean {
   if (!isRecord(table) || table.auth !== undefined) return false;
   const headers = table.http_headers;
@@ -106,43 +107,48 @@ export type CodexOtherReason =
  *  named inspection without its profile read is unrepresentable. */
 type CodexSelectionRead = { profile: null } | { profile: ProfileName; profileToml: TextReadResult };
 
-/** Read from different files than config.toml, so independent of how it classifies. A named
- *  profile's provider never reads an env var (managed auth.command only), so envKeyInDotenv,
- *  envKeyInEnviron, and tokenAvailable are false for it; envFilePresent still reports the file. */
+/** Read from different files than config.toml, so independent of how it classifies. `tokenAvailable`
+ *  is resolvable from .env OR the environment. A named profile's provider never reads an env var
+ *  (managed auth.command only), so envKeyInDotenv, envKeyInEnviron, and tokenAvailable are false
+ *  for it; envFilePresent still reports the file. */
 interface CodexTokenFacts {
   envFilePresent: boolean;
   envKeyInDotenv: boolean;
   envKeyInEnviron: boolean;
-  /** Resolvable from .env OR the environment. */
   tokenAvailable: boolean;
 }
 
 /** Discriminated on providerMode so a pair the classifier never mints (a wired "none", a direct
  *  table without the Direct base URL, a direct-auth verdict outside direct mode) is
- *  unrepresentable. The shared fields are documented once, on the direct arm. */
+ *  unrepresentable. The fields, documented once here:
+ *    configExists     -> on "none", false is no config.toml at all and true a config with no
+ *                        `model_provider`; on "other", false only for a named inspection whose
+ *                        `<name>.config.toml` is broken while config.toml is absent (presence stays
+ *                        a fact of its own, apart from the classification)
+ *    modelProvider    -> the inspected selection's `model_provider` (config.toml's top-level key for
+ *                        the default, `<name>.config.toml`'s for a named profile); on "other", the
+ *                        foreign value, or null when unknowable
+ *    baseUrl          -> direct classification requires a Copilot host (isDirectBaseUrl), so the
+ *                        match is pinned at the type and the host itself rides along
+ *    envKeyMatches    -> direct carries no env_key contract, so only a named table's forbidden
+ *                        env_key (drift the writer never emits; Codex rejects `auth` + `env_key`)
+ *                        can make it false
+ *    providerWired    -> a named profile's credential shape must be the managed one addressed at
+ *                        THAT profile (never a fallback), or the static bearer
+ *    directUsesToken  -> the table carries the managed `auth.command`; whether a `gh` login is
+ *                        needed is a STORE question the health probe answers */
 export type CodexWiringStatus = CodexTokenFacts &
   (
     | {
         providerMode: "direct";
         configExists: true;
-        /** The inspected selection's `model_provider` (config.toml's top-level key for the default,
-         *  `<name>.config.toml`'s for a named profile); on "other", the foreign value, or null when
-         *  unknowable. */
         modelProvider: string;
         providerSelected: true;
-        /** Direct classification requires a Copilot host (isDirectBaseUrl), so the match is pinned
-         *  at the type and the host itself rides along. */
         baseUrl: string;
         baseUrlMatches: true;
-        /** Direct carries no env_key contract, so only a named table's forbidden env_key (drift the
-         *  writer never emits; Codex rejects `auth` + `env_key`) can make it false. */
         envKeyMatches: boolean;
-        /** A named profile's credential shape must be the managed one addressed at THAT profile
-         *  (never a fallback), or the static bearer. */
         providerWired: boolean;
         credential: CodexManagedCredential;
-        /** The table carries the managed `auth.command`. Whether a `gh` login is needed is a STORE
-         *  question the health probe answers. */
         directUsesToken: boolean;
         otherReason: null;
       }
@@ -161,7 +167,6 @@ export type CodexWiringStatus = CodexTokenFacts &
       }
     | {
         providerMode: "none";
-        /** False = no config.toml at all; true = a config with no `model_provider`. */
         configExists: boolean;
         modelProvider: null;
         providerSelected: false;
@@ -175,8 +180,6 @@ export type CodexWiringStatus = CodexTokenFacts &
       }
     | {
         providerMode: "other";
-        /** False only for a named inspection whose `<name>.config.toml` is broken while config.toml
-         *  is absent: presence stays a fact of its own, apart from the classification. */
         configExists: boolean;
         modelProvider: string | null;
         providerSelected: false;

@@ -12,16 +12,25 @@ export const DEFAULT_CLI_COOLDOWN_DAYS = 7;
 /** The cl/co/cx launchers belong to the `shell.launchers` config key (`agent profile env` emits them); a wire
  *  only reports that state, and `--clis` turns it on. */
 interface ShellArgs {
+  /** Take the block out of the rc files again; config keys untouched. */
   remove?: boolean;
+
+  /** Also install the agent CLIs, and turn `shell.launchers` on. */
   clis?: boolean;
+
   /** Days of release aging for the CLI installs; null = each vendor's latest. */
   cooldown?: number | null;
+
+  /** With --clis: install without sudo; exclusive with --no-prereqs. */
   noSudo?: boolean;
+
+  /** With --clis: report which CLIs are installed and install nothing (verify-only). */
   noPrereqs?: boolean;
+
   /** Windows only: the CurrentUserAllHosts profile. */
   allHosts?: boolean;
-  /** Print each rc file the wiring would change with the block diff, and every install the
-   *  --clis pass would run; write and install nothing. */
+
+  /** Print each rc file the wiring would change (the block diff) and every install --clis would run; do neither. */
   dryRun?: boolean;
 }
 

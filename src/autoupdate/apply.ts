@@ -52,12 +52,13 @@ import { installStateRoot, PROJECT_ROOT, readInstallManifest } from "../utils/ro
 import { currentReleaseTarget, installedBinaryName, releaseAssetName } from "../utils/targets.ts";
 import { COPILOT_ENV_USER_AGENT } from "../utils/user_agent.ts";
 
+/** Where the releases are fetched from when DOWNLOAD_BASE_ENV is unset. */
 const REPO = "Vivswan/copilot-env";
+
+/** The asset `bun run build` writes beside the binaries; attested alongside them. */
 const CHECKSUMS_NAME = "checksums.txt";
 
-/** Points the download at a directory or base URL instead of the GitHub release.
- *  The same hook install.sh / install.ps1 honor, so a smoke test can drive the
- *  whole update against locally built artifacts. */
+/** A directory or base URL in place of the GitHub release; install.sh and install.ps1 honor the same hook. */
 const DOWNLOAD_BASE_ENV = "COPILOT_ENV_DOWNLOAD_BASE";
 
 /** Verifies a release's attestation.json text against the digests about to be
@@ -87,8 +88,7 @@ export function resolveProvenanceDecision(
   return configEnabled ? { kind: "verify" } : { kind: "skip", via: "verify-provenance" };
 }
 
-/** The real verifier, loaded on first use: the sigstore stack is well over a
- *  megabyte of CommonJS and `agent profile env` runs at every shell start. */
+/** Lazy: the sigstore stack is well over a megabyte of CommonJS, and `agent profile env` runs at every shell start. */
 const defaultVerifier: ProvenanceVerifier = async (tag, bundleJson, required) => {
   const { verifyReleaseProvenance } = await import("../install/provenance.ts");
   return await verifyReleaseProvenance(tag, bundleJson, required);
@@ -97,13 +97,19 @@ const defaultVerifier: ProvenanceVerifier = async (tag, bundleJson, required) =>
 interface Downloaded {
   /** The downloaded binary, still in the temp directory. */
   readonly path: string;
+
   /** Its release-asset name, i.e. the key to look up in the manifest. */
   readonly asset: string;
+
+  /** Parsed from checksumsPath: asset name -> sha256, what the binary's digest is verified against. */
   readonly checksums: Checksums;
+
   /** The downloaded checksums.txt itself: attested alongside the binary. */
   readonly checksumsPath: string;
+
   /** Where the release files came from, for the attestation fetched later. */
   readonly source: DownloadSource;
+
   /** The staging dir the attestation lands in. */
   readonly dir: string;
 }
@@ -125,7 +131,11 @@ interface Attested {
 interface Staged {
   /** The new binary, on disk inside its NOT-yet-live version root. */
   readonly binary: string;
+
+  /** The target's directory name under versions/; the staged manifest's version must spell the same. */
   readonly versionName: string;
+
+  /** Wiped and rebuilt by stage; live only once `current` points at it. */
   readonly versionRoot: string;
 }
 
@@ -137,6 +147,7 @@ interface Provisioned {
 
 type DownloadSource = { kind: "directory"; path: string } | { kind: "url"; base: string };
 
+/** The override, when set, is how a smoke test drives the whole update against locally built artifacts. */
 function downloadSource(tag: string): DownloadSource {
   const override = process.env[DOWNLOAD_BASE_ENV];
   if (override) {
@@ -361,13 +372,16 @@ export function previewUpdate(
 }
 
 export interface ApplyUpdateOptions {
+  /** Defaults to consola; the preflight passes its stderr-only logger. */
   logger?: Logger;
-  /** Send the children's stdout to stderr so migration output cannot pollute stdout. The
-   *  preflight sets this: an autoupdate inside `agent start` is stderr-only end to end. */
+
+  /** Set by the preflight: an autoupdate inside `agent start` is stderr-only end to end, migrations included. */
   childStdoutToStderr?: boolean;
+
+  /** The install root whose `current` flips; defaults to PROJECT_ROOT. */
   root?: string;
-  /** Verify the release's build provenance, or skip it -- decided by the caller
-   *  (see ProvenanceDecision), never defaulted here. */
+
+  /** Decided by the caller (ProvenanceDecision), never defaulted here. */
   provenance: ProvenanceDecision;
 }
 

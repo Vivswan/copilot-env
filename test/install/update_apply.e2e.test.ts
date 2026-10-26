@@ -29,7 +29,9 @@ import { afterEach, beforeEach, describe, expect, tempDir, test } from "../helpe
 //   -> COMMIT by flipping the `current` link
 // The real verifier needs the Sigstore trust root (test/install/provenance.test.ts). Downloads are
 // redirected at a local directory through COPILOT_ENV_DOWNLOAD_BASE, the same hook install.sh
-// and the CI smokes use.
+// and the CI smokes use. The stand-in binaries land at <top>/versions/<v>/bin/, hence their three
+// hops up to the invocations log; RECORDING_BINARY's manifest write is the provision postcondition
+// `install` must leave behind.
 
 const skipWin = test.skipIf(process.platform === "win32");
 
@@ -63,9 +65,7 @@ function hostTarget() {
   return target;
 }
 
-/** Records every invocation with the root it was aimed at, and writes the per-version
- *  manifest `install` must leave behind (the provision postcondition). It lives at
- *  <top>/versions/<v>/bin/, hence the three hops up to the log. */
+/** Logs each invocation with its aimed root, and leaves the per-version manifest `install` must. */
 const RECORDING_BINARY = `#!/bin/sh
 HERE="$(dirname "$0")"
 echo "\${COPILOT_ENV_INSTALL_ROOT:-} $@" >> "$HERE/../../../invocations.log"

@@ -87,16 +87,23 @@ test("a dry run reads its own writes and deletes back, and the disk keeps what i
   ]);
 });
 
-// Each case starts from the same pre-state, built on the disk for the real run and through the
-// facade inside the dry run, so the code the overlay derives from planned state is checked against
-// the code this platform's node:fs raises for the state itself.
+// One pre-state per case, built on disk for the real run and through the facade in the dry run; the codes must agree.
 const ERROR_CASES: Array<{
+  /** The row's key in the real-versus-dry comparison. */
   name: string;
+
+  /** Builds the pre-state: on disk for the real run, through the facade inside the dry run. */
   setup: (root: string) => void;
+
+  /** The facade call under test. */
   op: (root: string) => unknown;
+
+  /** The errno code this platform's node:fs raises for the state, or "ok" for the control that succeeds. */
   code: string;
+
   /** The code bun's node:fs raises on Windows for the same state, when it differs. */
   win32?: string;
+
   /** A state Windows cannot build without a privilege the runner lacks (a symlink). */
   posixOnly?: boolean;
 }> = [
@@ -217,6 +224,7 @@ const ERROR_CASES: Array<{
   },
 ];
 
+/** The rows this platform can build: the posixOnly ones drop out on Windows. */
 const CASES = ERROR_CASES.filter((c) => !c.posixOnly || !WINDOWS);
 
 test("every error the overlay derives from planned state carries the code this platform's node:fs raises for that state", async () => {

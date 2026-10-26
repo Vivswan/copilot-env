@@ -5,6 +5,7 @@ import type { GhAccount } from "../../src/copilot_api/gh_cli.ts";
 import { parseProfileName } from "../../src/copilot_api/profile.ts";
 import { captureChannels } from "../helpers/output.ts";
 
+/** A branded fixture name: parseProfileName is the only mint for ProfileName. */
 export const WORK = parseProfileName("work");
 
 /** The retry command acquireCredential composes for the default slot's `auth`. */

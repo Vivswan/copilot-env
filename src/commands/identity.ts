@@ -140,19 +140,28 @@ type SlotReading =
 export interface IdentityTableInput {
   /** Every row under the one header set every mode sends (directClientHeaders). */
   survey: IdentitySurvey;
+
+  /** The `identity` key's literal, or null for `auto` (probing). */
   pinned: string | null;
+
   /** The `host` literal, or null for `auto`. */
   configuredHost: string | null;
+
   /** The slot's probed halves; a half undefined while never probed. */
   stored: StoredDirectPair;
-  /** The host every request goes to: the literal, else the stored host, else the generic host
-   *  a first probe starts on. */
+
+  /** Where every request goes: the literal, else the stored host, else the generic host a first probe starts on. */
   hostInUse: string;
+
+  /** What the slot decides for this credential, resolved once in surveyAndTable (SlotReading). */
   slot: SlotReading;
-  /** A running daemon keeps the identity and host it launched with, so the mark is not what is
-   *  being sent right now. */
+
+  /** A running daemon keeps the identity and host it launched with, so the mark is not what is sent now. */
   daemonRunning: boolean;
+
+  /** Named in the notes' start, stop, and landing commands; null is the default profile. */
   profile: Profile;
+
   /** colorEnabled() at the command edge; plain off a TTY. */
   color: boolean;
 }

@@ -9,10 +9,10 @@ import { expect, test } from "../helpers/testing.ts";
 // A no-op rule passes `biome ci` exactly as quietly as a clean tree does, so the rule's teeth
 // and the scope biome.json gives it are pinned here rather than assumed.
 
+/** The rule under test: its grit file, checkout-relative. */
 const PLUGIN = "biome/no_unmanaged_temp_dir.grit";
 
-/** Every API that yields a temp path, listed here on its own so that dropping one from the
- *  rule fails this test instead of shrinking it. */
+/** Every temp-path API, listed on its own so dropping one from the rule fails this test instead of shrinking it. */
 const TEMP_PATH_APIS = [
   "mkdtemp",
   "mkdtempSync",
@@ -21,8 +21,7 @@ const TEMP_PATH_APIS = [
   "tmpdir",
 ];
 
-// Every route to a temp path draws one diagnostic per banned name it reaches; type imports and
-// unrelated names draw none.
+// Every route to a temp path draws one diagnostic per banned name it reaches; type imports and unrelated names none.
 const SOURCES: [source: string, diagnostics: number][] = [
   // Every banned name, as a value import; the module does not matter, so the guard cannot be
   // sidestepped by importing from "fs" or "node:fs/promises" instead of "node:fs".

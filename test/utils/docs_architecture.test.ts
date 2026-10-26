@@ -18,18 +18,25 @@ import {
   spliceGeneratedRegion,
 } from "../lint/architecture.ts";
 
+/** The architecture page, checkout-relative: a problem names it this way. */
 const PAGE = join("docs", "architecture.md");
-/** Changes only when a concept diagram is added or removed on purpose: a fence a stray edit
- *  swallowed would otherwise vanish from every other check here. */
+
+/** Bumped only on purpose: a fence a stray edit swallowed would otherwise vanish from every other check here. */
 const CONCEPT_DIAGRAMS = 7;
 
+/** The page's lines, CRLF folded so a Windows checkout reads the same. */
 const page = readFileSync(join(PROJECT_ROOT, PAGE), "utf8").replaceAll("\r\n", "\n").split("\n");
 
 interface Fence {
   /** Zero-based line of the opening fence. */
   line: number;
+
+  /** The opening fence named `mermaid`, the only kind the diagram checks walk. */
   mermaid: boolean;
+
+  /** The lines between the fences, joined with LF. */
   body: string;
+
   /** Inside the GENERATED region: the declaration's diagram, not the author's. */
   generated: boolean;
 }
@@ -66,22 +73,33 @@ function readPage(lines: readonly string[]): { fences: Fence[]; text: (string | 
   return { fences, text };
 }
 
+/** One walk over the page; `text` holds undefined where a fence line was. */
 const { fences, text } = readPage(page);
+
+/** The author's diagrams: every mermaid fence outside the GENERATED region. */
 const concepts = fences.filter((fence) => fence.mermaid && !fence.generated);
 
-// --- labels ------------------------------------------------------------------
-
+/** The checkout's top-level directories (dot-dirs aside): the only first segments a label's path may open with. */
 const PATH_ROOTS = readdirSync(PROJECT_ROOT, { withFileTypes: true })
   .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
   .map((entry) => entry.name);
+
+/** A path token: one of PATH_ROOTS, a slash, then word, dot, slash, or dash characters. */
 const PATH_TOKEN = new RegExp(`^(?:${PATH_ROOTS.join("|")})/[\\w./-]+$`);
+
+/** A symbol token: an identifier, with an optional `()` marking a function. */
 const SYMBOL_TOKEN = /^[A-Za-z_$][\w$]*(?:\(\))?$/;
+
 /** A token shaped like a repository path: a bare first segment, then a slash. */
 const REPO_PATH_SHAPE = /^[A-Za-z_][\w.-]*\//;
 
 interface Claim {
+  /** The whole label the claim was read from, quoted in a problem. */
   label: string;
+
+  /** The segment's opening path token, bound for the segments after it. */
   path: string;
+
   /** The names after the path, `()` stripped. */
   symbols: string[];
 }

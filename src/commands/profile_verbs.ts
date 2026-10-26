@@ -44,12 +44,12 @@ import { DRY_RUN_HELP, type Opts, valueList } from "./registration.ts";
 
 /** The `--auto` option line `add` and `init` share. */
 const AUTO_HELP = "Probe Direct vs the proxy and record the verdict.";
+
 /** The sign-in step's one credential flag on `add` and `init`, in one wording. */
 const GH_USER_HELP =
   "Sign in through this gh account, or auto to follow gh's active account (gh-cli).";
 
-// Keyed exhaustively on AuthProvider so a membership change in env_state.ts fails the compile here
-// instead of drifting the help.
+// Keyed exhaustively on AuthProvider: a membership change in env_state.ts fails the compile here, not the help.
 const AUTH_PROVIDER_HELP: Record<AuthProvider, string> = {
   copilot: "device flow in the browser",
   "gh-cli": "the machine's gh login",
@@ -57,13 +57,14 @@ const AUTH_PROVIDER_HELP: Record<AuthProvider, string> = {
   "gh-env": ghTokenEnvVarsLabel(),
 };
 
+// The verbs as the "takes a verb" error lists them.
 const VERB_LIST = PROFILE_VERBS.join(" | ");
 
 export interface ProfileInvocation {
   /** The user's arguments with the name taken out, for Commander. */
   args: string[];
-  /** The bare word after `profile` when it is not a verb. Passed on as the string the owning
-   *  function takes, so it validates the name in its own order. */
+
+  /** The bare word after `profile` when not a verb, left a string: the owning function validates it in its order. */
   profile: string | null;
 }
 
@@ -161,12 +162,12 @@ function agentFlag(opts: Opts): ManagedAgentId | null {
   return null;
 }
 
-/** The help group every profile verb is listed under: `agent profile --help` and, one row per
- *  verb as `profile [<name>] <verb>`, the root `agent --help` (src/cli.ts). */
+/** Every profile verb's help group: `agent profile --help`, and `profile [<name>] <verb>` rows in `agent --help`. */
 const PROFILE_VERB_GROUP = "Profile:";
 
 /** The name from the word position is passed on as the string the owning function takes, so both
- *  it and the verb validate the name in one order; a verb that owns its own read mints it. */
+ *  it and the verb validate the name in one order; a verb that owns its own read mints it. The
+ *  root `agent --help` (src/cli.ts) lists the verbs under PROFILE_VERB_GROUP. */
 export function registerProfileCommand(program: Command, rawProfile: string | null): Command {
   const minted = (): Profile => (rawProfile === null ? null : parseProfileName(rawProfile));
 

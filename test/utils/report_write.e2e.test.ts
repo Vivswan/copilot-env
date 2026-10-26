@@ -13,15 +13,18 @@ import { envSnapshot, isolateAgentHomes } from "../helpers/env.ts";
 import { CHILD_VALUES, childValuesEnv, importSpecifier, ROOT, runScript } from "../helpers/run.ts";
 import { expect, removeDir, tempDir, test } from "../helpers/testing.ts";
 
+/** Taken at load; the case that moves the homes restores through it. */
 const restoreEnv = envSnapshot();
+
+/** The module under test, by path: the child programs import it as source. */
+const SEAM = join(ROOT, "src", "utils", "report_write.ts");
+
+/** The facade the child writes through, so the reports come from the real seam. */
+const FACADE = join(ROOT, "src", "utils", "fs_facade.ts");
 
 // The seam's contract is per PROCESS (dedup, stderr-only, immune to the consola level),
 // so it is pinned from outside: one child runs every kind and the parent reads what
 // reached which stream.
-
-const SEAM = join(ROOT, "src", "utils", "report_write.ts");
-const FACADE = join(ROOT, "src", "utils", "fs_facade.ts");
-
 test("every kind prints once per process, on stderr only, and a delete re-arms the path", () => {
   const dir = tempDir("copilot-report-");
   try {

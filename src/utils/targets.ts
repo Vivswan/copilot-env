@@ -5,12 +5,16 @@
 //   install.ps1   Resolve-Target     (Windows platform -> triple)
 
 export interface ReleaseTarget {
-  /** The rust-style triple the release asset is named after: an on-disk and URL contract that
-   *  outlived the compiler that first took it. */
+  /** Names the asset: a rust-style triple, now a disk and URL contract outliving its compiler. */
   triple: string;
+
   /** What `bun build --compile --target` takes for this platform. */
   bunTarget: string;
+
+  /** Matched against process.platform by currentReleaseTarget. */
   os: "darwin" | "linux" | "win32";
+
+  /** Matched against process.arch by currentReleaseTarget. */
   arch: "x64" | "arm64";
 }
 
@@ -36,12 +40,13 @@ export function currentReleaseTarget(
   return RELEASE_TARGETS.find((t) => t.os === platform && t.arch === arch) ?? null;
 }
 
-/** Platform-independent, unlike the release asset: one install root only ever holds its own
- *  platform's binary, and the launcher shims hardcode this name. The `bin/agent`(`.ps1`) shim
- *  beside it IS the `agent` alias. */
+/** Platform-free, unlike the asset: a root holds one platform's binary; the shims hardcode it. */
 export const INSTALLED_BINARY_POSIX = "copilot-env";
+
+/** The same name with the `.exe` Windows needs to run it. */
 export const INSTALLED_BINARY_WINDOWS = "copilot-env.exe";
 
+/** The `bin/agent` (`.ps1`) shim beside the binary IS the `agent` alias. */
 export function installedBinaryName(platform: string = process.platform): string {
   return platform === "win32" ? INSTALLED_BINARY_WINDOWS : INSTALLED_BINARY_POSIX;
 }

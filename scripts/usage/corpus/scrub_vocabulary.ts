@@ -1,10 +1,11 @@
 // The scrub's closed vocabularies: the schema keys, containers, tool names, enum values, and the
-// numeric, timestamp and version keys the two CLIs write, plus the id and clock shapes. Grown
-// from the recorded corpus; anything outside these sets is content and is replaced.
+// numeric, timestamp and version keys the two CLIs (and the fake) write, plus the id and clock
+// shapes. Grown from the recorded corpus; anything outside these sets is content and is replaced,
+// so schema drift shows up as `SCRUBBED_KEY_n` entries rather than leaking. A number or a timestamp
+// survives only under its listed key: an account or phone number typed into a prompt, or a figure
+// inside tool output, is content.
 
-/** Every schema key the two CLIs (and the fake) write outside tool containers; anything else is
- *  a dynamic key and is replaced. Grown from the recorded corpus, so schema drift shows up as
- *  `SCRUBBED_KEY_n` entries rather than leaking. */
+/** Schema keys outside tool containers; any other key is dynamic and becomes `SCRUBBED_KEY_n`. */
 export const KNOWN_KEYS = new Set([
   "access",
   "active",
@@ -205,8 +206,8 @@ export const KNOWN_KEYS = new Set([
   "wire_api",
   "workspace_roots",
 ]);
-/** Keys whose whole value is tool or user data (or a user-keyed map, `settings`): inside,
- *  only these structural keys survive. */
+
+/** Tool or user data (`settings`: a user-keyed map); inside, only CONTAINER_STRUCT_KEYS survive. */
 export const CONTAINER_KEYS = new Set([
   "input",
   "output",
@@ -216,6 +217,8 @@ export const CONTAINER_KEYS = new Set([
   "toolUseResult",
   "settings",
 ]);
+
+/** Kept inside a container; a value there is still content unless an id or a `type`/`name` enum. */
 export const CONTAINER_STRUCT_KEYS = new Set([
   "type",
   "id",
@@ -232,6 +235,7 @@ export const CONTAINER_STRUCT_KEYS = new Set([
   "annotations",
   "logprobs",
 ]);
+
 /** The tools either CLI ships; a `name` outside this set is a user-defined (MCP) tool or text. */
 const TOOL_NAMES = [
   "Agent",
@@ -256,6 +260,7 @@ const TOOL_NAMES = [
   "web_search",
   "write_stdin",
 ];
+
 /** Closed value sets for the enum-bearing keys; a value outside its set is content. */
 export const ENUM_VALUES: Record<string, ReadonlySet<string>> = {
   type: new Set([
@@ -364,9 +369,8 @@ export const ENUM_VALUES: Record<string, ReadonlySet<string>> = {
   subtype: new Set(["success", "error", "init", "compact_boundary"]),
   name: new Set(TOOL_NAMES),
 };
-/** Keys whose NUMBER survives outside a container: the token buckets the readers price, the
- *  clocks and durations, and the structural counts and offsets. Any other number (an account
- *  or phone number typed into a prompt, a figure inside tool output) is content. */
+
+/** The only keys whose number survives outside a container; any other number is content. */
 export const NUMERIC_KEYS = new Set([
   "addedLines",
   "apiBlockIndex",
@@ -404,13 +408,22 @@ export const NUMERIC_KEYS = new Set([
   "web_fetch_requests",
   "web_search_requests",
 ]);
-/** Keys whose ISO timestamp survives outside a container: the line clock the readers bucket
- *  by, and the turn clocks. A timestamp-shaped string under any other key is content. */
+
+/** The only keys whose ISO timestamp survives outside a container (the line and turn clocks). */
 export const TIMESTAMP_KEYS = new Set(["timestamp", "started_at", "completed_at"]);
+
 /** `version` / `cli_version` hold a release number, a shape rather than a vocabulary. */
 export const VERSION_KEYS = new Set(["version", "cli_version"]);
+
+/** A release number as the CLIs write it, with an optional prerelease or build tail. */
 export const VERSION_RE = /^\d+\.\d+\.\d+([.-][A-Za-z0-9.]+)?$/;
+
+/** A bare uuid, either case; its pseudonym keeps the 8-4-4-4-12 shape. */
 export const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Typed vendor ids (`msg_`, `toolu_`, `call_`, ...): the prefix stays, the tail is a pseudonym. */
 export const PREFIXED_ID_RE =
   /^(msg|toolu|call|fc|resp|rs|item|req|chatcmpl|agent)[_-]([A-Za-z0-9_-]+)$/;
+
+/** The clock shape both CLIs write; kept under a TIMESTAMP_KEYS key, read for the minute count. */
 export const ISO_TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:?\d{2})$/;

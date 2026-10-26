@@ -27,27 +27,31 @@ import {
 import { spawnChild } from "./run.ts";
 import { outputOf } from "./subprocess.ts";
 
+/** The bearer the claude settings bake; aimock's inbound auth is off, so the value is never checked. */
 const FAKE_CLAUDE_TOKEN = "fake-token-claude";
+
+/** The codex config's bearer, distinct from claude's; aimock REDACTS it in the journal either way. */
 const FAKE_CODEX_TOKEN = "fake-token-codex";
+
 /** The identity the scratch configs bake, distinct from anything a real wiring sends. */
 export const FAKE_USER_AGENT = "copilot-env-test/1.0";
-/** The models the scratch configs pin, both in the fake's catalog. */
+
+/** The model the live probe passes on claude's command line, in the fake's catalog; model-not-found names it. */
 export const FAKE_CLAUDE_MODEL = "claude-haiku-4-5";
+
+/** The model the codex config pins, in the fake's catalog too. */
 export const FAKE_CODEX_MODEL = "gpt-5.4";
 
-/** The Responses stream prelude (response.created, response.in_progress, the message's
- *  response.output_item.added, response.content_part.added) before the first text delta. */
+/** The Responses frames before the first text delta: created, in_progress, output_item.added, content_part.added. */
 const RESPONSES_PRELUDE_FRAMES = 4;
-/** codex sends `include: ["reasoning.encrypted_content"]`, and aimock answers a reasoning model
- *  with a blob-only reasoning item BEFORE the message: one output_item.added / output_item.done
- *  pair, two frames ahead of the prelude. */
+
+/** The reasoning item's output_item.added/done pair aimock puts BEFORE the message for codex's request. */
 const RESPONSES_REASONING_ITEM_FRAMES = 2;
-/** aimock's `truncateAfterChunks: N` writes the Nth frame and destroys the socket in the same
- *  tick, so the wire carries N - 1 frames. */
+
+/** aimock's `truncateAfterChunks: N` writes the Nth frame and destroys the socket in the same tick: N - 1 land. */
 const AIMOCK_CUT_OFFSET = 1;
 
-/** Every scenario a test can name. The error bodies are the vendors' envelopes with Copilot's
- *  words where Copilot has its own (the service_tier rejection). */
+/** Every scenario a test can name; the error bodies are the vendors' envelopes in Copilot's own wording. */
 const SCENARIOS = {
   ok: { kind: "text", text: "OK" },
   unauthorized: {
@@ -72,7 +76,9 @@ const SCENARIOS = {
   // The connection drops right after the FIRST content delta of a codex-shaped Responses stream
   // (aimock destroys the socket, so this is the mid-stream disconnect, not a clean early end).
   // The frame count is codex's request shape (reasoning item, prelude, one delta) plus aimock's
-  // off-by-one; fake_model_endpoint.e2e.test.ts pins that exactly one delta gets through. Exercised
+  // off-by-one: codex sends `include: ["reasoning.encrypted_content"]`, so aimock answers a
+  // reasoning model with a blob-only reasoning item two frames ahead of the prelude;
+  // fake_model_endpoint.e2e.test.ts pins that exactly one delta gets through. Exercised
   // through codex, which reconnects five times within seconds and fails the turn; claude reads
   // the same drop as a connection error it retries ten times over about six minutes, so its arm
   // is recorded, never exercised.
@@ -171,19 +177,24 @@ function fakeCliEnv(home: string, extra: Record<string, string>): Record<string,
 interface CliRun {
   /** -1 when the deadline killed it before it exited. */
   exitCode: number;
+
+  /** Empty when the deadline killed it and a descendant held the pipe past KILL_GRACE_MS. */
   stdout: string;
+
+  /** Empty on the same condition: the pipes never settled after the kill. */
   stderr: string;
+
   /** The deadline killed it: the run never ended on its own. */
   timedOut: boolean;
 }
 
-/** After the deadline kill, how long the output pipes get to close. A CLI's own child may
- *  outlive it holding the pipes; the wait is bounded so a wedged CLI ends the test instead of
- *  the test waiting on it. */
+/** How long the output pipes get to close after the deadline kill; runFakeCli says why it is bounded. */
 const KILL_GRACE_MS = 5_000;
 
 /** Async on purpose: the fake's front serves from THIS process, so a blocking spawn would starve
- *  the very requests the child is making. */
+ *  the very requests the child is making. After the deadline kill the pipes get KILL_GRACE_MS to
+ *  close: a CLI's own child may outlive it holding them, and the bound makes a wedged CLI end the
+ *  test instead of the test waiting on it. */
 export async function runFakeCli(
   cli: "claude" | "codex",
   args: string[],

@@ -5,6 +5,9 @@
 // Skipped on a machine without the binary. COPILOT_ENV_LIVE_CLIS (set by checks.yml and the
 // fleet nightly after installing the CLIs) opts in: the tests run and a missing codex is a
 // failure, never a skip that lets the gate pass vacuously.
+//
+// Codex reconnects five times on a rejected request before it gives up, and a cold start on a CI
+// runner adds to that, hence the three-minute test budget.
 import { join } from "node:path";
 import { CODEX_PROBE, PROBE_PROMPT, summarizeProbeFailure } from "../../src/agents/live_probe.ts";
 import { codexLiveLaunch } from "../../src/health/live_launch.ts";
@@ -25,8 +28,7 @@ import { afterEach, beforeEach, expect, tempDir, test } from "../helpers/testing
 const LIVE_ENV = "COPILOT_ENV_LIVE_CLIS";
 const codexPath = resolveCommand("codex");
 const live = test.skipIf(codexPath === null && !process.env[LIVE_ENV]);
-/** Codex reconnects five times on a rejected request before it gives up; a cold start on a CI
- *  runner adds to that. */
+
 const TEST_TIMEOUT_MS = 180_000;
 
 let fake: FakeModelEndpoint;
@@ -34,6 +36,8 @@ let home = "";
 
 /** The health probe's own read of a codex stream: did the model answer? */
 const answered = (stdout: string) => codexLiveLaunch(home, null).answered(stdout);
+
+/** The answer item by hand, to read its text; the probe's read says only that one exists. */
 const isAgentMessage = (e: Record<string, unknown>) =>
   e.type === "item.completed" && isRecord(e.item) && e.item.type === "agent_message";
 

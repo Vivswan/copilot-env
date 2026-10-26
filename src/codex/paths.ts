@@ -17,8 +17,7 @@ export function plainCodexHome(): string {
   return path.join(userHomeDir(), ".codex");
 }
 
-/** The `model_provider` a copilot-env-written config.toml selects, direct and proxy alike (the mode
- *  is read from the table's contents). */
+/** The `model_provider` copilot-env writes, direct and proxy alike: the table's contents carry the mode. */
 export const CODEX_PROVIDER_ID = "copilot-env";
 
 /** A named profile is selected by its own `<name>.config.toml` (`codex --profile <name>` layers it

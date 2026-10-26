@@ -19,6 +19,7 @@ import { fetchModelCatalog } from "./models_fetch.ts";
 /** The two Copilot wires the managed agents speak (Claude: Anthropic messages, Codex: responses). */
 type DirectWire = "messages" | "responses";
 
+/** Relative to the host the wiring bakes (apiBase), the same host for both wires. */
 const WIRE_PATHS: Record<DirectWire, string> = {
   messages: "/v1/messages",
   responses: "/responses",
@@ -27,17 +28,20 @@ const WIRE_PATHS: Record<DirectWire, string> = {
 /** One ping's budget, shared with discovery.ts. */
 export const PING_TIMEOUT_MS = 20_000;
 
-/** One agent's endpoint smoke: its wire plus its own "can I drive this model" picks. */
+/** One agent's endpoint smoke: its wire plus its own "can I drive this model" picks. A pick that
+ *  answers null means the catalog holds nothing the agent could drive: a failed smoke (Direct
+ *  cannot serve the agent), not an error. */
 export interface EndpointSmoke {
+  /** Selects the ping's path and request body (WIRE_PATHS, pingBody). */
   wire: DirectWire;
-  /** The wire ping's model from the raw /models body. Null means the catalog holds nothing this
-   *  agent could drive, which is a failed smoke (Direct cannot serve the agent), not an error. */
+
+  /** The wire ping's model from the raw /models body; null = nothing this agent could drive. */
   pickModel: (catalogBody: unknown) => string | null;
-  /** The CLI smoke's catalog-free first hop: an alias the CLI resolves itself. Absent: the first
-   *  hop is pickModel's catalog pick. */
+
+  /** The CLI smoke's catalog-free first hop, an alias the CLI resolves itself; absent = pickModel's pick. */
   cliAlias?: string;
-  /** The CLI smoke's second hop from the catalog, run once after a model rejection of the first.
-   *  Absent: no second hop. */
+
+  /** The CLI smoke's second hop from the catalog, once, after a model rejection of the first; absent = none. */
   cliFallback?: (catalogBody: unknown) => string | null;
 }
 
@@ -50,11 +54,14 @@ export type SmokeModelOutcome = { ok: true; model: string } | { ok: false; detai
 export interface DirectSmoke {
   /** GET /models under the wiring's headers, then the agent's wire pick. */
   pickModel(): Promise<SmokeModelOutcome>;
+
   /** The CLI smoke's first hop: the pin, else the agent's alias (no fetch), else the wire pick. */
   cliModel(): Promise<SmokeModelOutcome>;
+
   /** The CLI smoke's second hop after a model rejection: GET /models, then the agent's fallback;
    *  null when there is none (a pin, or an agent without a fallback). */
   cliFallbackModel(): Promise<SmokeModelOutcome | null>;
+
   /** One minimal capped call to the wire with that model; 200 alone is Direct. */
   ping(model: string): Promise<EndpointSmokeOutcome>;
 }

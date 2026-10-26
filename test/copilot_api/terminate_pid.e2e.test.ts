@@ -7,6 +7,8 @@
 //                least as demanding, so a transient scan failure must not strand a stop
 // The TERM-survivor arms need a trappable SIGTERM, which Windows lacks (process.kill is
 // TerminateProcess there), so they are POSIX-only.
+
+import { afterEach } from "bun:test";
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { type TerminateVerdict, terminatePid } from "../../src/copilot_api/process.ts";
@@ -14,7 +16,7 @@ import { pidAlive } from "../../src/utils/pid.ts";
 import { killAndAwaitExit, until, withUnprovablePidProbe } from "../helpers/daemon.ts";
 import { captureAllWrites as withCapturedOutput } from "../helpers/output.ts";
 import { bunRunArgs, CHILD_VALUES, childValuesEnv, spawnChild } from "../helpers/run.ts";
-import { afterEach, expect, removeDir, tempDir, test } from "../helpers/testing.ts";
+import { expect, removeDir, tempDir, test } from "../helpers/testing.ts";
 
 let dir = "";
 

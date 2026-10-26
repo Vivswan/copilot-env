@@ -94,6 +94,77 @@ export function recordHeartbeat(profile: Profile = null): void {
   CopilotEnvRunState.forProfile(profile).setIfExists({ lastEnsureAt: Date.now() });
 }
 
+/** Whether the tracked pid is signalled, the lock ruling first (same table as proxyStatus): "dead" is
+ *  never signalled however alive the pid table says it is, since the OS may have recycled the pid.
+ *  "unproven" signals on "yes" AND "unknown" (a sandboxed token that cannot read the pid's identity,
+ *  e.g. Windows Constrained Language Mode): treating "unknown" as gone would leave a live daemon
+ *  running while reporting it stopped. "refused" is a held lock whose pid this host cannot identify
+ *  as our daemon, warned here. */
+async function trackedSignalDecision(
+  trackedPid: number,
+  profile: Profile,
+  classify: (pid: number) => Promise<"yes" | "no" | "unknown">,
+): Promise<"signal" | "skip" | "refused"> {
+  const lock = daemonLockVerdict(new CopilotApiPaths(profile).home, trackedPid);
+  switch (lock) {
+    case "alive":
+      // "alive" proves a live holder SOMEWHERE, not that the local pid is it: on a home shared across
+      // hosts the holder is another HOST's daemon, and the tracked number can sit on any innocent local
+      // process. An unconfirmed pid is refused LOUDLY with tracking kept: silently unbinding something
+      // provably up would lie.
+      if (await isCopilotApiPid(trackedPid)) return "signal";
+      consola.warn(
+        scannable({
+          headline: `Not stopping pid ${paintFor(colorEnabled()).cyan(String(trackedPid))}: this host cannot identify it as our daemon.`,
+          evidence: [
+            "daemon.lock held",
+            "a shared home's daemon on another host, or an unreadable process table",
+            "tracking left in place",
+          ],
+          lead: "Fix:",
+          actions: [[agentStopCommand(profile), "run it on the host whose daemon holds the lock"]],
+        }),
+      );
+      return "refused";
+    case "dead":
+      return "skip";
+    case "unproven": {
+      const cls = await classify(trackedPid);
+      return cls === "yes" || cls === "unknown" ? "signal" : "skip";
+    }
+    default:
+      return assertNever(lock);
+  }
+}
+
+/** Whether the daemon is gone after its signal. On Windows SIGTERM maps to TerminateProcess, a hard
+ *  kill; SQLite WAL recovery makes that safe. */
+async function stoppedAfterSignal(
+  trackedPid: number,
+  graceMs: number,
+  classify: (pid: number) => Promise<"yes" | "no" | "unknown">,
+): Promise<boolean> {
+  const verdict = await terminatePid(trackedPid, graceMs, classify);
+  switch (verdict) {
+    case "refused-reused-pid":
+      // The daemon died inside the grace and the OS recycled its pid onto a FOREIGN process; keeping
+      // the tracking would aim every follow-up stop at an innocent bystander. terminatePid already
+      // warned that the impostor was spared.
+      consola.info(
+        `Cleared the stale tracking: the proxy (pid ${paintFor(colorEnabled()).cyan(String(trackedPid))}) exited and another process now holds its pid.`,
+      );
+      return true;
+    case "term-only":
+    case "died-in-grace":
+    case "killed":
+      // With graceMs 0 a just-SIGTERMed process can still be alive for a tick; a caller needing
+      // certainty passes graceMs > 0.
+      return !pidAlive(trackedPid);
+    default:
+      return assertNever(verdict);
+  }
+}
+
 /**
  * The shared core of `agent stop` and the de-authenticate teardown. `graceMs > 0` waits and escalates
  * to SIGKILL for callers that must be sure; `0` sends one SIGTERM without waiting. `classify` is the test seam.
@@ -117,80 +188,19 @@ export async function stopTrackedProxy(
     clearPersistedInferenceActivity(profile);
     return { signalled: false, stopped: true };
   }
-  // The lock rules first (same table as proxyStatus): "dead" is never signalled however alive the pid
-  // table says it is, since the OS may have recycled the pid. "unproven" signals on "yes" AND "unknown"
-  // (a sandboxed token that cannot read the pid's identity, e.g. Windows Constrained Language Mode):
-  // treating "unknown" as gone would leave a live daemon running while reporting it stopped.
-  // On Windows SIGTERM maps to TerminateProcess, a hard kill; SQLite WAL recovery makes that safe.
-  const lock = daemonLockVerdict(new CopilotApiPaths(profile).home, trackedPid);
-  let signalled: boolean;
-  switch (lock) {
-    case "alive":
-      // "alive" proves a live holder SOMEWHERE, not that the local pid is it: on a home shared across
-      // hosts the holder is another HOST's daemon, and the tracked number can sit on any innocent local
-      // process. An unconfirmed pid is refused LOUDLY with tracking kept: silently unbinding something
-      // provably up would lie.
-      if (!(await isCopilotApiPid(trackedPid))) {
-        consola.warn(
-          scannable({
-            headline: `Not stopping pid ${paintFor(colorEnabled()).cyan(String(trackedPid))}: this host cannot identify it as our daemon.`,
-            evidence: [
-              "daemon.lock held",
-              "a shared home's daemon on another host, or an unreadable process table",
-              "tracking left in place",
-            ],
-            lead: "Fix:",
-            actions: [
-              [agentStopCommand(profile), "run it on the host whose daemon holds the lock"],
-            ],
-          }),
-        );
-        return { trackedPid, signalled: false, stopped: false };
-      }
-      signalled = true;
-      break;
-    case "dead":
-      signalled = false;
-      break;
-    case "unproven": {
-      const cls = await classify(trackedPid);
-      signalled = cls === "yes" || cls === "unknown";
-      break;
-    }
-    default:
-      signalled = assertNever(lock);
-  }
+  const decision = await trackedSignalDecision(trackedPid, profile, classify);
+  if (decision === "refused") return { trackedPid, signalled: false, stopped: false };
+  const signalled = decision === "signal";
+
   // A dry run takes the same path to here (the refusal above is the real command's) and sends no
   // signal; the tracking write below records like every store write.
-  let stopped: boolean;
+  let stopped = true;
   if (signalled && dryRunActive()) {
     consola.info(`Would stop the tracked proxy daemon (pid ${trackedPid}).`);
-    stopped = true;
   } else if (signalled) {
-    const verdict = await terminatePid(trackedPid, graceMs, classify);
-    switch (verdict) {
-      case "refused-reused-pid":
-        // The daemon died inside the grace and the OS recycled its pid onto a FOREIGN process; keeping
-        // the tracking would aim every follow-up stop at an innocent bystander. terminatePid already
-        // warned that the impostor was spared.
-        consola.info(
-          `Cleared the stale tracking: the proxy (pid ${paintFor(colorEnabled()).cyan(String(trackedPid))}) exited and another process now holds its pid.`,
-        );
-        stopped = true;
-        break;
-      case "term-only":
-      case "died-in-grace":
-      case "killed":
-        // With graceMs 0 a just-SIGTERMed process can still be alive for a tick; a caller needing
-        // certainty passes graceMs > 0.
-        stopped = !pidAlive(trackedPid);
-        break;
-      default:
-        stopped = assertNever(verdict);
-    }
-  } else {
-    stopped = true;
+    stopped = await stoppedAfterSignal(trackedPid, graceMs, classify);
   }
+
   // Tracking survives only when we waited and the daemon is confirmed still alive: a stuck daemon a
   // follow-up `agent stop` must be able to target. The graceMs 0 path cannot confirm death, so it stays optimistic.
   const keepTracking = graceMs > 0 && !stopped;

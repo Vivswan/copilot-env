@@ -1,3 +1,4 @@
+import { afterEach, beforeEach } from "bun:test";
 import { mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join, parse, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -51,7 +52,7 @@ import {
   runSync,
   spawnChild,
 } from "../helpers/run.ts";
-import { afterEach, beforeEach, expect, tempDir, test } from "../helpers/testing.ts";
+import { expect, tempDir, test } from "../helpers/testing.ts";
 
 // Every daemon spawn derives from ONE DaemonSpec, so argv and environment are pinned against the
 // spec rather than a pile of optional arguments.
@@ -106,153 +107,158 @@ function plantInstalledProxy(version: string): string {
   return plantProxyInstall(dir, version);
 }
 
+/** The PAT rows' identity: the copilot-developer-cli id header under the codex User-Agent. */
 const CLI_HEADERS = daemonClientHeaders("codex_exec/1", "copilot-developer-cli");
+
+/** A copilotHost other than BASE's, so the host env is seen to follow the spec. */
 const BUSINESS_HOST = "https://api.business.githubcopilot.com";
+
+/** Always loaded, in this order (every daemon has a credential and a host); optional shims append. */
+const BASE_PRELOADS = [
+  "daemon_lock_preload.ts",
+  "token_argv_preload.ts",
+  "daemon_runtime_preload.ts",
+  "copilot_host_preload.ts",
+  "client_headers_preload.ts",
+];
+
+/** copilot-api's own host override and app selector, as a shell may carry them. */
+const ENTERPRISE_ENV = {
+  COPILOT_API_ENTERPRISE_URL: "ghe.example",
+  COPILOT_API_OAUTH_APP: "opencode",
+};
+
+/** What an earlier launch left in our shell; the spec sets every credential key, so none leaks in. */
+const STALE_ENV = {
+  [DAEMON_GH_TOKEN_ENV]: "gho_from_an_earlier_run",
+  [DAEMON_CLIENT_HEADERS_ENV]: '{"User-Agent":"stale"}',
+  COPILOT_API_OAUTH_APP: "opencode",
+};
+
+/** The codex identity names the id header as a deletion, so the proxy's own cannot stand in. */
+const CODEX_HEADERS = daemonClientHeaders("codex_exec/1", null);
+
+interface PreloadRow {
+  /** Overlaid on BASE. */
+  spec: Partial<DaemonSpec>;
+
+  /** The shims the launch names, in order: the always-loaded base, then the spec's optional ones. */
+  preloads: string[];
+
+  /** Inherited environment -> the keys the daemon must (not) see. */
+  env?: Array<{ inherited: Record<string, string>; keys: Record<string, string | undefined> }>;
+}
+
+const PRELOAD_ROWS: PreloadRow[] = [
+  {
+    spec: {},
+    preloads: BASE_PRELOADS,
+    env: [
+      // copilot-api's own host selectors answer before the rewritten state: always scrubbed.
+      {
+        inherited: ENTERPRISE_ENV,
+        keys: { COPILOT_API_ENTERPRISE_URL: undefined, COPILOT_API_OAUTH_APP: undefined },
+      },
+      {
+        inherited: { [DAEMON_COPILOT_HOST_ENV]: "https://stale.example" },
+        keys: { [DAEMON_COPILOT_HOST_ENV]: FAKE_DAEMON_HOST },
+      },
+    ],
+  },
+  {
+    // Every credential rides with its identity's header set, as the shim parses it back. The
+    // rewrite rides copilot-api's default upstream path, so the opencode app switch is scrubbed
+    // for every credential.
+    spec: { credential: { kind: "token", token: "gho_new", clientHeaders: CODEX_HEADERS } },
+    preloads: BASE_PRELOADS,
+    env: [
+      {
+        inherited: STALE_ENV,
+        keys: {
+          [DAEMON_GH_TOKEN_ENV]: "gho_new",
+          [DAEMON_CLIENT_HEADERS_ENV]: JSON.stringify(CODEX_HEADERS),
+          COPILOT_API_OAUTH_APP: undefined,
+        },
+      },
+    ],
+  },
+  {
+    spec: { credential: { kind: "pat", token: "ghp_x", clientHeaders: CLI_HEADERS } },
+    preloads: [...BASE_PRELOADS, "pat_passthrough_preload.ts"],
+    env: [
+      {
+        inherited: STALE_ENV,
+        keys: {
+          [DAEMON_GH_TOKEN_ENV]: "ghp_x",
+          [DAEMON_CLIENT_HEADERS_ENV]: JSON.stringify(CLI_HEADERS),
+          COPILOT_API_OAUTH_APP: undefined,
+        },
+      },
+    ],
+  },
+  {
+    // The daemon inherits our TLS/proxy environment; the spec's own wiring wins over an inherited
+    // copy, and an inherited NODE_PATH is replaced, never joined: the shims resolve from the
+    // proxy home's install alone.
+    spec: { home: "/profiles/work" },
+    preloads: BASE_PRELOADS,
+    env: [
+      {
+        inherited: {
+          NODE_EXTRA_CA_CERTS: "/etc/corp.pem",
+          HTTPS_PROXY: "http://corp:3128",
+          COPILOT_API_HOME: "/the/default/home",
+          NODE_PATH: "/somewhere/else",
+        },
+        keys: {
+          NODE_EXTRA_CA_CERTS: "/etc/corp.pem",
+          HTTPS_PROXY: "http://corp:3128",
+          COPILOT_API_HOME: "/profiles/work",
+          NODE_PATH: "/the/root/home/proxy/install/node_modules",
+          BUN_BE_BUN: "1",
+        },
+      },
+    ],
+  },
+  {
+    spec: { idleWatchdog: true },
+    preloads: [...BASE_PRELOADS, "idle_watchdog_preload.ts"],
+  },
+  {
+    spec: { muteProxyLogs: true },
+    preloads: [...BASE_PRELOADS, "log_mute_preload.ts"],
+  },
+  {
+    spec: { idleWatchdog: true, muteProxyLogs: true },
+    preloads: [...BASE_PRELOADS, "idle_watchdog_preload.ts", "log_mute_preload.ts"],
+  },
+  {
+    spec: { copilotHost: BUSINESS_HOST },
+    preloads: BASE_PRELOADS,
+    env: [{ inherited: {}, keys: { [DAEMON_COPILOT_HOST_ENV]: BUSINESS_HOST } }],
+  },
+  {
+    spec: {
+      copilotHost: BUSINESS_HOST,
+      credential: { kind: "pat", token: "ghp_x", clientHeaders: CLI_HEADERS },
+      idleWatchdog: true,
+    },
+    preloads: [...BASE_PRELOADS, "pat_passthrough_preload.ts", "idle_watchdog_preload.ts"],
+  },
+];
 
 // Why the order and the environment matter: the daemon-lock shim leads every spawn (the per-home
 // liveness lock is taken before anything else touches the home); the passthrough fake loads after
 // the splice it reads the token from; a pinned host's shim precedes the PAT shim, and copilot-api's
 // own host override and app selector are dropped because either would beat the rewritten state.
 test("the preload set and its environment derive from the spec, in load order", () => {
-  // Every daemon carries a credential and a host, so the token, host, and client-header shims are
-  // always loaded, in this order; the optional shims append.
-  const base = [
-    "daemon_lock_preload.ts",
-    "token_argv_preload.ts",
-    "daemon_runtime_preload.ts",
-    "copilot_host_preload.ts",
-    "client_headers_preload.ts",
-  ];
-  const enterprise = {
-    COPILOT_API_ENTERPRISE_URL: "ghe.example",
-    COPILOT_API_OAUTH_APP: "opencode",
-  };
   // The file's one line, as bun reads it: file URLs, which an import accepts on every platform.
   expect(renderDaemonPreload(BASE)).toBe(
-    `${base
-      .map(
-        (shim) =>
-          `import ${JSON.stringify(pathToFileURL(join(ROOT, "src", "scripts", shim)).href)};`,
-      )
-      .join(" ")}\n`,
+    `${BASE_PRELOADS.map(
+      (shim) => `import ${JSON.stringify(pathToFileURL(join(ROOT, "src", "scripts", shim)).href)};`,
+    ).join(" ")}\n`,
   );
-  // Our own environment already carries both credential keys (an earlier launch in this shell):
-  // the credential environment is always set from the spec, so a stale value can never leak in.
-  const stale = {
-    [DAEMON_GH_TOKEN_ENV]: "gho_from_an_earlier_run",
-    [DAEMON_CLIENT_HEADERS_ENV]: '{"User-Agent":"stale"}',
-    COPILOT_API_OAUTH_APP: "opencode",
-  };
-  // The codex identity names the id header as a deletion, so the proxy's own cannot stand in.
-  const CODEX_HEADERS = daemonClientHeaders("codex_exec/1", null);
-  interface Row {
-    /** Overlaid on BASE. */
-    spec: Partial<DaemonSpec>;
-
-    /** The shims the launch names, in order: the always-loaded base, then the spec's optional ones. */
-    preloads: string[];
-
-    /** Inherited environment -> the keys the daemon must (not) see. */
-    env?: Array<{ inherited: Record<string, string>; keys: Record<string, string | undefined> }>;
-  }
-  const rows: Row[] = [
-    {
-      spec: {},
-      preloads: base,
-      env: [
-        // copilot-api's own host selectors answer before the rewritten state: always scrubbed.
-        {
-          inherited: enterprise,
-          keys: { COPILOT_API_ENTERPRISE_URL: undefined, COPILOT_API_OAUTH_APP: undefined },
-        },
-        {
-          inherited: { [DAEMON_COPILOT_HOST_ENV]: "https://stale.example" },
-          keys: { [DAEMON_COPILOT_HOST_ENV]: FAKE_DAEMON_HOST },
-        },
-      ],
-    },
-    {
-      // Every credential rides with its identity's header set, as the shim parses it back. The
-      // rewrite rides copilot-api's default upstream path, so the opencode app switch is scrubbed
-      // for every credential.
-      spec: { credential: { kind: "token", token: "gho_new", clientHeaders: CODEX_HEADERS } },
-      preloads: base,
-      env: [
-        {
-          inherited: stale,
-          keys: {
-            [DAEMON_GH_TOKEN_ENV]: "gho_new",
-            [DAEMON_CLIENT_HEADERS_ENV]: JSON.stringify(CODEX_HEADERS),
-            COPILOT_API_OAUTH_APP: undefined,
-          },
-        },
-      ],
-    },
-    {
-      spec: { credential: { kind: "pat", token: "ghp_x", clientHeaders: CLI_HEADERS } },
-      preloads: [...base, "pat_passthrough_preload.ts"],
-      env: [
-        {
-          inherited: stale,
-          keys: {
-            [DAEMON_GH_TOKEN_ENV]: "ghp_x",
-            [DAEMON_CLIENT_HEADERS_ENV]: JSON.stringify(CLI_HEADERS),
-            COPILOT_API_OAUTH_APP: undefined,
-          },
-        },
-      ],
-    },
-    {
-      // The daemon inherits our TLS/proxy environment; the spec's own wiring wins over an inherited
-      // copy, and an inherited NODE_PATH is replaced, never joined: the shims resolve from the
-      // proxy home's install alone.
-      spec: { home: "/profiles/work" },
-      preloads: base,
-      env: [
-        {
-          inherited: {
-            NODE_EXTRA_CA_CERTS: "/etc/corp.pem",
-            HTTPS_PROXY: "http://corp:3128",
-            COPILOT_API_HOME: "/the/default/home",
-            NODE_PATH: "/somewhere/else",
-          },
-          keys: {
-            NODE_EXTRA_CA_CERTS: "/etc/corp.pem",
-            HTTPS_PROXY: "http://corp:3128",
-            COPILOT_API_HOME: "/profiles/work",
-            NODE_PATH: "/the/root/home/proxy/install/node_modules",
-            BUN_BE_BUN: "1",
-          },
-        },
-      ],
-    },
-    {
-      spec: { idleWatchdog: true },
-      preloads: [...base, "idle_watchdog_preload.ts"],
-    },
-    {
-      spec: { muteProxyLogs: true },
-      preloads: [...base, "log_mute_preload.ts"],
-    },
-    {
-      spec: { idleWatchdog: true, muteProxyLogs: true },
-      preloads: [...base, "idle_watchdog_preload.ts", "log_mute_preload.ts"],
-    },
-    {
-      spec: { copilotHost: BUSINESS_HOST },
-      preloads: base,
-      env: [{ inherited: {}, keys: { [DAEMON_COPILOT_HOST_ENV]: BUSINESS_HOST } }],
-    },
-    {
-      spec: {
-        copilotHost: BUSINESS_HOST,
-        credential: { kind: "pat", token: "ghp_x", clientHeaders: CLI_HEADERS },
-        idleWatchdog: true,
-      },
-      preloads: [...base, "pat_passthrough_preload.ts", "idle_watchdog_preload.ts"],
-    },
-  ];
-  for (const row of rows) {
+  for (const row of PRELOAD_ROWS) {
     const spec = { ...BASE, ...row.spec };
     expect({ spec: row.spec, preloads: preloads(spec) }).toEqual({
       spec: row.spec,
@@ -621,95 +627,59 @@ test("the Windows CommandLine mirror matches the image-quoted daemon shapes, own
   ).toBe(false);
 });
 
-test("impostor argv that merely mentions copilot-api and start survives the sweep", () => {
-  // The incident shape: an agent CLI carrying prompt text about this very code. The
-  // ucomm gate rejects it outright, however daemon-like the text reads.
-  expect(
-    isDaemonProcess({
-      pid: 1,
-      ucomm: "codex",
-      command: "/usr/local/bin/codex exec --prompt narrow the copilot-api start sweep in launch.ts",
-    }),
-  ).toBe(false);
+// Command lines that mention copilot-api and start without being a daemon; each row's comment
+// names its shape. The ucomm gate rejects a foreign process outright, however daemon-like its
+// text reads.
+
+const IMPOSTOR_PROCESSES: { ucomm: string; command: string }[] = [
+  // The incident shape: an agent CLI carrying prompt text about this very code.
+  {
+    ucomm: "codex",
+    command: "/usr/local/bin/codex exec --prompt narrow the copilot-api start sweep in launch.ts",
+  },
   // A shell whose $0/argv spell the old substring exactly.
-  expect(
-    isDaemonProcess({ pid: 1, ucomm: "sh", command: "sh -c sleep 30 copilot-api start" }),
-  ).toBe(false);
+  { ucomm: "sh", command: "sh -c sleep 30 copilot-api start" },
   // Even a real runtime process: the words as BARE tokens are not an entry.
-  expect(
-    isDaemonProcess({
-      pid: 1,
-      ucomm: "bun",
-      command: "/home/me/.bun/bin/bun run script.ts --note copilot-api start",
-    }),
-  ).toBe(false);
+  { ucomm: "bun", command: "/home/me/.bun/bin/bun run script.ts --note copilot-api start" },
   // A copilot-api-SHAPED path in a runtime's own arguments: the bare word before it
   // ("inspect" -- prompt text, another script's argument) breaks the invocation shape.
-  expect(
-    isDaemonProcess({
-      pid: 1,
-      ucomm: "bun",
-      command: "bun run worker.ts --prompt inspect /tmp/copilot-api-notes start safely",
-    }),
-  ).toBe(false);
+  {
+    ucomm: "bun",
+    command: "bun run worker.ts --prompt inspect /tmp/copilot-api-notes start safely",
+  },
   // A copilot-api path token NOT followed by the start subcommand (a foreground run).
-  expect(
-    isDaemonProcess({
-      pid: 1,
-      ucomm: "bun",
-      command: "/opt/bun/bun run /x/node_modules/@jeffreycao/copilot-api/dist/main.js auth login",
-    }),
-  ).toBe(false);
+  {
+    ucomm: "bun",
+    command: "/opt/bun/bun run /x/node_modules/@jeffreycao/copilot-api/dist/main.js auth login",
+  },
   // A codex process even with a perfectly daemon-shaped command line: ucomm decides.
-  expect(
-    isDaemonProcess({
-      pid: 1,
-      ucomm: "codex",
-      command: "/opt/bun/bun run /x/node_modules/@jeffreycao/copilot-api/dist/main.js start",
-    }),
-  ).toBe(false);
+  {
+    ucomm: "codex",
+    command: "/opt/bun/bun run /x/node_modules/@jeffreycao/copilot-api/dist/main.js start",
+  },
   // The suite's own bun processes: a test runner, the CLI under test. Neither carries an entry.
-  expect(
-    isDaemonProcess({
-      pid: 1,
-      ucomm: "bun",
-      command: "bun test test/copilot_api/daemon_spawn.test.ts",
-    }),
-  ).toBe(false);
-  expect(
-    isDaemonProcess({
-      pid: 1,
-      ucomm: "bun",
-      command: "bun run --no-env-file /repo/src/cli.ts start --port 4141",
-    }),
-  ).toBe(false);
+  { ucomm: "bun", command: "bun test test/copilot_api/daemon_spawn.test.ts" },
+  { ucomm: "bun", command: "bun run --no-env-file /repo/src/cli.ts start --port 4141" },
   // A copilot-api-named ROOT HOME in an unrelated flag never qualifies as the entry.
-  expect(
-    isDaemonProcess({
-      pid: 1,
-      ucomm: "bun",
-      command:
-        "bun run --preload /home/me/.local/share/copilot-api/proxy/x.ts /repo/src/cli.ts env",
-    }),
-  ).toBe(false);
+  {
+    ucomm: "bun",
+    command: "bun run --preload /home/me/.local/share/copilot-api/proxy/x.ts /repo/src/cli.ts env",
+  },
   // Slash-carrying tokens must not read as one "spaced path" bridging over the bare word: that
   // tolerance is exactly what re-admits prompt-text argv.
-  expect(
-    isDaemonProcess({
-      pid: 1,
-      ucomm: "bun",
-      command: "bun run /tmp/tool.ts inspect /tmp/data /tmp/copilot-api-notes start",
-    }),
-  ).toBe(false);
+  { ucomm: "bun", command: "bun run /tmp/tool.ts inspect /tmp/data /tmp/copilot-api-notes start" },
   // ps already stripped shell quoting, so LITERAL quotes in POSIX argv are prompt text; quoted
   // tokens are honored only in the Windows CommandLine form.
-  expect(
-    isDaemonProcess({
-      pid: 1,
-      ucomm: "bun",
-      command: 'bun run /tmp/tool.ts --prompt "inspect bare words" /tmp/copilot-api-notes start',
-    }),
-  ).toBe(false);
+  {
+    ucomm: "bun",
+    command: 'bun run /tmp/tool.ts --prompt "inspect bare words" /tmp/copilot-api-notes start',
+  },
+];
+
+test("impostor argv that merely mentions copilot-api and start survives the sweep", () => {
+  for (const { ucomm, command } of IMPOSTOR_PROCESSES) {
+    expect(isDaemonProcess({ pid: 1, ucomm, command }), command).toBe(false);
+  }
   // Every middle alternative consumes exactly one token and the classes are disjoint (`--flag=/path`
   // reads as a flag only), so a failing scan is linear. The bound catches a polynomially-slow
   // regression; an exponential one hangs the suite, still a failure.
@@ -747,43 +717,79 @@ test("a wedged drain still exits: the deadline is what keeps `agent stop` able t
   expect(Number(res.stdout.trim())).toBeGreaterThanOrEqual(DRAIN_DEADLINE_MS - 100);
 });
 
+// A daemon-shaped child whose one request parks until the release file exists. Its listeners, by
+// the line each prints:
+//   SIGNALLED     registered BEFORE the handler, so it runs in the signal's own emit and the
+//                 parent learns the signal was delivered while the drain is under way
+//   LATE          copilot-api's own shape, registered after the preload: an async cleanup, then
+//                 its own exit, in the same emit it would sever the response, so it must run
+//                 after the drain and its cleanup must still finish before the process is gone
+//   WRONG-SIGNAL  the other signal's late listener: a SIGTERM must not replay it
+
+const SERVING_CHILD_SOURCE =
+  `import { existsSync } from "node:fs";\n` +
+  `import { installTerminationHandler } from ${SHUTDOWN_MODULE};\n` +
+  `import { installInferenceObserver } from ${importSpecifier(
+    join(ROOT, "src", "copilot_api", "inference_activity.ts"),
+  )};\n` +
+  `const release = ${CHILD_VALUES}.release;\n` +
+  "process.on('SIGTERM', () => console.log('SIGNALLED'));\n" +
+  "installInferenceObserver();\n" +
+  "installTerminationHandler();\n" +
+  "process.once('SIGTERM', async () => { console.log('LATE'); await new Promise((r) => setTimeout(r, 50)); console.log('CLEANED'); process.exit(0); });\n" +
+  "process.once('SIGINT', () => console.log('WRONG-SIGNAL'));\n" +
+  "const parked = async () => {\n" +
+  "  console.log('SERVING');\n" +
+  "  while (!existsSync(release)) await new Promise((r) => setTimeout(r, 20));\n" +
+  "  return new Response('drained-ok');\n" +
+  "};\n" +
+  "const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: parked });\n" +
+  "console.log('PORT ' + server.port);\n" +
+  "process.on('exit', () => console.log('DRAINED'));\n";
+
+/** The child's stdout as it arrives. `awaitLine` has no clock of its own: the test deadline is the
+ *  one budget for a slow child, and the harness kills the child when it fires, which closes stdout
+ *  and ends the wait, so the expectation then fails on the text. */
+function watchStdout(stdout: ReadableStream<Uint8Array>): {
+  text: () => string;
+  drained: Promise<void>;
+  awaitLine: (line: string) => Promise<void>;
+} {
+  let text = "";
+  let open = true;
+  const decoder = new TextDecoder();
+  const reader = stdout.getReader();
+  const drained = (async () => {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) return;
+      text += decoder.decode(value);
+    }
+  })().finally(() => {
+    open = false;
+  });
+  return {
+    text: () => text,
+    drained,
+    awaitLine: async (line) => {
+      while (!text.includes(line) && open) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(text).toContain(line);
+    },
+  };
+}
+
 test.skipIf(process.platform === "win32")(
   "SIGTERM drains an IN-FLIGHT request before the daemon exits, the proxy's own exit held back",
   async () => {
     // Windows has no deliverable SIGTERM, so the drain is a POSIX contract. The request must be
     // genuinely mid-flight when the signal lands: the handler parks until this process writes the
-    // release, which happens only after the child reports the signal arrived. The LATE listener is
-    // copilot-api's own shape, registered after the preload: an async cleanup, then its own exit.
-    // Run in the same emit it would sever the response, so it runs after the drain, and its cleanup
-    // must still finish before the process is gone.
+    // release, which happens only after the child reports the signal arrived.
     dir = tempDir("copilot-sigterm-");
     const target = join(dir, "serving.ts");
     const release = join(dir, "release");
-    writeFileSync(
-      target,
-      `import { existsSync } from "node:fs";\n` +
-        `import { installTerminationHandler } from ${SHUTDOWN_MODULE};\n` +
-        `import { installInferenceObserver } from ${importSpecifier(
-          join(ROOT, "src", "copilot_api", "inference_activity.ts"),
-        )};\n` +
-        `const release = ${CHILD_VALUES}.release;\n` +
-        // Registered BEFORE the handler, so it runs in the signal's own emit and the parent learns
-        // the signal was delivered while the drain is under way.
-        "process.on('SIGTERM', () => console.log('SIGNALLED'));\n" +
-        "installInferenceObserver();\n" +
-        "installTerminationHandler();\n" +
-        "process.once('SIGTERM', async () => { console.log('LATE'); await new Promise((r) => setTimeout(r, 50)); console.log('CLEANED'); process.exit(0); });\n" +
-        // The other signal's late listener: a SIGTERM must not replay it.
-        "process.once('SIGINT', () => console.log('WRONG-SIGNAL'));\n" +
-        "const parked = async () => {\n" +
-        "  console.log('SERVING');\n" +
-        "  while (!existsSync(release)) await new Promise((r) => setTimeout(r, 20));\n" +
-        "  return new Response('drained-ok');\n" +
-        "};\n" +
-        "const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: parked });\n" +
-        "console.log('PORT ' + server.port);\n" +
-        "process.on('exit', () => console.log('DRAINED'));\n",
-    );
+    writeFileSync(target, SERVING_CHILD_SOURCE);
     // Bun.spawn reports the real wait status (exit code and signal apart), so a clean exit after
     // the SIGTERM is distinguishable from a death by that signal.
     const child = spawnChild(process.execPath, {
@@ -792,41 +798,21 @@ test.skipIf(process.platform === "win32")(
       stdout: "pipe",
       stderr: "pipe",
     });
-    let stdout = "";
-    let stdoutOpen = true;
-    const decoder = new TextDecoder();
-    const reader = (child.stdout as ReadableStream<Uint8Array>).getReader();
-    const pump = (async () => {
-      for (;;) {
-        const { value, done } = await reader.read();
-        if (done) return;
-        stdout += decoder.decode(value);
-      }
-    })().finally(() => {
-      stdoutOpen = false;
-    });
-    // No clock of its own: the test deadline is the one budget for a slow child, and the harness
-    // kills this child when it fires, which closes stdout and ends the wait.
-    const awaitLine = async (line: string): Promise<void> => {
-      while (!stdout.includes(line) && stdoutOpen) {
-        await new Promise((resolve) => setTimeout(resolve, 20));
-      }
-      expect(stdout).toContain(line);
-    };
+    const out = watchStdout(child.stdout as ReadableStream<Uint8Array>);
     let inFlight: Promise<Response> | undefined;
     try {
       // Signal it only once it is genuinely listening (the handler installs before serve).
-      await awaitLine("PORT ");
-      const match = /PORT (\d+)/.exec(stdout);
+      await out.awaitLine("PORT ");
+      const match = /PORT (\d+)/.exec(out.text());
       expect(match).not.toBeNull();
       inFlight = fetch(`http://127.0.0.1:${match?.[1]}/`);
       inFlight.catch(() => {}); // marked handled; the await below is what surfaces a failure
-      await awaitLine("SERVING"); // the handler is parked, response not yet written
+      await out.awaitLine("SERVING"); // the handler is parked, response not yet written
 
       child.kill("SIGTERM");
       // The listener prints in the same tick the drain starts, so a daemon that reaches its drain
       // deadline without this line exits, closes stdout, and fails the wait right here.
-      await awaitLine("SIGNALLED");
+      await out.awaitLine("SIGNALLED");
       writeFileSync(release, "");
 
       // The parked request completes: drained, not severed.
@@ -838,10 +824,11 @@ test.skipIf(process.platform === "win32")(
 
       expect(await child.exited).toBe(0);
       expect(child.signalCode).toBeNull();
-      await pump;
+      await out.drained;
       // Drained through the shared path, not severed by the runtime's default terminate (which
       // runs no exit handlers); the late listener ran only once the response was out, and its
       // cleanup finished before the exit hook.
+      const stdout = out.text();
       const order = ["SERVING", "LATE", "CLEANED", "DRAINED"].map((line) => stdout.indexOf(line));
       expect(order).toEqual([...order].sort((a, b) => a - b));
       expect(order.every((at) => at >= 0)).toBe(true);

@@ -4,6 +4,7 @@
 // did each run.
 
 import { Database } from "bun:sqlite";
+import { afterEach } from "bun:test";
 import {
   appendFileSync,
   existsSync,
@@ -41,7 +42,7 @@ import {
 import { must } from "../../src/utils/assert.ts";
 import { releaseFileLock, tryAcquireFileLock } from "../../src/utils/file_lock.ts";
 import { captureAllWrites } from "../helpers/output.ts";
-import { afterEach, expect, removeDir, tempDir, test } from "../helpers/testing.ts";
+import { expect, removeDir, tempDir, test } from "../helpers/testing.ts";
 import { indexBytesOnDisk } from "../helpers/usage_index.ts";
 
 let root = "";

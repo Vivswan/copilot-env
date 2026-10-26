@@ -90,11 +90,11 @@ export async function runAgentConfig(
     // The stored pair is complete, so the render cannot come back null; the overlays render over it.
     const rendered = renderDirectWiring(null);
     if (rendered === null) throw new Error("the default's stored Direct pair did not render");
-    const ghToken = opts.ghToken !== undefined ? opts.ghToken : new Credential().resolve();
+    const ghToken = opts.ghToken === undefined ? new Credential().resolve() : opts.ghToken;
     await writeDefaultAgent(adapter, { mode: "direct", direct: rendered }, ghToken);
     return recorded;
   }
-  const ghToken = opts.ghToken !== undefined ? opts.ghToken : new Credential().resolve();
+  const ghToken = opts.ghToken === undefined ? new Credential().resolve() : opts.ghToken;
   await writeDefaultAgent(adapter, { mode: "proxy" }, ghToken);
   return recorded;
 }
@@ -131,6 +131,63 @@ interface DefaultAgentsOutcome {
   failedAgents: ManagedAgentId[];
 }
 
+/** The both-`auto` landing: the probes' verdict for each agent, or, when the record disagrees and
+ *  the request asks, the mode the request picks, re-resolved per agent so the same landing `agent
+ *  init --<recorded>` runs, selection included. */
+async function probedModes(
+  request: DefaultAgentRequest,
+  adapters: readonly AgentAdapter[],
+  ghToken: string | null,
+): Promise<Map<ManagedAgentId, ManagedMode>> {
+  const chosen = new Map<ManagedAgentId, ManagedMode>();
+  for (const [id, mode] of await decideDefaultMode(adapters, ghToken)) chosen.set(id, mode);
+  const verdict = probedVerdict(chosen);
+  const recorded = new CopilotEnvState().readProfileSlot(null).mode;
+  const landing =
+    recorded === null || recorded === verdict || request.onVerdict === undefined
+      ? verdict
+      : await request.onVerdict(recorded, verdict);
+  if (landing === verdict) return chosen;
+  // The record stays: the same landing `agent init --<recorded>` runs, selection included.
+  chosen.clear();
+  for (const adapter of adapters) {
+    chosen.set(adapter.id, await resolveDefaultMode(adapter, landing, ghToken));
+  }
+  return chosen;
+}
+
+/** What every agent's write in one configureDefaultAgents pass shares. */
+interface DefaultLanding {
+  adapters: readonly AgentAdapter[];
+  bothNamed: boolean;
+  chosen: Map<ManagedAgentId, ManagedMode>;
+  ghToken: string | null;
+}
+
+/** One agent's default write and the mode it landed. With both named, the landing with the mode
+ *  chosen for it (resolved here when the probes did not choose one); alone, the agent's own
+ *  re-render (runAgentConfig). */
+async function landDefaultAgent(
+  adapter: AgentAdapter,
+  mode: RequestedMode,
+  landing: DefaultLanding,
+): Promise<AgentProviderMode> {
+  if (landing.bothNamed) {
+    const resolved =
+      landing.chosen.get(adapter.id) ?? (await resolveDefaultMode(adapter, mode, landing.ghToken));
+    landing.chosen.set(adapter.id, resolved);
+    await writeDefaultAgent(adapter, resolved, landing.ghToken);
+    return resolved.mode;
+  }
+  const landed = await runAgentConfig(
+    adapter,
+    { kind: "configure", mode },
+    { ghToken: landing.ghToken },
+    landing.adapters,
+  );
+  return landed ?? "none";
+}
+
 /**
  * Warns per agent and keeps going; `failures` lets a stricter caller (the settings-bundle import)
  * fail the run instead of printing success over a broken wiring. The modes are what each write
@@ -149,49 +206,19 @@ export async function configureDefaultAgents(
   };
   const named = adapters.filter((adapter) => request[adapter.id] !== null);
   const bothNamed = named.length === adapters.length;
-  const ghToken = request.ghToken !== undefined ? request.ghToken : new Credential().resolve();
-  const chosen = new Map<ManagedAgentId, ManagedMode>();
-  if (bothNamed) {
-    const modes = named.map((adapter) => request[adapter.id]);
-    if (modes.every((mode) => mode === "auto")) {
-      for (const [id, mode] of await decideDefaultMode(adapters, ghToken)) chosen.set(id, mode);
-      const verdict = probedVerdict(chosen);
-      const recorded = new CopilotEnvState().readProfileSlot(null).mode;
-      const landing =
-        recorded === null || recorded === verdict || request.onVerdict === undefined
-          ? verdict
-          : await request.onVerdict(recorded, verdict);
-      if (landing !== verdict) {
-        // The record stays: the same landing `agent init --<recorded>` runs, selection included.
-        chosen.clear();
-        for (const adapter of named) {
-          chosen.set(adapter.id, await resolveDefaultMode(adapter, landing, ghToken));
-        }
-      }
-    }
-  }
+  const bothAuto = bothNamed && named.every((adapter) => request[adapter.id] === "auto");
+  const ghToken = request.ghToken === undefined ? new Credential().resolve() : request.ghToken;
+  const chosen = bothAuto
+    ? await probedModes(request, adapters, ghToken)
+    : new Map<ManagedAgentId, ManagedMode>();
+  const landing: DefaultLanding = { adapters, bothNamed, chosen, ghToken };
   for (const adapter of named) {
     const mode = request[adapter.id];
     if (mode === null) continue;
     logger.log("");
     logger.log(bold(`▸ ${adapter.label}`));
     try {
-      if (!bothNamed) {
-        landed[adapter.id] =
-          (await runAgentConfig(
-            adapter,
-            { kind: "configure", mode },
-            {
-              ghToken,
-            },
-            adapters,
-          )) ?? "none";
-        continue;
-      }
-      const resolved = chosen.get(adapter.id) ?? (await resolveDefaultMode(adapter, mode, ghToken));
-      chosen.set(adapter.id, resolved);
-      await writeDefaultAgent(adapter, resolved, ghToken);
-      landed[adapter.id] = resolved.mode;
+      landed[adapter.id] = await landDefaultAgent(adapter, mode, landing);
     } catch (e) {
       logger.warn(caught(e, (message) => `  Could not configure ${adapter.label}: ${message}`));
       failures.push(caught(e, (message) => `${adapter.label}: ${message}`));

@@ -80,6 +80,37 @@ export const FENCE_LINES: readonly string[] = [
   LAUNCHERS_MARKER_END,
 ];
 
+/** A line without its trailing CR; null past the end. */
+function bareLine(lines: readonly string[], i: number): string | null {
+  if (i >= lines.length) return null;
+  return (lines[i] ?? "").replace(/\r$/, "");
+}
+
+/** Whether the block opened at `start` closes with `end` before any other fence line. */
+function closedBy(lines: readonly string[], start: number, end: string): boolean {
+  for (let j = start + 1; j < lines.length; j++) {
+    const later = bareLine(lines, j);
+    if (later === end) return true;
+    if (later !== null && FENCE_LINES.includes(later)) return false;
+  }
+  return false;
+}
+
+/** Whether the two lines under the marker at `start` are one of the release's [assignment,
+ *  guard] pairs. */
+function bodyIsReleasedPair(
+  lines: readonly string[],
+  start: number,
+  pairs: readonly (readonly [RegExp, RegExp])[],
+): boolean {
+  const assignment = bareLine(lines, start + 1);
+  const guard = bareLine(lines, start + 2);
+  if (assignment === null || guard === null) return false;
+  const pair = pairs.find(([assign]) => assign.test(assignment));
+  if (pair === undefined) return false;
+  return pair[1].test(guard);
+}
+
 /** An unfenced marker block whose two body lines are its release's pair gets the end fence
  *  inserted after the guard, so the current writer (fenced blocks only) refreshes or strips it
  *  like any other. Anything else is left byte-identical. CR-tolerant; the fence adopts the
@@ -89,25 +120,13 @@ export const FENCE_LINES: readonly string[] = [
  *  guard position must not be consumed. */
 export function fenceUnfencedBlocks(content: string): string {
   const lines = content.split("\n");
-  const bare = (i: number): string | null =>
-    i < lines.length ? (lines[i] ?? "").replace(/\r$/, "") : null;
   const out: string[] = [];
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i] ?? "";
     out.push(line);
-    const shape = UNFENCED_BLOCKS[bare(i) ?? ""];
-    if (shape === undefined) continue;
-    let fenced = false;
-    for (let j = i + 1; j < lines.length; j++) {
-      const later = bare(j);
-      if (later === shape.end) fenced = true;
-      if (later !== null && FENCE_LINES.includes(later)) break;
-    }
-    if (fenced) continue;
-    const assignment = bare(i + 1);
-    const guard = bare(i + 2);
-    const pair = shape.pairs.find(([assign]) => assignment !== null && assign.test(assignment));
-    if (pair === undefined || guard === null || !pair[1].test(guard)) continue;
+    const shape = UNFENCED_BLOCKS[bareLine(lines, i) ?? ""];
+    if (shape === undefined || closedBy(lines, i, shape.end)) continue;
+    if (!bodyIsReleasedPair(lines, i, shape.pairs)) continue;
     out.push(
       lines[i + 1] ?? "",
       lines[i + 2] ?? "",
@@ -191,6 +210,15 @@ function profileOfProviderId(id: string): Profile | undefined {
   return isValidProfileName(name) ? parseProfileName(name) : undefined;
 }
 
+/** Where the script path sits in a resolver's argv: first under `/bin/sh`, behind powershell's
+ *  four fixed flags; null for any other interpreter. */
+function scriptArgvLead(command: unknown, args: readonly string[]): number | null {
+  if (command === "/bin/sh") return 0;
+  const powershellFlags = args.slice(0, 4).join(" ") === "-NoProfile -ExecutionPolicy Bypass -File";
+  if (command === "powershell" && powershellFlags) return 4;
+  return null;
+}
+
 /** The 3.5.6 proxy resolver as its `auth` block spelled it for `profile`, at any
  *  install root: `/bin/sh <root>/src/scripts/proxy-token.sh --yes [--profile <name>]`,
  *  or on Windows `powershell -NoProfile -ExecutionPolicy Bypass -File
@@ -200,14 +228,8 @@ function isScriptShapedProxyAuth(auth: unknown, profile: Profile): boolean {
   if (!isRecord(auth) || !Array.isArray(auth.args)) return false;
   const args = auth.args.filter((a): a is string => typeof a === "string");
   if (args.length !== auth.args.length) return false;
-  const lead =
-    auth.command === "/bin/sh"
-      ? 0
-      : auth.command === "powershell" &&
-          args.slice(0, 4).join(" ") === "-NoProfile -ExecutionPolicy Bypass -File"
-        ? 4
-        : -1;
-  if (lead === -1) return false;
+  const lead = scriptArgvLead(auth.command, args);
+  if (lead === null) return false;
   const script = args[lead];
   const ext = auth.command === "/bin/sh" ? "sh" : "ps1";
   if (
@@ -354,6 +376,16 @@ function claudeSettingsProfiles(claudeHome: string): Profile[] {
   return [null, ...names.sort()];
 }
 
+/** Which helper file an apiKeyHelper names; null for a path copilot-env never wrote. */
+function legacyHelperMode(
+  helper: string,
+  paths: { direct: string; proxy: string },
+): "direct" | "proxy" | null {
+  if (helper === paths.direct) return "direct";
+  if (helper === paths.proxy) return "proxy";
+  return null;
+}
+
 /**
  * Only a helper copilot-env itself wrote is converted; the BODY proves that, since nothing
  * copilot-env wrote pointed anything else at that path.
@@ -370,8 +402,7 @@ export function rewriteLegacyClaudeHelper(claudeHome: string, profile: Profile):
   if (doc === null) return false;
   const helper = doc.apiKeyHelper;
   if (typeof helper !== "string") return false;
-  const paths = legacyHelperPaths(claudeHome, profile);
-  const mode = helper === paths.direct ? "direct" : helper === paths.proxy ? "proxy" : null;
+  const mode = legacyHelperMode(helper, legacyHelperPaths(claudeHome, profile));
   if (mode === null) return false;
   const body = fs.readTextResult(helper);
   if (body.kind === "unreadable") throw new Error(`could not read ${helper} (${body.error})`);

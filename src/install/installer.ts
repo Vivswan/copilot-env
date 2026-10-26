@@ -24,6 +24,7 @@ import { consola } from "consola";
 import { configSetCommand } from "../copilot_api/env_config.ts";
 
 import { runShellIntegration } from "../shell/integration.ts";
+import { RenameRefusedError } from "../utils/fs.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { userHomeDir } from "../utils/home.ts";
 import { caught, printWrapped, ScannableError, type ScannableMessage } from "../utils/message.ts";
@@ -119,6 +120,42 @@ function currentLinkTarget(top: string, versionName: string): string {
     : join(VERSIONS_DIR, versionName);
 }
 
+/** The Windows flip: remove-then-create with a RESTORE. If the new junction cannot be created
+ *  (antivirus, transient locks) the old one is put back before the error surfaces. The layout is
+ *  left linkless when the restore fails too (the error below says so), when there was no previous
+ *  target to put back (a first install), or when the process dies between the two calls; each is
+ *  repaired by re-running the update or installer. */
+function pointCurrentJunctionAt(top: string, versionName: string): void {
+  const link = currentLinkPath(top);
+  const target = currentLinkTarget(top, versionName);
+  const previous = readCurrentTargetPath(top);
+  if (!fs.entryAbsent(link)) fs.rmdir(link);
+  try {
+    fs.symlink(target, link, "junction");
+  } catch (error) {
+    if (previous === null) throw error;
+    try {
+      fs.symlink(previous, link, "junction");
+    } catch {
+      // Double fault: the layout is now LINKLESS. Say so, instead of reporting only the
+      // creation failure as if nothing else changed. The `agent` shim dispatches through the
+      // missing link, so the installer, aimed at this root, is the way back.
+      throw new ScannableError({
+        headline: "could not create the current link, nor restore its previous target.",
+        evidence: [link, caught(error, (message) => message)],
+        lead: "Fix:",
+        actions: [
+          [
+            `$env:COPILOT_ENV_DIR = ${quotePowerShell(top)}; irm https://github.com/Vivswan/copilot-env/releases/latest/download/install.ps1 | iex`,
+            "re-run the installer in PowerShell to re-point it",
+          ],
+        ],
+      });
+    }
+    throw error;
+  }
+}
+
 /**
  * THE commit step of an install or update. POSIX: build the replacement link aside and rename
  * it over, so a concurrent reader sees the old link or the new one (only the corrupt-layout
@@ -128,43 +165,12 @@ function currentLinkTarget(top: string, versionName: string): string {
  * junction (an entry delete; the target's contents are untouched), then create the new one.
  */
 export function pointCurrentAt(top: string, versionName: string): void {
-  const link = currentLinkPath(top);
-  const target = currentLinkTarget(top, versionName);
   if (process.platform === "win32") {
-    // Remove-then-create with a RESTORE: if the new junction cannot be created (antivirus,
-    // transient locks) the old one is put back before the error surfaces. The layout is left
-    // linkless when the restore fails too (the error below says so), when there was no previous
-    // target to put back (a first install), or when the process dies between the two calls; each
-    // is repaired by re-running the update or installer.
-    const previous = readCurrentTargetPath(top);
-    if (!fs.entryAbsent(link)) fs.rmdir(link);
-    try {
-      fs.symlink(target, link, "junction");
-    } catch (error) {
-      if (previous !== null) {
-        try {
-          fs.symlink(previous, link, "junction");
-        } catch {
-          // Double fault: the layout is now LINKLESS. Say so, instead of reporting only the
-          // creation failure as if nothing else changed. The `agent` shim dispatches through the
-          // missing link, so the installer, aimed at this root, is the way back.
-          throw new ScannableError({
-            headline: "could not create the current link, nor restore its previous target.",
-            evidence: [link, caught(error, (message) => message)],
-            lead: "Fix:",
-            actions: [
-              [
-                `$env:COPILOT_ENV_DIR = ${quotePowerShell(top)}; irm https://github.com/Vivswan/copilot-env/releases/latest/download/install.ps1 | iex`,
-                "re-run the installer in PowerShell to re-point it",
-              ],
-            ],
-          });
-        }
-      }
-      throw error;
-    }
+    pointCurrentJunctionAt(top, versionName);
     return;
   }
+  const link = currentLinkPath(top);
+  const target = currentLinkTarget(top, versionName);
   // A corrupt layout may leave a REAL directory at the link path; rename cannot replace one.
   // rmdir is non-recursive on purpose: an empty stray dir is repaired, a non-empty one is
   // unknown data and fails the flip loudly.
@@ -215,7 +221,7 @@ function writeShimFile(to: string, text: string, executable: boolean, logger: Lo
   } catch (error) {
     // Only a refused publish falls back to the direct, in-place write; a failure to stage the
     // text (disk full, I/O) propagates and never truncates the live shim.
-    if (!(error instanceof fs.RenameRefusedError)) throw error;
+    if (!(error instanceof RenameRefusedError)) throw error;
     fs.writeText(to, text, { atomic: false });
     if (executable) fs.chmod(to, 0o755);
   }

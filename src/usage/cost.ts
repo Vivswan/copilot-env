@@ -344,12 +344,121 @@ interface CostRun {
   fetchImpl: ProbeFetch | undefined;
 }
 
+/** Everything the report renders from, text or JSON, once every source is read and priced. */
+interface CostInputs {
+  proxy: ProxySource;
+  codexByProvider: Map<string, UsageReport>;
+  codexRoots: number;
+  claude: ClaudeSource;
+  logs: SessionLogs;
+  sources: PriceSources;
+  sinceMs: number | undefined;
+  measured: MeasuredRun;
+}
+
+/** One stderr note per price source whose fresh copy could not be kept for the day. */
+function warnUncachedSources(sources: PriceSources): void {
+  for (const [name, source] of [
+    ["the OpenRouter price list", sources.openRouter],
+    ["GitHub's rate card", sources.gitHub],
+  ] as const) {
+    if (source.kind === "read" && source.cacheWriteError !== undefined) {
+      consola.warn(
+        scannable({
+          headline: `could not cache ${name}.`,
+          evidence: [source.cacheWriteError, "the next run fetches it again"],
+        }),
+      );
+    }
+  }
+}
+
+function measuredRun(logs: SessionLogs, pricingWaitMs: number, run: CostRun): MeasuredRun {
+  return {
+    indexed: logs.indexed,
+    index: logs.meter.stats,
+    timing: {
+      walk: Math.round(logs.meter.timing.walk),
+      parse: Math.round(logs.meter.timing.parse),
+      fold: Math.round(logs.meter.timing.fold),
+      pricing: Math.round(pricingWaitMs),
+    },
+    startedAt: run.startedAt,
+    now: run.now,
+  };
+}
+
+function printCostJson(inputs: CostInputs, perDay: boolean): void {
+  const { pricing } = inputs.sources;
+  const codexSessions = {
+    roots: inputs.codexRoots,
+    providers: Object.fromEntries(
+      [...inputs.codexByProvider.keys()].sort().map((provider) => {
+        const report = inputs.codexByProvider.get(provider) ?? EMPTY_REPORT;
+        return [
+          provider,
+          buildSourceJson(report, estimateCost(report, pricing), pricing, { perDay }),
+        ];
+      }),
+    ),
+  };
+  const claude = inputs.claude.report;
+  const claudeSessions = {
+    roots: inputs.claude.roots,
+    ...buildSourceJson(claude, estimateCost(claude, pricing), pricing, { perDay }),
+  };
+  const payload = buildCostJson({
+    proxy: inputs.proxy,
+    sources: inputs.sources,
+    sinceMs: inputs.sinceMs,
+    perDay,
+    codexSessions,
+    claudeSessions,
+    measured: inputs.measured,
+  });
+  console.log(JSON.stringify(payload, null, 2));
+}
+
+function printCostText(inputs: CostInputs, args: CostArgs, window: DaysWindow | undefined): void {
+  const { proxy, codexByProvider, claude } = inputs;
+  const { pricing, rateCard } = inputs.sources;
+  const reportOpts: ReportOpts = {
+    pricing,
+    rateCard,
+    window,
+    perDay: Boolean(args.perDay),
+    roots: inputs.codexRoots,
+  };
+  if (args.sources) {
+    printSeparateReports(proxy, codexByProvider, claude, reportOpts);
+  } else {
+    printCombinedView(proxy, codexByProvider, claude, reportOpts, inputs.logs.clients);
+  }
+
+  const unmapped = pricing instanceof PriceList ? pricing.card.unmapped : [];
+  if (unmapped.length > 0) {
+    printWrapped(
+      paintFor(colorEnabled()).dim(
+        `  GitHub's rate card also lists models with no id here (unmapped): ${unmapped.join(", ")}`,
+      ),
+    );
+    console.log("");
+  }
+  printBilledCheck([proxy.report, ...codexByProvider.values(), claude.report], pricing);
+  printWrapped(sourcesNote(Boolean(args.sources)));
+  printWrapped(disclaimer(inputs.sources));
+  console.log("");
+  if (inputs.logs.indexed) {
+    printWrappedToStderr(describeIndexRun(inputs.logs.meter.stats));
+  }
+}
+
 async function reportCost(
   args: CostArgs,
   roots: SessionRootDiscovery,
   run: CostRun,
 ): Promise<void> {
-  const { window, startedAt, now } = run;
+  const { window, now } = run;
   const sinceMs = window === undefined ? undefined : daysCutoffMs(window);
   const dbPaths = discoverUsageDbs();
   const proxyRequests = dbPaths.length > 0 ? readUsageRequests(dbPaths, sinceMs) : [];
@@ -398,115 +507,29 @@ async function reportCost(
   );
   const pricingWaitMs = now() - pricingWaitStartedAt;
   for (const line of unreadWarnings(sources)) consola.warn(line);
-  for (const [name, source] of [
-    ["the OpenRouter price list", sources.openRouter],
-    ["GitHub's rate card", sources.gitHub],
-  ] as const) {
-    if (source.kind === "read" && source.cacheWriteError !== undefined) {
-      consola.warn(
-        scannable({
-          headline: `could not cache ${name}.`,
-          evidence: [source.cacheWriteError, "the next run fetches it again"],
-        }),
-      );
-    }
-  }
-  const { pricing } = sources;
+  warnUncachedSources(sources);
 
-  const measured: MeasuredRun = {
-    indexed: logs.indexed,
-    index: logs.meter.stats,
-    timing: {
-      walk: Math.round(logs.meter.timing.walk),
-      parse: Math.round(logs.meter.timing.parse),
-      fold: Math.round(logs.meter.timing.fold),
-      pricing: Math.round(pricingWaitMs),
+  const inputs: CostInputs = {
+    proxy: {
+      report: proxyReport,
+      requests: proxyRequests,
+      // ModelUsage is a structural superset of UsageTokens, so a report prices as it is.
+      estimate: estimateCost(proxyReport, sources.pricing),
+      dbCount: dbPaths.length,
     },
-    startedAt,
-    now,
+    codexByProvider,
+    codexRoots: sessionRoots.length,
+    claude: { report: claudeReport, roots: claudeRoots.length },
+    logs,
+    sources,
+    sinceMs,
+    measured: measuredRun(logs, pricingWaitMs, run),
   };
-
-  // ModelUsage is a structural superset of UsageTokens, so a report prices as it is.
-  const proxyEstimate = estimateCost(proxyReport, pricing);
-  const codexProviders = [...codexByProvider.keys()].sort();
-
   if (args.json) {
-    const codexSessions = {
-      roots: sessionRoots.length,
-      providers: Object.fromEntries(
-        codexProviders.map((provider) => {
-          const report = codexByProvider.get(provider) ?? EMPTY_REPORT;
-          return [
-            provider,
-            buildSourceJson(report, estimateCost(report, pricing), pricing, {
-              perDay: Boolean(args.perDay),
-            }),
-          ];
-        }),
-      ),
-    };
-    const claudeSessions = {
-      roots: claudeRoots.length,
-      ...buildSourceJson(claudeReport, estimateCost(claudeReport, pricing), pricing, {
-        perDay: Boolean(args.perDay),
-      }),
-    };
-    console.log(
-      JSON.stringify(
-        buildCostJson(
-          proxyReport,
-          proxyEstimate,
-          sources,
-          dbPaths.length,
-          sinceMs,
-          Boolean(args.perDay),
-          codexSessions,
-          claudeSessions,
-          measured,
-        ),
-        null,
-        2,
-      ),
-    );
+    printCostJson(inputs, Boolean(args.perDay));
     return;
   }
-
-  const claude = { report: claudeReport, roots: claudeRoots.length };
-  const proxy: ProxySource = {
-    report: proxyReport,
-    requests: proxyRequests,
-    estimate: proxyEstimate,
-    dbCount: dbPaths.length,
-  };
-  const reportOpts: ReportOpts = {
-    pricing,
-    rateCard: sources.rateCard,
-    window,
-    perDay: Boolean(args.perDay),
-    roots: sessionRoots.length,
-  };
-  if (args.sources) {
-    printSeparateReports(proxy, codexByProvider, claude, reportOpts);
-  } else {
-    printCombinedView(proxy, codexByProvider, claude, reportOpts, logs.clients);
-  }
-
-  const unmapped = pricing instanceof PriceList ? pricing.card.unmapped : [];
-  if (unmapped.length > 0) {
-    printWrapped(
-      paintFor(colorEnabled()).dim(
-        `  GitHub's rate card also lists models with no id here (unmapped): ${unmapped.join(", ")}`,
-      ),
-    );
-    console.log("");
-  }
-  printBilledCheck([proxyReport, ...codexByProvider.values(), claudeReport], pricing);
-  printWrapped(sourcesNote(Boolean(args.sources)));
-  printWrapped(disclaimer(sources));
-  console.log("");
-  if (logs.indexed) {
-    printWrappedToStderr(describeIndexRun(logs.meter.stats));
-  }
+  printCostText(inputs, args, window);
 }
 
 interface SessionLogs {
@@ -643,6 +666,28 @@ interface ClaudeSource {
   roots: number;
 }
 
+interface SectionTitles {
+  title: string;
+  sourceLabel: string;
+  perDayTitle: string;
+}
+
+/** One source's table and, under --per-day, its day breakdown. */
+function printSourceSection(
+  report: ReadonlyUsageReport,
+  estimate: CostEstimate,
+  opts: ReportOpts,
+  titles: SectionTitles,
+): void {
+  printCostReport(report, estimate, opts, {
+    title: titles.title,
+    sourceLabel: titles.sourceLabel,
+  });
+  if (opts.perDay) {
+    printPerDayReport(report, opts.pricing, estimate, titles.perDayTitle);
+  }
+}
+
 function printSeparateReports(
   proxy: ProxySource,
   codexByProvider: ReadonlyMap<string, ReadonlyUsageReport>,
@@ -650,13 +695,11 @@ function printSeparateReports(
   opts: ReportOpts,
 ): void {
   if (proxy.dbCount > 0) {
-    printCostReport(proxy.report, proxy.estimate, opts, {
+    printSourceSection(proxy.report, proxy.estimate, opts, {
       title: "Proxy usage by model",
       sourceLabel: `${proxy.dbCount} db${proxy.dbCount === 1 ? "" : "s"}`,
+      perDayTitle: "Per-day breakdown (proxy)",
     });
-    if (opts.perDay) {
-      printPerDayReport(proxy.report, opts.pricing, proxy.estimate, "Per-day breakdown (proxy)");
-    }
   } else {
     console.log("");
     printWrapped("No proxy usage databases found; skipping the proxy section.");
@@ -664,25 +707,19 @@ function printSeparateReports(
 
   for (const provider of [...codexByProvider.keys()].sort()) {
     const report = codexByProvider.get(provider) ?? EMPTY_REPORT;
-    const estimate = estimateCost(report, opts.pricing);
-    printCostReport(report, estimate, opts, {
+    printSourceSection(report, estimateCost(report, opts.pricing), opts, {
       title: `Codex sessions (provider: ${provider}) by model`,
       sourceLabel: `${opts.roots} root${opts.roots === 1 ? "" : "s"}`,
+      perDayTitle: `Per-day breakdown (codex: ${provider})`,
     });
-    if (opts.perDay) {
-      printPerDayReport(report, opts.pricing, estimate, `Per-day breakdown (codex: ${provider})`);
-    }
   }
 
   if (claude.roots > 0) {
-    const estimate = estimateCost(claude.report, opts.pricing);
-    printCostReport(claude.report, estimate, opts, {
+    printSourceSection(claude.report, estimateCost(claude.report, opts.pricing), opts, {
       title: "Claude sessions by model",
       sourceLabel: `${claude.roots} root${claude.roots === 1 ? "" : "s"}`,
+      perDayTitle: "Per-day breakdown (claude)",
     });
-    if (opts.perDay) {
-      printPerDayReport(claude.report, opts.pricing, estimate, "Per-day breakdown (claude)");
-    }
   }
 }
 
@@ -1166,27 +1203,29 @@ function completeRuntime(measured: MeasuredRun, rateCard: RateCardSource | undef
   };
 }
 
+/** The payload's parts beside the proxy report. */
+interface CostJsonParts {
+  proxy: ProxySource;
+  sources: PriceSources;
+  sinceMs: number | undefined;
+  perDay: boolean;
+  codexSessions: { roots: number; providers: Record<string, Record<string, unknown>> };
+  claudeSessions: Record<string, unknown>;
+  measured: MeasuredRun;
+}
+
 /** The top-level keys are the proxy report; `codexSessions`/`claudeSessions` sit beside them, and
  *  `runtime` is the one key that describes the run rather than the usage. */
-function buildCostJson(
-  report: ReadonlyUsageReport,
-  estimate: CostEstimate,
-  sources: PriceSources,
-  dbCount: number,
-  sinceMs: number | undefined,
-  perDay: boolean,
-  codexSessions: { roots: number; providers: Record<string, Record<string, unknown>> },
-  claudeSessions: Record<string, unknown>,
-  measured: MeasuredRun,
-): Record<string, unknown> {
+function buildCostJson(parts: CostJsonParts): Record<string, unknown> {
+  const { proxy, sources, perDay } = parts;
   // Property order is evaluation order: `runtime` last, so its `total` covers the construction of
   // the rest.
   return {
-    dbCount,
-    sinceMs: sinceMs ?? null,
-    ...buildSourceJson(report, estimate, sources.pricing, { perDay }),
-    codexSessions,
-    claudeSessions,
+    dbCount: proxy.dbCount,
+    sinceMs: parts.sinceMs ?? null,
+    ...buildSourceJson(proxy.report, proxy.estimate, sources.pricing, { perDay }),
+    codexSessions: parts.codexSessions,
+    claudeSessions: parts.claudeSessions,
     note:
       "approximate numbers gathered from local logs and keyed by canonical model spellings " +
       `(dashed/dated claude ids fold into the dotted form), ${pricingClause(
@@ -1195,6 +1234,6 @@ function buildCostJson(
       )}; ` +
       "top-level keys cover proxied traffic only, while codexSessions/claudeSessions cover each agent's FULL traffic " +
       "(proxy and Direct), so they overlap the proxy keys when an agent is proxy-wired -- never sum them",
-    runtime: completeRuntime(measured, sources.rateCard),
+    runtime: completeRuntime(parts.measured, sources.rateCard),
   };
 }

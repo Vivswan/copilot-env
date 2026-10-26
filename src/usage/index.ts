@@ -167,6 +167,151 @@ export interface UsageIndex {
   close(): void;
 }
 
+/** One query for the not-walked deletion set and the reuse/resume decisions alike. */
+function knownFilesOf(db: Database, source: UsageSource): Map<string, KnownFile> {
+  const rows = db
+    .prepare(
+      `SELECT "path", "size", "mtime_ms" AS mtimeMs, "parsed_through" AS parsedThrough,
+              "tail_probe" AS tailProbeKey
+         FROM "files" WHERE "source" = ?`,
+    )
+    .all(source) as unknown as (KnownFile & { path: string })[];
+  return new Map(rows.map(({ path, ...known }) => [path, known]));
+}
+
+/** The index's reads during one reconcile. A read the index itself fails (not the session file)
+ *  turns the rest of the run index-less: every remaining candidate parses whole and nothing is
+ *  saved. Warned once, not once per file. */
+interface IndexReads<S extends UsageSource> {
+  /** The rows of `source` by path; empty once a read has failed. */
+  readonly knownFiles: Map<string, KnownFile>;
+
+  /** The stored contribution at `path`; null when none, unparseable, or the index has failed. */
+  stored(path: string): ContributionOf<S> | null;
+
+  /** True once a read of the index itself failed. */
+  failed(): boolean;
+}
+
+function indexReads<S extends UsageSource>(db: Database, source: S): IndexReads<S> {
+  let failure: string | null = null;
+  const read = <T>(fn: () => T, fallback: T): T => {
+    if (failure !== null) return fallback;
+    try {
+      return fn();
+    } catch (e) {
+      failure = errMessage(e);
+      logger.warn(
+        caught(e, (message) => `usage index unreadable, parsing every file (${message}).`),
+      );
+      return fallback;
+    }
+  };
+  const knownFiles = read(() => knownFilesOf(db, source), new Map<string, KnownFile>());
+  // Prepared once: a per-file prepare cost as much as the read itself.
+  const recordStatement = read(
+    () => db.prepare(`SELECT "record" FROM "files" WHERE "path" = ? AND "source" = ?`),
+    null,
+  );
+  return {
+    knownFiles,
+    stored(path) {
+      if (recordStatement === null) return null;
+      return read(() => {
+        const row = recordStatement.get(path, source) as { record: string } | null;
+        return row === null ? null : parseStoredContribution<S>(row.record);
+      }, null);
+    },
+    failed: () => failure !== null,
+  };
+}
+
+/** The stored contribution of a file the index holds whole: same size and mtime, readable row. */
+function unchangedContribution<S extends UsageSource>(
+  file: WalkedFile,
+  known: KnownFile | undefined,
+  reads: IndexReads<S>,
+): ContributionOf<S> | null {
+  if (known === undefined || known.size !== file.size || known.mtimeMs !== file.mtimeMs) {
+    return null;
+  }
+  return reads.stored(file.path);
+}
+
+/** A parse from the stored resume point, when the file only grew, is resumable, its tail still
+ *  matches, and its record is readable; null sends the file to a whole parse. */
+function tailParse<S extends UsageSource>(
+  file: WalkedFile,
+  known: KnownFile | undefined,
+  reads: IndexReads<S>,
+  parseTail: ParseTail<ContributionOf<S>>,
+  stats: IndexStats,
+): ParsedFile<ContributionOf<S>> | null {
+  if (known === undefined || !(file.size > known.size) || !file.resumable) {
+    return null;
+  }
+  if (!tailProbeMatches(file.path, known.parsedThrough, known.tailProbeKey, stats)) {
+    return null;
+  }
+  const prior = reads.stored(file.path);
+  if (prior === null) {
+    return null;
+  }
+  const parsed = parseTail(file, known.parsedThrough, prior);
+  stats.filesParsedTail++;
+  return parsed;
+}
+
+/** One reconcile's working set: its parsers and index reads, and the records and writes it
+ *  gathers. */
+interface ReconcileRun<S extends UsageSource> {
+  source: S;
+  reads: IndexReads<S>;
+  parseWhole: ParseWhole<ContributionOf<S>>;
+  parseTail: ParseTail<ContributionOf<S>>;
+  stats: IndexStats;
+  records: FileRecord<ContributionOf<S>>[];
+  writes: PendingWrite[];
+}
+
+/** One candidate: reused from its stored record when unchanged, parsed from the resume point when
+ *  it only grew, else parsed whole; a parse that throws drops its row. */
+function reconcileFile<S extends UsageSource>(run: ReconcileRun<S>, file: WalkedFile): void {
+  const { reads, stats } = run;
+  // Once the index has failed the snapshot is not consulted either, so no probe read happens on
+  // its behalf.
+  const known = reads.failed() ? undefined : reads.knownFiles.get(file.path);
+  try {
+    const unchanged = unchangedContribution(file, known, reads);
+    if (unchanged !== null) {
+      stats.filesReused++;
+      run.records.push({ path: file.path, contribution: unchanged });
+      return;
+    }
+    let parsed = tailParse(file, known, reads, run.parseTail, stats);
+    if (parsed === null) {
+      parsed = run.parseWhole(file);
+      stats.filesParsedWhole++;
+    }
+    stats.bytesRead += parsed.bytesRead;
+    run.records.push({ path: file.path, contribution: parsed.contribution });
+    run.writes.push({
+      kind: "upsert",
+      source: run.source,
+      path: file.path,
+      size: file.size,
+      mtimeMs: file.mtimeMs,
+      parsedThrough: parsed.parsedThrough,
+      tailProbeKey: dedupKey(parsed.tailProbeHex),
+      record: JSON.stringify(parsed.contribution),
+    });
+  } catch (e) {
+    stats.filesFailed++;
+    logger.warn(caught(e, (message) => `could not read ${file.path} (${message}).`));
+    run.writes.push({ kind: "delete", path: file.path, unwalked: false });
+  }
+}
+
 class SqliteUsageIndex implements UsageIndex {
   /** Opened and configured by openUsageIndex alone; closed once, at the run's end. */
   readonly #db: Database;
@@ -181,18 +326,6 @@ class SqliteUsageIndex implements UsageIndex {
     this.#db = db;
     this.#lockPath = lockPath;
     this.#lockPolicy = lockPolicy;
-  }
-
-  /** One query for the not-walked deletion set and the reuse/resume decisions alike. */
-  #knownFiles(source: UsageSource): Map<string, KnownFile> {
-    const rows = this.#db
-      .prepare(
-        `SELECT "path", "size", "mtime_ms" AS mtimeMs, "parsed_through" AS parsedThrough,
-              "tail_probe" AS tailProbeKey
-         FROM "files" WHERE "source" = ?`,
-      )
-      .all(source) as unknown as (KnownFile & { path: string })[];
-    return new Map(rows.map(({ path, ...known }) => [path, known]));
   }
 
   /** Null = the lock could not be taken and nothing was written. */
@@ -234,103 +367,8 @@ class SqliteUsageIndex implements UsageIndex {
     return transaction.immediate();
   }
 
-  /** `bytesRead`: successful parses and probe reads only, for the warm-run and append oracles. */
-  readonly reconcile: Reconcile = <S extends UsageSource>(
-    source: S,
-    walked: readonly WalkedFile[],
-    parseWhole: ParseWhole<ContributionOf<S>>,
-    parseTail: ParseTail<ContributionOf<S>>,
-  ): ReconcileResult<ContributionOf<S>> => {
-    const stats = emptyIndexStats();
-    stats.filesSeen = walked.length;
-    const records: FileRecord<ContributionOf<S>>[] = [];
-    const writes: PendingWrite[] = [];
-
-    // A read the index itself fails (not the session file) turns the rest of the run index-less:
-    // every remaining candidate parses whole and nothing is saved. Warned once, not once per file.
-    let indexFailure: string | null = null;
-    const indexRead = <T>(read: () => T, fallback: T): T => {
-      if (indexFailure !== null) return fallback;
-      try {
-        return read();
-      } catch (e) {
-        indexFailure = errMessage(e);
-        logger.warn(
-          caught(e, (message) => `usage index unreadable, parsing every file (${message}).`),
-        );
-        return fallback;
-      }
-    };
-
-    const walkedPaths = new Set(walked.map((file) => file.path));
-    const knownFiles = indexRead(() => this.#knownFiles(source), new Map<string, KnownFile>());
-    for (const path of knownFiles.keys()) {
-      if (!walkedPaths.has(path)) writes.push({ kind: "delete", path, unwalked: true });
-    }
-    // Prepared once: a per-file prepare cost as much as the read itself.
-    const recordStatement = indexRead(
-      () => this.#db.prepare(`SELECT "record" FROM "files" WHERE "path" = ? AND "source" = ?`),
-      null,
-    );
-    const stored = (path: string): ContributionOf<S> | null =>
-      recordStatement === null
-        ? null
-        : indexRead(() => {
-            const row = recordStatement.get(path, source) as { record: string } | null;
-            return row === null ? null : parseStoredContribution<S>(row.record);
-          }, null);
-
-    for (const file of walked) {
-      if (!file.candidate) continue;
-      // Once the index has failed the snapshot is not consulted either, so no probe read happens on
-      // its behalf.
-      const known = indexFailure === null ? knownFiles.get(file.path) : undefined;
-      try {
-        let parsed: ParsedFile<ContributionOf<S>> | null = null;
-        if (known !== undefined) {
-          if (known.size === file.size && known.mtimeMs === file.mtimeMs) {
-            const contribution = stored(file.path);
-            if (contribution !== null) {
-              stats.filesReused++;
-              records.push({ path: file.path, contribution });
-              continue;
-            }
-          } else if (
-            file.size > known.size &&
-            file.resumable &&
-            tailProbeMatches(file.path, known.parsedThrough, known.tailProbeKey, stats)
-          ) {
-            const prior = stored(file.path);
-            if (prior !== null) {
-              parsed = parseTail(file, known.parsedThrough, prior);
-              stats.filesParsedTail++;
-            }
-          }
-        }
-        if (parsed === null) {
-          parsed = parseWhole(file);
-          stats.filesParsedWhole++;
-        }
-        stats.bytesRead += parsed.bytesRead;
-        records.push({ path: file.path, contribution: parsed.contribution });
-        writes.push({
-          kind: "upsert",
-          source,
-          path: file.path,
-          size: file.size,
-          mtimeMs: file.mtimeMs,
-          parsedThrough: parsed.parsedThrough,
-          tailProbeKey: dedupKey(parsed.tailProbeHex),
-          record: JSON.stringify(parsed.contribution),
-        });
-      } catch (e) {
-        stats.filesFailed++;
-        logger.warn(caught(e, (message) => `could not read ${file.path} (${message}).`));
-        writes.push({ kind: "delete", path: file.path, unwalked: false });
-      }
-    }
-
-    if (indexFailure !== null) return { records, stats };
+  /** A commit that fails or finds the lock taken is a notice: the run keeps its results. */
+  #save(writes: readonly PendingWrite[], stats: IndexStats): void {
     try {
       const removed = this.#commit(writes);
       if (removed === null) {
@@ -341,7 +379,36 @@ class SqliteUsageIndex implements UsageIndex {
     } catch (e) {
       logger.warn(caught(e, (message) => `could not update the usage index (${message}).`));
     }
-    return { records, stats };
+  }
+
+  /** `bytesRead`: successful parses and probe reads only, for the warm-run and append oracles. */
+  readonly reconcile: Reconcile = <S extends UsageSource>(
+    source: S,
+    walked: readonly WalkedFile[],
+    parseWhole: ParseWhole<ContributionOf<S>>,
+    parseTail: ParseTail<ContributionOf<S>>,
+  ): ReconcileResult<ContributionOf<S>> => {
+    const run: ReconcileRun<S> = {
+      source,
+      reads: indexReads(this.#db, source),
+      parseWhole,
+      parseTail,
+      stats: emptyIndexStats(),
+      records: [],
+      writes: [],
+    };
+    run.stats.filesSeen = walked.length;
+
+    const walkedPaths = new Set(walked.map((file) => file.path));
+    for (const path of run.reads.knownFiles.keys()) {
+      if (!walkedPaths.has(path)) run.writes.push({ kind: "delete", path, unwalked: true });
+    }
+    for (const file of walked) {
+      if (file.candidate) reconcileFile(run, file);
+    }
+
+    if (!run.reads.failed()) this.#save(run.writes, run.stats);
+    return { records: run.records, stats: run.stats };
   };
 
   close(): void {

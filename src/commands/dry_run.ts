@@ -5,6 +5,37 @@ import { type FileChange, underDryRunMarker, withDryRun } from "../utils/dry_run
 import { renderDryRun } from "../utils/dry_run_report.ts";
 import { terminalWidth, wrapLine } from "../utils/table.ts";
 
+/** How a rendered diff row wraps: its first-line indent, the hang of its continuation lines, and
+ *  the text after the indent. */
+interface DiffRowShape {
+  indent: string;
+  hang: string;
+  text: string;
+}
+
+/** A diff row keeps its `+`/`-` marker in the indent, so a wrapped row never sheds it onto a line
+ *  of its own; an attribute row hangs under its key. */
+function diffRowShape(line: string): DiffRowShape {
+  const marker = /^ {2}([+-]) ?/.exec(line);
+  if (marker !== null) {
+    return { indent: `    ${marker[1]} `, hang: "      ", text: line.slice(marker[0].length) };
+  }
+  if (line.startsWith("  ")) {
+    return { indent: "    ", hang: "      ", text: line.trimStart() };
+  }
+  return { indent: "  ", hang: "    ", text: line.trimStart() };
+}
+
+function printChanges(header: string, run: { changes: readonly FileChange[] }): void {
+  const width = terminalWidth();
+  console.log(header);
+  // A path or a value wider than the line is one word: wrapLine splits it at the width.
+  for (const line of renderDryRun(run.changes)) {
+    const { indent, hang, text } = diffRowShape(line);
+    for (const wrapped of wrapLine(text, width, indent, hang)) console.log(wrapped);
+  }
+}
+
 /** The command's stderr narration still runs (the probes it needs, the lines it says); the diff is
  *  the stdout, file by file and attribute by attribute, wrapped to the terminal like every other
  *  table (an attribute row hangs under its key; a long path or value splits at the width). Every
@@ -23,19 +54,4 @@ export async function runDryRun(body: () => Promise<unknown>): Promise<void> {
     throw run.error;
   }
   printChanges("DRY RUN: nothing was written. The command would:", run);
-}
-
-function printChanges(header: string, run: { changes: readonly FileChange[] }): void {
-  const width = terminalWidth();
-  console.log(header);
-  // A path or a value wider than the line is one word: wrapLine splits it at the width. A diff
-  // row keeps its `+`/`-` marker in the indent, so a wrapped row never sheds it onto a line of
-  // its own.
-  for (const line of renderDryRun(run.changes)) {
-    const marker = /^ {2}([+-]) ?/.exec(line);
-    const indent = marker !== null ? `    ${marker[1]} ` : line.startsWith("  ") ? "    " : "  ";
-    const hang = marker !== null ? "      " : `${indent}  `;
-    const text = marker !== null ? line.slice(marker[0].length) : line.trimStart();
-    for (const wrapped of wrapLine(text, width, indent, hang)) console.log(wrapped);
-  }
 }

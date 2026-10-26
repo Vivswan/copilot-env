@@ -328,6 +328,64 @@ test("rename moves planned text and whole disk trees by reference, a binary keep
   expect(new Uint8Array(readFileSync(blob))).toEqual(bytes);
 });
 
+/** The disk files the mode cases start from, by their role. */
+interface ModeFixtures {
+  script: string;
+  both: string;
+  inplace: string;
+  same: string;
+  staged: string;
+  restaged: string;
+  swap: string;
+  doc: string;
+}
+
+/** Both in-place writes (`inplace` here, `real-inplace` under `root`) name 0600 over a 0644 file:
+ *  the real one is the witness for what the runtime's writeFileSync lands on an existing inode
+ *  (its chmod after the write), the dry one the pin. `staged` is pinned away from 0600 so the
+ *  staged write is a mode change under any umask. */
+function seedModeFixtures(root: string, files: ModeFixtures): void {
+  writeFileSync(files.script, "#!/bin/sh\n");
+  writeFileSync(files.both, "old\n");
+  writeFileSync(files.inplace, "old\n");
+  chmodSync(files.inplace, 0o644);
+  writeFileSync(join(root, "real-inplace"), "old\n");
+  chmodSync(join(root, "real-inplace"), 0o644);
+  facade.writeText(join(root, "real-inplace"), "new\n", { atomic: false, mode: 0o600 });
+  writeFileSync(files.same, "keep");
+  writeFileSync(files.staged, "keep");
+  chmodSync(files.staged, 0o644);
+  writeFileSync(files.restaged, "#!/bin/sh\n");
+  chmodSync(files.restaged, 0o755);
+  writeFileSync(files.swap, "a file today");
+  mkdirSync(files.doc);
+}
+
+/** The real run is the witness for what an explicit and a default mode land as on this platform
+ *  (a file's explicit mode is exact, a directory's and every default have the umask applied;
+ *  Windows folds every mode to its one read-only bit): the four landed modes in the order the dry
+ *  run reads them back, the file default among them, and what a chmod to `mode` lands. */
+function realModeWitnesses(root: string): {
+  realModes: string[];
+  fileDefault: string;
+  afterChmod: (mode: number) => string;
+} {
+  facade.mkdir(join(root, "real-d"), { mode: 0o777 });
+  facade.writeText(join(root, "real-f"), "x", { mode: 0o666 });
+  facade.mkdir(join(root, "real-d-default"));
+  facade.writeText(join(root, "real-f-default"), "x");
+  const realModes = ["real-d", "real-f", "real-d-default", "real-f-default"].map((n) =>
+    modeOf(join(root, n)),
+  );
+  const afterChmod = (mode: number): string => {
+    const witness = join(root, `witness-${mode.toString(8)}`);
+    writeFileSync(witness, "x");
+    chmodSync(witness, mode);
+    return modeOf(witness);
+  };
+  return { realModes, fileDefault: realModes[3] as string, afterChmod };
+}
+
 test("a mode-only change is a rewrite with no row where the platform can change a mode; the same bytes written back are unchanged; nothing is nothing", async () => {
   dir = tempDir("copilot-facade-");
   const script = join(dir, "helper.sh");
@@ -339,41 +397,8 @@ test("a mode-only change is a rewrite with no row where the platform can change 
   const transient = join(dir, "transient.txt");
   const swap = join(dir, "swap");
   const doc = join(dir, "doc.json");
-  writeFileSync(script, "#!/bin/sh\n");
-  writeFileSync(both, "old\n");
-  // Both in-place writes below name 0600 over a 0644 file: the real one is the witness for what
-  // the runtime's writeFileSync lands on an existing inode (its chmod after the write), the dry one
-  // the pin.
-  writeFileSync(inplace, "old\n");
-  chmodSync(inplace, 0o644);
-  writeFileSync(join(dir, "real-inplace"), "old\n");
-  chmodSync(join(dir, "real-inplace"), 0o644);
-  facade.writeText(join(dir, "real-inplace"), "new\n", { atomic: false, mode: 0o600 });
-  writeFileSync(same, "keep");
-  writeFileSync(staged, "keep");
-  // Pinned away from 0600 so the staged write below is a mode change under any umask.
-  chmodSync(staged, 0o644);
-  writeFileSync(restaged, "#!/bin/sh\n");
-  chmodSync(restaged, 0o755);
-  writeFileSync(swap, "a file today");
-  mkdirSync(doc);
-  // The real run is the witness for what an explicit and a default mode land as on this platform
-  // (a file's explicit mode is exact, a directory's and every default have the umask applied;
-  // Windows folds every mode to its one read-only bit).
-  facade.mkdir(join(dir, "real-d"), { mode: 0o777 });
-  facade.writeText(join(dir, "real-f"), "x", { mode: 0o666 });
-  facade.mkdir(join(dir, "real-d-default"));
-  facade.writeText(join(dir, "real-f-default"), "x");
-  const realModes = ["real-d", "real-f", "real-d-default", "real-f-default"].map((n) =>
-    modeOf(join(dir, n)),
-  );
-  const fileDefault = realModes[3] as string;
-  const afterChmod = (mode: number): string => {
-    const witness = join(dir, `witness-${mode.toString(8)}`);
-    writeFileSync(witness, "x");
-    chmodSync(witness, mode);
-    return modeOf(witness);
-  };
+  seedModeFixtures(dir, { script, both, inplace, same, staged, restaged, swap, doc });
+  const { realModes, fileDefault, afterChmod } = realModeWitnesses(dir);
   const lines = await dryRun(() => {
     facade.chmod(script, 0o700);
     facade.writeText(both, "new\n", { mode: 0o700 });
@@ -812,25 +837,34 @@ test.skipIf(WINDOWS)(
   },
 );
 
+/** The disk the case tests start from, with `variant`: a path with the drive letter, the directory
+ *  and the file name in the other case. */
+function caseFixtures(root: string): {
+  onDisk: string;
+  native: string;
+  variant: (path: string) => string;
+} {
+  const onDisk = join(root, "Disk.txt");
+  writeFileSync(onDisk, "disk");
+  mkdirSync(join(root, "Source"));
+  writeFileSync(join(root, "Source", "Child.txt"), "child");
+  writeFileSync(join(root, "Plain.txt"), "plain");
+  mkdirSync(join(root, "Linked"));
+  writeFileSync(join(root, "Linked", "Target.txt"), "target");
+  const variant = (path: string): string =>
+    path
+      .replace(/^[A-Za-z]:/, (drive) => drive.toLowerCase())
+      .toUpperCase()
+      .replace(/^[A-Z]:/, (drive) => drive.toLowerCase());
+  return { onDisk, native: realpathSync.native(onDisk), variant };
+}
+
 // A case-insensitive filesystem with 8.3 short names: only Windows has one on the runners.
 test.skipIf(!WINDOWS)(
   "on Windows every spelling of a path is one entry: a planned file reads back through a case variant, and realpath keeps the OS's own spelling",
   async () => {
     dir = tempDir("copilot-facade-");
-    const onDisk = join(dir, "Disk.txt");
-    writeFileSync(onDisk, "disk");
-    mkdirSync(join(dir, "Source"));
-    writeFileSync(join(dir, "Source", "Child.txt"), "child");
-    writeFileSync(join(dir, "Plain.txt"), "plain");
-    mkdirSync(join(dir, "Linked"));
-    writeFileSync(join(dir, "Linked", "Target.txt"), "target");
-    const native = realpathSync.native(onDisk);
-    // The drive letter, the directory and the file name in the other case.
-    const variant = (path: string): string =>
-      path
-        .replace(/^[A-Za-z]:/, (drive) => drive.toLowerCase())
-        .toUpperCase()
-        .replace(/^[A-Z]:/, (drive) => drive.toLowerCase());
+    const { onDisk, native, variant } = caseFixtures(dir);
     const lines = await dryRun(() => {
       facade.writeText(join(dir, "Mixed", "File.txt"), "planned");
       expect(facade.readText(variant(join(dir, "Mixed", "File.txt")))).toBe("planned");

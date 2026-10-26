@@ -1,7 +1,7 @@
 // A child the CLI spawns only to read something must carry a bound: with none, a child that never
 // exits (or whose exit Bun never reports, oven-sh/bun#41024) hangs the command. The required
 // `timeoutMs` of runCaptured (src/utils/command.ts) covers its callers; this rule covers every other
-// node:child_process call in src/, so a new raw look cannot drop the bound unnoticed. biome.json
+// node:child_process call in src/, so a new raw look cannot drop the bound unnoticed. biome.local.jsonc
 // scopes it to src/.
 //
 // The rule catches an ACCIDENTAL omission in the call shapes this repository writes: a direct or

@@ -15,7 +15,7 @@ import { caught } from "../utils/message.ts";
 import { isDue } from "../utils/time.ts";
 import { CODEX_IDENTITY_NAME } from "./config_registry.ts";
 import { PING_TIMEOUT_MS } from "./endpoint_smoke.ts";
-import { CopilotEnvState } from "./env_state.ts";
+import { CopilotEnvState, type ModelVerdict } from "./env_state.ts";
 import {
   COPILOT_CLI_INTEGRATION_ID,
   COPILOT_SANDBOX_INTEGRATION_ID,
@@ -87,6 +87,30 @@ interface DiscoveredClaudeModels {
   unlisted: string[];
 }
 
+/** What every request of one discovery goes out with. */
+interface DiscoveryWire {
+  /** The test seam for EVERY request this module makes. */
+  fetchImpl: ProbeFetch;
+
+  /** The host the wiring bakes (selectDirectIdentityAndHost). */
+  apiBase: string;
+
+  /** The credential's bearer. */
+  token: string;
+
+  /** The versioned codexUserAgent. */
+  userAgent: string;
+
+  /** The baked id; null = the default identity (no Copilot-Integration-Id header). */
+  integrationId: string | null;
+
+  /** The wiring's exact bytes plus the credential, for the POSTs (the GETs go through fetchModelCatalog, which adds the bearer). */
+  headers: Record<string, string>;
+
+  /** The verdict-cache key segment for the host and token (credentialDigest). */
+  credential: string;
+}
+
 /**
  * `userAgent` MUST be the versioned codexUserAgent, `integrationId` the baked id (null = default), and
  * `apiBase` the host the wiring bakes (selectDirectIdentityAndHost): every request below goes there.
@@ -100,65 +124,35 @@ export async function discoverServableClaudeModels(
   apiBase: string,
   opts: DiscoveryOptions = {},
 ): Promise<DiscoveredClaudeModels> {
-  const fetchImpl: ProbeFetch = opts.fetchImpl ?? defaultFetch;
-  const own = wireHeaders(token, userAgent, integrationId);
-  const credential = await credentialDigest(`${apiBase}|${token}`);
-
-  const catalogBody = await catalogUnder(
-    fetchImpl,
+  const wire: DiscoveryWire = {
+    fetchImpl: opts.fetchImpl ?? defaultFetch,
     apiBase,
     token,
     userAgent,
     integrationId,
-    credential,
-  );
+    headers: { ...directClientHeaders(userAgent, integrationId), Authorization: `Bearer ${token}` },
+    credential: await credentialDigest(`${apiBase}|${token}`),
+  };
+
+  const catalogBody = await catalogUnder(wire, integrationId);
   const advertised = parseCatalogModels(catalogBody);
   const models = [...advertised];
   const unlisted: string[] = [];
 
   try {
-    const extras = await unadvertisedClaudeIds(
-      fetchImpl,
-      apiBase,
-      token,
-      userAgent,
-      integrationId,
-      credential,
-      advertised,
-    );
+    const extras = await unadvertisedClaudeIds(wire, advertised);
     const state = new CopilotEnvState();
     const now = opts.nowMs?.() ?? Date.now();
     for (const id of extras) {
       // `agent profile models` and the Desktop wiring share the persisted verdicts, so a DEFINITIVE one costs its
       // billed ping once per model+identity+credential per day for sequential runs; overlapping runs each
-      // probe. An inconclusive probe caches nothing (below), so it pings again on the next invocation.
-      const key = `${credential}|${identityKey(integrationId)}|${id}`;
+      // probe. An inconclusive probe caches nothing (probeExtra), so it pings again on the next invocation.
+      const key = `${wire.credential}|${identityKey(integrationId)}|${id}`;
       let verdict = state.readModelVerdict(key);
       if (verdict === null || isDue(verdict.atMs, now)) {
-        const ping = await probeOnce(`${key}|ping`, now, () =>
-          pingModel(fetchImpl, apiBase, own, id, "x"),
-        );
-        const oneM =
-          ping.outcome === "yes"
-            ? await probeOnce(`${key}|1m`, now, () =>
-                pingModel(fetchImpl, apiBase, own, id, "x ".repeat(ONE_M_PROBE_TOKENS)),
-              )
-            : { outcome: "no" as const, atMs: ping.atMs };
-        // Only DEFINITIVE outcomes are cached: a timeout / 429 / 5xx must not wedge
-        // a servable model out (or in) for a whole TTL window.
-        if (ping.outcome === "unknown" || oneM.outcome === "unknown") {
-          if (ping.outcome === "yes") {
-            models.push({ id, is1m: false });
-            unlisted.push(id);
-          }
-          continue;
-        }
-        verdict = {
-          servable: ping.outcome === "yes",
-          is1m: oneM.outcome === "yes",
-          atMs: ping.atMs,
-        };
-        state.setModelVerdict(key, verdict);
+        const probed = await probeExtra(wire, id, key, now);
+        verdict = probed.verdict;
+        if (probed.definitive) state.setModelVerdict(key, verdict);
       }
       if (verdict.servable) {
         models.push({ id, is1m: verdict.is1m });
@@ -184,73 +178,41 @@ async function credentialDigest(hostAndToken: string): Promise<string> {
   ).join("");
 }
 
-/** The raw /models body under `integrationId`, fetched once per credential and identity in this
- *  process; a failure throws with the status (an unusable 2xx body or a network error rethrows its
- *  own error) and is not remembered. */
-async function catalogUnder(
-  fetchImpl: ProbeFetch,
-  apiBase: string,
-  token: string,
-  userAgent: string,
-  integrationId: string | null,
-  credential: string,
-): Promise<unknown> {
-  const key = `${credential}|${identityKey(integrationId)}`;
+/** The raw /models body under `integrationId` (the wiring's own, or another identity's for the
+ *  trigger), fetched once per credential and identity in this process; a failure throws with the
+ *  status (an unusable 2xx body or a network error rethrows its own error) and is not remembered. */
+async function catalogUnder(wire: DiscoveryWire, integrationId: string | null): Promise<unknown> {
+  const key = `${wire.credential}|${identityKey(integrationId)}`;
   if (catalogs.has(key)) return catalogs.get(key);
   const got = await fetchModelCatalog({
-    host: apiBase,
-    token,
-    headers: directClientHeaders(userAgent, integrationId),
-    fetchImpl,
+    host: wire.apiBase,
+    token: wire.token,
+    headers: directClientHeaders(wire.userAgent, integrationId),
+    fetchImpl: wire.fetchImpl,
   });
   switch (got.kind) {
     case "ok":
       catalogs.set(key, got.body);
       return got.body;
     case "http":
-      throw new Error(`GET ${apiBase}/models returned ${got.status}`);
+      throw new Error(`GET ${wire.apiBase}/models returned ${got.status}`);
     default:
       throw got.error;
   }
 }
 
-/** The wiring's exact bytes plus the credential, for the POSTs; the GETs go through
- *  fetchModelCatalog, which adds the bearer itself. */
-function wireHeaders(token: string, userAgent: string, id: string | null): Record<string, string> {
-  return { ...directClientHeaders(userAgent, id), Authorization: `Bearer ${token}` };
-}
-
 /** Empty when no gated trigger id exists or the oracle's error shape is not understood: never a guess. */
 async function unadvertisedClaudeIds(
-  fetchImpl: ProbeFetch,
-  apiBase: string,
-  token: string,
-  userAgent: string,
-  integrationId: string | null,
-  credential: string,
+  wire: DiscoveryWire,
   advertised: CatalogModel[],
 ): Promise<string[]> {
   const ownIds = new Set(advertised.map((m) => m.id));
-
-  const candidates: string[] = [];
-  for (const id of KNOWN_IDENTITY_IDS) {
-    if (id === integrationId) continue;
-    try {
-      const body = await catalogUnder(fetchImpl, apiBase, token, userAgent, id, credential);
-      for (const model of parseCatalogModels(body)) {
-        if (!ownIds.has(model.id) && !candidates.includes(model.id)) candidates.push(model.id);
-      }
-    } catch {
-      // One identity's catalog failing must not sink the others.
-    }
-  }
-
-  const own = wireHeaders(token, userAgent, integrationId);
+  const candidates = await gatedTriggerIds(wire, ownIds);
   for (const candidate of candidates.slice(0, ORACLE_ATTEMPTS)) {
-    const key = `${credential}|${identityKey(integrationId)}|${candidate}`;
+    const key = `${wire.credential}|${identityKey(wire.integrationId)}|${candidate}`;
     let answer = oracled.get(key);
     if (answer === undefined) {
-      const asked = await oracleAllowlist(fetchImpl, apiBase, own, candidate);
+      const asked = await oracleAllowlist(wire, candidate);
       if (asked === null) continue;
       answer = asked;
       oracled.set(key, answer);
@@ -263,18 +225,37 @@ async function unadvertisedClaudeIds(
   return [];
 }
 
+/** The ids the OTHER identities' catalogs list that the wiring's own does not: real but gated under
+ *  ours, so any one of them makes the oracle print its allowlist. First seen first, no duplicates. */
+async function gatedTriggerIds(
+  wire: DiscoveryWire,
+  ownIds: ReadonlySet<string>,
+): Promise<string[]> {
+  const candidates: string[] = [];
+  for (const id of KNOWN_IDENTITY_IDS) {
+    if (id === wire.integrationId) continue;
+    try {
+      const body = await catalogUnder(wire, id);
+      for (const model of parseCatalogModels(body)) {
+        if (!ownIds.has(model.id) && !candidates.includes(model.id)) candidates.push(model.id);
+      }
+    } catch {
+      // One identity's catalog failing must not sink the others.
+    }
+  }
+  return candidates;
+}
+
 /** The allowlist the rejection printed; "servable" for a 2xx (the id turned out servable, and
  *  max_output_tokens caps the accident at one billed token); null for an unrecognized error
  *  shape. */
 async function oracleAllowlist(
-  fetchImpl: ProbeFetch,
-  apiBase: string,
-  headers: Record<string, string>,
+  wire: DiscoveryWire,
   gatedId: string,
 ): Promise<string[] | "servable" | null> {
-  const res = await fetchImpl(`${apiBase}/responses`, {
+  const res = await wire.fetchImpl(`${wire.apiBase}/responses`, {
     method: "POST",
-    headers: { ...headers, "Content-Type": "application/json" },
+    headers: { ...wire.headers, "Content-Type": "application/json" },
     body: JSON.stringify({
       model: gatedId,
       input: "x",
@@ -289,6 +270,30 @@ async function oracleAllowlist(
   if (match === null || match[1] === undefined) return null;
   const ids = match[1].split(/\s+/).filter((id) => id !== "");
   return ids.length > 0 ? ids : null;
+}
+
+/** A fresh probe of one extra: the small ping, then the 1m probe when it answered. `definitive`
+ *  is false when either came back "unknown" (a timeout / 429 / 5xx), and only a definitive verdict
+ *  may be cached: an inconclusive one must not wedge a servable model out (or in) for a whole TTL
+ *  window, so it is used once (servable while the ping answered, never 1m) and probed again next time. */
+async function probeExtra(
+  wire: DiscoveryWire,
+  id: string,
+  key: string,
+  now: number,
+): Promise<{ verdict: ModelVerdict; definitive: boolean }> {
+  const ping = await probeOnce(`${key}|ping`, now, () => pingModel(wire, id, "x"));
+  let oneM: ProbeOutcome = "no";
+  if (ping.outcome === "yes") {
+    const probe = await probeOnce(`${key}|1m`, now, () =>
+      pingModel(wire, id, "x ".repeat(ONE_M_PROBE_TOKENS)),
+    );
+    oneM = probe.outcome;
+  }
+  return {
+    verdict: { servable: ping.outcome === "yes", is1m: oneM === "yes", atMs: ping.atMs },
+    definitive: ping.outcome !== "unknown" && oneM !== "unknown",
+  };
 }
 
 /** One probe's outcome, taken once per process while it holds (the verdict TTL); "unknown" is never
@@ -312,17 +317,15 @@ async function probeOnce(
 type ProbeOutcome = "yes" | "no" | "unknown";
 
 async function pingModel(
-  fetchImpl: ProbeFetch,
-  apiBase: string,
-  headers: Record<string, string>,
+  wire: DiscoveryWire,
   model: string,
   content: string,
 ): Promise<ProbeOutcome> {
   try {
-    const res = await fetchImpl(`${apiBase}/v1/messages`, {
+    const res = await wire.fetchImpl(`${wire.apiBase}/v1/messages`, {
       method: "POST",
       headers: {
-        ...headers,
+        ...wire.headers,
         "Content-Type": "application/json",
         "anthropic-version": "2023-06-01",
       },

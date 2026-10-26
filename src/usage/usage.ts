@@ -134,6 +134,12 @@ export function usageReport(): UsageReport {
   return { ...usageTotals(), longContext: usageTotals(), billed: new Map() };
 }
 
+/** The per-event cut of a `--days` window: under a cutoff, an event with no timestamp is out. */
+export function inWindow(tsMs: number | null, sinceMs: number | undefined): boolean {
+  if (sinceMs === undefined) return true;
+  return tsMs !== null && tsMs >= sinceMs;
+}
+
 /** The one owner of a new increment's consistency: every source records through here, so the
  *  per-day split cannot drift from the roll-up and the long-context share cannot exceed it.
  *  mergeUsageReports bypasses it, unioning reports that are consistent already. `usage.events` is
@@ -374,7 +380,7 @@ export function foldUsageRequests(
   for (const request of requests) {
     // The daemon writes created_at_ms on every row, so a null tsMs is not expected; record still
     // totals such a row, just outside the per-day split. The day is the user's local one.
-    record(report, request.tsMs !== null ? dayKey(request.tsMs) : null, request.model, {
+    record(report, request.tsMs === null ? null : dayKey(request.tsMs), request.model, {
       ...request.buckets,
       events: 1,
     });

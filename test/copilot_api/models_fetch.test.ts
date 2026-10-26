@@ -2,6 +2,8 @@
 // consumer still decides for itself (its identity header pair) and what it no longer can (the
 // URL, the bearer, the count). The verdict arms per consumer stay pinned in their own suites
 // (endpoint_smoke, discovery, integration_identity).
+
+import { afterEach } from "bun:test";
 import { fetchRawModels } from "../../src/copilot_api/catalog.ts";
 import { discoverServableClaudeModels } from "../../src/copilot_api/discovery.ts";
 import { directSmoke } from "../../src/copilot_api/endpoint_smoke.ts";
@@ -22,7 +24,8 @@ import {
 } from "../../src/copilot_api/integration_identity.ts";
 import { parseModelList } from "../../src/copilot_api/models.ts";
 import { envSnapshot, isolateProxyHome } from "../helpers/env.ts";
-import { afterEach, expect, test } from "../helpers/testing.ts";
+import { requestUrl } from "../helpers/fetch_input.ts";
+import { expect, test } from "../helpers/testing.ts";
 
 const restoreEnv = envSnapshot();
 
@@ -42,7 +45,7 @@ interface SeenRequest {
 /** Answers every /models with SEAM_BODY and the account lookup with no designated host. */
 function recordingFetch(seen: SeenRequest[]): ProbeFetch {
   return (input, init) => {
-    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    const url = requestUrl(input);
     if (url.includes("/copilot_internal/user")) {
       return Promise.resolve(new Response("{}", { status: 200 }));
     }

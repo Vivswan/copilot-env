@@ -5,8 +5,12 @@
 
 import type { ProbeFetch } from "../copilot_api/integration_identity.ts";
 import { errMessage } from "../utils/error.ts";
-import { loadGitHubRateCard, type RateCardSource } from "./github_rate_card.ts";
-import { loadPricing, type PricingTier, withGitHubRates } from "./pricing.ts";
+import {
+  type LoadedRateCard,
+  loadGitHubRateCard,
+  type RateCardSource,
+} from "./github_rate_card.ts";
+import { type LoadedPricing, loadPricing, type PricingTier, withGitHubRates } from "./pricing.ts";
 
 export type SourceRead =
   | {
@@ -34,6 +38,36 @@ export interface PriceSources {
   gitHub: SourceRead;
 }
 
+/** The list load with its failure folded in, so the two sources settle side by side. */
+type LoadedList = ({ kind: "list" } & LoadedPricing) | { kind: "none"; problem: string };
+
+function kept(cacheWriteError: string | undefined): { cacheWriteError?: string } {
+  return cacheWriteError === undefined ? {} : { cacheWriteError };
+}
+
+function openRouterRead(list: LoadedList): SourceRead {
+  if (list.kind === "none") {
+    return { kind: "none", problem: list.problem };
+  }
+  if (list.source === "stale-cache") {
+    return { kind: "cached", fetchedAtMs: list.fetchedAtMs, problem: list.fetchError };
+  }
+  if (list.source === "fetched") {
+    return { kind: "read", ...kept(list.cacheWriteError) };
+  }
+  return { kind: "read" };
+}
+
+function gitHubRead(card: LoadedRateCard): SourceRead {
+  if (card.kind === "none") {
+    return { kind: "none", problem: card.problem };
+  }
+  if (card.problem !== undefined) {
+    return { kind: "cached", fetchedAtMs: card.from.fetchedAtMs, problem: card.problem };
+  }
+  return { kind: "read", ...kept(card.cacheWriteError) };
+}
+
 /** Both fetches run side by side: each has its own timeout, and neither needs the other. */
 export async function loadPriceSources(
   urls: { pricingUrl: string; rateCardUrl: string },
@@ -41,8 +75,8 @@ export async function loadPriceSources(
 ): Promise<PriceSources> {
   const [list, card] = await Promise.all([
     loadPricing(urls.pricingUrl, { fetchImpl }).then(
-      (loaded) => ({ kind: "list" as const, ...loaded }),
-      (e: unknown) => ({ kind: "none" as const, problem: errMessage(e) }),
+      (loaded): LoadedList => ({ kind: "list", ...loaded }),
+      (e: unknown): LoadedList => ({ kind: "none", problem: errMessage(e) }),
     ),
     loadGitHubRateCard(urls.rateCardUrl, { fetchImpl }),
   ]);
@@ -50,21 +84,7 @@ export async function loadPriceSources(
   return {
     pricing: card.kind === "card" ? withGitHubRates(listed, card.card, card.from) : listed,
     rateCard: card.kind === "card" ? card.from : undefined,
-    openRouter:
-      list.kind === "none"
-        ? { kind: "none", problem: list.problem }
-        : list.source === "stale-cache"
-          ? { kind: "cached", fetchedAtMs: list.fetchedAtMs, problem: list.fetchError }
-          : { kind: "read", ...(list.source === "fetched" ? kept(list.cacheWriteError) : {}) },
-    gitHub:
-      card.kind === "none"
-        ? { kind: "none", problem: card.problem }
-        : card.problem !== undefined
-          ? { kind: "cached", fetchedAtMs: card.from.fetchedAtMs, problem: card.problem }
-          : { kind: "read", ...kept(card.cacheWriteError) },
+    openRouter: openRouterRead(list),
+    gitHub: gitHubRead(card),
   };
-}
-
-function kept(cacheWriteError: string | undefined): { cacheWriteError?: string } {
-  return cacheWriteError === undefined ? {} : { cacheWriteError };
 }

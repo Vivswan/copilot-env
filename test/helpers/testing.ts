@@ -18,8 +18,6 @@ import { CLAUDE_DESKTOP_DIR_ENV } from "../../src/claude/desktop_library.ts";
 import { CI_NO_LIVE_LOOKUPS_ENV } from "../../src/codex/user_agent.ts";
 import { CI_PS_DOCUMENTS_DIR_ENV, CI_RC_DIR_ENV } from "../../src/shell/integration.ts";
 
-export { afterEach, beforeEach, describe } from "bun:test";
-
 /**
  * bun:test types `toEqual`/`toBe`/`toContain` against the RECEIVED value's type, so a table row
  * expecting a partial shape, a union, or a branded string fails to compile at the assertion rather

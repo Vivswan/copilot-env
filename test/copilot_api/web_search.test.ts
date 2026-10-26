@@ -1,3 +1,4 @@
+import { afterEach } from "bun:test";
 import { Credential } from "../../src/copilot_api/credential.ts";
 import { CopilotEnvConfig } from "../../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../../src/copilot_api/env_state.ts";
@@ -16,7 +17,7 @@ import {
   webSearch,
 } from "../../src/copilot_api/web_search.ts";
 import { envSnapshot, isolateProxyHome } from "../helpers/env.ts";
-import { afterEach, expect, removeDir, test } from "../helpers/testing.ts";
+import { expect, removeDir, test } from "../helpers/testing.ts";
 
 // isolateProxyHome clears both the stores under COPILOT_API_HOME and the GH token trio the env-token fallback reads.
 const restoreEnv = envSnapshot();
@@ -117,9 +118,10 @@ test("parseResponsesOutput: message text concatenated with deduped sources appen
     { name: "no output at all", body: {}, throws: /no answer text/ },
   ];
   for (const c of cases) {
-    if (c.throws !== undefined) {
+    if (c.throws === undefined) expect(parseResponsesOutput(c.body), c.name).toBe(c.text);
+    else {
       expect(() => parseResponsesOutput(c.body), c.name).toThrow(c.throws);
-    } else expect(parseResponsesOutput(c.body), c.name).toBe(c.text);
+    }
   }
 });
 

@@ -4,6 +4,7 @@
 // or a static bearer alone. The writer never emits an env_key for a named profile, so the
 // OPENAI_API_KEY facts read false here.
 
+import { afterEach } from "bun:test";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse, stringify } from "smol-toml";
@@ -17,7 +18,7 @@ import { readTextResult } from "../../src/utils/fs_facade.ts";
 import { proxyTokenCommand } from "../../src/utils/root.ts";
 import { envSnapshot, isolateAgentHomes } from "../helpers/env.ts";
 import { runSync } from "../helpers/run.ts";
-import { afterEach, expect, test } from "../helpers/testing.ts";
+import { expect, test } from "../helpers/testing.ts";
 
 const restoreEnv = envSnapshot();
 let dir = "";
@@ -178,111 +179,115 @@ test("removing a profile deletes its file, or only our selector when the user's 
   expect(configText(codexHome)).toBe(before);
 });
 
+interface DriftRow {
+  drift: string;
+  mode: "proxy" | "direct";
+  mutate: ((doc: Record<string, unknown>) => void) | null;
+  inspect: Parameters<typeof inspectWork>[1];
+  wiring: Partial<CodexWiringStatus>;
+}
+
+/** A drift on a named profile's provider table, the inspection it gets, and the wiring facts read off it. */
+const DRIFT_ROWS: DriftRow[] = [
+  {
+    drift: "base_url on the wrong port",
+    mode: "proxy",
+    mutate: null,
+    inspect: { port: PROFILE_PORT + 1 },
+    wiring: {
+      providerSelected: true,
+      providerMode: "proxy",
+      baseUrlMatches: false,
+      providerWired: false,
+    },
+  },
+  {
+    drift: "foreign auth command",
+    mode: "proxy",
+    mutate: (doc) => {
+      profileProvider(doc).auth = { command: "/usr/local/bin/my-token", args: [] };
+    },
+    inspect: {},
+    wiring: {
+      providerMode: "proxy",
+      baseUrlMatches: true,
+      envKeyMatches: false,
+      providerWired: false,
+    },
+  },
+  {
+    // The DEFAULT selection's managed auth would route the resolver at the default daemon,
+    // not this profile's.
+    drift: "the default selection's managed auth",
+    mode: "proxy",
+    mutate: (doc) => {
+      const auth = proxyTokenCommand();
+      profileProvider(doc).auth = { command: auth.command, args: auth.args };
+    },
+    inspect: {},
+    wiring: { envKeyMatches: false, providerWired: false },
+  },
+  {
+    drift: "auth deleted",
+    mode: "proxy",
+    mutate: (doc) => {
+      delete profileProvider(doc).auth;
+    },
+    inspect: {},
+    wiring: { providerWired: false },
+  },
+  {
+    // The exported token and the .env line are the default selection's facts; the named
+    // profile stays unwired.
+    drift: "env_key replacing auth, with the token exported and in .env",
+    mode: "proxy",
+    mutate: (doc) => {
+      const provider = profileProvider(doc);
+      delete provider.auth;
+      provider.env_key = "OPENAI_API_KEY";
+    },
+    inspect: { envText: "OPENAI_API_KEY=sk-user\n", envKey: true },
+    wiring: {
+      providerMode: "proxy",
+      envKeyMatches: false,
+      tokenAvailable: false,
+      providerWired: false,
+    },
+  },
+  {
+    // The writer strips env_key from a profile table and Codex rejects auth + env_key on one
+    // provider, so a stray env_key beside intact auth is drift and must not read as wired.
+    drift: "env_key beside intact managed auth",
+    mode: "proxy",
+    mutate: (doc) => {
+      profileProvider(doc).env_key = "OPENAI_API_KEY";
+    },
+    inspect: {},
+    wiring: {
+      providerMode: "proxy",
+      baseUrlMatches: true,
+      envKeyMatches: false,
+      providerWired: false,
+    },
+  },
+  {
+    drift: "env_key beside intact managed auth",
+    mode: "direct",
+    mutate: (doc) => {
+      profileProvider(doc).env_key = "OPENAI_API_KEY";
+    },
+    inspect: {},
+    wiring: {
+      providerMode: "direct",
+      directUsesToken: true,
+      envKeyMatches: false,
+      providerWired: false,
+    },
+  },
+];
+
 test("one drifted detail on a named profile's provider table reads its mode but never wired: a base_url off the port, a foreign, default-addressed, or missing managed auth, or an env_key (alone or beside intact auth, proxy and direct)", () => {
-  const rows: {
-    drift: string;
-    mode: "proxy" | "direct";
-    mutate: ((doc: Record<string, unknown>) => void) | null;
-    inspect: Parameters<typeof inspectWork>[1];
-    wiring: Partial<CodexWiringStatus>;
-  }[] = [
-    {
-      drift: "base_url on the wrong port",
-      mode: "proxy",
-      mutate: null,
-      inspect: { port: PROFILE_PORT + 1 },
-      wiring: {
-        providerSelected: true,
-        providerMode: "proxy",
-        baseUrlMatches: false,
-        providerWired: false,
-      },
-    },
-    {
-      drift: "foreign auth command",
-      mode: "proxy",
-      mutate: (doc) => {
-        profileProvider(doc).auth = { command: "/usr/local/bin/my-token", args: [] };
-      },
-      inspect: {},
-      wiring: {
-        providerMode: "proxy",
-        baseUrlMatches: true,
-        envKeyMatches: false,
-        providerWired: false,
-      },
-    },
-    {
-      // The DEFAULT selection's managed auth would route the resolver at the default daemon,
-      // not this profile's.
-      drift: "the default selection's managed auth",
-      mode: "proxy",
-      mutate: (doc) => {
-        const auth = proxyTokenCommand();
-        profileProvider(doc).auth = { command: auth.command, args: auth.args };
-      },
-      inspect: {},
-      wiring: { envKeyMatches: false, providerWired: false },
-    },
-    {
-      drift: "auth deleted",
-      mode: "proxy",
-      mutate: (doc) => {
-        delete profileProvider(doc).auth;
-      },
-      inspect: {},
-      wiring: { providerWired: false },
-    },
-    {
-      // The exported token and the .env line are the default selection's facts; the named
-      // profile stays unwired.
-      drift: "env_key replacing auth, with the token exported and in .env",
-      mode: "proxy",
-      mutate: (doc) => {
-        const provider = profileProvider(doc);
-        delete provider.auth;
-        provider.env_key = "OPENAI_API_KEY";
-      },
-      inspect: { envText: "OPENAI_API_KEY=sk-user\n", envKey: true },
-      wiring: {
-        providerMode: "proxy",
-        envKeyMatches: false,
-        tokenAvailable: false,
-        providerWired: false,
-      },
-    },
-    {
-      // The writer strips env_key from a profile table and Codex rejects auth + env_key on one
-      // provider, so a stray env_key beside intact auth is drift and must not read as wired.
-      drift: "env_key beside intact managed auth",
-      mode: "proxy",
-      mutate: (doc) => {
-        profileProvider(doc).env_key = "OPENAI_API_KEY";
-      },
-      inspect: {},
-      wiring: {
-        providerMode: "proxy",
-        baseUrlMatches: true,
-        envKeyMatches: false,
-        providerWired: false,
-      },
-    },
-    {
-      drift: "env_key beside intact managed auth",
-      mode: "direct",
-      mutate: (doc) => {
-        profileProvider(doc).env_key = "OPENAI_API_KEY";
-      },
-      inspect: {},
-      wiring: {
-        providerMode: "direct",
-        directUsesToken: true,
-        envKeyMatches: false,
-        providerWired: false,
-      },
-    },
-  ];
-  for (const row of rows) {
+  for (const row of DRIFT_ROWS) {
     const codexHome = isolate();
     if (row.mode === "direct") {
       configureCodexConfig(codexHome, {

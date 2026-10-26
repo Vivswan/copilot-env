@@ -13,7 +13,7 @@ import { managedCodexHome } from "../codex/host.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { assertKnownProfile } from "../copilot_api/env_state.ts";
 import { type Profile, parseProfileFlag } from "../copilot_api/profile.ts";
-import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
+import { type ManagedEnvValue, quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
 
 interface EnvArgs {
   format?: string;
@@ -49,55 +49,45 @@ export function launcherFunctionLines(powershell: boolean): string[] {
   });
 }
 
-export function runEnv(args: EnvArgs): void {
-  const format = String(args.format ?? "posix").toLowerCase();
-  const isPowershell = format === "powershell" || format === "pwsh" || format === "ps";
-  if (!isPowershell && format !== "posix" && format !== "sh" && format !== "bash") {
-    throw new Error(`Unknown --format '${args.format}' (expected 'posix' or 'powershell').`);
+/** Whether `--format` names PowerShell (`powershell`, `pwsh`, `ps`); POSIX is `posix`, `sh`, or
+ *  `bash`, and the default. */
+function isPowershellFormat(raw: string | undefined): boolean {
+  const format = String(raw ?? "posix").toLowerCase();
+  if (format === "powershell" || format === "pwsh" || format === "ps") return true;
+  if (format === "posix" || format === "sh" || format === "bash") return false;
+  throw new Error(`Unknown --format '${raw}' (expected 'posix' or 'powershell').`);
+}
+
+/** The directive a managed value asks for: none while the value is not managed. */
+function directivesFor(key: string, managed: ManagedEnvValue): EnvDirective[] {
+  if (managed === null) return [];
+  if ("unset" in managed) return [{ key, unset: true }];
+  return [{ key, value: managed.value }];
+}
+
+function directiveLine(directive: EnvDirective, powershell: boolean): string {
+  if ("unset" in directive) {
+    // SilentlyContinue: clearing an already-absent var must be a no-op, like POSIX `unset`.
+    return powershell
+      ? `Remove-Item -LiteralPath Env:${directive.key} -ErrorAction SilentlyContinue`
+      : `unset ${directive.key}`;
   }
+  if (powershell) return `$env:${directive.key} = ${quotePowerShell(directive.value)}`;
+  return `export ${directive.key}=${quotePosix(directive.value)}`;
+}
+
+export function runEnv(args: EnvArgs): void {
+  const isPowershell = isPowershellFormat(args.format);
   // Before any directive is printed: an unknown profile must exit non-zero with an EMPTY stdout,
   // since the wrapper evals whatever came out.
   const profile: Profile = parseProfileFlag(args.profile);
   if (profile !== null) assertKnownProfile(profile);
 
-  const directives: EnvDirective[] = [];
-  const codexHome = managedCodexHome();
-  if (codexHome !== null) {
-    directives.push(
-      "unset" in codexHome
-        ? { key: "CODEX_HOME", unset: true }
-        : {
-            key: "CODEX_HOME",
-            value: codexHome.value,
-          },
-    );
-  }
-  const baseUrl = managedClaudeBaseUrl(profile);
-  if (baseUrl !== null) {
-    directives.push(
-      "unset" in baseUrl
-        ? { key: BASE_URL_ENV, unset: true }
-        : {
-            key: BASE_URL_ENV,
-            value: baseUrl.value,
-          },
-    );
-  }
-
-  for (const directive of directives) {
-    if ("unset" in directive) {
-      // SilentlyContinue: clearing an already-absent var must be a no-op, like POSIX `unset`.
-      console.log(
-        isPowershell
-          ? `Remove-Item -LiteralPath Env:${directive.key} -ErrorAction SilentlyContinue`
-          : `unset ${directive.key}`,
-      );
-    } else if (isPowershell) {
-      console.log(`$env:${directive.key} = ${quotePowerShell(directive.value)}`);
-    } else {
-      console.log(`export ${directive.key}=${quotePosix(directive.value)}`);
-    }
-  }
+  const directives = [
+    ...directivesFor("CODEX_HOME", managedCodexHome()),
+    ...directivesFor(BASE_URL_ENV, managedClaudeBaseUrl(profile)),
+  ];
+  for (const directive of directives) console.log(directiveLine(directive, isPowershell));
 
   // The functions only delegate to the launch verb, which never runs `agent profile env` itself,
   // so this cannot recurse.

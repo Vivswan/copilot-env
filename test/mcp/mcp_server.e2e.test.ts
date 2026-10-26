@@ -1,8 +1,9 @@
+import { afterEach } from "bun:test";
 import { consola } from "consola";
 import { redirectConsolaToStderr } from "../../src/utils/logger.ts";
 import { cleanupTmpDirs, type JsonRpcMessage, McpClient } from "../helpers/mcp.ts";
 import { captureChannelsSync } from "../helpers/output.ts";
-import { afterEach, expect, test } from "../helpers/testing.ts";
+import { expect, test } from "../helpers/testing.ts";
 
 afterEach(cleanupTmpDirs);
 

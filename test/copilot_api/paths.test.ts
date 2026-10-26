@@ -1,3 +1,4 @@
+import { afterEach } from "bun:test";
 import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -13,7 +14,7 @@ import {
 import { type Profile, parseProfileName } from "../../src/copilot_api/profile.ts";
 import { getSanitizedHostname } from "../../src/utils/hostname.ts";
 import { envSnapshot, isolateProxyHome } from "../helpers/env.ts";
-import { afterEach, expect, tempDir, test } from "../helpers/testing.ts";
+import { expect, tempDir, test } from "../helpers/testing.ts";
 
 const restoreEnv = envSnapshot();
 let dir = "";

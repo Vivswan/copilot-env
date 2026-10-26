@@ -19,6 +19,7 @@ import {
   readFileSync,
   readlinkSync,
   rmSync,
+  type Stats,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -26,6 +27,7 @@ import { join, relative, resolve } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { isRecord, stableStringify } from "../../src/utils/json.ts";
+import { byCodeUnit } from "../../src/utils/order.ts";
 
 /** Leads both the comment body and the failure summary, so either is recognizable as this script's. */
 const COMMENT_MARKER = "<!-- cost-metrics -->";
@@ -493,7 +495,7 @@ function treeEntries(root: string): { rel: string; path: string }[] {
       const path = join(entry.parentPath, entry.name);
       return { rel: relative(root, path), path };
     })
-    .sort((a, b) => (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0));
+    .sort((a, b) => byCodeUnit(a.rel, b.rel));
 }
 
 /** Read-only tree while it is measured: a cost run must not write the sessions it reads. */
@@ -514,11 +516,16 @@ function unsealTree(root: string): void {
   }
 }
 
+function entryKind(stat: Stats): "dir" | "link" | "file" {
+  if (stat.isDirectory()) return "dir";
+  if (stat.isSymbolicLink()) return "link";
+  return "file";
+}
+
 function treeDigest(root: string): string {
   const hash = createHash("sha256");
   for (const { rel, path } of treeEntries(root)) {
-    const stat = lstatSync(path);
-    const kind = stat.isDirectory() ? "dir" : stat.isSymbolicLink() ? "link" : "file";
+    const kind = entryKind(lstatSync(path));
     hash.update(`${rel}\0${kind}\0`);
     if (kind === "file") hash.update(readFileSync(path));
     if (kind === "link") hash.update(readlinkSync(path));
@@ -537,13 +544,13 @@ export function failureLine(error: unknown): string {
   return lines[1] ?? lines[0] ?? "no detail";
 }
 
+/** A step's value, or the reason it produced none under the declared intent. */
+type UnderIntent<T> = { kind: "ran"; value: T } | { kind: "no-payload"; reason: string };
+
 /** Nothing the base runs may fail under the declared intent: the base then reads as producing
  *  no payload, with the failure's first stderr line, and the head is measured alone. Without
  *  INTENDED_LABEL the failure is the error it always was. */
-async function underIntent<T>(
-  intended: boolean,
-  step: () => Promise<T>,
-): Promise<{ kind: "ran"; value: T } | { kind: "no-payload"; reason: string }> {
+async function underIntent<T>(intended: boolean, step: () => Promise<T>): Promise<UnderIntent<T>> {
   try {
     return { kind: "ran", value: await step() };
   } catch (error: unknown) {
@@ -770,7 +777,7 @@ async function unifiedDiff(scratch: string, baseText: string, headText: string):
 
 interface Bench {
   /** The base checkout, or the reason it produced no payload before any window ran. */
-  base: { kind: "ran"; value: Checkout } | { kind: "no-payload"; reason: string };
+  base: UnderIntent<Checkout>;
 
   /** This checkout, measured even when the base produced no payload. */
   head: Checkout;
@@ -1001,6 +1008,48 @@ export function renderWindowTable(result: WindowResult): string[] {
   ];
 }
 
+function commentHeadline(headOnly: boolean, anyDiffers: boolean): string {
+  if (headOnly) return "head only";
+  if (anyDiffers) return "JSON DIFFERS from base";
+  return "JSON matches base";
+}
+
+/** The measured sha, naming the PR head it is a merge of when the two differ. */
+function headLabel(opts: MeasureOptions, measuredSha: string): string {
+  if (opts.headSha !== undefined && shortSha(opts.headSha) !== shortSha(measuredSha)) {
+    return `${shortSha(measuredSha)} (merge of PR head ${shortSha(opts.headSha)})`;
+  }
+  return shortSha(measuredSha);
+}
+
+/** The footnotes: the dropped key, and each window whose difference did not survive a base
+ *  re-run. */
+function commentFootnotes(results: readonly WindowResult[], headOnly: boolean): string[] {
+  const lines: string[] = [];
+  if (!headOnly && results.some((result) => result.runtimeKeyPresent)) {
+    lines.push(`- compared with the \`${RUNTIME_KEY}\` key dropped`);
+  }
+  for (const result of results) {
+    if (result.outcome.kind !== "transient") continue;
+    lines.push(
+      `- ${result.window}: ${result.outcome.labels.join(", ")} differed from the first base ` +
+        "run but matched a second one, so the inputs (live pricing or the local day boundary) " +
+        "moved between runs, not the code",
+    );
+  }
+  return lines;
+}
+
+/** Each differing window's diff excerpt, one section per window. */
+function diffSections(results: readonly WindowResult[]): string {
+  let body = "";
+  for (const result of results) {
+    if (result.outcome.kind !== "differs") continue;
+    body += diffSection(result.window, result.outcome.labels[0], result.outcome.diff);
+  }
+  return body;
+}
+
 function renderComment(
   results: readonly WindowResult[],
   opts: MeasureOptions,
@@ -1013,19 +1062,9 @@ function renderComment(
   const headOnly = results.flatMap((result) =>
     result.outcome.kind === "head-only" ? [result.outcome.reason] : [],
   );
-  const headLabel =
-    opts.headSha !== undefined && shortSha(opts.headSha) !== shortSha(measuredSha)
-      ? `${shortSha(measuredSha)} (merge of PR head ${shortSha(opts.headSha)})`
-      : shortSha(measuredSha);
   const lines = [
     COMMENT_MARKER,
-    `## Cost metrics: ${
-      headOnly.length > 0
-        ? "head only"
-        : anyDiffers
-          ? "JSON DIFFERS from base"
-          : "JSON matches base"
-    }`,
+    `## Cost metrics: ${commentHeadline(headOnly.length > 0, anyDiffers)}`,
     "",
     ...headOnly.flatMap((reason) => [
       `base \`${shortSha(baseSha)}\` produced no payload (${reason}); the PR declares the ` +
@@ -1043,30 +1082,16 @@ function renderComment(
     } on one runner.`,
     "",
     ...results.flatMap((result) => [...renderWindowTable(result), ""]),
-    `- base \`${shortSha(baseSha)}\`, head \`${headLabel}\``,
+    `- base \`${shortSha(baseSha)}\`, head \`${headLabel(opts, measuredSha)}\``,
     `- tree: ${opts.mb} MB requested, seed ${opts.seed}; ${tree.files} files, ${tree.bytes} bytes, ` +
       `days ${tree.firstDay}..${tree.lastDay}`,
     "- cold: first run in a fresh copilot-env home; warm: second run in the same home; " +
       `${NO_INDEX_FLAG}: a third run there with the index bypassed. ${
         headOnly.length > 0 ? "The checkout was" : "Both checkouts were"
       } primed untimed first, so the numbers measure the scans, not the disk.`,
+    ...commentFootnotes(results, headOnly.length > 0),
   ];
-  if (headOnly.length === 0 && results.some((result) => result.runtimeKeyPresent)) {
-    lines.push(`- compared with the \`${RUNTIME_KEY}\` key dropped`);
-  }
-  for (const result of results) {
-    if (result.outcome.kind !== "transient") continue;
-    lines.push(
-      `- ${result.window}: ${result.outcome.labels.join(", ")} differed from the first base ` +
-        "run but matched a second one, so the inputs (live pricing or the local day boundary) " +
-        "moved between runs, not the code",
-    );
-  }
-  let body = `${lines.join("\n")}\n`;
-  for (const result of results) {
-    if (result.outcome.kind !== "differs") continue;
-    body += diffSection(result.window, result.outcome.labels[0], result.outcome.diff);
-  }
+  const body = `${lines.join("\n")}\n${diffSections(results)}`;
   return body.endsWith("\n") ? body : `${body}\n`;
 }
 
@@ -1100,6 +1125,63 @@ async function cleanup(steps: readonly Teardown[]): Promise<string[]> {
   return failures;
 }
 
+/** The tree generated under `treeHome` and sealed read-only (its unseal registered first, so a
+ *  seal that fails halfway is still unsealed), with its window and digest. */
+async function sealedTree(
+  opts: MeasureOptions,
+  treeHome: string,
+  teardown: Teardown[],
+): Promise<{ tree: TreeSummary; window: Window; digest: string }> {
+  console.log(`generating a ${opts.mb} MB tree (seed ${opts.seed}) into ${treeHome}`);
+  const tree = await generateTree(opts, treeHome);
+  console.log(JSON.stringify(tree));
+  const window = wholeTreeWindow(tree, localTodayMs());
+  teardown.unshift({ what: "unseal tree", run: () => unsealTree(treeHome) });
+  sealTree(treeHome);
+  return { tree, window, digest: treeDigest(treeHome) };
+}
+
+/** The base checkout, probed for NO_INDEX_FLAG; an install or a probe that failed under the
+ *  declared intent reads as no payload. */
+async function baseUnderIntent(
+  installed: UnderIntent<RunResult>,
+  baseDir: string,
+  probeEnv: Record<string, string>,
+  intended: boolean,
+): Promise<UnderIntent<Checkout>> {
+  if (installed.kind === "no-payload") return installed;
+  return underIntent(
+    intended,
+    async (): Promise<Checkout> => ({
+      label: "base",
+      dir: baseDir,
+      noIndex: await supportsNoIndex(baseDir, probeEnv),
+    }),
+  );
+}
+
+/** A head-only window exists only under the label, so it is the declared intent too. */
+function verdictOf(results: readonly WindowResult[], intended: boolean): Verdict {
+  if (results.some((result) => result.outcome.kind === "differs")) {
+    return intended ? "intended" : "differs";
+  }
+  if (results.some((result) => result.outcome.kind === "head-only")) return "intended";
+  return "match";
+}
+
+/** The comment and the verdict into `out`, the comment into the step summary, and the comment's
+ *  path as the COMMENT_OUTPUT step output. */
+function writeOutputs(out: string, body: string, verdict: Verdict): void {
+  console.log(body);
+  mkdirSync(out, { recursive: true });
+  const commentFile = join(out, COMMENT_FILE);
+  writeFileSync(commentFile, body);
+  writeFileSync(join(out, VERDICT_FILE), `${verdict}\n`);
+  appendStepSummary(body);
+  setStepOutput(COMMENT_OUTPUT, commentFile);
+  console.log(`verdict: ${verdict} (written to ${out})`);
+}
+
 async function runMeasure(opts: MeasureOptions): Promise<void> {
   // Teardown steps register as their resource is created, so a failure anywhere in the try
   // (setup included) cleans up exactly what exists and still writes the failure summary.
@@ -1131,27 +1213,10 @@ async function runMeasure(opts: MeasureOptions): Promise<void> {
       mustRun("bun", ["install", "--frozen-lockfile"], { cwd: baseDir, env: setupEnv() }),
     );
 
-    console.log(`generating a ${opts.mb} MB tree (seed ${opts.seed}) into ${treeHome}`);
-    const tree = await generateTree(opts, treeHome);
-    console.log(JSON.stringify(tree));
-    const window = wholeTreeWindow(tree, localTodayMs());
-    // Registered before sealing: a seal that fails halfway is still unsealed.
-    teardown.unshift({ what: "unseal tree", run: () => unsealTree(treeHome) });
-    sealTree(treeHome);
-    const digest = treeDigest(treeHome);
+    const { tree, window, digest } = await sealedTree(opts, treeHome, teardown);
 
     const probeEnv = treeEnv(treeHome, freshHome("probe"), cache);
-    const base =
-      installed.kind === "ran"
-        ? await underIntent(
-            opts.intended,
-            async (): Promise<Checkout> => ({
-              label: "base",
-              dir: baseDir,
-              noIndex: await supportsNoIndex(baseDir, probeEnv),
-            }),
-          )
-        : installed;
+    const base = await baseUnderIntent(installed, baseDir, probeEnv, opts.intended);
     if (base.kind === "no-payload") {
       console.log(`base ${shortSha(baseSha)} produced no payload (${base.reason}); head only`);
     }
@@ -1170,22 +1235,7 @@ async function runMeasure(opts: MeasureOptions): Promise<void> {
     }
 
     const body = renderComment(results, opts, baseSha, measuredSha, tree);
-    // A head-only window exists only under the label, so it is the declared intent too.
-    const verdict: Verdict = results.some((result) => result.outcome.kind === "differs")
-      ? opts.intended
-        ? "intended"
-        : "differs"
-      : results.some((result) => result.outcome.kind === "head-only")
-        ? "intended"
-        : "match";
-    console.log(body);
-    mkdirSync(opts.out, { recursive: true });
-    const commentFile = join(opts.out, COMMENT_FILE);
-    writeFileSync(commentFile, body);
-    writeFileSync(join(opts.out, VERDICT_FILE), `${verdict}\n`);
-    appendStepSummary(body);
-    setStepOutput(COMMENT_OUTPUT, commentFile);
-    console.log(`verdict: ${verdict} (written to ${opts.out})`);
+    writeOutputs(opts.out, body, verdictOf(results, opts.intended));
   } catch (error: unknown) {
     primary = error;
     const message = error instanceof Error ? error.message : String(error);

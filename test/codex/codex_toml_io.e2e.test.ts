@@ -1,3 +1,4 @@
+import { afterEach } from "bun:test";
 import {
   chmodSync,
   existsSync,
@@ -20,7 +21,7 @@ import { CopilotEnvConfig } from "../../src/copilot_api/env_config.ts";
 import { CopilotApiPaths } from "../../src/copilot_api/paths.ts";
 import { parseProfileName } from "../../src/copilot_api/profile.ts";
 import { envSnapshot, isolateAgentHomes } from "../helpers/env.ts";
-import { afterEach, expect, outcomeOf, removeDir, tempDir, test } from "../helpers/testing.ts";
+import { expect, outcomeOf, removeDir, tempDir, test } from "../helpers/testing.ts";
 
 const restoreEnv = envSnapshot();
 let dir = "";

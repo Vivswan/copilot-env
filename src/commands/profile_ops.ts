@@ -173,12 +173,8 @@ function settingsFlags(opts: Opts): SettingsArgs {
 
 // --- the verbs -----------------------------------------------------------------------------------
 
-/** The ten runtime verbs on the `profile` tree; `rawProfile` is the word-position name, passed on
- *  as the string each command function validates in its own order (null = the default). */
-export function registerProfileOps(ctx: ProfileOpsContext): void {
-  const { rawProfile, verb, refuseStrayWords } = ctx;
+function registerLaunchVerb({ rawProfile, verb }: ProfileOpsContext): void {
   const profile = rawProfile ?? undefined;
-
   verb(
     "launch",
     "Run an agent CLI (claude | codex | copilot)",
@@ -195,7 +191,10 @@ export function registerProfileOps(ctx: ProfileOpsContext): void {
         Boolean(opts.dryRun),
       ),
     );
+}
 
+function registerEnvVerb({ rawProfile, verb, refuseStrayWords }: ProfileOpsContext): void {
+  const profile = rawProfile ?? undefined;
   verb(
     "env",
     "Print its shell exports, for eval",
@@ -213,7 +212,10 @@ export function registerProfileOps(ctx: ProfileOpsContext): void {
       refuseStrayWords(cmd, "env");
       runEnv({ format: opts.format === undefined ? undefined : String(opts.format), profile });
     });
+}
 
+function registerProxyTokenVerb({ rawProfile, verb, refuseStrayWords }: ProfileOpsContext): void {
+  const profile = rawProfile ?? undefined;
   addProxyTokenOptions(
     verb(
       "proxy-token",
@@ -225,7 +227,10 @@ export function registerProfileOps(ctx: ProfileOpsContext): void {
     refuseStrayWords(cmd, "proxy-token");
     return proxyTokenAction(opts, profile);
   });
+}
 
+function registerMcpVerb({ rawProfile, verb, refuseStrayWords }: ProfileOpsContext): void {
+  const profile = rawProfile ?? undefined;
   addMcpOptions(
     verb(
       "mcp",
@@ -237,7 +242,10 @@ export function registerProfileOps(ctx: ProfileOpsContext): void {
     refuseStrayWords(cmd, "mcp");
     return mcpAction(opts, profile);
   });
+}
 
+function registerStartVerb({ rawProfile, verb, refuseStrayWords }: ProfileOpsContext): void {
+  const profile = rawProfile ?? undefined;
   addStartOptions(
     verb(
       "start",
@@ -249,7 +257,10 @@ export function registerProfileOps(ctx: ProfileOpsContext): void {
     refuseStrayWords(cmd, "start");
     return startAction(opts, profile);
   });
+}
 
+function registerStopVerb({ rawProfile, verb, refuseStrayWords }: ProfileOpsContext): void {
+  const profile = rawProfile ?? undefined;
   addStopOptions(
     verb(
       "stop",
@@ -260,7 +271,10 @@ export function registerProfileOps(ctx: ProfileOpsContext): void {
     refuseStrayWords(cmd, "stop");
     return stopAction(opts, profile);
   });
+}
 
+function registerHealthVerb({ rawProfile, verb, refuseStrayWords }: ProfileOpsContext): void {
+  const profile = rawProfile ?? undefined;
   addHealthOptions(
     verb(
       "health",
@@ -272,7 +286,10 @@ export function registerProfileOps(ctx: ProfileOpsContext): void {
     refuseStrayWords(cmd, "health");
     return runHealth({ ...healthFlags(opts), profile });
   });
+}
 
+function registerModelsVerb({ rawProfile, verb, refuseStrayWords }: ProfileOpsContext): void {
+  const profile = rawProfile ?? undefined;
   addModelsOptions(
     verb(
       "models",
@@ -284,7 +301,10 @@ export function registerProfileOps(ctx: ProfileOpsContext): void {
     refuseStrayWords(cmd, "models");
     return modelsAction(opts, profile);
   });
+}
 
+function registerCreditsVerb({ rawProfile, verb, refuseStrayWords }: ProfileOpsContext): void {
+  const profile = rawProfile ?? undefined;
   addCreditsOptions(
     verb(
       "credits",
@@ -296,7 +316,10 @@ export function registerProfileOps(ctx: ProfileOpsContext): void {
     refuseStrayWords(cmd, "credits");
     return runCredits({ ...creditsFlags(opts), profile });
   });
+}
 
+function registerSettingsVerb({ rawProfile, verb, refuseStrayWords }: ProfileOpsContext): void {
+  const profile = rawProfile ?? undefined;
   addSettingsOptions(
     verb(
       "settings",
@@ -308,6 +331,22 @@ export function registerProfileOps(ctx: ProfileOpsContext): void {
     refuseStrayWords(cmd, "settings");
     return runProfileSettings(profile, settingsFlags(opts));
   });
+}
+
+/** The ten runtime verbs on the `profile` tree, in listing order; `rawProfile` is the
+ *  word-position name, passed on as the string each command function validates in its own order
+ *  (null = the default). */
+export function registerProfileOps(ctx: ProfileOpsContext): void {
+  registerLaunchVerb(ctx);
+  registerEnvVerb(ctx);
+  registerProxyTokenVerb(ctx);
+  registerMcpVerb(ctx);
+  registerStartVerb(ctx);
+  registerStopVerb(ctx);
+  registerHealthVerb(ctx);
+  registerModelsVerb(ctx);
+  registerCreditsVerb(ctx);
+  registerSettingsVerb(ctx);
 }
 
 // --- the top level -------------------------------------------------------------------------------

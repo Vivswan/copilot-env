@@ -8,6 +8,7 @@ import {
   buildExportBundle,
   type ImportDeps,
   type ImportOutcome,
+  type ImportPlan,
   type ImportScope,
   parseSettingsBundle,
   planImport,
@@ -225,40 +226,87 @@ interface BundleScope {
   plan: ImportScope;
 }
 
-async function runImport(
-  action: ImportAction,
-  deps: SettingsDeps,
-  scope: BundleScope,
-): Promise<void> {
-  const file = action.file;
+/** The bundle file as JSON; a file that cannot be read, or is not JSON, is the named refusal. */
+function readBundleJson(file: string): unknown {
   let raw: string;
   try {
     raw = fs.readText(file);
   } catch (e) {
     throw rethrown(e, (message) => `could not read ${file}: ${message}`);
   }
-  let parsed: unknown;
   try {
-    parsed = JSON.parse(raw);
+    return JSON.parse(raw);
   } catch {
     throw new Error(`${file} is not valid JSON`);
   }
-  const bundle = scope.widen(parseSettingsBundle(parsed), action);
+}
+
+/** The same landing, recorded: the pre-import backup (its file, and the prune it triggers), then
+ *  every store slot and agent file the bundle would change, by key. The skips and failures the
+ *  apply would report are said, and fail the run, the same way. Only the confirmation is skipped. */
+async function previewImport(
+  plan: ImportPlan,
+  scope: ImportScope,
+  apply: typeof applyImportPlan,
+  noBackup: boolean,
+): Promise<void> {
+  await runDryRun(async () => {
+    if (!noBackup) writeSettingsBackup();
+    const outcome = await apply(plan, scope);
+    for (const line of [...outcome.skipped, ...outcome.failures]) logger.warn(line);
+    if (outcome.failures.length > 0) process.exitCode = 1;
+  });
+}
+
+/** What a landed import says: its skips and failures, the summary (a failure fails the run), each
+ *  imported profile's launch hint, the restart hints, and the rollback command. */
+function narrateImport(
+  outcome: ImportOutcome,
+  file: string,
+  restartHints: readonly ScannableMessage[],
+  backupPath: string | null,
+): void {
+  for (const line of outcome.skipped) logger.warn(line);
+  for (const line of outcome.failures) logger.warn(line);
+  const wired =
+    outcome.wiredProfiles.length > 0 ? ` (profiles: ${outcome.wiredProfiles.join(", ")})` : "";
+  if (outcome.failures.length > 0) {
+    // failures carries both a failed profile commit and a failed default-agent wiring; the summary
+    // must not claim only "wiring".
+    logger.error(
+      `Settings imported from ${file}${wired}, but some profiles or wiring could not be applied (see above).`,
+    );
+    process.exitCode = 1;
+  } else {
+    logger.success(`Settings imported from ${file}${wired}.`);
+  }
+  // The profile writes name the shared Codex config once per process, so each imported profile's
+  // launch hint (the line `agent profile` prints) is said here.
+  for (const name of outcome.wiredProfiles) {
+    logger.log(`  Launch ${profileLabel(name)}:  cl --profile ${name}  /  cx --profile ${name}`);
+  }
+  for (const hint of restartHints) logger.info(hint);
+  // The backup lives inside copilot-env's own home, where writes are silent, so the rollback
+  // command is said here.
+  if (backupPath !== null) {
+    logger.log(`  Roll back with: ${rollbackCommand(backupPath)} ${ROLLBACK_SCOPE_NOTE}.`);
+  }
+}
+
+async function runImport(
+  action: ImportAction,
+  deps: SettingsDeps,
+  scope: BundleScope,
+): Promise<void> {
+  const file = action.file;
+  const bundle = scope.widen(parseSettingsBundle(readBundleJson(file)), action);
 
   // One plan drives both the confirmation and the apply, so the prompt shows exactly what the
   // import changes: the apply's own change set, read off the overlay before anything lands.
   const plan = planImport(bundle, deps, scope.plan);
   const apply = deps.applyPlan ?? applyImportPlan;
   if (action.dryRun) {
-    // The same landing, recorded: the pre-import backup (its file, and the prune it triggers), then
-    // every store slot and agent file the bundle would change, by key. The skips and failures the
-    // apply would report are said, and fail the run, the same way. Only the confirmation is skipped.
-    await runDryRun(async () => {
-      if (!action.noBackup) writeSettingsBackup();
-      const outcome = await apply(plan, scope.plan);
-      for (const line of [...outcome.skipped, ...outcome.failures]) logger.warn(line);
-      if (outcome.failures.length > 0) process.exitCode = 1;
-    });
+    await previewImport(plan, scope.plan, apply, action.noBackup);
     return;
   }
   if (!action.force) {
@@ -283,31 +331,7 @@ async function runImport(
     throw e;
   }
 
-  for (const line of outcome.skipped) logger.warn(line);
-  for (const line of outcome.failures) logger.warn(line);
-  const wired =
-    outcome.wiredProfiles.length > 0 ? ` (profiles: ${outcome.wiredProfiles.join(", ")})` : "";
-  if (outcome.failures.length > 0) {
-    // failures carries both a failed profile commit and a failed default-agent wiring; the summary
-    // must not claim only "wiring".
-    logger.error(
-      `Settings imported from ${file}${wired}, but some profiles or wiring could not be applied (see above).`,
-    );
-    process.exitCode = 1;
-  } else {
-    logger.success(`Settings imported from ${file}${wired}.`);
-  }
-  // The profile writes name the shared Codex config once per process, so each imported profile's
-  // launch hint (the line `agent profile` prints) is said here.
-  for (const name of outcome.wiredProfiles) {
-    logger.log(`  Launch ${profileLabel(name)}:  cl --profile ${name}  /  cx --profile ${name}`);
-  }
-  for (const hint of importRestartHints(bundle.config, preImportPrefs)) logger.info(hint);
-  // The backup lives inside copilot-env's own home, where writes are silent, so the rollback
-  // command is said here.
-  if (backupPath !== null) {
-    logger.log(`  Roll back with: ${rollbackCommand(backupPath)} ${ROLLBACK_SCOPE_NOTE}.`);
-  }
+  narrateImport(outcome, file, importRestartHints(bundle.config, preImportPrefs), backupPath);
 }
 
 /** `agent settings`: the whole store. */
@@ -407,16 +431,8 @@ function profileBundle(whole: SettingsBundle, profile: Profile): SettingsBundle 
   };
 }
 
-/** A profile's import takes a bundle of that profile alone: anything else in it would land on
- *  another profile or the machine, which is `agent settings --import`'s scope. */
-function assertProfileBundle(bundle: SettingsBundle, profile: Profile, action: ImportAction): void {
-  const { file } = action;
-  const wholeStoreImport = [
-    rollbackCommand(file),
-    ...(action.force ? ["--force"] : []),
-    ...(action.noBackup ? ["--no-backup"] : []),
-    ...(action.dryRun ? ["--dry-run"] : []),
-  ].join(" ");
+/** What a bundle carries beyond `profile`'s own parts, each named as the refusal lists it. */
+function strayBundleParts(bundle: SettingsBundle, profile: Profile): string[] {
   const key = profileKey(profile);
   const stray: string[] = [];
   const foreignSections = Object.keys(bundle.config.profiles).filter((k) => k !== key);
@@ -436,13 +452,25 @@ function assertProfileBundle(bundle: SettingsBundle, profile: Profile, action: I
       stray.push("the default wiring modes");
     }
   }
+  return stray;
+}
+
+/** A profile's import takes a bundle of that profile alone: anything else in it would land on
+ *  another profile or the machine, which is `agent settings --import`'s scope. */
+function assertProfileBundle(bundle: SettingsBundle, profile: Profile, action: ImportAction): void {
+  const { file } = action;
+  const wholeStoreImport = [rollbackCommand(file)];
+  if (action.force) wholeStoreImport.push("--force");
+  if (action.noBackup) wholeStoreImport.push("--no-backup");
+  if (action.dryRun) wholeStoreImport.push("--dry-run");
+  const stray = strayBundleParts(bundle, profile);
   if (stray.length > 0) {
     throw new ScannableError({
       headline: `${paintFor(colorEnabled()).cyan(file)} is not a bundle of ${profileLabel(profile)} alone.`,
       evidence: stray.map((part) => `${part} present`),
       lead: "Pick one:",
       actions: [
-        [wholeStoreImport, "import the whole store"],
+        [wholeStoreImport.join(" "), "import the whole store"],
         ["agent profile [<name>] settings --export", "export one profile's bundle"],
       ],
     });

@@ -71,6 +71,13 @@ function applyClientHeaders(current: HeadersInit | undefined, set: ClientHeaderS
   return headers;
 }
 
+/** The URL a fetch argument addresses, in each of its three spellings. */
+function requestUrl(input: Parameters<typeof fetch>[0]): string {
+  if (typeof input === "string") return input;
+  if (input instanceof URL) return input.href;
+  return input.url;
+}
+
 /** `init.headers` when present, else the Request's own, is the effective set, and passing the
  *  result back through `init` overrides exactly that set. */
 function fetchHeaders(
@@ -91,6 +98,9 @@ export type HandshakeInit =
   | string[]
   | { headers?: HeadersInit; [option: string]: unknown };
 
+/** The options form of a HandshakeInit: what the header set is applied over. */
+type HandshakeOptions = Exclude<HandshakeInit, string | string[]>;
+
 const rawSet = process.env[CLIENT_HEADERS_ENV]?.trim() || null;
 const identity =
   rawSet === null
@@ -100,6 +110,13 @@ const identity =
         configuredHost: process.env[COPILOT_HOST_ENV]?.trim() || null,
       };
 
+/** bun takes a bare protocol string, but under `protocols` only a sequence. */
+function handshakeOptions(init: HandshakeInit | undefined): HandshakeOptions {
+  if (typeof init === "string") return { protocols: [init] };
+  if (Array.isArray(init)) return { protocols: init };
+  return { ...init };
+}
+
 /** `init` for a handshake to `url`: the header set applied for a Copilot API host, `init` as given
  *  for any other (the Codex backend's WebSocket carries that backend's own headers). The
  *  WebSocket subclass in undici_identity.ts calls this from the proxy's own construction. */
@@ -108,13 +125,7 @@ export function handshakeInit(
   init: HandshakeInit | undefined,
 ): HandshakeInit | undefined {
   if (identity === null || !isCopilotApiHost(String(url), identity.configuredHost)) return init;
-  // bun takes a bare protocol string, but under `protocols` only a sequence.
-  const options: Exclude<HandshakeInit, string | string[]> =
-    typeof init === "string"
-      ? { protocols: [init] }
-      : Array.isArray(init)
-        ? { protocols: init }
-        : { ...init };
+  const options = handshakeOptions(init);
   return {
     ...options,
     headers: Object.fromEntries(applyClientHeaders(options.headers, identity.set)),
@@ -165,7 +176,7 @@ if (identity !== null) {
     input: Parameters<typeof fetch>[0],
     init?: Parameters<typeof fetch>[1],
   ): Promise<Response> => {
-    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    const url = requestUrl(input);
     if (!isCopilotApiHost(url, configuredHost)) return originalFetch(input, init);
     return originalFetch(input, { ...init, headers: fetchHeaders(input, init, set) });
   };

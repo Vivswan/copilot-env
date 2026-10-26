@@ -119,10 +119,10 @@ if (first === "--lifecycle") {
   runArgs.push("--network=none");
   // The container's HOME is the throwaway one, so the *.e2e.test.ts files run here as in CI; the
   // image's CMD carries the same opt-in for the whole suite.
-  if (first !== undefined) {
-    command = ["bun", "run", "test", "--e2e", first, ...rest];
-  } else {
+  if (first === undefined) {
     command = [];
+  } else {
+    command = ["bun", "run", "test", "--e2e", first, ...rest];
   }
 }
 

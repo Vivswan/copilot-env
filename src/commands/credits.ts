@@ -71,6 +71,13 @@ interface AccountMeter {
   profiles: string[];
 }
 
+/** Profile order: the default first, then the names sorted. */
+function byProfileOrder(a: string, b: string): number {
+  if (a === DEFAULT_PROFILE_NAME) return -1;
+  if (b === DEFAULT_PROFILE_NAME) return 1;
+  return a.localeCompare(b);
+}
+
 /** Every distinct account across the profiles: one meter per account, naming the profiles on it.
  *  Profiles holding the same token are one account before any fetch; two tokens the endpoint
  *  reports under one login are one account after it. A profile whose credential does not resolve
@@ -113,11 +120,7 @@ export async function runCreditsEverywhere(
   }
   // A merge appends the later token's profiles after the earlier's: the list is profile order
   // (the default, then the names sorted) whatever order the tokens were met in.
-  for (const meter of meters) {
-    meter.profiles.sort((a, b) =>
-      a === DEFAULT_PROFILE_NAME ? -1 : b === DEFAULT_PROFILE_NAME ? 1 : a.localeCompare(b),
-    );
-  }
+  for (const meter of meters) meter.profiles.sort(byProfileOrder);
   if (args.json) {
     console.log(
       JSON.stringify(

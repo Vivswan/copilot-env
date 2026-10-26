@@ -118,6 +118,14 @@ function longestWord(cell: string): number {
   return Math.max(0, ...cell.split(" ").map((word) => stringWidth(word)));
 }
 
+/** The narrowest a cell lets its column go: a free-text cell its longest word, a hard-split cell
+ *  nothing, an unwrapped cell its whole width. */
+function cellFloor(cell: string, mode: boolean | "hard"): number {
+  if (mode === true) return longestWord(cell);
+  if (mode === "hard") return 0;
+  return stringWidth(cell);
+}
+
 function padCell(text: string, width: number, align: Align): string {
   const fill = " ".repeat(Math.max(0, width - stringWidth(text)));
   return align === "right" ? `${fill}${text}` : `${text}${fill}`;
@@ -164,15 +172,13 @@ export function formatTable(body: TableRow[], options: TableOptions = {}): strin
     return Math.max(
       mode === false ? 0 : WRAP_FLOOR,
       longestWord(header?.[i] ?? ""),
-      ...[...records, ...footer].map((r) =>
-        mode === true ? longestWord(r[i] ?? "") : mode === "hard" ? 0 : stringWidth(r[i] ?? ""),
-      ),
+      ...[...records, ...footer].map((r) => cellFloor(r[i] ?? "", mode)),
     );
   });
   const widths =
     width === null || total <= width ? natural : fitWidths(natural, floors, total - width);
   if (widths === null) {
-    return formatStacked(body, footer, header, indent, rowIndent, width, wrap, tint);
+    return formatStacked({ body, footer, header, indent, rowIndent, width, wrap, tint });
   }
 
   const fmt = (row: string[]): string[] => {
@@ -236,17 +242,21 @@ function tintFor(color: boolean): Tint {
   };
 }
 
+/** What formatStacked lays out: the rows, and the options formatTable resolved for them. */
+interface StackedTable {
+  body: TableRow[];
+  footer: string[][];
+  header: string[] | undefined;
+  indent: string;
+  rowIndent: string;
+  width: number | null;
+  wrap: Array<boolean | "hard">;
+  tint: Tint;
+}
+
 /** The layout for a terminal narrower than the column floors: one block per record. */
-function formatStacked(
-  body: TableRow[],
-  footer: string[][],
-  header: string[] | undefined,
-  indent: string,
-  rowIndent: string,
-  width: number | null,
-  wrap: Array<boolean | "hard">,
-  tint: Tint,
-): string[] {
+function formatStacked(table: StackedTable): string[] {
+  const { body, footer, header, indent, rowIndent, width, wrap, tint } = table;
   const label = (i: number, cell: string): string =>
     header?.[i] === undefined ? cell : `${tint.head(header[i])}: ${cell}`;
   // An unlabeled cell of a column marked `false` is one line, wider than the terminal when it must

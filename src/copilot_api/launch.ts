@@ -229,6 +229,70 @@ function judgeProxyFloor(): RunnableEntry {
 
 // --- port resolution --------------------------------------------------------------
 
+/** The pinned port's gate: used as-is when free, else the refusal naming why (out of range, busy). */
+async function requirePinnedPort(
+  pinned: number,
+  range: { min: number; max: number },
+): Promise<number> {
+  switch (await checkProxyPort(pinned)) {
+    case "out-of-range":
+      throw new ScannableError({
+        headline: `requested port ${paintFor(colorEnabled()).cyan(String(pinned))} is out of range.`,
+        evidence: [`proxy port range ${range.min}-${range.max}`],
+        lead: "Pick one:",
+        actions: [
+          [configSetCommand("daemon.min-port", "<n>"), "lower the range's floor"],
+          [configSetCommand("daemon.max-port", "<n>"), "raise the range's ceiling"],
+        ],
+      });
+    case "busy":
+      throw new Error(
+        `requested port ${pinned} is busy (held by another process). Free it or pick another --port.`,
+      );
+    case "free":
+      return pinned;
+  }
+}
+
+/** The port the launch tries first. */
+interface StartPortCandidate {
+  /** The stored default, the profile's recorded reservation, or a fresh pick for it. */
+  port: number;
+
+  /** An EXISTING reservation is honored even when min/max later narrowed past it (the range governs NEW allocations), so it gets a liveness-only probe instead of the range gate. */
+  honoredReservation: boolean;
+}
+
+/** The soft base is PERSISTED only when `reserve` (the live launch path; the dry run peeks without recording). */
+function startPortCandidate(
+  profile: Profile,
+  reserve: boolean,
+  config: CopilotEnvConfig,
+): StartPortCandidate {
+  const policy = daemonPolicy(profile);
+  if (policy.port.source === "config") {
+    return { port: config.defaultPort(), honoredReservation: false };
+  }
+  const name = policy.port.name;
+  const recorded = CopilotEnvRunState.forProfile(name).read().port;
+  if (recorded !== undefined) return { port: recorded, honoredReservation: true };
+  const port = reserve ? reserveProfilePort(name) : Number(copilotApiResolvePort(name));
+  return { port, honoredReservation: false };
+}
+
+/** The next free port above the busy `base`; the move is announced when `announce`. */
+async function nextFreePort(base: number, announce: boolean): Promise<number> {
+  if (announce) consola.warn(`Port ${base} is busy (held by another process/user).`);
+  let port: number;
+  try {
+    port = await copilotApiFindPort(base + 1);
+  } catch {
+    throw new Error("could not find a free port to start the proxy.");
+  }
+  if (announce) consola.success(`Using alternative port: ${port}`);
+  return port;
+}
+
 /**
  * A pinned `--port` must be free: never silently move off the port the user asked for. The soft base
  * is PERSISTED only when `reserve` (the live launch path; the dry run peeks without recording).
@@ -240,40 +304,10 @@ export async function resolveStartPort(
   reserve: boolean,
   config: CopilotEnvConfig = new CopilotEnvConfig(),
 ): Promise<number> {
-  const { min, max } = proxyPortRange(config);
-  if (pinned !== undefined) {
-    switch (await checkProxyPort(pinned)) {
-      case "out-of-range":
-        throw new ScannableError({
-          headline: `requested port ${paintFor(colorEnabled()).cyan(String(pinned))} is out of range.`,
-          evidence: [`proxy port range ${min}-${max}`],
-          lead: "Pick one:",
-          actions: [
-            [configSetCommand("daemon.min-port", "<n>"), "lower the range's floor"],
-            [configSetCommand("daemon.max-port", "<n>"), "raise the range's ceiling"],
-          ],
-        });
-      case "busy":
-        throw new Error(
-          `requested port ${pinned} is busy (held by another process). Free it or pick another --port.`,
-        );
-      case "free":
-        return pinned;
-    }
-  }
-  // An EXISTING reservation is honored even when min/max later narrowed past it (the range governs
-  // NEW allocations), so it gets a liveness-only probe instead of the range gate.
-  const policy = daemonPolicy(profile);
-  let honoredReservation = false;
-  let def: number;
-  if (policy.port.source === "config") {
-    def = config.defaultPort();
-  } else {
-    const name = policy.port.name;
-    const recorded = CopilotEnvRunState.forProfile(name).read().port;
-    honoredReservation = recorded !== undefined;
-    def = recorded ?? (reserve ? reserveProfilePort(name) : Number(copilotApiResolvePort(name)));
-  }
+  const range = proxyPortRange(config);
+  if (pinned !== undefined) return requirePinnedPort(pinned, range);
+
+  const { port: def, honoredReservation } = startPortCandidate(profile, reserve, config);
   switch (await checkProxyPort(def)) {
     case "free":
       return def;
@@ -283,7 +317,7 @@ export async function resolveStartPort(
         break; // a busy reservation auto-increments back inside the range
       }
       throw new Error(
-        `configured port ${def} is outside the allowed range ${min}-${max}; run ` +
+        `configured port ${def} is outside the allowed range ${range.min}-${range.max}; run ` +
           `\`${configSetCommand(
             "daemon.port",
             "<n>",
@@ -292,21 +326,13 @@ export async function resolveStartPort(
     case "busy":
       break;
   }
-  if (policy.strictPortEligible && config.strictPortEnabled()) {
+  if (daemonPolicy(profile).strictPortEligible && config.strictPortEnabled()) {
     throw new Error(
       `port ${def} is busy and auto-increment is disabled (\`daemon.strict-port\`); free it, pick another ` +
         `\`--port\`, or set \`${configSetCommand("daemon.strict-port", "false")}\`.`,
     );
   }
-  if (announce) consola.warn(`Port ${def} is busy (held by another process/user).`);
-  let port: number;
-  try {
-    port = await copilotApiFindPort(def + 1);
-  } catch {
-    throw new Error("could not find a free port to start the proxy.");
-  }
-  if (announce) consola.success(`Using alternative port: ${port}`);
-  return port;
+  return nextFreePort(def, announce);
 }
 
 // --- credential resolution ---------------------------------------------------------
@@ -505,6 +531,109 @@ function copilotTokenFailureHint(log: string, profile: Profile): ScannableMessag
   });
 }
 
+/** Why a daemon died right after its spawn, read from its log: the port the retry should try
+ *  when it lost a bind race (EADDRINUSE) and may move; every other death, and a lost race on a
+ *  port that may not move, throws with the log tail. */
+async function portAfterLostBindRace(opts: {
+  port: number;
+  logFile: string;
+  profile: Profile;
+  pinnedPort: number | undefined;
+  config: CopilotEnvConfig;
+  findPort: (start: number) => Promise<number>;
+}): Promise<number> {
+  const { port, logFile, profile, pinnedPort, config, findPort } = opts;
+  let logContent = "";
+  try {
+    logContent = fs.readText(logFile);
+  } catch {
+    logContent = "";
+  }
+  if (!/address already in use|EADDRINUSE|bind.*failed/i.test(logContent)) {
+    printLogTail(logFile, 20);
+    const hint = copilotTokenFailureHint(logContent, profile);
+    if (hint) consola.error(hint);
+    throw new Error(`the proxy failed to start. See ${logFile}`);
+  }
+  // Same exemption as resolveStartPort: `daemon.strict-port` gates only the policy-eligible daemon.
+  const strictPort = daemonPolicy(profile).strictPortEligible && config.strictPortEnabled();
+  if (pinnedPort !== undefined || strictPort) {
+    printLogTail(logFile, 20);
+    const why =
+      strictPort && pinnedPort === undefined
+        ? " (daemon.strict-port is on, so no auto-increment)"
+        : "";
+    throw new Error(
+      `port ${port} was taken by another process just before launch${why}. See ${logFile}`,
+    );
+  }
+  consola.warn(
+    `Port ${port} was taken by another process just before launch; retrying on a different port ...`,
+  );
+  try {
+    return await findPort(port + 1);
+  } catch {
+    throw new Error("could not find a free port after the retry.");
+  }
+}
+
+/** Writes the log's bytes past `printedBytes` to stderr; returns the whole log and the new mark,
+ *  which starts over from the first byte when the file is shorter than the mark. */
+function tailLogToStderr(
+  logFile: string,
+  printedBytes: number,
+): { log: string; printedBytes: number } {
+  const logBytes = fs.readBytes(logFile);
+  let printed = logBytes.length < printedBytes ? 0 : printedBytes;
+  if (logBytes.length > printed) {
+    process.stderr.write(logBytes.subarray(printed));
+    printed = logBytes.length;
+  }
+  return { log: new TextDecoder().decode(logBytes), printedBytes: printed };
+}
+
+/** Tails the log to stderr until its "Listening on:" line, for up to `maxWait` seconds; a daemon
+ *  that exits meanwhile throws (after the token-exchange hint when its log carries it), as does the
+ *  wait running out. */
+async function awaitListening(opts: {
+  pid: number;
+  port: number;
+  logFile: string;
+  profile: Profile;
+}): Promise<void> {
+  const { pid, port, logFile, profile } = opts;
+  const maxWait = 120;
+  let printedLogBytes = 0;
+  for (let i = 0; i < maxWait; i++) {
+    if (!pidAlive(pid)) {
+      try {
+        const hint = copilotTokenFailureHint(fs.readText(logFile), profile);
+        if (hint) consola.error(hint);
+      } catch {
+        // A missing or unreadable log just means no hint.
+      }
+      throw new Error(`the proxy (PID ${pid}) exited during startup. See ${logFile}.`);
+    }
+    let logContent = "";
+    try {
+      const tailed = tailLogToStderr(logFile, printedLogBytes);
+      printedLogBytes = tailed.printedBytes;
+      logContent = tailed.log;
+    } catch {
+      // A failed read is not a proven "not listening", but the loop RE-READS every second, so a
+      // transient failure self-heals; a persistently unreadable log still fails loudly below,
+      // pointing at the file, never as a confident health verdict.
+      logContent = "";
+    }
+    if (logContent.includes("Listening on:")) return;
+    await sleep(LAUNCH_SETTLE_MS);
+  }
+
+  consola.warn(`The proxy did not start listening on port ${port} within ${maxWait}s.`);
+  consola.warn(`It may still be coming up; check the log file: ${logFile}`);
+  throw new Error(`the proxy did not start listening on port ${port} within ${maxWait}s`);
+}
+
 /**
  * A lost bind race (EADDRINUSE in the log) retries ONCE on another port, unless the port was pinned by
  * `--port` (`pinnedPort`: a lost race there fails, never moves) or `daemon.strict-port` steers the
@@ -545,39 +674,7 @@ export async function awaitReadiness(opts: {
         `the proxy failed to start after retrying on a different port. See ${logFile}`,
       );
     }
-    let logContent = "";
-    try {
-      logContent = fs.readText(logFile);
-    } catch {
-      logContent = "";
-    }
-    if (!/address already in use|EADDRINUSE|bind.*failed/i.test(logContent)) {
-      printLogTail(logFile, 20);
-      const hint = copilotTokenFailureHint(logContent, profile);
-      if (hint) consola.error(hint);
-      throw new Error(`the proxy failed to start. See ${logFile}`);
-    }
-    // Same exemption as resolveStartPort: `daemon.strict-port` gates only the policy-eligible daemon.
-    const strictPort = daemonPolicy(profile).strictPortEligible && config.strictPortEnabled();
-    if (pinnedPort !== undefined || strictPort) {
-      printLogTail(logFile, 20);
-      throw new Error(
-        `port ${port} was taken by another process just before launch` +
-          `${
-            strictPort && pinnedPort === undefined
-              ? " (daemon.strict-port is on, so no auto-increment)"
-              : ""
-          }. See ${logFile}`,
-      );
-    }
-    consola.warn(
-      `Port ${port} was taken by another process just before launch; retrying on a different port ...`,
-    );
-    try {
-      port = await findPort(port + 1);
-    } catch {
-      throw new Error("could not find a free port after the retry.");
-    }
+    port = await portAfterLostBindRace({ port, logFile, profile, pinnedPort, config, findPort });
     pid = relaunch(port);
     retried = true;
   }
@@ -587,49 +684,7 @@ export async function awaitReadiness(opts: {
   consola.info(`Started the proxy (PID ${pid}) on port ${port}, detached.`);
 
   consola.start("Waiting for the proxy to start (tailing its log) ...");
-
-  const maxWait = 120;
-  let ready = false;
-  let printedLogBytes = 0;
-  for (let i = 0; i < maxWait; i++) {
-    if (!pidAlive(pid)) {
-      try {
-        const hint = copilotTokenFailureHint(fs.readText(logFile), profile);
-        if (hint) consola.error(hint);
-      } catch {
-        // A missing or unreadable log just means no hint.
-      }
-      throw new Error(`the proxy (PID ${pid}) exited during startup. See ${logFile}.`);
-    }
-    let logContent = "";
-    try {
-      const logBytes = fs.readBytes(logFile);
-      if (logBytes.length < printedLogBytes) {
-        printedLogBytes = 0;
-      }
-      if (logBytes.length > printedLogBytes) {
-        process.stderr.write(logBytes.subarray(printedLogBytes));
-        printedLogBytes = logBytes.length;
-      }
-      logContent = new TextDecoder().decode(logBytes);
-    } catch {
-      // A failed read is not a proven "not listening", but the loop RE-READS every second, so a
-      // transient failure self-heals; a persistently unreadable log still fails loudly below,
-      // pointing at the file, never as a confident health verdict.
-      logContent = "";
-    }
-    if (logContent.includes("Listening on:")) {
-      ready = true;
-      break;
-    }
-    await sleep(LAUNCH_SETTLE_MS);
-  }
-
-  if (!ready) {
-    consola.warn(`The proxy did not start listening on port ${port} within ${maxWait}s.`);
-    consola.warn(`It may still be coming up; check the log file: ${logFile}`);
-    throw new Error(`the proxy did not start listening on port ${port} within ${maxWait}s`);
-  }
+  await awaitListening({ pid, port, logFile, profile });
 
   consola.success(`The proxy is up on port ${port} (PID ${pid}).`);
   return { pid, port };

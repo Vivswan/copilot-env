@@ -198,6 +198,172 @@ function baseUrlMatchesProxy(baseUrl: string, expectedPort: number): boolean {
   return matchesProxyOrigin(baseUrl, expectedPort, "/v1");
 }
 
+/** A config read parsed. An unreadable and an unparseable file end the classification each with
+ *  its own CodexOtherReason, so the two stay apart. */
+type ConfigRead =
+  | { kind: "absent" }
+  | { kind: "doc"; doc: Record<string, unknown> }
+  | { kind: "read-error" }
+  | { kind: "malformed" };
+
+function parseConfigRead(read: TextReadResult): ConfigRead {
+  if (read.kind === "absent") return { kind: "absent" };
+  if (read.kind === "unreadable") return { kind: "read-error" };
+  try {
+    return { kind: "doc", doc: parseToml(read.text) };
+  } catch {
+    return { kind: "malformed" };
+  }
+}
+
+function codexTokenFacts(
+  envText: string | null,
+  envKeyInEnviron: boolean,
+  profile: Profile,
+): CodexTokenFacts {
+  const envKeyInDotenv =
+    profile === null &&
+    envText !== null &&
+    new RegExp(`^\\s*(?:export\\s+)?${CODEX_ENV_KEY}\\s*=\\s*\\S`, "m").test(envText);
+  const envKeyExported = profile === null && envKeyInEnviron;
+  return {
+    envFilePresent: envText !== null,
+    envKeyInDotenv,
+    envKeyInEnviron: envKeyExported,
+    tokenAvailable: envKeyInDotenv || envKeyExported,
+  };
+}
+
+function noneStatus(tokenFacts: CodexTokenFacts, configExists: boolean): CodexWiringStatus {
+  return {
+    ...tokenFacts,
+    providerMode: "none",
+    configExists,
+    modelProvider: null,
+    providerSelected: false,
+    baseUrl: null,
+    baseUrlMatches: false,
+    envKeyMatches: false,
+    providerWired: false,
+    credential: "none",
+    directUsesToken: false,
+    otherReason: null,
+  };
+}
+
+function otherStatus(
+  tokenFacts: CodexTokenFacts,
+  otherReason: CodexOtherReason,
+  modelProvider: string | null,
+  configExists = true,
+): CodexWiringStatus {
+  return {
+    ...tokenFacts,
+    providerMode: "other",
+    configExists,
+    modelProvider,
+    providerSelected: false,
+    baseUrl: null,
+    baseUrlMatches: false,
+    envKeyMatches: false,
+    providerWired: false,
+    credential: "none",
+    directUsesToken: false,
+    otherReason,
+  };
+}
+
+/** The selected provider table as the mode classifiers read it. */
+interface SelectedTable {
+  table: unknown;
+  modelProvider: string;
+  profile: Profile;
+  baseUrl: string | null;
+  namedTableCarriesEnvKey: boolean;
+}
+
+function selectedTable(
+  doc: Record<string, unknown>,
+  modelProvider: string,
+  profile: Profile,
+): SelectedTable {
+  const providers = doc.model_providers;
+  const table = isRecord(providers) ? providers[codexProviderId(profile)] : undefined;
+  // The writer strips env_key from a named table (MANAGED_PROVIDER_KEYS) and Codex rejects `auth` +
+  // `env_key` on one provider, so a present one is drift the writer would never produce.
+  const namedTableCarriesEnvKey =
+    profile !== null && isRecord(table) && table.env_key !== undefined;
+  return {
+    table,
+    modelProvider,
+    profile,
+    baseUrl: isRecord(table) && typeof table.base_url === "string" ? table.base_url : null,
+    namedTableCarriesEnvKey,
+  };
+}
+
+/** `managedCommand`: the table's `auth` is the managed command of the mode being classified. */
+function credentialShape(managedCommand: boolean, table: unknown): CodexManagedCredential {
+  if (managedCommand) return "command";
+  if (isStaticAuthorization(table)) return "static";
+  return "none";
+}
+
+function directStatus(tokenFacts: CodexTokenFacts, selected: SelectedTable): CodexWiringStatus {
+  const { table, profile } = selected;
+  const envKeyMatches = !selected.namedTableCarriesEnvKey;
+  // Positively identify OUR launcher (command + args), not just any auth.command: a stale `gh
+  // auth token` block must NOT read as managed.
+  const directUsesToken = isRecord(table) && isManagedDirectAuth(table.auth, profile);
+  const credential = credentialShape(directUsesToken, table);
+  return {
+    ...tokenFacts,
+    providerMode: "direct",
+    configExists: true,
+    modelProvider: selected.modelProvider,
+    providerSelected: true,
+    // A direct table always carries a string base_url (codexTableMode); the fallback is unreachable.
+    baseUrl: selected.baseUrl ?? DEFAULT_COPILOT_API_BASE,
+    baseUrlMatches: true,
+    envKeyMatches,
+    // The default direct selection needs no further conjunct (the health probe layers the store
+    // question on top); a named direct profile requires the profile-addressed managed auth or the
+    // static bearer, since default-addressed or foreign auth would resolve the wrong credential.
+    providerWired: envKeyMatches && (profile === null || credential !== "none"),
+    credential,
+    directUsesToken,
+    otherReason: null,
+  };
+}
+
+/** A selected-but-unrecognized table shape (codexTableMode "other") still counts as ours for
+ *  messaging, reported as proxy so the wiring facts flag what's off. */
+function proxyStatus(
+  tokenFacts: CodexTokenFacts,
+  selected: SelectedTable,
+  expectedPort: number,
+): CodexWiringStatus {
+  const { table, profile, baseUrl } = selected;
+  const managedCommand = isRecord(table) && isManagedProxyAuth(table.auth, profile);
+  const credential = credentialShape(managedCommand, table);
+  const baseUrlMatches = baseUrl !== null && baseUrlMatchesProxy(baseUrl, expectedPort);
+  const envKeyMatches = !selected.namedTableCarriesEnvKey && credential !== "none";
+  return {
+    ...tokenFacts,
+    providerMode: "proxy",
+    configExists: true,
+    modelProvider: selected.modelProvider,
+    providerSelected: true,
+    baseUrl,
+    baseUrlMatches,
+    envKeyMatches,
+    providerWired: baseUrlMatches && envKeyMatches,
+    credential,
+    directUsesToken: false,
+    otherReason: null,
+  };
+}
+
 /**
  * An UNREADABLE or unparseable config is "other", never "none": "none" would let a best-effort
  * caller write over a config it could not read.
@@ -219,147 +385,36 @@ export function inspectCodexWiring(
       ? { kind: "text", text: configToml }
       : (configToml ?? { kind: "absent" });
   const profile = selection.profile;
-  const providerId = codexProviderId(profile);
-  const envKeyInDotenv =
-    profile === null &&
-    envText !== null &&
-    new RegExp(`^\\s*(?:export\\s+)?${CODEX_ENV_KEY}\\s*=\\s*\\S`, "m").test(envText);
-  const envKeyExported = profile === null && envKeyInEnviron;
-  const tokenFacts: CodexTokenFacts = {
-    envFilePresent: envText !== null,
-    envKeyInDotenv,
-    envKeyInEnviron: envKeyExported,
-    tokenAvailable: envKeyInDotenv || envKeyExported,
-  };
-  const none = (configExists: boolean): CodexWiringStatus => ({
-    ...tokenFacts,
-    providerMode: "none",
-    configExists,
-    modelProvider: null,
-    providerSelected: false,
-    baseUrl: null,
-    baseUrlMatches: false,
-    envKeyMatches: false,
-    providerWired: false,
-    credential: "none",
-    directUsesToken: false,
-    otherReason: null,
-  });
-  const other = (
-    otherReason: CodexOtherReason,
-    modelProvider: string | null,
-    configExists = true,
-  ): CodexWiringStatus => ({
-    ...tokenFacts,
-    providerMode: "other",
-    configExists,
-    modelProvider,
-    providerSelected: false,
-    baseUrl: null,
-    baseUrlMatches: false,
-    envKeyMatches: false,
-    providerWired: false,
-    credential: "none",
-    directUsesToken: false,
-    otherReason,
-  });
-  if (read.kind === "unreadable") return other("read-error", null);
-  let doc: Record<string, unknown> | null = null;
-  if (read.kind === "text") {
-    try {
-      doc = parseToml(read.text);
-    } catch {
-      return other("malformed", null);
-    }
-  }
+  const tokenFacts = codexTokenFacts(envText, envKeyInEnviron, profile);
+  const config = parseConfigRead(read);
+  if (config.kind === "read-error") return otherStatus(tokenFacts, "read-error", null);
+  if (config.kind === "malformed") return otherStatus(tokenFacts, "malformed", null);
   // The selection fact mirrors what Codex itself reads: config.toml's top-level `model_provider`
   // for the default, `<name>.config.toml`'s for a named profile (`codex --profile <name>`), which
   // Codex refuses as a whole when either file is unparseable. The profile file is judged before
   // config.toml's absence, so a broken one is never hidden behind "no config".
-  let selector = doc;
-  if (selection.profile !== null) {
-    const profileRead = selection.profileToml;
-    const configExists = read.kind !== "absent";
-    if (profileRead.kind === "unreadable") {
-      return other("profile-read-error", null, configExists);
-    }
-    if (profileRead.kind === "text") {
-      try {
-        selector = parseToml(profileRead.text);
-      } catch {
-        return other("profile-malformed", null, configExists);
-      }
-    }
+  const configExists = config.kind === "doc";
+  const selector = selection.profile === null ? config : parseConfigRead(selection.profileToml);
+  if (selector.kind === "read-error") {
+    return otherStatus(tokenFacts, "profile-read-error", null, configExists);
   }
-  if (read.kind === "absent") return none(false);
-  if (selection.profile !== null && selection.profileToml.kind === "absent") return none(true);
+  if (selector.kind === "malformed") {
+    return otherStatus(tokenFacts, "profile-malformed", null, configExists);
+  }
+  if (config.kind === "absent") return noneStatus(tokenFacts, false);
+  if (selector.kind === "absent") return noneStatus(tokenFacts, true);
   const modelProvider =
-    typeof selector?.model_provider === "string" ? selector.model_provider : null;
-  if (modelProvider === null) return none(true);
-  if (modelProvider !== providerId) return other("custom", modelProvider);
-
-  const providers = doc?.model_providers;
-  const table = isRecord(providers) ? providers[providerId] : undefined;
-  const tableMode = codexTableMode(table, expectedPort);
-  const baseUrl = isRecord(table) && typeof table.base_url === "string" ? table.base_url : null;
-  // The writer strips env_key from a named table (MANAGED_PROVIDER_KEYS) and Codex rejects `auth` +
-  // `env_key` on one provider, so a present one is drift the writer would never produce.
-  const namedTableCarriesEnvKey =
-    profile !== null && isRecord(table) && table.env_key !== undefined;
-
-  if (tableMode === "direct") {
-    const envKeyMatches = !namedTableCarriesEnvKey;
-    // Positively identify OUR launcher (command + args), not just any auth.command: a stale `gh
-    // auth token` block must NOT read as managed.
-    const directUsesToken = isRecord(table) && isManagedDirectAuth(table.auth, profile);
-    const credential: CodexManagedCredential = directUsesToken
-      ? "command"
-      : isStaticAuthorization(table)
-        ? "static"
-        : "none";
-    return {
-      ...tokenFacts,
-      providerMode: "direct",
-      configExists: true,
-      modelProvider,
-      providerSelected: true,
-      // A direct table always carries a string base_url (codexTableMode); the fallback is unreachable.
-      baseUrl: baseUrl ?? DEFAULT_COPILOT_API_BASE,
-      baseUrlMatches: true,
-      envKeyMatches,
-      // The default direct selection needs no further conjunct (the health probe layers the store
-      // question on top); a named direct profile requires the profile-addressed managed auth or the
-      // static bearer, since default-addressed or foreign auth would resolve the wrong credential.
-      providerWired: envKeyMatches && (profile === null || credential !== "none"),
-      credential,
-      directUsesToken,
-      otherReason: null,
-    };
+    typeof selector.doc.model_provider === "string" ? selector.doc.model_provider : null;
+  if (modelProvider === null) return noneStatus(tokenFacts, true);
+  if (modelProvider !== codexProviderId(profile)) {
+    return otherStatus(tokenFacts, "custom", modelProvider);
   }
-  // A selected-but-unrecognized table shape (tableMode "other") still counts as ours for messaging,
-  // reported as proxy so the wiring facts below flag what's off.
-  const credential: CodexManagedCredential =
-    isRecord(table) && isManagedProxyAuth(table.auth, profile)
-      ? "command"
-      : isStaticAuthorization(table)
-        ? "static"
-        : "none";
-  const baseUrlMatches = baseUrl !== null && baseUrlMatchesProxy(baseUrl, expectedPort);
-  const envKeyMatches = !namedTableCarriesEnvKey && credential !== "none";
-  return {
-    ...tokenFacts,
-    providerMode: "proxy",
-    configExists: true,
-    modelProvider,
-    providerSelected: true,
-    baseUrl,
-    baseUrlMatches,
-    envKeyMatches,
-    providerWired: baseUrlMatches && envKeyMatches,
-    credential,
-    directUsesToken: false,
-    otherReason: null,
-  };
+
+  const selected = selectedTable(config.doc, modelProvider, profile);
+  if (codexTableMode(selected.table, expectedPort) === "direct") {
+    return directStatus(tokenFacts, selected);
+  }
+  return proxyStatus(tokenFacts, selected, expectedPort);
 }
 
 function codexOtherDetail(otherReason: CodexOtherReason): string {

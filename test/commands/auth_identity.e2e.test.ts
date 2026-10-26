@@ -1,3 +1,4 @@
+import { afterEach } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { stringify } from "smol-toml";
@@ -22,8 +23,9 @@ import {
 import { CopilotApiPaths } from "../../src/copilot_api/paths.ts";
 import { withColumns } from "../helpers/columns.ts";
 import { envSnapshot, isolateAgentHomes, resetExitCode } from "../helpers/env.ts";
+import { requestUrl } from "../helpers/fetch_input.ts";
 import { stubGithubLogins, writeRunState } from "../helpers/fixtures.ts";
-import { afterEach, expect, test } from "../helpers/testing.ts";
+import { expect, test } from "../helpers/testing.ts";
 import { captureStderr, captureStdout, OCTOCAT_LOGINS } from "./auth_fixtures.ts";
 
 const restoreEnv = envSnapshot();
@@ -68,7 +70,7 @@ let stubbedSurveyFetch: ProbeFetch = () => Promise.reject(new Error("no survey s
  *  accepts every identity (9 models); `designated` is the account host the user lookup names. */
 function stubIdentitySurvey(designated = "https://api.enterprise.githubcopilot.com"): void {
   stubbedSurveyFetch = (input, init) => {
-    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    const url = requestUrl(input);
     if (url.includes("/copilot_internal/user")) {
       return Promise.resolve(
         new Response(JSON.stringify({ endpoints: { api: designated } }), { status: 200 }),
@@ -97,6 +99,174 @@ const PAT_REJECTION = "400 Personal Access Tokens are not supported for this end
 
 const GENERIC_HOST = "https://api.githubcopilot.com";
 
+/** The first survey of a never-probed slot: every (host, identity) asked ONCE under one header
+ *  set, plain text, the four candidate rows and no more, the `>` preview on the next landing's
+ *  pick, and every rejection listed after the table. */
+async function expectFreshSurvey(): Promise<void> {
+  // One header set for every mode, so every (host, identity) is asked ONCE; the survey selects
+  // nothing and writes nothing.
+  const requests = new Map<string, number>();
+  const surveyFetch = (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    const headers = new Headers(init?.headers);
+    const key = `${requestUrl(input)} ${headers.get(INTEGRATION_ID_HEADER) ?? "-"} ${
+      headers.get("User-Agent") ?? "-"
+    }`;
+    requests.set(key, (requests.get(key) ?? 0) + 1);
+    return stubbedSurveyFetch(input, init);
+  };
+  setIntegrationProbeFetch(surveyFetch);
+  const fresh = await captureStdout(() => runAuth({ identities: true }));
+  expect([...requests.entries()].filter(([, n]) => n !== 1)).toEqual([]);
+  // The account lookup (no id, copilot-env's own User-Agent) happened exactly once.
+  expect(requests.get("https://api.github.com/copilot_internal/user - copilot-env")).toBe(1);
+  setIntegrationProbeFetch(stubbedSurveyFetch);
+  // Color is a TTY affordance: the survey a pipe or a test reads is plain text.
+  expect(fresh).not.toContain("\x1b");
+  // Four candidate rows, nothing more; vscode-chat is the last candidate.
+  expect(fresh).toMatch(
+    /^vscode-chat\s+rejected \(400\)\s+rejected \(400\)\s+copilot-api's former default$/m,
+  );
+  expect(fresh).not.toContain(FOREIGN_ID);
+  expect(fresh).toContain("identity: auto");
+  expect(fresh).toContain("host: auto (api.githubcopilot.com in use)");
+  expect(fresh).toMatch(
+    /^identity\s+api\.githubcopilot\.com \(in use\)\s+api\.enterprise\.githubcopilot\.com \(account\)\s+note$/m,
+  );
+  expect(fresh).toMatch(/^codex\s+rejected \(400\)\s+rejected \(400\)\s+the default/m);
+  // A slot never probed has nothing in use, so no `*`; `>` sits on what the next landing would
+  // pick: the first candidate the host in use accepts (the codex identity is rejected there).
+  expect(fresh).toMatch(
+    /^copilot-developer-cli\s+accepted \(5 models\) >\s+accepted \(37 models\)\s+GitHub Copilot CLI/m,
+  );
+  expect(fresh).toMatch(/^copilot-developer-sandbox\s+accepted \(2 models\)\s+rejected \(400\)$/m);
+  expect(fresh.match(/ \*/g)).toBeNull();
+  expect(fresh.match(/\) >/g)).toHaveLength(1);
+  expect(fresh).toContain("; > = would be picked by the next landing (nothing stored yet)");
+  expect(fresh).toContain(
+    "Nothing stored yet for this profile: run `agent init` (or `agent start`) once; it probes " +
+      "on the host in use and stores the identity and host it lands on.",
+  );
+  expect(new CopilotEnvState().readProfileDirectPair(null)).toEqual({});
+  expect(fresh).toContain(`  codex on api.githubcopilot.com: ${PAT_REJECTION}`);
+  expect(fresh).toContain(
+    `  copilot-developer-sandbox on api.enterprise.githubcopilot.com (account): ${PAT_REJECTION}`,
+  );
+}
+
+/** A pin without a stored pair marks nothing: the pin fixes the identity, so there is no pick to
+ *  preview, and the host is still the probe's to find, so the `*` waits for the pair. */
+async function expectPinWithoutPairMarksNothing(): Promise<void> {
+  new CopilotEnvConfig().setProfile(null, { identity: COPILOT_CLI_INTEGRATION_ID });
+  const pinnedEmpty = await captureStdout(() => runAuth({ identities: true }));
+  expect(pinnedEmpty).toContain(`identity: pinned to ${COPILOT_CLI_INTEGRATION_ID}`);
+  expect(pinnedEmpty).not.toContain(">");
+  expect(pinnedEmpty.match(/ \*/g)).toBeNull();
+  expect(pinnedEmpty).toContain("The host is not stored yet for this profile");
+  new CopilotEnvConfig().setProfile(null, { identity: "auto" });
+}
+
+/** A pinned landing stored only the host; with the pin cleared the slot holds that half alone.
+ *  The next landing re-selects from the generic host, so no pick is previewed on the stored one. */
+async function expectHalfStoredSlotPreviewsNothing(): Promise<void> {
+  new CopilotEnvState().setProfileDirectPair(null, {
+    host: "https://api.enterprise.githubcopilot.com",
+  });
+  const halfStored = await captureStdout(() => runAuth({ identities: true }));
+  expect(halfStored).toContain("host: auto (api.enterprise.githubcopilot.com in use)");
+  expect(halfStored).not.toContain(">");
+  expect(halfStored.match(/ \*/g)).toBeNull();
+  expect(halfStored).toContain("The identity is not stored yet for this profile");
+}
+
+/** The stored pair is THE identity in use: one `*`, on its host, and the `>` preview is gone.
+ *  Returns the table, the baseline the agent-file control compares against. */
+async function expectStoredPairInUse(): Promise<string> {
+  new CopilotEnvState().setProfileDirectPair(null, {
+    integrationId: COPILOT_CLI_INTEGRATION_ID,
+    host: GENERIC_HOST,
+  });
+  const stored = await captureStdout(() => runAuth({ identities: true }));
+  expect(stored).toMatch(
+    /^copilot-developer-cli\s+accepted \(5 models\) \*\s+accepted \(37 models\)\s/m,
+  );
+  expect(stored.match(/ \*/g)).toHaveLength(1);
+  expect(stored).not.toContain(">");
+  expect(stored).not.toContain("Nothing stored yet");
+  return stored;
+}
+
+/** Negative control: an agent file baking another identity changes nothing; the files are
+ *  outputs, and the survey never reads them. */
+async function expectAgentFileIgnored(claudeHome: string, stored: string): Promise<void> {
+  configureClaudeConfig(claudeHome, {
+    mode: "direct",
+    credential: { kind: "command" },
+    direct: directWiring(COPILOT_SANDBOX_INTEGRATION_ID, DEFAULT_COPILOT_API_BASE),
+  });
+  expect(await captureStdout(() => runAuth({ identities: true }))).toBe(stored);
+}
+
+/** A pin overlays the stored identity: the mark moves to it, and the note names the overlay. */
+async function expectPinOverlaysStored(): Promise<void> {
+  await runAuth({ identity: COPILOT_SANDBOX_INTEGRATION_ID });
+  const pinned = await captureStdout(() => runAuth({ identities: true }));
+  expect(pinned).toContain(`identity: pinned to ${COPILOT_SANDBOX_INTEGRATION_ID}`);
+  expect(pinned).toMatch(
+    /^copilot-developer-cli\s+accepted \(5 models\)\s+accepted \(37 models\)\s/m,
+  );
+  expect(pinned).toMatch(
+    /^copilot-developer-sandbox\s+accepted \(2 models\) \*\s+rejected \(400\)$/m,
+  );
+  expect(pinned).toContain(
+    "Slot: the probed identity is copilot-developer-cli; the pin overlays it at every " +
+      "re-render and daemon start.",
+  );
+}
+
+/** A pin that is not a built-in candidate is still probed and marked, never a bare `-`; and a
+ *  stored identity no candidate list names (set here directly: a landing never stores a pin)
+ *  stays in use once the pin clears, so its row stays and keeps the mark. */
+async function expectForeignIdentityRows(): Promise<void> {
+  new CopilotEnvConfig().setProfile(null, { identity: FOREIGN_ID });
+  const foreign = await captureStdout(() => runAuth({ identities: true }));
+  expect(foreign).toMatch(FOREIGN_MARKED_ROW);
+  expect(foreign).toContain(`  ${FOREIGN_ID} on api.githubcopilot.com: ${PAT_REJECTION}`);
+
+  new CopilotEnvConfig().setProfile(null, { identity: "auto" });
+  new CopilotEnvState().setProfileDirectPair(null, {
+    integrationId: FOREIGN_ID,
+    host: GENERIC_HOST,
+  });
+  const storedForeign = await captureStdout(() => runAuth({ identities: true }));
+  expect(storedForeign).toContain("identity: auto");
+  expect(storedForeign).toMatch(FOREIGN_MARKED_ROW);
+  expect(storedForeign.match(/ \*/g)).toHaveLength(1);
+}
+
+/** A credential the proxy exchanges itself (device-flow) has no identity story of its own: the
+ *  credential write took the pair with it, so the slot reads as never probed again. */
+async function expectExchangedCredentialClearsSlot(): Promise<void> {
+  new CopilotEnvState().setCredential(null, {
+    kind: "stored",
+    provider: "copilot",
+    token: "ghu_device",
+  });
+  const exchanged = await captureStdout(() => runAuth({ identities: true }));
+  expect(exchanged.match(/ \*/g)).toBeNull();
+  expect(exchanged).toContain("Nothing stored yet for this profile");
+  expect(exchanged).not.toContain("passthrough");
+}
+
+/** A running daemon keeps the identity and host it launched with, and the table says so. */
+async function expectRunningDaemonNoted(): Promise<void> {
+  writeRunState({ pid: process.pid, port: 4141 });
+  const running = await captureStdout(() => runAuth({ identities: true }));
+  expect(running).toContain(
+    "Proxy: a daemon is running and keeps the identity and host it launched with; restart it " +
+      "to apply a change: `agent stop`, then `agent start`.",
+  );
+}
+
 test("identity survey: one column per host, ONE mark on the slot's identity under the pin, and never a read of the agent files", async () => {
   const { claudeHome } = isolate();
   const credential = { kind: "stored", provider: "gh-token", token: "github_pat_x" } as const;
@@ -105,157 +275,15 @@ test("identity survey: one column per host, ONE mark on the slot's identity unde
   // The table is pinned at its natural width whatever terminal runs the tests.
   await withColumns(200, async () => {
     try {
-      // One header set for every mode, so every (host, identity) is asked ONCE; the survey selects
-      // nothing and writes nothing.
-      const requests = new Map<string, number>();
-      const surveyFetch = (
-        input: string | URL | Request,
-        init?: RequestInit,
-      ): Promise<Response> => {
-        const url =
-          typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-        const headers = new Headers(init?.headers);
-        const key = `${url} ${headers.get(INTEGRATION_ID_HEADER) ?? "-"} ${
-          headers.get("User-Agent") ?? "-"
-        }`;
-        requests.set(key, (requests.get(key) ?? 0) + 1);
-        return stubbedSurveyFetch(input, init);
-      };
-      setIntegrationProbeFetch(surveyFetch);
-      const fresh = await captureStdout(() => runAuth({ identities: true }));
-      expect([...requests.entries()].filter(([, n]) => n !== 1)).toEqual([]);
-      // The account lookup (no id, copilot-env's own User-Agent) happened exactly once.
-      expect(requests.get("https://api.github.com/copilot_internal/user - copilot-env")).toBe(1);
-      setIntegrationProbeFetch(stubbedSurveyFetch);
-      // Color is a TTY affordance: the survey a pipe or a test reads is plain text.
-      expect(fresh).not.toContain("\x1b");
-      // Four candidate rows, nothing more; vscode-chat is the last candidate.
-      expect(fresh).toMatch(
-        /^vscode-chat\s+rejected \(400\)\s+rejected \(400\)\s+copilot-api's former default$/m,
-      );
-      expect(fresh).not.toContain(FOREIGN_ID);
-      expect(fresh).toContain("identity: auto");
-      expect(fresh).toContain("host: auto (api.githubcopilot.com in use)");
-      expect(fresh).toMatch(
-        /^identity\s+api\.githubcopilot\.com \(in use\)\s+api\.enterprise\.githubcopilot\.com \(account\)\s+note$/m,
-      );
-      expect(fresh).toMatch(/^codex\s+rejected \(400\)\s+rejected \(400\)\s+the default/m);
-      // A slot never probed has nothing in use, so no `*`; `>` sits on what the next landing would
-      // pick: the first candidate the host in use accepts (the codex identity is rejected there).
-      expect(fresh).toMatch(
-        /^copilot-developer-cli\s+accepted \(5 models\) >\s+accepted \(37 models\)\s+GitHub Copilot CLI/m,
-      );
-      expect(fresh).toMatch(
-        /^copilot-developer-sandbox\s+accepted \(2 models\)\s+rejected \(400\)$/m,
-      );
-      expect(fresh.match(/ \*/g)).toBeNull();
-      expect(fresh.match(/\) >/g)).toHaveLength(1);
-      expect(fresh).toContain("; > = would be picked by the next landing (nothing stored yet)");
-      expect(fresh).toContain(
-        "Nothing stored yet for this profile: run `agent init` (or `agent start`) once; it probes " +
-          "on the host in use and stores the identity and host it lands on.",
-      );
-      expect(new CopilotEnvState().readProfileDirectPair(null)).toEqual({});
-      expect(fresh).toContain(`  codex on api.githubcopilot.com: ${PAT_REJECTION}`);
-      expect(fresh).toContain(
-        `  copilot-developer-sandbox on api.enterprise.githubcopilot.com (account): ${PAT_REJECTION}`,
-      );
-
-      // A pin without a stored pair marks nothing: the pin fixes the identity, so there is no pick to
-      // preview, and the host is still the probe's to find, so the `*` waits for the pair.
-      new CopilotEnvConfig().setProfile(null, { identity: COPILOT_CLI_INTEGRATION_ID });
-      const pinnedEmpty = await captureStdout(() => runAuth({ identities: true }));
-      expect(pinnedEmpty).toContain(`identity: pinned to ${COPILOT_CLI_INTEGRATION_ID}`);
-      expect(pinnedEmpty).not.toContain(">");
-      expect(pinnedEmpty.match(/ \*/g)).toBeNull();
-      expect(pinnedEmpty).toContain("The host is not stored yet for this profile");
-      new CopilotEnvConfig().setProfile(null, { identity: "auto" });
-
-      // A pinned landing stored only the host; with the pin cleared the slot holds that half alone.
-      // The next landing re-selects from the generic host, so no pick is previewed on the stored one.
-      new CopilotEnvState().setProfileDirectPair(null, {
-        host: "https://api.enterprise.githubcopilot.com",
-      });
-      const halfStored = await captureStdout(() => runAuth({ identities: true }));
-      expect(halfStored).toContain("host: auto (api.enterprise.githubcopilot.com in use)");
-      expect(halfStored).not.toContain(">");
-      expect(halfStored.match(/ \*/g)).toBeNull();
-      expect(halfStored).toContain("The identity is not stored yet for this profile");
-
-      // The stored pair is THE identity in use: one `*`, on its host, and the `>` preview is gone.
-      new CopilotEnvState().setProfileDirectPair(null, {
-        integrationId: COPILOT_CLI_INTEGRATION_ID,
-        host: GENERIC_HOST,
-      });
-      const stored = await captureStdout(() => runAuth({ identities: true }));
-      expect(stored).toMatch(
-        /^copilot-developer-cli\s+accepted \(5 models\) \*\s+accepted \(37 models\)\s/m,
-      );
-      expect(stored.match(/ \*/g)).toHaveLength(1);
-      expect(stored).not.toContain(">");
-      expect(stored).not.toContain("Nothing stored yet");
-
-      // Negative control: an agent file baking another identity changes nothing; the files are
-      // outputs, and the survey never reads them.
-      configureClaudeConfig(claudeHome, {
-        mode: "direct",
-        credential: { kind: "command" },
-        direct: directWiring(COPILOT_SANDBOX_INTEGRATION_ID, DEFAULT_COPILOT_API_BASE),
-      });
-      expect(await captureStdout(() => runAuth({ identities: true }))).toBe(stored);
-
-      // A pin overlays the stored identity: the mark moves to it, and the note names the overlay.
-      await runAuth({ identity: COPILOT_SANDBOX_INTEGRATION_ID });
-      const pinned = await captureStdout(() => runAuth({ identities: true }));
-      expect(pinned).toContain(`identity: pinned to ${COPILOT_SANDBOX_INTEGRATION_ID}`);
-      expect(pinned).toMatch(
-        /^copilot-developer-cli\s+accepted \(5 models\)\s+accepted \(37 models\)\s/m,
-      );
-      expect(pinned).toMatch(
-        /^copilot-developer-sandbox\s+accepted \(2 models\) \*\s+rejected \(400\)$/m,
-      );
-      expect(pinned).toContain(
-        "Slot: the probed identity is copilot-developer-cli; the pin overlays it at every " +
-          "re-render and daemon start.",
-      );
-
-      // A pin that is not a built-in candidate is still probed and marked, never a bare `-`.
-      new CopilotEnvConfig().setProfile(null, { identity: FOREIGN_ID });
-      const foreign = await captureStdout(() => runAuth({ identities: true }));
-      expect(foreign).toMatch(FOREIGN_MARKED_ROW);
-      expect(foreign).toContain(`  ${FOREIGN_ID} on api.githubcopilot.com: ${PAT_REJECTION}`);
-
-      // A stored identity no candidate list names (set here directly: a landing never stores a
-      // pin) stays in use once the pin clears, so its row stays and keeps the mark.
-      new CopilotEnvConfig().setProfile(null, { identity: "auto" });
-      new CopilotEnvState().setProfileDirectPair(null, {
-        integrationId: FOREIGN_ID,
-        host: GENERIC_HOST,
-      });
-      const storedForeign = await captureStdout(() => runAuth({ identities: true }));
-      expect(storedForeign).toContain("identity: auto");
-      expect(storedForeign).toMatch(FOREIGN_MARKED_ROW);
-      expect(storedForeign.match(/ \*/g)).toHaveLength(1);
-
-      // A credential the proxy exchanges itself (device-flow) has no identity story of its own: the
-      // credential write took the pair with it, so the slot reads as never probed again.
-      new CopilotEnvState().setCredential(null, {
-        kind: "stored",
-        provider: "copilot",
-        token: "ghu_device",
-      });
-      const exchanged = await captureStdout(() => runAuth({ identities: true }));
-      expect(exchanged.match(/ \*/g)).toBeNull();
-      expect(exchanged).toContain("Nothing stored yet for this profile");
-      expect(exchanged).not.toContain("passthrough");
-
-      // A running daemon keeps the identity and host it launched with, and the table says so.
-      writeRunState({ pid: process.pid, port: 4141 });
-      const running = await captureStdout(() => runAuth({ identities: true }));
-      expect(running).toContain(
-        "Proxy: a daemon is running and keeps the identity and host it launched with; restart it " +
-          "to apply a change: `agent stop`, then `agent start`.",
-      );
+      await expectFreshSurvey();
+      await expectPinWithoutPairMarksNothing();
+      await expectHalfStoredSlotPreviewsNothing();
+      const stored = await expectStoredPairInUse();
+      await expectAgentFileIgnored(claudeHome, stored);
+      await expectPinOverlaysStored();
+      await expectForeignIdentityRows();
+      await expectExchangedCredentialClearsSlot();
+      await expectRunningDaemonNoted();
     } finally {
       setIntegrationProbeFetch(null);
     }
@@ -367,9 +395,7 @@ test("identity survey: columns are the generic host, the account's when it diffe
         host: "https://api.enterprise.githubcopilot.com",
       });
       setIntegrationProbeFetch((input, init) => {
-        const url =
-          typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-        if (url.includes("/copilot_internal/user")) {
+        if (requestUrl(input).includes("/copilot_internal/user")) {
           return Promise.resolve(new Response("upstream", { status: 503 }));
         }
         return stubbedSurveyFetch(input, init);
@@ -427,6 +453,103 @@ test("identity survey: at 80 columns the note wraps inside its own column, never
   });
 });
 
+/** Every surveyed host rejecting the id refuses the pin, naming each host's answer. */
+async function expectEveryHostRejectionRefuses(): Promise<void> {
+  await expect(runAuth({ identity: VSCODE_CHAT_INTEGRATION_ID })).rejects.toThrow(
+    [
+      `every host rejects this credential under \`${VSCODE_CHAT_INTEGRATION_ID}\`; not pinned:`,
+      `  - api.githubcopilot.com: ${PAT_REJECTION}`,
+      `  - api.enterprise.githubcopilot.com (account): ${PAT_REJECTION}`,
+    ].join("\n"),
+  );
+  expect(new CopilotEnvConfig().pinnedIntegrationId(null)).toBeNull();
+}
+
+/** Accepted on the generic host, rejected on the account's: pinned, and the warning names what
+ *  carried it; `auto` then clears the pin. */
+async function expectOneAcceptancePinsAndNarrates(): Promise<void> {
+  const narrated = await captureStderr(() => runAuth({ identity: COPILOT_SANDBOX_INTEGRATION_ID }));
+  expect(new CopilotEnvConfig().pinnedIntegrationId(null)).toBe(COPILOT_SANDBOX_INTEGRATION_ID);
+  // consola's fancy reporter strips the backticks around the id; the CI reporter keeps them.
+  expect(narrated).toMatch(
+    new RegExp(
+      `api\\.enterprise\\.githubcopilot\\.com \\(account\\): rejects \`?${COPILOT_SANDBOX_INTEGRATION_ID}\`? ` +
+        `\\(${PAT_REJECTION}\\); pinning on api\\.githubcopilot\\.com accepting it\\.`,
+    ),
+  );
+
+  await runAuth({ identity: "auto" });
+  expect(new CopilotEnvConfig().pinnedIntegrationId(null)).toBeNull();
+}
+
+/** A transient account-host lookup leaves that host unknown and a blocked generic host (403) is
+ *  inconclusive: nothing definitive stands against the pin, so it lands unverified and says so. */
+async function expectUnverifiedPinLands(): Promise<void> {
+  setIntegrationProbeFetch((input) =>
+    Promise.resolve(
+      requestUrl(input).includes("/copilot_internal/user")
+        ? new Response("upstream", { status: 503 })
+        : new Response("forbidden", { status: 403 }),
+    ),
+  );
+  const unknown = await captureStderr(() => runAuth({ identity: COPILOT_SANDBOX_INTEGRATION_ID }));
+  expect(new CopilotEnvConfig().pinnedIntegrationId(null)).toBe(COPILOT_SANDBOX_INTEGRATION_ID);
+  expect(unknown).toContain(
+    "The account's designated host could not be looked up (transient); pinning unverified.",
+  );
+}
+
+/** Under a literal every request goes there, so its rejection alone refuses the pin even though
+ *  another host accepts the identity (the enterprise host rejects the sandbox id in this stub). */
+async function expectLiteralHostRejectionRefuses(): Promise<void> {
+  await runAuth({ identity: "auto" });
+  stubIdentitySurvey();
+  new CopilotEnvConfig().setProfile(null, { host: "https://api.enterprise.githubcopilot.com" });
+  await expect(runAuth({ identity: COPILOT_SANDBOX_INTEGRATION_ID })).rejects.toThrow(
+    "api.enterprise.githubcopilot.com (account, in use) rejects this credential under " +
+      `\`${COPILOT_SANDBOX_INTEGRATION_ID}\`; not pinned, every request goes to the ` +
+      `host in use: ${PAT_REJECTION}`,
+  );
+  expect(new CopilotEnvConfig().pinnedIntegrationId(null)).toBeNull();
+}
+
+/** Under `auto` the same rule reads the host auto WOULD select for the pin: the generic host
+ *  answers 400 for the sandbox id (kept: 400 is an identity answer), so its rejection refuses the
+ *  pin even though the account's host accepts that id; the CLI id, accepted there, pins. */
+async function expectAutoHostRejectionRefuses(): Promise<void> {
+  new CopilotEnvConfig().delProfile(null, "host");
+  setIntegrationProbeFetch((input, init) => {
+    const url = requestUrl(input);
+    if (url.includes("/copilot_internal/user")) {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({ endpoints: { api: "https://api.enterprise.githubcopilot.com" } }),
+          { status: 200 },
+        ),
+      );
+    }
+    const id = new Headers(init?.headers).get(INTEGRATION_ID_HEADER);
+    const enterprise = url.startsWith("https://api.enterprise.");
+    const accepted =
+      id === COPILOT_CLI_INTEGRATION_ID || (id === COPILOT_SANDBOX_INTEGRATION_ID && enterprise);
+    return Promise.resolve(
+      accepted
+        ? new Response(JSON.stringify({ data: [{}] }), { status: 200 })
+        : new Response("Personal Access Tokens are not supported for this endpoint", {
+            status: 400,
+          }),
+    );
+  });
+  await expect(runAuth({ identity: COPILOT_SANDBOX_INTEGRATION_ID })).rejects.toThrow(
+    "api.githubcopilot.com rejects this credential under " +
+      `\`${COPILOT_SANDBOX_INTEGRATION_ID}\`; not pinned, every request goes to the host auto ` +
+      `selects for this identity: ${PAT_REJECTION}`,
+  );
+  expect(new CopilotEnvConfig().pinnedIntegrationId(null)).toBeNull();
+  await runAuth({ identity: COPILOT_CLI_INTEGRATION_ID });
+  expect(new CopilotEnvConfig().pinnedIntegrationId(null)).toBe(COPILOT_CLI_INTEGRATION_ID);
+}
+
 test("set identity <id>: refused only when EVERY host rejects; one acceptance pins and names the other verdicts; auto clears", async () => {
   isolate();
   new CopilotEnvState().setCredential(null, {
@@ -436,97 +559,11 @@ test("set identity <id>: refused only when EVERY host rejects; one acceptance pi
   });
   stubIdentitySurvey();
   try {
-    await expect(runAuth({ identity: VSCODE_CHAT_INTEGRATION_ID })).rejects.toThrow(
-      [
-        `every host rejects this credential under \`${VSCODE_CHAT_INTEGRATION_ID}\`; not pinned:`,
-        `  - api.githubcopilot.com: ${PAT_REJECTION}`,
-        `  - api.enterprise.githubcopilot.com (account): ${PAT_REJECTION}`,
-      ].join("\n"),
-    );
-    expect(new CopilotEnvConfig().pinnedIntegrationId(null)).toBeNull();
-
-    // Accepted on the generic host, rejected on the account's: pinned, and the warning names what
-    // carried it.
-    const narrated = await captureStderr(() =>
-      runAuth({ identity: COPILOT_SANDBOX_INTEGRATION_ID }),
-    );
-    expect(new CopilotEnvConfig().pinnedIntegrationId(null)).toBe(COPILOT_SANDBOX_INTEGRATION_ID);
-    // consola's fancy reporter strips the backticks around the id; the CI reporter keeps them.
-    expect(narrated).toMatch(
-      new RegExp(
-        `api\\.enterprise\\.githubcopilot\\.com \\(account\\): rejects \`?${COPILOT_SANDBOX_INTEGRATION_ID}\`? ` +
-          `\\(${PAT_REJECTION}\\); pinning on api\\.githubcopilot\\.com accepting it\\.`,
-      ),
-    );
-
-    await runAuth({ identity: "auto" });
-    expect(new CopilotEnvConfig().pinnedIntegrationId(null)).toBeNull();
-
-    // A transient account-host lookup leaves that host unknown and a blocked generic host (403)
-    // is inconclusive: nothing definitive stands against the pin, so it lands unverified and
-    // says so.
-    setIntegrationProbeFetch((input) => {
-      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-      return Promise.resolve(
-        url.includes("/copilot_internal/user")
-          ? new Response("upstream", { status: 503 })
-          : new Response("forbidden", { status: 403 }),
-      );
-    });
-    const unknown = await captureStderr(() =>
-      runAuth({ identity: COPILOT_SANDBOX_INTEGRATION_ID }),
-    );
-    expect(new CopilotEnvConfig().pinnedIntegrationId(null)).toBe(COPILOT_SANDBOX_INTEGRATION_ID);
-    expect(unknown).toContain(
-      "The account's designated host could not be looked up (transient); pinning unverified.",
-    );
-
-    // Under a literal every request goes there, so its rejection alone refuses the pin even though
-    // another host accepts the identity (the enterprise host rejects the sandbox id in this stub).
-    await runAuth({ identity: "auto" });
-    stubIdentitySurvey();
-    new CopilotEnvConfig().setProfile(null, { host: "https://api.enterprise.githubcopilot.com" });
-    await expect(runAuth({ identity: COPILOT_SANDBOX_INTEGRATION_ID })).rejects.toThrow(
-      "api.enterprise.githubcopilot.com (account, in use) rejects this credential under " +
-        `\`${COPILOT_SANDBOX_INTEGRATION_ID}\`; not pinned, every request goes to the ` +
-        `host in use: ${PAT_REJECTION}`,
-    );
-    expect(new CopilotEnvConfig().pinnedIntegrationId(null)).toBeNull();
-
-    // Under `auto` the same rule reads the host auto WOULD select for the pin: the generic host
-    // answers 400 for the sandbox id (kept: 400 is an identity answer), so its rejection refuses
-    // the pin even though the account's host accepts that id; the CLI id, accepted there, pins.
-    new CopilotEnvConfig().delProfile(null, "host");
-    setIntegrationProbeFetch((input, init) => {
-      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-      if (url.includes("/copilot_internal/user")) {
-        return Promise.resolve(
-          new Response(
-            JSON.stringify({ endpoints: { api: "https://api.enterprise.githubcopilot.com" } }),
-            { status: 200 },
-          ),
-        );
-      }
-      const id = new Headers(init?.headers).get(INTEGRATION_ID_HEADER);
-      const enterprise = url.startsWith("https://api.enterprise.");
-      const accepted =
-        id === COPILOT_CLI_INTEGRATION_ID || (id === COPILOT_SANDBOX_INTEGRATION_ID && enterprise);
-      return Promise.resolve(
-        accepted
-          ? new Response(JSON.stringify({ data: [{}] }), { status: 200 })
-          : new Response("Personal Access Tokens are not supported for this endpoint", {
-              status: 400,
-            }),
-      );
-    });
-    await expect(runAuth({ identity: COPILOT_SANDBOX_INTEGRATION_ID })).rejects.toThrow(
-      "api.githubcopilot.com rejects this credential under " +
-        `\`${COPILOT_SANDBOX_INTEGRATION_ID}\`; not pinned, every request goes to the host auto ` +
-        `selects for this identity: ${PAT_REJECTION}`,
-    );
-    expect(new CopilotEnvConfig().pinnedIntegrationId(null)).toBeNull();
-    await runAuth({ identity: COPILOT_CLI_INTEGRATION_ID });
-    expect(new CopilotEnvConfig().pinnedIntegrationId(null)).toBe(COPILOT_CLI_INTEGRATION_ID);
+    await expectEveryHostRejectionRefuses();
+    await expectOneAcceptancePinsAndNarrates();
+    await expectUnverifiedPinLands();
+    await expectLiteralHostRejectionRefuses();
+    await expectAutoHostRejectionRefuses();
   } finally {
     setIntegrationProbeFetch(null);
   }

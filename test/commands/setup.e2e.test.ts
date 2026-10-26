@@ -122,10 +122,90 @@ function host(platform: NodeJS.Platform, over: Partial<InstallHost> = {}): Insta
   };
 }
 
+/** What a POSIX `--clis` run spawns with nothing pinned: each vendor's latest installer line. */
 const LATEST_POSIX_LINES = [
   `curl -fsSL ${CLAUDE_SH} | bash`,
   `curl -fsSL ${COPILOT_SH} | bash`,
   `curl -fsSL ${CODEX_SH} | CODEX_NON_INTERACTIVE=1 sh`,
+];
+
+/** Each vendor's documented POSIX installer line, latest and pinned. */
+const POSIX_INSTALLER_ROWS: Array<[AgentCli, string | null, string]> = [
+  [CLAUDE, null, `curl -fsSL ${CLAUDE_SH} | bash`],
+  [CLAUDE, "stable", `curl -fsSL ${CLAUDE_SH} | bash -s stable`],
+  [COPILOT, null, `curl -fsSL ${COPILOT_SH} | bash`],
+  [COPILOT, "v1.0.95", `curl -fsSL ${COPILOT_SH} | VERSION=v1.0.95 bash`],
+  [CODEX, null, `curl -fsSL ${CODEX_SH} | CODEX_NON_INTERACTIVE=1 sh`],
+  [CODEX, "0.163.0", `curl -fsSL ${CODEX_SH} | CODEX_NON_INTERACTIVE=1 sh -s -- --release 0.163.0`],
+];
+
+/** Each vendor's documented Windows installer, latest and pinned: the scripts, and winget for Copilot. */
+const WINDOWS_INSTALLER_ROWS: Array<
+  [AgentCli, string | null, Pick<InstallerCommand, "kind" | "file" | "args" | "line">]
+> = [
+  [
+    CLAUDE,
+    null,
+    {
+      kind: "powershell",
+      file: "powershell",
+      args: [...POWERSHELL_ARGS, `irm ${CLAUDE_PS1} | iex`],
+      line: `irm ${CLAUDE_PS1} | iex`,
+    },
+  ],
+  [
+    CLAUDE,
+    "stable",
+    {
+      kind: "powershell",
+      file: "powershell",
+      args: [...POWERSHELL_ARGS, `& ([scriptblock]::Create((irm ${CLAUDE_PS1}))) stable`],
+      line: `& ([scriptblock]::Create((irm ${CLAUDE_PS1}))) stable`,
+    },
+  ],
+  [
+    CODEX,
+    null,
+    {
+      kind: "powershell",
+      file: "powershell",
+      args: [...POWERSHELL_ARGS, `$env:CODEX_NON_INTERACTIVE = '1'; irm ${CODEX_PS1} | iex`],
+      line: `$env:CODEX_NON_INTERACTIVE = '1'; irm ${CODEX_PS1} | iex`,
+    },
+  ],
+  [
+    CODEX,
+    "0.163.0",
+    {
+      kind: "powershell",
+      file: "powershell",
+      args: [
+        ...POWERSHELL_ARGS,
+        `$env:CODEX_NON_INTERACTIVE = '1'; & ([scriptblock]::Create((irm ${CODEX_PS1}))) -Release 0.163.0`,
+      ],
+      line: `$env:CODEX_NON_INTERACTIVE = '1'; & ([scriptblock]::Create((irm ${CODEX_PS1}))) -Release 0.163.0`,
+    },
+  ],
+  [
+    COPILOT,
+    null,
+    {
+      kind: "winget",
+      file: "winget",
+      args: WINGET_ARGS,
+      line: `winget ${WINGET_ARGS.join(" ")}`,
+    },
+  ],
+  [
+    COPILOT,
+    "v1.0.95",
+    {
+      kind: "winget",
+      file: "winget",
+      args: [...WINGET_ARGS, "--version", "v1.0.95"],
+      line: `winget ${WINGET_ARGS.join(" ")} --version v1.0.95`,
+    },
+  ],
 ];
 
 // The vendors' documented installers, read 2026-10-17: https://code.claude.com/docs/en/setup
@@ -136,20 +216,8 @@ const LATEST_POSIX_LINES = [
 // --no-sudo refusal are pinned here per platform. The POSIX line runs under `bash -o pipefail`:
 // a curl that fails must not leave the pipeline at `sh`'s exit 0.
 test("planCliInstall spells each vendor's documented installer per platform under bash -o pipefail, splices the pin --cooldown resolved, and refuses winget under --no-sudo", () => {
-  const posixRows: Array<[AgentCli, string | null, string]> = [
-    [CLAUDE, null, `curl -fsSL ${CLAUDE_SH} | bash`],
-    [CLAUDE, "stable", `curl -fsSL ${CLAUDE_SH} | bash -s stable`],
-    [COPILOT, null, `curl -fsSL ${COPILOT_SH} | bash`],
-    [COPILOT, "v1.0.95", `curl -fsSL ${COPILOT_SH} | VERSION=v1.0.95 bash`],
-    [CODEX, null, `curl -fsSL ${CODEX_SH} | CODEX_NON_INTERACTIVE=1 sh`],
-    [
-      CODEX,
-      "0.163.0",
-      `curl -fsSL ${CODEX_SH} | CODEX_NON_INTERACTIVE=1 sh -s -- --release 0.163.0`,
-    ],
-  ];
   for (const platform of ["linux", "darwin"] as const) {
-    for (const [cli, pin, line] of posixRows) {
+    for (const [cli, pin, line] of POSIX_INSTALLER_ROWS) {
       // --no-sudo changes nothing here: every POSIX installer is user-local.
       for (const noSudo of [false, true]) {
         expect(
@@ -169,75 +237,7 @@ test("planCliInstall spells each vendor's documented installer per platform unde
       }
     }
   }
-
-  const windowsRows: Array<
-    [AgentCli, string | null, Pick<InstallerCommand, "kind" | "file" | "args" | "line">]
-  > = [
-    [
-      CLAUDE,
-      null,
-      {
-        kind: "powershell",
-        file: "powershell",
-        args: [...POWERSHELL_ARGS, `irm ${CLAUDE_PS1} | iex`],
-        line: `irm ${CLAUDE_PS1} | iex`,
-      },
-    ],
-    [
-      CLAUDE,
-      "stable",
-      {
-        kind: "powershell",
-        file: "powershell",
-        args: [...POWERSHELL_ARGS, `& ([scriptblock]::Create((irm ${CLAUDE_PS1}))) stable`],
-        line: `& ([scriptblock]::Create((irm ${CLAUDE_PS1}))) stable`,
-      },
-    ],
-    [
-      CODEX,
-      null,
-      {
-        kind: "powershell",
-        file: "powershell",
-        args: [...POWERSHELL_ARGS, `$env:CODEX_NON_INTERACTIVE = '1'; irm ${CODEX_PS1} | iex`],
-        line: `$env:CODEX_NON_INTERACTIVE = '1'; irm ${CODEX_PS1} | iex`,
-      },
-    ],
-    [
-      CODEX,
-      "0.163.0",
-      {
-        kind: "powershell",
-        file: "powershell",
-        args: [
-          ...POWERSHELL_ARGS,
-          `$env:CODEX_NON_INTERACTIVE = '1'; & ([scriptblock]::Create((irm ${CODEX_PS1}))) -Release 0.163.0`,
-        ],
-        line: `$env:CODEX_NON_INTERACTIVE = '1'; & ([scriptblock]::Create((irm ${CODEX_PS1}))) -Release 0.163.0`,
-      },
-    ],
-    [
-      COPILOT,
-      null,
-      {
-        kind: "winget",
-        file: "winget",
-        args: WINGET_ARGS,
-        line: `winget ${WINGET_ARGS.join(" ")}`,
-      },
-    ],
-    [
-      COPILOT,
-      "v1.0.95",
-      {
-        kind: "winget",
-        file: "winget",
-        args: [...WINGET_ARGS, "--version", "v1.0.95"],
-        line: `winget ${WINGET_ARGS.join(" ")} --version v1.0.95`,
-      },
-    ],
-  ];
-  for (const [cli, pin, command] of windowsRows) {
+  for (const [cli, pin, command] of WINDOWS_INSTALLER_ROWS) {
     expect(planCliInstall(cli, pin, host("win32"), false), `win32 ${cli.command} ${pin}`).toEqual({
       kind: "run",
       command: { cli: cli.command, ...command, writes: expect.any(Array) },
@@ -269,80 +269,82 @@ test("planCliInstall spells each vendor's documented installer per platform unde
   }
 });
 
+/** Where each vendor's script installs the binary, per platform and per knob. */
+const BINARY_PATH_ROWS: Array<[string, AgentCli, InstallHost, string]> = [
+  ["claude linux", CLAUDE, host("linux"), "/home/user/.local/bin/claude"],
+  ["copilot darwin", COPILOT, host("darwin"), "/home/user/.local/bin/copilot"],
+  ["codex linux", CODEX, host("linux"), "/home/user/.local/bin/codex"],
+  [
+    "codex honors CODEX_INSTALL_DIR",
+    CODEX,
+    host("linux", { env: { CODEX_INSTALL_DIR: "/opt/codex-bin" } }),
+    "/opt/codex-bin/codex",
+  ],
+  [
+    "copilot honors PREFIX",
+    COPILOT,
+    host("linux", { env: { PREFIX: "/home/user/custom" } }),
+    "/home/user/custom/bin/copilot",
+  ],
+  // `${VAR:-default}` in the POSIX scripts: only an EMPTY knob is unset, a blank one is a
+  // directory named by a space; the PowerShell installer's IsNullOrWhiteSpace takes a blank as
+  // unset too.
+  [
+    "an empty knob is unset",
+    CODEX,
+    host("linux", { env: { CODEX_INSTALL_DIR: "" } }),
+    "/home/user/.local/bin/codex",
+  ],
+  [
+    "a blank knob names a directory on POSIX",
+    CODEX,
+    host("linux", { env: { CODEX_INSTALL_DIR: " " } }),
+    " /codex",
+  ],
+  [
+    "a blank knob is unset on Windows",
+    CODEX,
+    host("win32", { env: { CODEX_INSTALL_DIR: " " } }),
+    "C:\\Users\\user\\AppData\\Local\\Programs\\OpenAI\\Codex\\bin\\codex.exe",
+  ],
+  [
+    "an empty PREFIX is unset",
+    COPILOT,
+    host("linux", { env: { PREFIX: "" } }),
+    "/home/user/.local/bin/copilot",
+  ],
+  [
+    "copilot as root defaults to /usr/local",
+    COPILOT,
+    host("linux", { root: true }),
+    "/usr/local/bin/copilot",
+  ],
+  ["claude win32", CLAUDE, host("win32"), "C:\\Users\\user\\.local\\bin\\claude.exe"],
+  [
+    "codex win32",
+    CODEX,
+    host("win32"),
+    "C:\\Users\\user\\AppData\\Local\\Programs\\OpenAI\\Codex\\bin\\codex.exe",
+  ],
+  [
+    "codex win32 honors CODEX_INSTALL_DIR",
+    CODEX,
+    host("win32", { env: { CODEX_INSTALL_DIR: "D:\\tools\\codex" } }),
+    "D:\\tools\\codex\\codex.exe",
+  ],
+  [
+    "copilot win32 is winget's package directory",
+    COPILOT,
+    host("win32"),
+    `${COPILOT_PACKAGE_DIR}\\copilot.exe`,
+  ],
+];
+
 // The install paths the vendors' scripts resolve (the same sources as above, read in their
 // install.sh / install.ps1): where an install is proven when this process's PATH predates the
 // installer's PATH edit, and what the disclosure names.
 test("installedBinaryPath follows each vendor's script: ~/.local/bin by default, CODEX_INSTALL_DIR and PREFIX when set, /usr/local for a root Copilot install, the Windows dirs, and winget's package directory for the Copilot CLI", () => {
-  const rows: Array<[string, AgentCli, InstallHost, string]> = [
-    ["claude linux", CLAUDE, host("linux"), "/home/user/.local/bin/claude"],
-    ["copilot darwin", COPILOT, host("darwin"), "/home/user/.local/bin/copilot"],
-    ["codex linux", CODEX, host("linux"), "/home/user/.local/bin/codex"],
-    [
-      "codex honors CODEX_INSTALL_DIR",
-      CODEX,
-      host("linux", { env: { CODEX_INSTALL_DIR: "/opt/codex-bin" } }),
-      "/opt/codex-bin/codex",
-    ],
-    [
-      "copilot honors PREFIX",
-      COPILOT,
-      host("linux", { env: { PREFIX: "/home/user/custom" } }),
-      "/home/user/custom/bin/copilot",
-    ],
-    // `${VAR:-default}` in the POSIX scripts: only an EMPTY knob is unset, a blank one is a
-    // directory named by a space; the PowerShell installer's IsNullOrWhiteSpace takes a blank as
-    // unset too.
-    [
-      "an empty knob is unset",
-      CODEX,
-      host("linux", { env: { CODEX_INSTALL_DIR: "" } }),
-      "/home/user/.local/bin/codex",
-    ],
-    [
-      "a blank knob names a directory on POSIX",
-      CODEX,
-      host("linux", { env: { CODEX_INSTALL_DIR: " " } }),
-      " /codex",
-    ],
-    [
-      "a blank knob is unset on Windows",
-      CODEX,
-      host("win32", { env: { CODEX_INSTALL_DIR: " " } }),
-      "C:\\Users\\user\\AppData\\Local\\Programs\\OpenAI\\Codex\\bin\\codex.exe",
-    ],
-    [
-      "an empty PREFIX is unset",
-      COPILOT,
-      host("linux", { env: { PREFIX: "" } }),
-      "/home/user/.local/bin/copilot",
-    ],
-    [
-      "copilot as root defaults to /usr/local",
-      COPILOT,
-      host("linux", { root: true }),
-      "/usr/local/bin/copilot",
-    ],
-    ["claude win32", CLAUDE, host("win32"), "C:\\Users\\user\\.local\\bin\\claude.exe"],
-    [
-      "codex win32",
-      CODEX,
-      host("win32"),
-      "C:\\Users\\user\\AppData\\Local\\Programs\\OpenAI\\Codex\\bin\\codex.exe",
-    ],
-    [
-      "codex win32 honors CODEX_INSTALL_DIR",
-      CODEX,
-      host("win32", { env: { CODEX_INSTALL_DIR: "D:\\tools\\codex" } }),
-      "D:\\tools\\codex\\codex.exe",
-    ],
-    [
-      "copilot win32 is winget's package directory",
-      COPILOT,
-      host("win32"),
-      `${COPILOT_PACKAGE_DIR}\\copilot.exe`,
-    ],
-  ];
-  for (const [name, cli, at, path] of rows) {
+  for (const [name, cli, at, path] of BINARY_PATH_ROWS) {
     expect(installedBinaryPath(cli, at), name).toBe(path);
   }
   // The Codex POSIX installer symlinks codex (and on macOS codex-code-mode-host) into the release
@@ -427,25 +429,137 @@ test("the Claude writes follow the XDG homes and CLAUDE_CONFIG_DIR on POSIX, an 
   ]);
 });
 
+/** The PATH edit a vendor's script discloses: the last write of its plan. */
+function pathEdit(cli: AgentCli, at: InstallHost): VendorWrite | undefined {
+  const plan = planCliInstall(cli, null, at, false);
+  return plan.kind === "run" ? plan.command.writes.at(-1) : undefined;
+}
+
+/** A Linux bash host on which exactly `present` exist. */
+function bashProfile(...present: string[]): InstallHost {
+  return host("linux", {
+    env: { SHELL: "/bin/bash" },
+    exists: (path) => present.includes(path),
+  });
+}
+
+/** The profile file Codex's pick_profile selects from `$os:$SHELL`. */
+const CODEX_PROFILE_ROWS: Array<[string, InstallHost, string]> = [
+  ["darwin zsh", host("darwin", { env: { SHELL: "/bin/zsh" } }), "/home/user/.zprofile"],
+  ["darwin bash", host("darwin", { env: { SHELL: "/bin/bash" } }), "/home/user/.bash_profile"],
+  ["linux zsh", host("linux", { env: { SHELL: "/usr/bin/zsh" } }), "/home/user/.zshrc"],
+  ["linux bash", host("linux", { env: { SHELL: "/bin/bash" } }), "/home/user/.bashrc"],
+  ["linux fish", host("linux", { env: { SHELL: "/usr/bin/fish" } }), "/home/user/.profile"],
+  ["no SHELL", host("linux"), "/home/user/.profile"],
+];
+
+/** The profile file the Copilot installer selects from `basename "${SHELL:-/bin/sh}"` and the files present. */
+const COPILOT_PROFILE_ROWS: Array<[string, InstallHost, string]> = [
+  ["zsh", host("linux", { env: { SHELL: "/bin/zsh" } }), "/home/user/.zprofile"],
+  [
+    "zsh with ZDOTDIR",
+    host("linux", { env: { SHELL: "/bin/zsh", ZDOTDIR: "/home/user/.config/zsh" } }),
+    "/home/user/.config/zsh/.zprofile",
+  ],
+  [
+    "bash with a .bash_profile",
+    bashProfile("/home/user/.bash_profile"),
+    "/home/user/.bash_profile",
+  ],
+  ["bash with only a .bash_login", bashProfile("/home/user/.bash_login"), "/home/user/.bash_login"],
+  ["bash with neither", bashProfile(), "/home/user/.profile"],
+  [
+    "fish",
+    host("linux", { env: { SHELL: "/usr/bin/fish" } }),
+    "/home/user/.config/fish/conf.d/copilot.fish",
+  ],
+  [
+    "fish with XDG_CONFIG_HOME",
+    host("darwin", {
+      env: { SHELL: "/opt/homebrew/bin/fish", XDG_CONFIG_HOME: "/home/user/cfg" },
+    }),
+    "/home/user/cfg/fish/conf.d/copilot.fish",
+  ],
+  ["no SHELL (sh)", host("linux"), "/home/user/.profile"],
+];
+
+/** The visible bin dir is a junction (its Ensure-Junction) into the standalone tree's current release. */
+const CODEX_WINDOWS_WRITES: VendorWrite[] = [
+  {
+    kind: "link",
+    path: "C:\\Users\\user\\AppData\\Local\\Programs\\OpenAI\\Codex\\bin",
+    target: "C:\\Users\\user\\.codex\\packages\\standalone\\current\\bin\\",
+    detail: "a junction",
+  },
+  {
+    kind: "file",
+    path: "C:\\Users\\user\\AppData\\Local\\Programs\\OpenAI\\Codex\\bin\\codex.exe",
+  },
+  {
+    kind: "file",
+    path: "C:\\Users\\user\\AppData\\Local\\Programs\\OpenAI\\Codex\\bin\\rg.exe",
+    detail: "ripgrep, beside codex.exe",
+  },
+  { kind: "file", path: "C:\\Users\\user\\.codex\\packages\\standalone\\" },
+  { kind: "value", path: "HKCU\\Environment\\Path", detail: "the User PATH" },
+];
+
+/** The dependency's MSIX: the user scope rules out Microsoft.PowerShell's machine-scope MSI arms. */
+const PWSH_PACKAGE_DIR =
+  "D:\\Program Files\\WindowsApps\\Microsoft.PowerShell_<version>_<arch>__8wekyb3d8bbwe";
+
+/** winget's footprint for GitHub.Copilot, ProgramFiles on D: (its manifest and sources, read 2026-10-17). */
+const WINGET_WRITES: VendorWrite[] = [
+  { kind: "file", path: `${COPILOT_PACKAGE_DIR}\\copilot.exe` },
+  {
+    kind: "file",
+    path: `${COPILOT_PACKAGE_DIR}\\`,
+    detail: "the archive's other files and winget's portable index",
+  },
+  {
+    kind: "link",
+    path: "C:\\Users\\user\\AppData\\Local\\Microsoft\\WinGet\\Links\\copilot.exe",
+    target: `${COPILOT_PACKAGE_DIR}\\copilot.exe`,
+    detail: "where winget can make a symlink; else its directory goes on the PATH",
+  },
+  { kind: "value", path: "HKCU\\Environment\\Path", detail: "the User PATH" },
+  {
+    kind: "value",
+    path: "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\GitHub.Copilot_Microsoft.Winget.Source_8wekyb3d8bbwe",
+    detail: "its Apps & features entry",
+  },
+  {
+    kind: "file",
+    path: "C:\\Users\\user\\AppData\\Local\\Packages\\Microsoft.DesktopAppInstaller_8wekyb3d8bbwe\\",
+    detail: "winget's own state: tracking, settings, logs",
+  },
+  {
+    kind: "file",
+    path: "D:\\Program Files\\WindowsApps\\Microsoft.Winget.Source_<version>_neutral__8wekyb3d8bbwe\\",
+    detail: "its source index, when winget refreshes its source",
+  },
+  {
+    kind: "file",
+    path: `${PWSH_PACKAGE_DIR}\\`,
+    detail: "pwsh 7 as its MSIX package, when PowerShell 7 is absent",
+  },
+  {
+    kind: "link",
+    path: "C:\\Users\\user\\AppData\\Local\\Microsoft\\WindowsApps\\pwsh.exe",
+    target: `${PWSH_PACKAGE_DIR}\\pwsh.exe`,
+    detail: "its execution alias, when PowerShell 7 is absent",
+  },
+];
+
 // The profile files the vendors' scripts edit, as their scripts pick them (read 2026-10-17):
 // Codex's pick_profile switches on `$os:$SHELL` (`*/zsh`, `*/bash`, else ~/.profile); the
 // Copilot installer on `basename "${SHELL:-/bin/sh}"` (zsh: `${ZDOTDIR:-$HOME}/.zprofile`; bash:
 // the first of ~/.bash_profile and ~/.bash_login that exists, else ~/.profile; fish: its conf.d
-// file; else ~/.profile). The Codex Windows installer edits the User PATH in the registry.
+// file; else ~/.profile). The Codex Windows installer edits the User PATH in the registry, and its
+// bin dir holds codex.exe and rg.exe (its required files); on POSIX rg lives inside the standalone
+// tree.
 test("the disclosed profile file is the one each vendor's script picks from the shell, the platform, and the files present", () => {
-  const pathEdit = (cli: AgentCli, at: InstallHost): VendorWrite | undefined => {
-    const plan = planCliInstall(cli, null, at, false);
-    return plan.kind === "run" ? plan.command.writes.at(-1) : undefined;
-  };
-  const codexRows: Array<[string, InstallHost, string]> = [
-    ["darwin zsh", host("darwin", { env: { SHELL: "/bin/zsh" } }), "/home/user/.zprofile"],
-    ["darwin bash", host("darwin", { env: { SHELL: "/bin/bash" } }), "/home/user/.bash_profile"],
-    ["linux zsh", host("linux", { env: { SHELL: "/usr/bin/zsh" } }), "/home/user/.zshrc"],
-    ["linux bash", host("linux", { env: { SHELL: "/bin/bash" } }), "/home/user/.bashrc"],
-    ["linux fish", host("linux", { env: { SHELL: "/usr/bin/fish" } }), "/home/user/.profile"],
-    ["no SHELL", host("linux"), "/home/user/.profile"],
-  ];
-  for (const [name, at, path] of codexRows) {
+  for (const [name, at, path] of CODEX_PROFILE_ROWS) {
     expect(pathEdit(CODEX, at), `codex ${name}`).toEqual({
       kind: "file",
       path,
@@ -457,127 +571,24 @@ test("the disclosed profile file is the one each vendor's script picks from the 
     path: "HKCU\\Environment\\Path",
     detail: "the User PATH",
   });
-
-  const bashProfile = (...present: string[]): InstallHost =>
-    host("linux", {
-      env: { SHELL: "/bin/bash" },
-      exists: (path) => present.includes(path),
-    });
-  const copilotRows: Array<[string, InstallHost, string]> = [
-    ["zsh", host("linux", { env: { SHELL: "/bin/zsh" } }), "/home/user/.zprofile"],
-    [
-      "zsh with ZDOTDIR",
-      host("linux", { env: { SHELL: "/bin/zsh", ZDOTDIR: "/home/user/.config/zsh" } }),
-      "/home/user/.config/zsh/.zprofile",
-    ],
-    [
-      "bash with a .bash_profile",
-      bashProfile("/home/user/.bash_profile"),
-      "/home/user/.bash_profile",
-    ],
-    [
-      "bash with only a .bash_login",
-      bashProfile("/home/user/.bash_login"),
-      "/home/user/.bash_login",
-    ],
-    ["bash with neither", bashProfile(), "/home/user/.profile"],
-    [
-      "fish",
-      host("linux", { env: { SHELL: "/usr/bin/fish" } }),
-      "/home/user/.config/fish/conf.d/copilot.fish",
-    ],
-    [
-      "fish with XDG_CONFIG_HOME",
-      host("darwin", {
-        env: { SHELL: "/opt/homebrew/bin/fish", XDG_CONFIG_HOME: "/home/user/cfg" },
-      }),
-      "/home/user/cfg/fish/conf.d/copilot.fish",
-    ],
-    ["no SHELL (sh)", host("linux"), "/home/user/.profile"],
-  ];
-  for (const [name, at, path] of copilotRows) {
+  for (const [name, at, path] of COPILOT_PROFILE_ROWS) {
     expect(pathEdit(COPILOT, at), `copilot ${name}`).toEqual({
       kind: "file",
       path,
       detail: "a PATH line it offers to append when its directory is not on PATH",
     });
   }
-  // The Codex Windows installer makes the visible bin dir a junction into the standalone tree's
-  // current release (its Ensure-Junction), holding codex.exe and rg.exe (its required files); on
-  // POSIX rg lives inside the standalone tree named above.
   const codexWindows = planCliInstall(CODEX, null, host("win32"), false);
-  expect(codexWindows.kind === "run" ? codexWindows.command.writes : null).toEqual([
-    {
-      kind: "link",
-      path: "C:\\Users\\user\\AppData\\Local\\Programs\\OpenAI\\Codex\\bin",
-      target: "C:\\Users\\user\\.codex\\packages\\standalone\\current\\bin\\",
-      detail: "a junction",
-    },
-    {
-      kind: "file",
-      path: "C:\\Users\\user\\AppData\\Local\\Programs\\OpenAI\\Codex\\bin\\codex.exe",
-    },
-    {
-      kind: "file",
-      path: "C:\\Users\\user\\AppData\\Local\\Programs\\OpenAI\\Codex\\bin\\rg.exe",
-      detail: "ripgrep, beside codex.exe",
-    },
-    { kind: "file", path: "C:\\Users\\user\\.codex\\packages\\standalone\\" },
-    { kind: "value", path: "HKCU\\Environment\\Path", detail: "the User PATH" },
-  ]);
-
-  // winget's footprint for GitHub.Copilot (its manifest and winget's sources, read 2026-10-17).
-  // The dependency lands as an MSIX: the user scope rules out Microsoft.PowerShell's machine-scope
-  // MSI arms.
+  expect(codexWindows.kind === "run" ? codexWindows.command.writes : null).toEqual(
+    CODEX_WINDOWS_WRITES,
+  );
   const winget = planCliInstall(
     COPILOT,
     null,
     host("win32", { env: { ProgramFiles: "D:\\Program Files" } }),
     false,
   );
-  const pwsh =
-    "D:\\Program Files\\WindowsApps\\Microsoft.PowerShell_<version>_<arch>__8wekyb3d8bbwe";
-  expect(winget.kind === "run" ? winget.command.writes : null).toEqual([
-    { kind: "file", path: `${COPILOT_PACKAGE_DIR}\\copilot.exe` },
-    {
-      kind: "file",
-      path: `${COPILOT_PACKAGE_DIR}\\`,
-      detail: "the archive's other files and winget's portable index",
-    },
-    {
-      kind: "link",
-      path: "C:\\Users\\user\\AppData\\Local\\Microsoft\\WinGet\\Links\\copilot.exe",
-      target: `${COPILOT_PACKAGE_DIR}\\copilot.exe`,
-      detail: "where winget can make a symlink; else its directory goes on the PATH",
-    },
-    { kind: "value", path: "HKCU\\Environment\\Path", detail: "the User PATH" },
-    {
-      kind: "value",
-      path: "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\GitHub.Copilot_Microsoft.Winget.Source_8wekyb3d8bbwe",
-      detail: "its Apps & features entry",
-    },
-    {
-      kind: "file",
-      path: "C:\\Users\\user\\AppData\\Local\\Packages\\Microsoft.DesktopAppInstaller_8wekyb3d8bbwe\\",
-      detail: "winget's own state: tracking, settings, logs",
-    },
-    {
-      kind: "file",
-      path: "D:\\Program Files\\WindowsApps\\Microsoft.Winget.Source_<version>_neutral__8wekyb3d8bbwe\\",
-      detail: "its source index, when winget refreshes its source",
-    },
-    {
-      kind: "file",
-      path: `${pwsh}\\`,
-      detail: "pwsh 7 as its MSIX package, when PowerShell 7 is absent",
-    },
-    {
-      kind: "link",
-      path: "C:\\Users\\user\\AppData\\Local\\Microsoft\\WindowsApps\\pwsh.exe",
-      target: `${pwsh}\\pwsh.exe`,
-      detail: "its execution alias, when PowerShell 7 is absent",
-    },
-  ]);
+  expect(winget.kind === "run" ? winget.command.writes : null).toEqual(WINGET_WRITES);
 });
 
 // --cooldown pins a release; the proof's `--version` line names whatever landed. A substring

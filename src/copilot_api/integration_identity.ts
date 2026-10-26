@@ -304,8 +304,32 @@ function failureDetail(
   );
 }
 
-/** One GET /models under one identity; never throws. Acceptance is the status alone, as it always
- *  has been: a 2xx whose body is not the catalog counts as accepted with no size.
+/** What every candidate's GET /models goes out with, resolved once per probe, survey, or host rule
+ *  from its deps; `memoize` is memoizable(deps), so injected I/O and a caller deadline bypass the
+ *  verdict memo. */
+interface CandidateProbe {
+  token: string;
+  fetchImpl: ProbeFetch;
+  timeoutMs: number;
+  signal: AbortSignal | undefined;
+  memoize: boolean;
+}
+
+function candidateProbe(
+  token: string,
+  deps: Pick<IdentityProbeDeps, "fetchImpl" | "timeoutMs" | "signal">,
+): CandidateProbe {
+  return {
+    token,
+    fetchImpl: deps.fetchImpl ?? defaultProbeFetch,
+    timeoutMs: deps.timeoutMs ?? PROBE_TIMEOUT_MS,
+    signal: deps.signal,
+    memoize: memoizable(deps),
+  };
+}
+
+/** One GET /models under one identity on `apiBase`; never throws. Acceptance is the status alone, as
+ *  it always has been: a 2xx whose body is not the catalog counts as accepted with no size.
  *
  *  The memo holds one verdict per (token, host, header set) in a process, shared by the survey, the
  *  selectors, and the host rule: the table `agent profile identity` prints and a selection in the
@@ -315,22 +339,18 @@ function failureDetail(
  *  Process-lifetime and never invalidated: a CLI invocation ends in seconds, while the MCP server
  *  (src/mcp/server.ts, reached through web_search.ts) keeps its verdicts until the transport closes. */
 function probeCandidate(
-  token: string,
-  apiBase: string,
   candidate: IntegrationIdentity,
-  fetchImpl: ProbeFetch,
-  timeoutMs: number,
-  signal: AbortSignal | undefined,
-  memoize: boolean,
+  apiBase: string,
+  probe: CandidateProbe,
 ): Promise<IdentityVerdict> {
   const request = async (): Promise<IdentityVerdict> => {
     const got = await fetchModelCatalog({
       host: apiBase,
-      token,
+      token: probe.token,
       headers: candidate.headers,
-      fetchImpl,
-      timeoutMs,
-      signal,
+      fetchImpl: probe.fetchImpl,
+      timeoutMs: probe.timeoutMs,
+      signal: probe.signal,
     });
     switch (got.kind) {
       case "ok":
@@ -345,8 +365,8 @@ function probeCandidate(
         return { kind: "inconclusive", detail: failureDetail(got), status: null };
     }
   };
-  if (!memoize) return request();
-  const key = JSON.stringify([token, apiBase, candidate.headers]);
+  if (!probe.memoize) return request();
+  const key = JSON.stringify([probe.token, apiBase, candidate.headers]);
   let pending = verdictMemo.get(key);
   if (pending === undefined) {
     pending = request();
@@ -366,21 +386,12 @@ export async function probeIntegrationIdentity(
   candidates: readonly IntegrationIdentity[],
   deps: IdentityProbeDeps,
 ): Promise<IdentityProbeResult> {
-  const fetchImpl = deps.fetchImpl ?? defaultProbeFetch;
-  const timeoutMs = deps.timeoutMs ?? PROBE_TIMEOUT_MS;
+  const probe = candidateProbe(token, deps);
   const { apiBase } = deps;
   const outcomes: IdentityProbeOutcome[] = [];
   let sawInconclusive = false;
   for (const candidate of candidates) {
-    const verdict = await probeCandidate(
-      token,
-      apiBase,
-      candidate,
-      fetchImpl,
-      timeoutMs,
-      deps.signal,
-      memoizable(deps),
-    );
+    const verdict = await probeCandidate(candidate, apiBase, probe);
     if (verdict.kind === "accepted") {
       outcomes.push({ name: candidate.name, detail: "ok" });
       return { identity: candidate, conclusive: true, apiBase, outcomes };
@@ -425,26 +436,17 @@ export async function surveyIntegrationIdentities(
   candidates: readonly IntegrationIdentity[],
   deps: IdentitySurveyDeps = {},
 ): Promise<IdentitySurvey> {
-  const fetchImpl = deps.fetchImpl ?? defaultProbeFetch;
-  const timeoutMs = deps.timeoutMs ?? PROBE_TIMEOUT_MS;
+  const probe = candidateProbe(token, deps);
   const surveyHost = async (apiBase: string, role: SurveyHostRole): Promise<IdentityHostSurvey> => {
     const verdicts = await Promise.all(
       candidates.map(async (candidate) => ({
         name: candidate.name,
-        verdict: await probeCandidate(
-          token,
-          apiBase,
-          candidate,
-          fetchImpl,
-          timeoutMs,
-          deps.signal,
-          memoizable(deps),
-        ),
+        verdict: await probeCandidate(candidate, apiBase, probe),
       })),
     );
     return { apiBase, role, verdicts };
   };
-  const designated = await accountApiBase(token, fetchImpl, timeoutMs, deps.signal);
+  const designated = await accountApiBase(token, probe.fetchImpl, probe.timeoutMs, deps.signal);
   const hosts: { apiBase: string; role: SurveyHostRole }[] = [
     { apiBase: DEFAULT_COPILOT_API_BASE, role: "generic" },
   ];
@@ -473,13 +475,9 @@ async function probeGenericHost(
   deps: Omit<IdentityProbeDeps, "apiBase">,
 ): Promise<HostProbe> {
   const verdict = await probeCandidate(
-    token,
-    DEFAULT_COPILOT_API_BASE,
     { name: headers[INTEGRATION_ID_HEADER] ?? CODEX_IDENTITY_NAME, headers },
-    deps.fetchImpl ?? defaultProbeFetch,
-    deps.timeoutMs ?? PROBE_TIMEOUT_MS,
-    deps.signal,
-    memoizable(deps),
+    DEFAULT_COPILOT_API_BASE,
+    candidateProbe(token, deps),
   );
   if (verdict.kind !== "inconclusive") return { kind: "kept" };
   const blocked = verdict.status === null || genericHostBlockedBy(verdict.status);

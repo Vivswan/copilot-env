@@ -12,6 +12,7 @@ import { freePort } from "../helpers/net.ts";
 import {
   expectIdentical,
   observe,
+  type ScratchHome,
   scratchHome as scratchHomeOf,
   seedProxyProfiles,
   treeContents,
@@ -172,9 +173,10 @@ interface Bundle {
   modes: { codex: string; claude: string };
 }
 
-test("profile settings is one profile's bundle: a named profile's slot and section, the default's credential, modes, and shared defaults; its import lands that profile alone and refuses the whole store", () => {
-  const scratch = scratchHome();
-  seedProxyProfiles(scratch);
+/** The three exports of one store: a named profile's bundle (its slot and section, nothing of
+ *  the default's), the default's (its credential, modes, and the shared defaults, never the
+ *  machine keys), and the whole store. Returns the whole store's bundle text. */
+function expectScopedExports(scratch: ScratchHome): string {
   for (const args of [
     ["profile", "work", "set", "passthrough", "off"],
     ["config", "set", "proxy.small-model", "gpt-x"],
@@ -209,10 +211,12 @@ test("profile settings is one profile's bundle: a named profile's slot and secti
     "proxy.small-model": "gpt-x",
   });
   expect(Object.keys(wholeBundle.profiles)).toEqual(["work"]);
+  return whole;
+}
 
-  // work's bundle lands work in a twin home and nothing else: the twin's own default
-  // credential and machine keys read back as they were.
-  const twin = scratchHome();
+/** work's bundle lands work in a twin home and nothing else: the twin's own default credential
+ *  and machine keys read back as they were. Returns the bundle file, for the imports below. */
+function expectNamedImportLandsAlone(scratch: ScratchHome, twin: ScratchHome): string {
   expect(observe(["auth", "--set", "ghu_twin"], twin).exitCode).toBe(0);
   const bundleFile = join(twin.home, "work.json");
   writeFileSync(
@@ -242,9 +246,12 @@ test("profile settings is one profile's bundle: a named profile's slot and secti
     githubToken: "ghu_twin",
   });
   expect(twinStore.modes).toEqual({ codex: "none", claude: "none" });
+  return bundleFile;
+}
 
-  // A named import reaches its profile alone: the default's Desktop entry, made stale by
-  // hand, is byte-identical after it, and a default write (`agent sync`) is what rewrites it.
+/** A named import reaches its profile alone: the default's Desktop entry, made stale by hand, is
+ *  byte-identical after it, and a default write (`agent sync`) is what rewrites it. */
+function expectNamedImportLeavesDefaultDesktopEntry(twin: ScratchHome, bundleFile: string): void {
   const desktop = join(twin.home, "claude-desktop");
   const library = join(desktop, "configLibrary");
   mkdirSync(library, { recursive: true });
@@ -273,8 +280,12 @@ test("profile settings is one profile's bundle: a named profile's slot and secti
   expect(readFileSync(defaultEntry, "utf8")).toBe(stale);
   expect(observe(["sync"], withDesktop).exitCode).toBe(0);
   expect(readFileSync(defaultEntry, "utf8")).not.toBe(stale);
+}
 
-  // The whole store is not one profile's bundle.
+/** The whole store is not one profile's bundle: refused, at 80 columns with the table stacked and
+ *  the recovery command on one line however long the path; a preview's refusal keeps the preview
+ *  (its recovery carries --dry-run too, and down a pipe with no COLUMNS nothing wraps). */
+function expectWholeStoreRefused(twin: ScratchHome, whole: string): void {
   const wholeFile = join(twin.home, "all.json");
   writeFileSync(wholeFile, whole);
   const refused = observe(["profile", "work", "settings", "--import", wholeFile, "--force"], {
@@ -282,7 +293,6 @@ test("profile settings is one profile's bundle: a named profile's slot and secti
     env: { ...twin.env, COLUMNS: "80" },
   });
   expect(refused.exitCode).toBe(1);
-  // At 80 columns the table stacks, and the recovery command is one line however long the path.
   expect(refused.stderr).toContain(
     [
       "Pick one:",
@@ -293,8 +303,6 @@ test("profile settings is one profile's bundle: a named profile's slot and secti
       "    export one profile's bundle",
     ].join("\n"),
   );
-  // A preview's refusal keeps the preview: its recovery carries --dry-run too. Down a pipe with no
-  // COLUMNS nothing wraps, so the headline and the row print whole.
   const previewed = observe(
     ["profile", "work", "settings", "--import", wholeFile, "--force", "--dry-run"],
     twin,
@@ -304,8 +312,14 @@ test("profile settings is one profile's bundle: a named profile's slot and secti
   expect(previewed.stderr).toContain(
     `\n  ${rollbackCommand(wholeFile)} --force --dry-run  import the whole store\n`,
   );
-  // A daemon home with no store slot is not a profile an export can carry: refused with its
-  // repair, so no bundle exists that its own import would refuse.
+}
+
+/** A daemon home with no store slot is not a profile an export can carry: refused with its
+ *  repair, so no bundle exists that its own import would refuse. A fresh machine's empty
+ *  whole-store export (no keys, no credential, no slot, no mode) carries no slot for work: read
+ *  as work's bundle it would clear work's preferences and land nothing, so it is refused and the
+ *  store is untouched. */
+function expectSlotlessBundlesRefused(twin: ScratchHome): void {
   mkdirSync(join(twin.home, "profiles", "ghost"), { recursive: true });
   const eighty = { ...twin, env: { ...twin.env, COLUMNS: "80" } };
   const homeOnly = observe(["profile", "ghost", "settings", "--export"], eighty);
@@ -319,9 +333,6 @@ test("profile settings is one profile's bundle: a named profile's slot and secti
       "  agent profile ghost add --direct|--proxy  re-create it",
     ].join("\n"),
   );
-  // A fresh machine's empty whole-store export (no keys, no credential, no slot, no mode)
-  // carries no slot for work: read as work's bundle it would clear work's preferences and land
-  // nothing, so it is refused and the store is untouched.
   const emptyFile = join(twin.home, "empty.json");
   writeFileSync(
     emptyFile,
@@ -338,5 +349,16 @@ test("profile settings is one profile's bundle: a named profile's slot and secti
   expect(empty.exitCode).toBe(1);
   expect(empty.stderr).toContain("carries no slot for profile 'work'");
   expect(observe(["settings", "--export"], twin).stdout).toBe(beforeEmpty);
+}
+
+test("profile settings is one profile's bundle: a named profile's slot and section, the default's credential, modes, and shared defaults; its import lands that profile alone and refuses the whole store", () => {
+  const scratch = scratchHome();
+  seedProxyProfiles(scratch);
+  const whole = expectScopedExports(scratch);
+  const twin = scratchHome();
+  const bundleFile = expectNamedImportLandsAlone(scratch, twin);
+  expectNamedImportLeavesDefaultDesktopEntry(twin, bundleFile);
+  expectWholeStoreRefused(twin, whole);
+  expectSlotlessBundlesRefused(twin);
   // Sixteen cold CLI spawns; generous headroom for loaded Windows CI runners.
 }, 300_000);

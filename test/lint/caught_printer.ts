@@ -64,6 +64,12 @@ const TYPED_EXPRESSIONS = new Set([
 /** The one finding with fixed text: a `throw` that reaches the caught error without passing it on whole. */
 const THROWN_AS_TEXT = "throw rebuilds the caught error as text: throw it, or rethrown(e, frame)";
 
+/** The node kinds that declare a class name under `id`, read like a function's own name. */
+const CLASSES = new Set(["ClassDeclaration", "ClassExpression"]);
+
+/** The node kinds whose only names are a jump label or `import.meta`: nothing in them is a read. */
+const UNREAD = new Set(["BreakStatement", "ContinueStatement", "MetaProperty"]);
+
 type Node = Record<string, unknown> & { type: string; start: number; end: number };
 
 /** One finding; `start` is the offset of the printer call (or the throw) in the source. */
@@ -88,35 +94,35 @@ function identifierName(node: Node): string | null {
   return node.type === "Identifier" ? (node.name as string) : null;
 }
 
+function optionalChild(node: Node, key: string): Node[] {
+  const child = node[key];
+  return isNode(child) ? [child] : [];
+}
+
+/** `e.message` reads `e`; a property named like the binding (`x.e`) is a name unless computed. */
+function memberReads(node: Node): Node[] {
+  const object = node.object as Node;
+  return node.computed === true ? [object, node.property as Node] : [object];
+}
+
+/** A keyed member's value, and its key only when computed. */
+function keyedReads(node: Node): Node[] {
+  const value = optionalChild(node, "value");
+  return node.computed === true ? [node.key as Node, ...value] : value;
+}
+
 /** The children of `node` a variable read can sit in: not a member's non-computed key, a declared
  *  or function name, a label, an import or export name, a JSX attribute name, or a type. */
 function readPositions(node: Node): Node[] {
-  if (node.type === "MemberExpression") {
-    // `e.message` reads `e`; a property named like the binding (`x.e`) is a name.
-    const object = node.object as Node;
-    return node.computed === true ? [object, node.property as Node] : [object];
-  }
-  if (KEYED.has(node.type)) {
-    const value = isNode(node.value) ? [node.value] : [];
-    return node.computed === true ? [node.key as Node, ...value] : value;
-  }
-  if (
-    FUNCTIONS.has(node.type) ||
-    node.type === "ClassDeclaration" ||
-    node.type === "ClassExpression"
-  ) {
+  if (node.type === "MemberExpression") return memberReads(node);
+  if (KEYED.has(node.type)) return keyedReads(node);
+  if (FUNCTIONS.has(node.type) || CLASSES.has(node.type)) {
     return children(node).filter((child) => child !== node.id);
   }
-  if (node.type === "VariableDeclarator") return isNode(node.init) ? [node.init] : [];
+  if (node.type === "VariableDeclarator") return optionalChild(node, "init");
   if (node.type === "LabeledStatement") return [node.body as Node];
-  if (node.type === "JSXAttribute") return isNode(node.value) ? [node.value] : [];
-  if (
-    node.type === "BreakStatement" ||
-    node.type === "ContinueStatement" ||
-    node.type === "MetaProperty" ||
-    node.type.startsWith("Import") ||
-    node.type.startsWith("Export")
-  ) {
+  if (node.type === "JSXAttribute") return optionalChild(node, "value");
+  if (UNREAD.has(node.type) || node.type.startsWith("Import") || node.type.startsWith("Export")) {
     return [];
   }
   if (node.type.startsWith("TS")) {
@@ -361,83 +367,110 @@ function hoistDeclared(block: Node, scope: Scope): void {
   }
 }
 
-/** Walks a clause body under `root`, the clause's scope holding its binding: every block, loop,
- *  function, and nested clause opens a scope of its own, and every sink or throw earns its
- *  finding. */
-function scanClause(body: Node, root: Scope, findings: PrinterFinding[]): void {
-  const walk = (node: Node, scope: Scope): void => {
-    if (FUNCTIONS.has(node.type)) {
-      const inner = functionScope(node, scope);
-      for (const child of children(node)) walk(child, inner);
-      return;
-    }
-    if (node.type === "CatchClause" && isNode(node.param)) {
-      // The nested clause's own binding is scanned by scanCaughtPrinters.
-      walk(node.body as Node, scopeOf(scope, patternBindings(node.param, null, scope)));
-      return;
-    }
-    if (ELEMENT_LOOPS.has(node.type)) {
-      walkElementLoop(node, scope);
-      return;
-    }
-    if (node.type === "BlockStatement" || node.type === "ForStatement") {
-      const inner = scopeOf(scope);
-      if (node.type === "BlockStatement") hoistDeclared(node, inner);
-      for (const child of children(node)) walk(child, inner);
-      return;
-    }
-    if (node.type === "VariableDeclaration") {
-      const target = node.kind === "var" ? (scope.hoist ?? scope) : scope;
-      for (const declarator of node.declarations as Node[]) {
-        const init = isNode(declarator.init) ? declarator.init : null;
-        if (init !== null) walk(init, scope);
-        const kind = init === null ? null : kindOfValue(init, scope);
-        declare(target, declarator.id as Node, kind, scope);
-      }
-      return;
-    }
-    if (node.type === "AssignmentExpression") {
-      // `x op= y` is `x = x op y`: the whole assignment is the source.
-      const source = node.operator === "=" ? (node.right as Node) : node;
-      assign(scope, root, node.left as Node, kindOfValue(source, scope));
-    }
-    if (node.type === "ThrowStatement") {
-      const thrown = node.argument as Node;
-      if (!leavesWhole(thrown, scope) && reachesAny(thrown, scope)) {
-        findings.push({ start: node.start, message: THROWN_AS_TEXT });
-      }
-    }
-    if (node.type === "CallExpression") {
-      const sink = sinkOf(node.callee as Expression);
-      if (sink !== null) {
-        for (const argument of node.arguments as Node[]) {
-          const message = findingFor(argument, scope, sink);
-          if (message !== null) findings.push({ start: node.start, message });
-        }
-      }
-    }
-    for (const child of children(node)) walk(child, scope);
-  };
+/** One clause's walk: the clause scope holding its binding, and the findings it earns. */
+interface ClauseWalk {
+  root: Scope;
+  findings: PrinterFinding[];
+}
 
-  /** `for (const x of value)`: each element is a value made of `value`, declared or assigned. */
-  const walkElementLoop = (node: Node, scope: Scope): void => {
-    const inner = scopeOf(scope);
-    const left = node.left as Node;
-    const right = node.right as Node;
-    const kind = kindOfValue(right, scope);
-    if (left.type === "VariableDeclaration") {
-      const target = left.kind === "var" ? (scope.hoist ?? scope) : inner;
-      for (const declarator of left.declarations as Node[]) {
-        declare(target, declarator.id as Node, kind, scope);
-      }
-    } else {
-      assign(inner, root, left, kind);
-    }
-    walk(right, scope);
-    walk(node.body as Node, inner);
-  };
+function walkFunction(fn: Node, scope: Scope, clause: ClauseWalk): void {
+  const inner = functionScope(fn, scope);
+  for (const child of children(fn)) walkNode(child, inner, clause);
+}
 
-  walk(body, root);
+/** A block or a `for`: a scope of its own, a block's declared functions and classes hoisted. */
+function walkBlock(node: Node, scope: Scope, clause: ClauseWalk): void {
+  const inner = scopeOf(scope);
+  if (node.type === "BlockStatement") hoistDeclared(node, inner);
+  for (const child of children(node)) walkNode(child, inner, clause);
+}
+
+/** Each declarator's initializer walked, then its pattern declared from the initializer's kind;
+ *  a `var` lands in the hoist scope. */
+function walkDeclaration(node: Node, scope: Scope, clause: ClauseWalk): void {
+  const target = node.kind === "var" ? (scope.hoist ?? scope) : scope;
+  for (const declarator of node.declarations as Node[]) {
+    const init = isNode(declarator.init) ? declarator.init : null;
+    if (init !== null) walkNode(init, scope, clause);
+    const kind = init === null ? null : kindOfValue(init, scope);
+    declare(target, declarator.id as Node, kind, scope);
+  }
+}
+
+/** `for (const x of value)`: each element is a value made of `value`, declared or assigned. */
+function walkElementLoop(node: Node, scope: Scope, clause: ClauseWalk): void {
+  const inner = scopeOf(scope);
+  const left = node.left as Node;
+  const right = node.right as Node;
+  const kind = kindOfValue(right, scope);
+  if (left.type === "VariableDeclaration") {
+    const target = left.kind === "var" ? (scope.hoist ?? scope) : inner;
+    for (const declarator of left.declarations as Node[]) {
+      declare(target, declarator.id as Node, kind, scope);
+    }
+  } else {
+    assign(inner, clause.root, left, kind);
+  }
+  walkNode(right, scope, clause);
+  walkNode(node.body as Node, inner, clause);
+}
+
+/** A throw that rebuilds the caught error as text earns its finding. */
+function judgeThrow(node: Node, scope: Scope, clause: ClauseWalk): void {
+  const thrown = node.argument as Node;
+  if (!leavesWhole(thrown, scope) && reachesAny(thrown, scope)) {
+    clause.findings.push({ start: node.start, message: THROWN_AS_TEXT });
+  }
+}
+
+/** A sink call's arguments judged, each finding at the call. */
+function judgeSinkCall(node: Node, scope: Scope, clause: ClauseWalk): void {
+  const sink = sinkOf(node.callee as Expression);
+  if (sink === null) return;
+  for (const argument of node.arguments as Node[]) {
+    const message = findingFor(argument, scope, sink);
+    if (message !== null) clause.findings.push({ start: node.start, message });
+  }
+}
+
+/** Walks `node` under `scope`: every block, loop, function, and nested clause opens a scope of its
+ *  own, and every sink or throw earns its finding. The walkers above recurse through here. */
+function walkNode(node: Node, scope: Scope, clause: ClauseWalk): void {
+  if (FUNCTIONS.has(node.type)) {
+    walkFunction(node, scope, clause);
+    return;
+  }
+  if (node.type === "CatchClause" && isNode(node.param)) {
+    // The nested clause's own binding is scanned by scanCaughtPrinters.
+    walkNode(node.body as Node, scopeOf(scope, patternBindings(node.param, null, scope)), clause);
+    return;
+  }
+  if (ELEMENT_LOOPS.has(node.type)) {
+    walkElementLoop(node, scope, clause);
+    return;
+  }
+  if (node.type === "BlockStatement" || node.type === "ForStatement") {
+    walkBlock(node, scope, clause);
+    return;
+  }
+  if (node.type === "VariableDeclaration") {
+    walkDeclaration(node, scope, clause);
+    return;
+  }
+  if (node.type === "AssignmentExpression") {
+    // `x op= y` is `x = x op y`: the whole assignment is the source.
+    const source = node.operator === "=" ? (node.right as Node) : node;
+    assign(scope, clause.root, node.left as Node, kindOfValue(source, scope));
+  }
+  if (node.type === "ThrowStatement") judgeThrow(node, scope, clause);
+  if (node.type === "CallExpression") judgeSinkCall(node, scope, clause);
+  for (const child of children(node)) walkNode(child, scope, clause);
+}
+
+/** A clause body walked under its `binding` (a name or a pattern) bound to the caught error. */
+function scanClause(body: Node, binding: Node, findings: PrinterFinding[]): void {
+  const root = clauseScope(binding);
+  walkNode(body, root, { root, findings });
 }
 
 /** Every printer call, list push, and throw under `source` that a catch binding reaches other
@@ -449,23 +482,18 @@ export function scanCaughtPrinters(path: string, source: string): PrinterFinding
   visit(parseModule(path, source).program, {
     CatchClause(clause) {
       const node = clause as unknown as Node;
-      if (isNode(node.param)) scanClause(node.body as Node, clauseScope(node.param), findings);
+      if (isNode(node.param)) scanClause(node.body as Node, node.param, findings);
     },
     CallExpression(call) {
       const node = call as unknown as Node;
       const callee = node.callee as Node;
+      if (callee.type !== "MemberExpression") return;
+      const property = callee.property as Node;
+      if (property.type !== "Identifier" || property.name !== "catch") return;
       const [handler] = node.arguments as Node[];
-      const [binding] = (handler !== undefined ? (handler.params as Node[]) : undefined) ?? [];
-      if (
-        callee.type === "MemberExpression" &&
-        (callee.property as Node).type === "Identifier" &&
-        (callee.property as Node).name === "catch" &&
-        handler !== undefined &&
-        FUNCTIONS.has(handler.type) &&
-        binding !== undefined
-      ) {
-        scanClause(handler.body as Node, clauseScope(binding), findings);
-      }
+      if (handler === undefined || !FUNCTIONS.has(handler.type)) return;
+      const [binding] = (handler.params as Node[] | undefined) ?? [];
+      if (binding !== undefined) scanClause(handler.body as Node, binding, findings);
     },
   });
   return findings;

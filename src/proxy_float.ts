@@ -27,6 +27,7 @@ import { DAEMON_SHIM_DEPENDENCIES } from "./copilot_api/shims.ts";
 import {
   installedProxyPackage,
   PROXY_PACKAGE_NAME,
+  type ProxyVersionStatus,
   proxyVersionBoundsStatus,
   proxyVersionFloorStatus,
 } from "./copilot_api/version.ts";
@@ -40,7 +41,7 @@ import { caught, rethrown, scannable } from "./utils/message.ts";
 import { type ProjectConfig, readProjectConfig } from "./utils/project_config.ts";
 import { pickAgedVersion, toSemverString, versionLessThan } from "./utils/semver.ts";
 import { SECONDS_PER_DAY } from "./utils/time.ts";
-import { stringify as stringifyToml } from "./utils/toml.ts";
+import { stringifyToml } from "./utils/toml.ts";
 import { packageDependencies } from "./utils/version.ts";
 
 const PROXY_PKG = PROXY_PACKAGE_NAME;
@@ -1014,6 +1015,79 @@ function installLookStatus(
   return null;
 }
 
+/** The verdict under an env pin: a tag pin re-resolves on every float; an exact pin is up to date
+ *  once it is the recorded version and its install resolves. */
+function pinnedVerifyStatus(
+  ctx: FloatContext,
+  override: string,
+  record: ResolvedVersionRecord | null,
+): ProxyFloatVerifyStatus {
+  if (!isExactVersion(override)) {
+    return {
+      upToDate: false,
+      message: `update needed: ${PROXY_VERSION_ENV}=${override} is a tag pin; it re-resolves on every float`,
+    };
+  }
+  if (record?.version !== override) {
+    return {
+      upToDate: false,
+      message: `update needed: ${PROXY_VERSION_ENV}=${override}; recorded ${record?.version ?? "none"}`,
+    };
+  }
+  return (
+    installLookStatus(ctx, installResolves(ctx, override), override) ?? {
+      upToDate: true,
+      message: `up to date: ${PROXY_PKG}@${override} pinned`,
+    }
+  );
+}
+
+/** Why the recorded version falls outside the configured bounds. */
+function boundsDetail(
+  bounds: Extract<ProxyVersionStatus, { ok: false }>,
+  version: string,
+  config: ProjectConfig,
+): string {
+  if (bounds.reason === "belowFloor") {
+    return `recorded ${version} < floor ${config.proxyMinVersion}`;
+  }
+  if (bounds.reason === "aboveCeiling") return `recorded ${version} > ceiling ${bounds.ceiling}`;
+  return "recorded version unreadable";
+}
+
+/** The registry's pick against the record: an update when it names another version, else up to
+ *  date; a refusal or an unavailable registry keeps the recorded version. */
+function registryVerifyStatus(
+  selection: RegistrySelection,
+  record: ResolvedVersionRecord,
+): ProxyFloatVerifyStatus {
+  switch (selection.kind) {
+    case "resolved":
+      if (selection.version === record.version) {
+        return {
+          upToDate: true,
+          message: `up to date: ${PROXY_PKG}@${record.version} (${selection.reason})`,
+        };
+      }
+      return {
+        upToDate: false,
+        message: `update needed: ${PROXY_PKG} ${record.version} -> ${selection.version} (${selection.reason})`,
+      };
+    case "refused":
+      return {
+        upToDate: true,
+        message: `no update: ${refusalMessage(selection)} Keeping ${PROXY_PKG}@${record.version}.`,
+      };
+    case "unavailable":
+      return {
+        upToDate: true,
+        message: `no update check: ${selection.reason}; keeping ${PROXY_PKG}@${record.version}`,
+      };
+    default:
+      return assertNever(selection);
+  }
+}
+
 /** Offline while the record is younger than the cooldown window; once stale the registry is
  *  re-consulted. Read-only: the record's timestamp only refreshes when the float itself runs. */
 export async function proxyFloatVerifyStatus(
@@ -1023,28 +1097,7 @@ export async function proxyFloatVerifyStatus(
   const record = resolutionInPlace(ctx);
 
   const override = resolveProxyVersionOverride();
-  if (override) {
-    if (!isExactVersion(override)) {
-      return {
-        upToDate: false,
-        message: `update needed: ${PROXY_VERSION_ENV}=${override} is a tag pin; it re-resolves on every float`,
-      };
-    }
-    if (record?.version !== override) {
-      return {
-        upToDate: false,
-        message: `update needed: ${PROXY_VERSION_ENV}=${override}; recorded ${
-          record?.version ?? "none"
-        }`,
-      };
-    }
-    return (
-      installLookStatus(ctx, installResolves(ctx, override), override) ?? {
-        upToDate: true,
-        message: `up to date: ${PROXY_PKG}@${override} pinned`,
-      }
-    );
-  }
+  if (override) return pinnedVerifyStatus(ctx, override, record);
 
   if (record === null) {
     return {
@@ -1055,13 +1108,10 @@ export async function proxyFloatVerifyStatus(
 
   const bounds = proxyVersionBoundsStatus(record.version, ctx.config);
   if (!bounds.ok) {
-    const detail =
-      bounds.reason === "belowFloor"
-        ? `recorded ${record.version} < floor ${ctx.config.proxyMinVersion}`
-        : bounds.reason === "aboveCeiling"
-          ? `recorded ${record.version} > ceiling ${bounds.ceiling}`
-          : `recorded version unreadable`;
-    return { upToDate: false, message: `update needed: ${detail}` };
+    return {
+      upToDate: false,
+      message: `update needed: ${boundsDetail(bounds, record.version, ctx.config)}`,
+    };
   }
 
   const recordedLook = installLookStatus(ctx, installResolves(ctx, record.version), record.version);
@@ -1086,31 +1136,10 @@ export async function proxyFloatVerifyStatus(
     };
   }
 
-  const selection = selectProxyVersion(doc, ctx.config, cooldownSeconds, ctx.nowMs);
-  switch (selection.kind) {
-    case "resolved":
-      return selection.version === record.version
-        ? {
-            upToDate: true,
-            message: `up to date: ${PROXY_PKG}@${record.version} (${selection.reason})`,
-          }
-        : {
-            upToDate: false,
-            message: `update needed: ${PROXY_PKG} ${record.version} -> ${selection.version} (${selection.reason})`,
-          };
-    case "refused":
-      return {
-        upToDate: true,
-        message: `no update: ${refusalMessage(selection)} Keeping ${PROXY_PKG}@${record.version}.`,
-      };
-    case "unavailable":
-      return {
-        upToDate: true,
-        message: `no update check: ${selection.reason}; keeping ${PROXY_PKG}@${record.version}`,
-      };
-    default:
-      return assertNever(selection);
-  }
+  return registryVerifyStatus(
+    selectProxyVersion(doc, ctx.config, cooldownSeconds, ctx.nowMs),
+    record,
+  );
 }
 
 // --- the Direct-only skip predicate -------------------------------------------

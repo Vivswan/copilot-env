@@ -4,7 +4,7 @@
 // (scripts/run_tests.ts) runs in CI or under --e2e only. The fix for a hit is the rename, never an
 // exemption.
 //
-// biome.json scopes the rule to every .ts under test/ except the *.e2e.test.ts files, the banned
+// biome.local.jsonc scopes the rule to every .ts under test/ except the *.e2e.test.ts files, the banned
 // helpers themselves, and testing.ts, so a helper that re-exports a banned one is flagged where
 // it is written, not where it is used. testing.ts is exempt for one reason: it imports nothing
 // banned, and the child-spawn rule's scope fixture pins its finding count, which this rule would

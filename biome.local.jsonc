@@ -1,0 +1,126 @@
+// The repository's own biome layer: exclusions, the formatter, extra rules, and per-path overrides with their
+// reasons. The managed biome.json extends this file and applies last, so the floor cannot be lowered here; the one
+// relaxation is a per-path `overrides` entry below with its reason beside it (docs/modules/typescript.md).
+{
+  "$schema": "https://biomejs.dev/schemas/2.5.15/schema.json",
+  "vcs": {
+    "enabled": true,
+    "clientKind": "git",
+    "useIgnoreFile": true
+  },
+  "files": {
+    "includes": [
+      "**",
+      "!node_modules",
+      "!dist",
+      "!.claude",
+      "!CHANGELOG.md",
+      "!.repo-platform.yml",
+      "!.typography-allow",
+      "!AGENTS.md",
+      "!CLAUDE.md",
+      "!.github/agents.md",
+      "!.github/copilot-instructions.md",
+      "!.github/dependabot.yml",
+      "!.github/instructions/review.instructions.md",
+      "!.github/repo-platform-manifest.json",
+      "!.github/settings.yml",
+      "!.github/workflows/auto-assign.yml",
+      "!.github/workflows/ci.yml",
+      "!.github/workflows/pr-title.yml",
+      "!test/fixtures/provenance/v4.0.0/attestation.json",
+      "!test/fixtures/provenance/v4.0.0/trusted_root.json",
+      "!test/fixtures/github-rate-card.yml"
+    ]
+  },
+  "formatter": {
+    "enabled": true,
+    "indentStyle": "space",
+    "indentWidth": 2,
+    "lineWidth": 100,
+    "lineEnding": "lf"
+  },
+  "javascript": {
+    "formatter": {
+      "quoteStyle": "double",
+      "semicolons": "always",
+      "trailingCommas": "all"
+    }
+  },
+  "linter": {
+    "rules": {
+      "preset": "recommended",
+      "complexity": {
+        "noCommaOperator": "error",
+        "noUselessStringRaw": "error",
+        "useLiteralKeys": "error",
+        "useOptionalChain": "error"
+      },
+      "correctness": {
+        "noUnusedImports": "error",
+        "noUnusedVariables": "error"
+      },
+      "performance": {
+        "noAccumulatingSpread": "error"
+      },
+      "style": {
+        "noNonNullAssertion": "error",
+        "useImportType": "error",
+        "useNodejsImportProtocol": "error",
+        "useTemplate": "error"
+      },
+      "suspicious": {
+        "noConfusingVoidType": "error",
+        "noTemplateCurlyInString": "error"
+      }
+    }
+  },
+  "overrides": [
+    // undici_identity.ts stands in for the undici specifier itself (client_headers_preload.ts re-points the
+    // proxy's import at it): its surface is undici's whole surface with one class replaced, so the re-export
+    // is the module, not a barrel in front of one.
+    {
+      "includes": ["src/scripts/undici_identity.ts"],
+      "linter": { "rules": { "performance": { "noBarrelFile": "off", "noReExportAll": "off" } } }
+    },
+    {
+      "includes": [
+        "src/scripts/token_argv_preload.ts",
+        "src/scripts/pat_passthrough_preload.ts",
+        "src/scripts/client_headers_preload.ts",
+        "src/scripts/copilot_host_preload.ts"
+      ],
+      "plugins": ["./biome/no_shim_imports.grit"]
+    },
+    {
+      "includes": ["src/**"],
+      "plugins": ["./biome/no_unbounded_child_spawn.grit"]
+    },
+    {
+      "includes": ["test/**", "!test/helpers/run.ts", "!test/helpers/testing.ts"],
+      "plugins": ["./biome/no_unmanaged_child_spawn.grit"]
+    },
+    {
+      "includes": ["test/**", "!test/helpers/testing.ts"],
+      "plugins": ["./biome/no_unmanaged_temp_dir.grit"]
+    },
+    {
+      "includes": [
+        "test/**/*.ts",
+        "!**/*.e2e.test.ts",
+        "!test/helpers/testing.ts",
+        "!test/helpers/run.ts",
+        "!test/helpers/net.ts",
+        "!test/helpers/fake_model_endpoint.ts",
+        "!test/helpers/fake_codex.ts",
+        "!test/helpers/usage_goldens.ts",
+        "!test/helpers/biome_plugin.ts",
+        "!test/helpers/daemon.ts",
+        "!test/helpers/fake_endpoint.ts",
+        "!test/helpers/mcp.ts",
+        "!test/helpers/scratch_home.ts"
+      ],
+      "plugins": ["./biome/no_e2e_helper_imports.grit"]
+    }
+  ]
+}

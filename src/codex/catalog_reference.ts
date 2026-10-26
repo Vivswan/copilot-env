@@ -13,7 +13,7 @@ import { isEnoent } from "../utils/fs.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import { caught, scannable } from "../utils/message.ts";
-import { parseToml, stringify } from "../utils/toml.ts";
+import { parseToml, stringifyToml } from "../utils/toml.ts";
 import {
   catalogBookkeepingAllowed,
   inspectCatalogFile,
@@ -168,6 +168,41 @@ function cleanupCodexCatalogArtifacts(catalogFile: string): void {
   }
 }
 
+/** What one config said about the catalog reference, after the strip:
+ *    absent    -> no file there
+ *    stripped  -> it referenced our file exactly, and the key is gone
+ *    clear     -> no reference to our file
+ *    unsure    -> unreadable, unparseable, or a reference not provably ours to strip */
+type ReferenceVerdict = "absent" | "stripped" | "clear" | "unsure";
+
+function stripCatalogReferenceIn(configPath: string, catalogFile: string): ReferenceVerdict {
+  // Absent (a recorded claim on it is stale) and unreadable (may still hold a reference) stay
+  // apart, as the catch below keeps them for a raw read.
+  const read = fs.readTextResult(configPath);
+  if (read.kind === "absent") return "absent";
+  if (read.kind === "unreadable") return "unsure";
+  try {
+    const doc = parseToml(read.text);
+    if (doc.model_catalog_json === catalogFile) {
+      const { model_catalog_json: _dropped, ...next } = doc;
+      fs.writeText(configPath, stringifyToml(next), {
+        atomic: false,
+        detail: "Codex config; model_catalog_json removed",
+        secretKeys: codexBearerLeaves(next),
+      });
+      return "stripped";
+    }
+    // An alternate spelling of OUR path (case variant on Windows, a symlinked home), or a resolve
+    // that could not RUN: not provably ours to strip, and deleting the file would dangle it.
+    if (resolvesToCatalogFile(doc.model_catalog_json, catalogFile) !== "no") return "unsure";
+    return "clear";
+  } catch {
+    // Unparseable content might still hold a reference, so the file stays until every readable
+    // config proves it unreferenced.
+    return "unsure";
+  }
+}
+
 /** The exact value match alone proves ownership, with no provider check: a reference left behind
  *  while the file goes breaks Codex startup, and a user-pinned custom path survives.
  *
@@ -183,43 +218,20 @@ function stripCodexCatalogReferences(catalogFile: string): {
   let deletionSafe = complete;
   let stripped = false;
   for (const configPath of new Set([...configs, ...recordedPaths])) {
-    // Absent (a recorded claim on it is stale) and unreadable (may still hold a reference) stay
-    // apart, as the catch below keeps them for a raw read.
-    const read = fs.readTextResult(configPath);
-    if (read.kind === "absent") {
-      if (recordedPaths.has(configPath) && catalogBookkeepingAllowed()) {
-        ledger.release("codexCatalog", configPath);
-      }
-      continue;
-    }
-    if (read.kind === "unreadable") {
+    const verdict = stripCatalogReferenceIn(configPath, catalogFile);
+    if (verdict === "unsure") {
       deletionSafe = false;
       continue;
     }
+    if (verdict === "stripped") stripped = true;
+    // A claim on a config that is absent, just stripped, or no longer references our file (the
+    // user removed or repointed the key) is stale. A bookkeeping failure on one config never stops
+    // the sweep over the rest; the file then stays until a later sweep proves it unreferenced.
+    const claimed = verdict === "stripped" || recordedPaths.has(configPath);
+    if (!claimed || !catalogBookkeepingAllowed()) continue;
     try {
-      const doc = parseToml(read.text);
-      if (doc.model_catalog_json === catalogFile) {
-        const { model_catalog_json: _dropped, ...next } = doc;
-        fs.writeText(configPath, stringify(next), {
-          atomic: false,
-          detail: "Codex config; model_catalog_json removed",
-          secretKeys: codexBearerLeaves(next),
-        });
-        stripped = true;
-        if (catalogBookkeepingAllowed()) ledger.release("codexCatalog", configPath);
-      } else if (resolvesToCatalogFile(doc.model_catalog_json, catalogFile) !== "no") {
-        // An alternate spelling of OUR path (case variant on Windows, a symlinked home), or a
-        // resolve that could not RUN: not provably ours to strip, and deleting the file would
-        // dangle it.
-        deletionSafe = false;
-      } else if (recordedPaths.has(configPath)) {
-        // Recorded, but the config no longer references our file (the user removed or repointed the
-        // key): a stale claim.
-        if (catalogBookkeepingAllowed()) ledger.release("codexCatalog", configPath);
-      }
+      ledger.release("codexCatalog", configPath);
     } catch {
-      // Unparseable content might still hold a reference, so the file stays until every readable
-      // config proves it unreferenced.
       deletionSafe = false;
     }
   }

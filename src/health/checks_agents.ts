@@ -7,7 +7,7 @@ import { type ClaudeDesktopStatus, renderClaudeDesktopStatus } from "../claude/d
 import { codexHostDriftFrom, codexHostDriftLine } from "../codex/host.ts";
 import type { CodexOtherReason } from "../codex/inspect.ts";
 import { codexConfigPath, codexProfileConfigPath, codexProviderId } from "../codex/paths.ts";
-import type { AuthProvider } from "../copilot_api/env_state.ts";
+import type { AuthProvider, ProfileMode } from "../copilot_api/env_state.ts";
 import { isDirectBaseUrl } from "../copilot_api/integration_identity.ts";
 import { agentAuthCommand, agentStartCommand, type Profile } from "../copilot_api/profile.ts";
 import { assertNever } from "../utils/assert.ts";
@@ -19,7 +19,7 @@ import type {
   CodexHostFacts,
   LiveProbeFacts,
 } from "./facts.ts";
-import { type CheckResult, meta, profileAddFix } from "./types.ts";
+import { type CheckOutcome, type CheckResult, meta, profileAddFix } from "./types.ts";
 
 /** The one could-not-check line for every gh-cli verdict (the default, a named profile, both
  *  agents' Direct checks). `detail` is the look's own account of what happened: the completed
@@ -35,11 +35,9 @@ export function ghCouldNotCheck(detail: string | undefined, accountClause: strin
  *  information): the pinned login, or the account an auto slot follows right now (bare AUTO when
  *  the list was unreadable). */
 export function ghAccountClause(pin: string | null, followed: string | null): string {
-  return pin !== null
-    ? `account '${pin}'`
-    : followed !== null
-      ? `AUTO - currently account ${followed}`
-      : "AUTO - follows gh's active account";
+  if (pin !== null) return `account '${pin}'`;
+  if (followed !== null) return `AUTO - currently account ${followed}`;
+  return "AUTO - follows gh's active account";
 }
 
 /**
@@ -57,7 +55,8 @@ function describeDirectGhAuth(a: CodexDirectAuthFacts): {
   // active login is exactly what it did NOT check), and ghActiveLogin is its own probe, so an
   // auto slot names its account even on the unproven line.
   const accountClause = ghAccountClause(a.ghUser ?? null, a.ghActiveLogin ?? null);
-  const account = (a.ghUser ?? null) !== null ? ` as ${accountClause}` : ` (${accountClause})`;
+  const pinned = (a.ghUser ?? null) !== null;
+  const account = pinned ? ` as ${accountClause}` : ` (${accountClause})`;
   switch (a.kind) {
     case "unproven":
       return {
@@ -200,6 +199,22 @@ function directAuthVerdict(
   };
 }
 
+/** A NAMED profile's wiring is DERIVED from its slot's recorded mode; a managed wiring in the
+ *  OTHER mode is an interrupted rewire (`profile <name> add` switched the slot but not this agent)
+ *  and must not read green. Null when the modes agree, or there is no recorded mode to compare. */
+function modeMismatch(
+  profile: Profile,
+  f: { providerMode: string; expectedMode?: ProfileMode | null },
+): { line: string; fix: string } | null {
+  if (profile === null || f.expectedMode == null) return null;
+  if (f.providerMode !== "direct" && f.providerMode !== "proxy") return null;
+  if (f.providerMode === f.expectedMode) return null;
+  return {
+    line: `wired ${f.providerMode}, but the profile's recorded mode is ${f.expectedMode} (out of step with the store slot)`,
+    fix: profileAddFix(profile),
+  };
+}
+
 /** Keyed off the reason the classifier minted (exhaustive, so a new reason forces a verdict), with
  *  the repair: `repair <file>` for the broken one. Null = "custom": a foreign selection is
  *  re-wirable, so checkCodex's generic model_provider reporting owns it. */
@@ -233,14 +248,108 @@ function codexOtherLine(
   }
 }
 
+/** No config: fine for the default, but a NAMED profile promises both-agent wiring, so its absence
+ *  is an interrupted `agent profile <name> add`. */
+function codexUnconfiguredOutcome(configPath: string, profile: Profile): CheckOutcome {
+  if (profile === null) {
+    return {
+      status: "ok",
+      detail: `provider: none\nno Codex config at ${configPath} (not wired)`,
+    };
+  }
+  return {
+    status: "warn",
+    detail: `provider: none\nno Codex config at ${configPath} (profile '${profile}' is not wired into Codex)`,
+    fix: profileAddFix(profile),
+  };
+}
+
+/** Direct: a stored token means the resolver (`agent auth --get`) needs no `gh`; wiring alone
+ *  decides. A gh-cli provider is probed live; with no provider at all, nothing resolves and it
+ *  warns. */
+function codexDirectOutcome(
+  f: CodexFacts,
+  profile: Profile,
+  fileLines: string[],
+  directFix: string,
+): CheckOutcome {
+  const verdict = directAuthVerdict(
+    {
+      directUsesToken: f.directNeedsNoGh,
+      provider: f.provider,
+      directAuth: f.directAuth,
+      credential: f.credential,
+      bakedCredential: f.bakedCredential,
+    },
+    f.providerWired,
+    directFix,
+    profile,
+  );
+  const detail = [
+    "provider: direct",
+    ...fileLines,
+    `model_provider ${f.modelProvider ?? "(unset)"} (direct) → ${f.baseUrl ?? "(missing)"}`,
+    verdict.authLine,
+  ].join("\n");
+  if (verdict.status === "ok") return { status: "ok", detail };
+  return { status: "warn", detail, fix: verdict.fix };
+}
+
+/** Config exists and the selection is not Direct: precisely which part of the proxy wiring is
+ *  off, else the fully wired line. */
+function codexProxyOutcome(
+  f: CodexFacts,
+  profile: Profile,
+  fileLines: string[],
+  proxyFix: string,
+): CheckOutcome {
+  const gap = (provider: string, message: string): CheckOutcome => ({
+    status: "warn",
+    detail: [provider, ...fileLines, message].join("\n"),
+    fix: proxyFix,
+  });
+  if (!f.providerSelected) {
+    return gap(
+      `provider: ${f.providerMode}`,
+      `model_provider is ${f.modelProvider ?? "unset"}, not "${codexProviderId(profile)}"`,
+    );
+  }
+  if (!f.baseUrlMatches) {
+    return gap(
+      "provider: proxy",
+      `copilot-env base_url ${f.baseUrl ?? "(missing)"} is not the running proxy`,
+    );
+  }
+  // Selected + base_url ok, but the managed proxy auth.command (the proxy-token resolver) is
+  // missing or foreign.
+  if (!f.providerWired) return gap("provider: proxy", "copilot-env proxy is not fully wired");
+  // Fully wired. The command shape resolves the key at runtime, so there is no baked value to
+  // report; the static shape has one, and the daemon it addresses must be up on its own.
+  const baked = bakedCredentialClause(f.bakedCredential, proxyFix);
+  const authLine =
+    f.credential === "static"
+      ? `auth: local proxy key baked into the config (static-key; the daemon must be running: \`${agentStartCommand(
+          profile,
+        )}\`${baked.clause})`
+      : "auth: local proxy key via the proxy-token resolver";
+  const detail = [
+    "provider: proxy",
+    ...fileLines,
+    `model_provider ${codexProviderId(profile)} → ${f.baseUrl}`,
+    authLine,
+  ].join("\n");
+  if (baked.stale) return { status: "warn", detail, fix: proxyFix };
+  return { status: "ok", detail };
+}
+
 export function checkCodex(f: CodexFacts, profile: Profile): CheckResult {
   const configPath = codexConfigPath(f.home);
   // A named profile's selector lives in its own file, named on every row beside config.toml.
-  const profileConfigPath = profile === null ? null : codexProfileConfigPath(f.home, profile);
-  const fileLines = [
-    `config.toml: ${configPath}`,
-    ...(profileConfigPath === null ? [] : [`${basename(profileConfigPath)}: ${profileConfigPath}`]),
-  ];
+  const fileLines = [`config.toml: ${configPath}`];
+  if (profile !== null) {
+    const profileConfigPath = codexProfileConfigPath(f.home, profile);
+    fileLines.push(`${basename(profileConfigPath)}: ${profileConfigPath}`);
+  }
   // A named profile's whole wiring (both agents, one mode) is rewritten by ONE command, so every
   // named repair points there instead of `agent profile sync --codex ...`.
   const directFix = profile === null ? "agent init --direct" : profileAddFix(profile);
@@ -271,119 +380,31 @@ export function checkCodex(f: CodexFacts, profile: Profile): CheckResult {
   // fix cannot land and the repair comes first (mirrors the Claude malformed/read-error arm;
   // codexOtherLine's null sends a foreign "custom" selection to the re-wire path below). Judged
   // before "no config": a named profile's broken file needs repairing whether config.toml exists.
-  if (f.providerMode === "other") {
-    const other = codexOtherLine(f.otherReason, configPath, profile);
-    if (other !== null) {
-      const rewire = profile === null ? "agent profile sync --codex" : profileAddFix(profile);
-      return {
-        ...base,
-        status: "warn",
-        detail: ["provider: other", ...fileLines, other.line].join("\n"),
-        fix: `${other.repair}, then re-run \`${rewire}\``,
-      };
-    }
-  }
-  // No config: fine for the default, but a NAMED profile promises both-agent wiring, so its
-  // absence is an interrupted `agent profile <name> add`.
-  if (!f.configExists) {
-    if (profile !== null) {
-      return {
-        ...base,
-        status: "warn",
-        detail: `provider: none\nno Codex config at ${configPath} (profile '${profile}' is not wired into Codex)`,
-        fix: profileAddFix(profile),
-      };
-    }
-    return {
-      ...base,
-      status: "ok",
-      detail: `provider: none\nno Codex config at ${configPath} (not wired)`,
-    };
-  }
-  // A NAMED profile's wiring is DERIVED from its slot's recorded mode; a managed wiring in the
-  // OTHER mode is an interrupted rewire (`profile <name> add` switched the slot but not this agent)
-  // and must not read green.
-  if (
-    profile !== null &&
-    f.expectedMode != null &&
-    (f.providerMode === "direct" || f.providerMode === "proxy") &&
-    f.providerMode !== f.expectedMode
-  ) {
+  const broken =
+    f.providerMode === "other" ? codexOtherLine(f.otherReason, configPath, profile) : null;
+  if (broken !== null) {
+    const rewire = profile === null ? "agent profile sync --codex" : profileAddFix(profile);
     return {
       ...base,
       status: "warn",
-      detail: [
-        `provider: ${f.providerMode}`,
-        ...fileLines,
-        `wired ${f.providerMode}, but the profile's recorded mode is ${f.expectedMode} (out of step with the store slot)`,
-      ].join("\n"),
-      fix: profileAddFix(profile),
+      detail: ["provider: other", ...fileLines, broken.line].join("\n"),
+      fix: `${broken.repair}, then re-run \`${rewire}\``,
+    };
+  }
+  if (!f.configExists) return { ...base, ...codexUnconfiguredOutcome(configPath, profile) };
+  const mismatch = modeMismatch(profile, f);
+  if (mismatch !== null) {
+    return {
+      ...base,
+      status: "warn",
+      detail: [`provider: ${f.providerMode}`, ...fileLines, mismatch.line].join("\n"),
+      fix: mismatch.fix,
     };
   }
   if (f.providerMode === "direct") {
-    // A stored token means the resolver (`agent auth --get`) needs no `gh`; wiring alone decides.
-    // A gh-cli provider is probed live; with no provider at all, nothing resolves and it warns.
-    const verdict = directAuthVerdict(
-      {
-        directUsesToken: f.directNeedsNoGh,
-        provider: f.provider,
-        directAuth: f.directAuth,
-        credential: f.credential,
-        bakedCredential: f.bakedCredential,
-      },
-      f.providerWired,
-      directFix,
-      profile,
-    );
-    const detail = [
-      "provider: direct",
-      ...fileLines,
-      `model_provider ${f.modelProvider ?? "(unset)"} (direct) → ${f.baseUrl ?? "(missing)"}`,
-      verdict.authLine,
-    ].join("\n");
-    return verdict.status === "ok"
-      ? { ...base, status: "ok", detail }
-      : { ...base, status: "warn", detail, fix: verdict.fix };
+    return { ...base, ...codexDirectOutcome(f, profile, fileLines, directFix) };
   }
-  // Config exists: report precisely which part of the wiring is off.
-  const withConfigPath = (message: string) => [...fileLines, message].join("\n");
-  let detail: string | null = null;
-  if (!f.providerSelected) {
-    detail = [
-      `provider: ${f.providerMode}`,
-      withConfigPath(
-        `model_provider is ${f.modelProvider ?? "unset"}, not "${codexProviderId(profile)}"`,
-      ),
-    ].join("\n");
-  } else if (!f.baseUrlMatches) {
-    detail = [
-      "provider: proxy",
-      withConfigPath(`copilot-env base_url ${f.baseUrl ?? "(missing)"} is not the running proxy`),
-    ].join("\n");
-  } else if (!f.providerWired) {
-    // Selected + base_url ok, but the managed proxy auth.command (the proxy-token resolver) is
-    // missing or foreign.
-    detail = ["provider: proxy", withConfigPath("copilot-env proxy is not fully wired")].join("\n");
-  }
-  if (detail !== null) {
-    return { ...base, status: "warn", detail, fix: proxyFix };
-  }
-  // Fully wired. The command shape resolves the key at runtime, so there is no baked value to
-  // report; the static shape has one, and the daemon it addresses must be up on its own.
-  const baked = bakedCredentialClause(f.bakedCredential, proxyFix);
-  const detailLines = [
-    "provider: proxy",
-    ...fileLines,
-    `model_provider ${codexProviderId(profile)} → ${f.baseUrl}`,
-    f.credential === "static"
-      ? `auth: local proxy key baked into the config (static-key; the daemon must be running: \`${agentStartCommand(
-          profile,
-        )}\`${baked.clause})`
-      : "auth: local proxy key via the proxy-token resolver",
-  ];
-  return baked.stale
-    ? { ...base, status: "warn", detail: detailLines.join("\n"), fix: proxyFix }
-    : { ...base, status: "ok", detail: detailLines.join("\n") };
+  return { ...base, ...codexProxyOutcome(f, profile, fileLines, proxyFix) };
 }
 
 /** Any key-vs-disk drift warns with the wiring pass that resolves it (the same verdict `agent
@@ -442,8 +463,108 @@ function claudeOtherLine(f: ClaudeFacts & { providerMode: "other" }): string {
   }
 }
 
-export function checkClaude(f: ClaudeFacts, profile: Profile): CheckResult {
+/** Direct: a stored token means the resolver (`agent auth --get`) needs no `gh`; only the base
+ *  URL must be right. A gh-cli provider is probed live; with no provider at all, nothing resolves. */
+function claudeDirectOutcome(f: ClaudeFacts, profile: Profile): CheckOutcome {
   const directFix = profile === null ? "agent init --direct" : profileAddFix(profile);
+  const baseOk = f.baseUrl !== null && isDirectBaseUrl(f.baseUrl);
+  const verdict = directAuthVerdict(f, baseOk, directFix, profile);
+  const baseUrlNote = baseOk ? "" : " (not an https Copilot host)";
+  const detail = [
+    "provider: direct",
+    `settings.json: ${f.settingsPath}`,
+    `ANTHROPIC_BASE_URL → ${f.baseUrl ?? "(missing)"}${baseUrlNote}`,
+    verdict.authLine,
+  ].join("\n");
+  if (verdict.status === "ok") return { status: "ok", detail };
+  return { status: "warn", detail, fix: verdict.fix };
+}
+
+/** Proxy: wiring presence AND that ANTHROPIC_BASE_URL points at the resolved proxy port: a stale
+ *  URL (after `config port` changed and the daemon rebound) would send Claude to the wrong port,
+ *  so it must not read green. Reachability is the proxy check's job. Mirrors the Codex check. */
+function claudeProxyOutcome(f: ClaudeFacts, profile: Profile): CheckOutcome {
+  const baseUrlOk = f.baseUrl !== null && f.baseUrlMatches;
+  // --proxy explicitly: the bare commands auto-detect a mode, which is not guaranteed to re-bake
+  // the proxy wiring this fix is repairing.
+  const proxyFix = profile === null ? "agent init --proxy" : profileAddFix(profile);
+  const baked = bakedCredentialClause(f.bakedCredential, proxyFix);
+  const baseUrlNote = baseUrlOk ? "" : " (does not match the resolved proxy port)";
+  const credentialLine =
+    f.credential === "static"
+      ? `credential → static ANTHROPIC_AUTH_TOKEN (static-key; the daemon must be running: \`${agentStartCommand(
+          profile,
+        )}\`${baked.clause})`
+      : `apiKeyHelper → ${f.helperPath ?? "(missing)"}`;
+  const detail = [
+    "provider: proxy",
+    `settings.json: ${f.settingsPath}`,
+    `ANTHROPIC_BASE_URL → ${f.baseUrl ?? "(missing)"}${baseUrlNote}`,
+    credentialLine,
+  ].join("\n");
+  if (baseUrlOk && !baked.stale) return { status: "ok", detail };
+  if (baked.stale) return { status: "warn", detail, fix: proxyFix };
+  const whichPort = profile === null ? "current proxy port" : "profile's proxy port";
+  return {
+    status: "warn",
+    detail,
+    fix: `Re-run \`${proxyFix}\` to repoint ANTHROPIC_BASE_URL at the ${whichPort}.`,
+  };
+}
+
+/** Foreign wiring in the DEFAULT settings.json is the user's own business; in a NAMED profile's
+ *  file it is drift: the profile promises managed wiring, and `profile <name> add` refuses to
+ *  overwrite an unmanaged file, so the fix names the removal first. */
+function claudeOtherOutcome(
+  f: ClaudeFacts & { providerMode: "other" },
+  profile: Profile,
+): CheckOutcome {
+  const lines = (last: string) =>
+    ["provider: other", `settings.json: ${f.settingsPath}`, last].join("\n");
+  if (profile !== null) {
+    return {
+      status: "warn",
+      detail: lines(`${claudeOtherLine(f)}; profile '${profile}' expects managed wiring`),
+      fix: `remove ${f.settingsPath} (not managed by copilot-env), then ${profileAddFix(profile)}`,
+    };
+  }
+  // Default-profile exception to "the user's own business": a settings file that could not be
+  // read or parsed will trip Claude itself too.
+  if (f.otherReason === "malformed" || f.otherReason === "read-error") {
+    return {
+      status: "warn",
+      detail: lines(claudeOtherLine(f)),
+      fix: `repair ${f.settingsPath}, then re-run \`agent profile sync --claude\``,
+    };
+  }
+  return { status: "ok", detail: lines(`${claudeOtherLine(f)}; not managed`) };
+}
+
+/** none: fine for the default (`cl` writes proxy wiring on first launch); a NAMED profile
+ *  promises both-agent wiring, so its absence is an interrupted `agent profile <name> add`. */
+function claudeUnconfiguredOutcome(f: ClaudeFacts, profile: Profile): CheckOutcome {
+  if (profile === null) {
+    return {
+      status: "ok",
+      detail: [
+        "provider: none",
+        `settings.json: ${f.settingsPath}`,
+        "not configured; run `agent profile sync --claude` (or `agent init --direct|--proxy`)",
+      ].join("\n"),
+    };
+  }
+  return {
+    status: "warn",
+    detail: [
+      "provider: none",
+      `settings.json: ${f.settingsPath}`,
+      `profile '${profile}' is not wired into Claude`,
+    ].join("\n"),
+    fix: profileAddFix(profile),
+  };
+}
+
+export function checkClaude(f: ClaudeFacts, profile: Profile): CheckResult {
   const base = {
     ...meta("setup.claude"),
     profile,
@@ -459,142 +580,23 @@ export function checkClaude(f: ClaudeFacts, profile: Profile): CheckResult {
       directUsesToken: f.directUsesToken,
     },
   };
-  // A NAMED profile's settings file is derived from its slot's recorded mode; a managed wiring
-  // in the OTHER mode is an interrupted rewire (see checkCodex).
-  if (
-    profile !== null &&
-    f.expectedMode != null &&
-    (f.providerMode === "direct" || f.providerMode === "proxy") &&
-    f.providerMode !== f.expectedMode
-  ) {
+  const mismatch = modeMismatch(profile, f);
+  if (mismatch !== null) {
     return {
       ...base,
       status: "warn",
       detail: [
         `provider: ${f.providerMode}`,
         `settings.json: ${f.settingsPath}`,
-        `wired ${f.providerMode}, but the profile's recorded mode is ${f.expectedMode} (out of step with the store slot)`,
+        mismatch.line,
       ].join("\n"),
-      fix: profileAddFix(profile),
+      fix: mismatch.fix,
     };
   }
-  if (f.providerMode === "direct") {
-    const baseOk = f.baseUrl !== null && isDirectBaseUrl(f.baseUrl);
-    // A stored token means the resolver (`agent auth --get`) needs no `gh`; only the base URL
-    // must be right. A gh-cli provider is probed live; with no provider at all, nothing resolves.
-    const verdict = directAuthVerdict(f, baseOk, directFix, profile);
-    const baseUrlLine = `ANTHROPIC_BASE_URL → ${f.baseUrl ?? "(missing)"}${
-      baseOk ? "" : " (not an https Copilot host)"
-    }`;
-    const detail = [
-      "provider: direct",
-      `settings.json: ${f.settingsPath}`,
-      baseUrlLine,
-      verdict.authLine,
-    ].join("\n");
-    return verdict.status === "ok"
-      ? { ...base, status: "ok", detail }
-      : { ...base, status: "warn", detail, fix: verdict.fix };
-  }
-  if (f.providerMode === "proxy") {
-    // Wiring presence AND that ANTHROPIC_BASE_URL points at the resolved proxy port: a stale URL
-    // (after `config port` changed and the daemon rebound) would send Claude to the wrong port,
-    // so it must not read green. Reachability is the proxy check's job. Mirrors the Codex check.
-    const baseUrlOk = f.baseUrl !== null && f.baseUrlMatches;
-    const proxyFix =
-      profile === null
-        ? // --proxy explicitly: the bare commands auto-detect a mode, which is not guaranteed to
-          // re-bake the proxy wiring this fix is repairing.
-          "agent init --proxy"
-        : profileAddFix(profile);
-    const baked = bakedCredentialClause(f.bakedCredential, proxyFix);
-    const detail = [
-      "provider: proxy",
-      `settings.json: ${f.settingsPath}`,
-      `ANTHROPIC_BASE_URL → ${f.baseUrl ?? "(missing)"}${
-        baseUrlOk ? "" : " (does not match the resolved proxy port)"
-      }`,
-      f.credential === "static"
-        ? `credential → static ANTHROPIC_AUTH_TOKEN (static-key; the daemon must be running: \`${agentStartCommand(
-            profile,
-          )}\`${baked.clause})`
-        : `apiKeyHelper → ${f.helperPath ?? "(missing)"}`,
-    ].join("\n");
-    if (baseUrlOk && !baked.stale) return { ...base, status: "ok", detail };
-    return {
-      ...base,
-      status: "warn",
-      detail,
-      fix: baked.stale
-        ? proxyFix
-        : `Re-run \`${proxyFix}\` to repoint ANTHROPIC_BASE_URL at the ${
-            profile === null ? "current proxy port" : "profile's proxy port"
-          }.`,
-    };
-  }
-  if (f.providerMode === "other") {
-    // Foreign wiring in the DEFAULT settings.json is the user's own business; in a NAMED
-    // profile's file it is drift: the profile promises managed wiring, and `profile <name> add`
-    // refuses to overwrite an unmanaged file, so the fix names the removal first.
-    if (profile !== null) {
-      return {
-        ...base,
-        status: "warn",
-        detail: [
-          "provider: other",
-          `settings.json: ${f.settingsPath}`,
-          `${claudeOtherLine(f)}; profile '${profile}' expects managed wiring`,
-        ].join("\n"),
-        fix: `remove ${f.settingsPath} (not managed by copilot-env), then ${profileAddFix(
-          profile,
-        )}`,
-      };
-    }
-    // Default-profile exception to "the user's own business": a settings file that could not be
-    // read or parsed will trip Claude itself too.
-    if (f.otherReason === "malformed" || f.otherReason === "read-error") {
-      return {
-        ...base,
-        status: "warn",
-        detail: ["provider: other", `settings.json: ${f.settingsPath}`, claudeOtherLine(f)].join(
-          "\n",
-        ),
-        fix: `repair ${f.settingsPath}, then re-run \`agent profile sync --claude\``,
-      };
-    }
-    return {
-      ...base,
-      status: "ok",
-      detail: [
-        "provider: other",
-        `settings.json: ${f.settingsPath}`,
-        `${claudeOtherLine(f)}; not managed`,
-      ].join("\n"),
-    };
-  }
-  // none: fine for the default (`cl` writes proxy wiring on first launch); a NAMED profile
-  // promises both-agent wiring, so its absence is an interrupted `agent profile <name> add`.
-  if (profile !== null) {
-    return {
-      ...base,
-      status: "warn",
-      detail: [
-        "provider: none",
-        `settings.json: ${f.settingsPath}`,
-        `profile '${profile}' is not wired into Claude`,
-      ].join("\n"),
-      fix: profileAddFix(profile),
-    };
-  }
-  return {
-    ...base,
-    status: "ok",
-    detail: [
-      "provider: none",
-      `settings.json: ${f.settingsPath}`,
-      "not configured; run `agent profile sync --claude` (or `agent init --direct|--proxy`)",
-    ].join("\n"),
-  };
+  if (f.providerMode === "direct") return { ...base, ...claudeDirectOutcome(f, profile) };
+  if (f.providerMode === "proxy") return { ...base, ...claudeProxyOutcome(f, profile) };
+  if (f.providerMode === "other") return { ...base, ...claudeOtherOutcome(f, profile) };
+  return { ...base, ...claudeUnconfiguredOutcome(f, profile) };
 }
 
 /** A rendered fix (drift) is a warn, anything else informational. The drift rule lives in

@@ -212,12 +212,93 @@ export function bakedClaudeToken(settings: TextReadResult): string | null {
 
 // --- wiring inspection (pure) -----------------------------------------------
 
+function noneStatus(settingsExists: boolean): ClaudeWiringStatus {
+  return {
+    providerMode: "none",
+    settingsExists,
+    wired: false,
+    otherReason: null,
+    credential: null,
+    helperPath: null,
+    baseUrl: null,
+    baseUrlMatches: false,
+  };
+}
+
+function otherStatus(
+  otherReason: ClaudeOtherReason,
+  helperPath: string | null = null,
+  baseUrl: string | null = null,
+  baseUrlMatches = false,
+): ClaudeWiringStatus {
+  return {
+    providerMode: "other",
+    settingsExists: true,
+    wired: false,
+    otherReason,
+    credential: null,
+    helperPath,
+    baseUrl,
+    baseUrlMatches,
+  };
+}
+
+/** The keys a Claude wiring is judged by, lifted from the parsed document. */
+interface ClaudeWiringKeys {
+  helperPath: string | null;
+  env: Record<string, unknown> | undefined;
+  baseUrl: string | null;
+  staticToken: string | null;
+}
+
+function claudeWiringKeys(doc: Record<string, unknown>): ClaudeWiringKeys {
+  // apiKeyHelper is the command Claude runs, not a secret; keyed access (no literal
+  // `.apiKeyHelper`) keeps secret scanners from flagging it as a logged credential.
+  const helperPath = readStringField(doc, "apiKeyHelper");
+  const env = isRecord(doc.env) ? doc.env : undefined;
+  return {
+    helperPath,
+    env,
+    baseUrl: env ? readStringField(env, BASE_URL_ENV) : null,
+    staticToken: env ? readStringField(env, AUTH_TOKEN_ENV) : null,
+  };
+}
+
+/** The managed credential shape and the mode it keys, or null for anything else: a managed
+ *  apiKeyHelper, else (with no helper at all) a baked ANTHROPIC_AUTH_TOKEN beside the env keys only
+ *  our Direct or proxy write produces. A user's similar-looking helper is never ours. */
+function managedClaudeShape(
+  keys: ClaudeWiringKeys,
+  profile: Profile,
+): { providerMode: "direct" | "proxy"; shape: ClaudeManagedCredential } | null {
+  const { helperPath, env, baseUrl, staticToken } = keys;
+  if (helperPath !== null && managedHelperShape(helperPath, agentAuthGetArgs(profile))) {
+    return { providerMode: "direct", shape: { credential: "command", helperPath } };
+  }
+  if (helperPath !== null && managedHelperShape(helperPath, proxyTokenArgs(profile))) {
+    return { providerMode: "proxy", shape: { credential: "command", helperPath } };
+  }
+  if (helperPath !== null || env === undefined) return null;
+  if (staticToken === null || staticToken === "") return null;
+  if (
+    baseUrl !== null &&
+    isDirectBaseUrl(baseUrl) &&
+    env[DISABLE_BETAS_ENV] === "1" &&
+    directHeadersShape(readStringField(env, CUSTOM_HEADERS_ENV))
+  ) {
+    return { providerMode: "direct", shape: { credential: "static", helperPath: null } };
+  }
+  // Any loopback port: the port fact travels as baseUrlMatches, like the command shape.
+  if (baseUrl !== null && parseLoopbackProxyUrl(baseUrl)?.path === "") {
+    return { providerMode: "proxy", shape: { credential: "static", helperPath: null } };
+  }
+  return null;
+}
+
 /**
  * The verdict authorizes `--check`, the uninstall strip, and the profile overwrite guard, so a
  * settings file that exists but cannot be read is "other", never "none": "none" would authorize
- * removal. Mode keys off the credential shape alone: a managed apiKeyHelper, else (with no helper at
- * all) a baked ANTHROPIC_AUTH_TOKEN beside the env keys only our Direct or proxy write produces. A
- * user's similar-looking helper is never ours.
+ * removal. Mode keys off the credential shape alone (managedClaudeShape).
  */
 export function inspectClaudeWiring(
   settings: TextReadResult | string | null,
@@ -228,82 +309,32 @@ export function inspectClaudeWiring(
     typeof settings === "string"
       ? { kind: "text", text: settings }
       : (settings ?? { kind: "absent" });
-  const none = (settingsExists: boolean): ClaudeWiringStatus => ({
-    providerMode: "none",
-    settingsExists,
-    wired: false,
-    otherReason: null,
-    credential: null,
-    helperPath: null,
-    baseUrl: null,
-    baseUrlMatches: false,
-  });
-  const other = (
-    otherReason: ClaudeOtherReason,
-    helperPath: string | null = null,
-    baseUrl: string | null = null,
-    baseUrlMatches = false,
-  ): ClaudeWiringStatus => ({
-    providerMode: "other",
-    settingsExists: true,
-    wired: false,
-    otherReason,
-    credential: null,
-    helperPath,
-    baseUrl,
-    baseUrlMatches,
-  });
-  if (read.kind === "unreadable") return other("read-error");
-  if (read.kind === "absent" || read.text.trim() === "") return none(read.kind !== "absent");
+  if (read.kind === "unreadable") return otherStatus("read-error");
+  if (read.kind === "absent" || read.text.trim() === "") return noneStatus(read.kind !== "absent");
 
   const doc = parseJsonRecord(read.text);
-  if (doc === null) return other("malformed");
+  if (doc === null) return otherStatus("malformed");
 
-  // apiKeyHelper is the command Claude runs, not a secret; keyed access (no literal
-  // `.apiKeyHelper`) keeps secret scanners from flagging it as a logged credential.
-  const helperPath = readStringField(doc, "apiKeyHelper");
-  const env = isRecord(doc.env) ? doc.env : undefined;
-  const baseUrl = env ? readStringField(env, BASE_URL_ENV) : null;
+  const keys = claudeWiringKeys(doc);
   // No path, unlike Codex's `/v1`; the grammar (trailing slash, localhost) is port.ts's.
-  const baseUrlMatches = baseUrl !== null && matchesProxyOrigin(baseUrl, expectedPort, "");
-  const wired = (
-    providerMode: "direct" | "proxy",
-    shape: ClaudeManagedCredential,
-  ): ClaudeWiringStatus => ({
-    ...shape,
-    providerMode,
-    settingsExists: true,
-    wired: true,
-    otherReason: null,
-    baseUrl,
-    baseUrlMatches,
-  });
-
-  if (helperPath !== null && managedHelperShape(helperPath, agentAuthGetArgs(profile))) {
-    return wired("direct", { credential: "command", helperPath });
+  const baseUrlMatches =
+    keys.baseUrl !== null && matchesProxyOrigin(keys.baseUrl, expectedPort, "");
+  const managed = managedClaudeShape(keys, profile);
+  if (managed !== null) {
+    return {
+      ...managed.shape,
+      providerMode: managed.providerMode,
+      settingsExists: true,
+      wired: true,
+      otherReason: null,
+      baseUrl: keys.baseUrl,
+      baseUrlMatches,
+    };
   }
-  if (helperPath !== null && managedHelperShape(helperPath, proxyTokenArgs(profile))) {
-    return wired("proxy", { credential: "command", helperPath });
+  if (keys.helperPath !== null || keys.baseUrl !== null || keys.staticToken !== null) {
+    return otherStatus("custom", keys.helperPath, keys.baseUrl, baseUrlMatches);
   }
-  const staticToken = env ? readStringField(env, AUTH_TOKEN_ENV) : null;
-  if (helperPath === null && env !== undefined && staticToken !== null && staticToken !== "") {
-    if (
-      baseUrl !== null &&
-      isDirectBaseUrl(baseUrl) &&
-      env[DISABLE_BETAS_ENV] === "1" &&
-      directHeadersShape(readStringField(env, CUSTOM_HEADERS_ENV))
-    ) {
-      return wired("direct", { credential: "static", helperPath: null });
-    }
-    // Any loopback port: the port fact travels as baseUrlMatches, like the command shape.
-    if (baseUrl !== null && parseLoopbackProxyUrl(baseUrl)?.path === "") {
-      return wired("proxy", { credential: "static", helperPath: null });
-    }
-  }
-  if (helperPath !== null || baseUrl !== null || staticToken !== null) {
-    return other("custom", helperPath, baseUrl, baseUrlMatches);
-  }
-  return none(true);
+  return noneStatus(true);
 }
 
 // --- config writes ----------------------------------------------------------
@@ -837,9 +868,9 @@ export function claudeAdapter(): AgentAdapter {
         profile,
         quiet: options.quiet,
         directToken:
-          options.directToken !== undefined
-            ? options.directToken
-            : resolvedDirectToken(write.mode, write.credential),
+          options.directToken === undefined
+            ? resolvedDirectToken(write.mode, write.credential)
+            : options.directToken,
       });
     },
     removeProfile(name, options) {

@@ -1,5 +1,7 @@
 // The corpus recorder, end to end with the real CLIs (opt-in: COPILOT_ENV_LIVE_CORPUS), and the
 // one property of its scrub that matters: nothing private survives into the shareable copies.
+
+import { describe } from "bun:test";
 import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -11,7 +13,7 @@ import {
 import { must } from "../../src/utils/assert.ts";
 import { agentHomeEnv } from "../helpers/env.ts";
 import { ROOT, runCli, runScript } from "../helpers/run.ts";
-import { describe, expect, tempDir, test } from "../helpers/testing.ts";
+import { expect, tempDir, test } from "../helpers/testing.ts";
 
 type Json = Record<string, unknown>;
 
@@ -28,188 +30,208 @@ function field(obj: unknown, ...path: string[]): unknown {
   return current;
 }
 
+/** Carried by CLAUDE_LINE as uuid, sessionId, and a tool-result ref; the scrub must drop it. */
+const CLAUDE_SESSION = "3b0d9160-c75b-415e-a217-bb97a9d60c33";
+
+/** One assistant line carrying a secret of every shape under keys of every kind. */
+const CLAUDE_LINE = JSON.stringify({
+  type: "assistant",
+  timestamp: "2026-09-04T23:53:34.386Z",
+  uuid: CLAUDE_SESSION,
+  sessionId: CLAUDE_SESSION,
+  version: "2.1.258",
+  // Content of every length and shape under known keys.
+  cwd: "/home/octocat/secret-project",
+  gitBranch: "sk-ant-1",
+  // Timestamp-shaped content: only a timestamp KEY keeps an ISO string.
+  lastPrompt: "1984-03-21T09:45:00.4111111111111111Z",
+  text: "aGVsbG8gd29ybGQ=",
+  // Identifier-shaped secrets under enum keys, and an unknown identifier-shaped key.
+  name: "Alice",
+  summary: "secret_project",
+  model: "acme-internal-model",
+  customer: "acme-corp",
+  // Numbers are content unless DIRECTLY under a known count key: a count key inside an
+  // unknown wrapper, a known non-numeric key, an array under a count key, and a tool
+  // input all carry one here.
+  account: { input_tokens: 4111111111111111 },
+  path: 5551234567,
+  total_tokens: [1234567890123],
+  // A user-keyed map: a count key inside it is a user's key, not a count.
+  settings: {
+    "/tmp/a.txt": 1,
+    "has space": 2,
+    constructor: "x",
+    input_tokens: 9876543210987,
+  },
+  message: {
+    id: "msg_25950bad28ce4ed1d19ffb13",
+    role: "assistant",
+    model: "claude-sonnet-4-6",
+    content: [
+      { type: "text", text: "a reply", citations: null },
+      {
+        type: "tool_use",
+        id: "toolu_01abc",
+        name: "Read",
+        input: { file_path: "/u/me", offset: 31337031 },
+      },
+    ],
+    stop_reason: "tool_use",
+    usage: { input_tokens: 12, output_tokens: 3, service_tier: "standard" },
+  },
+  toolUseResult: {
+    customer: "Alice",
+    when: "2026-09-04T23:53:34.386Z",
+    ref: CLAUDE_SESSION,
+    n: 2,
+  },
+});
+
+/** A fragment of every secret CLAUDE_LINE plants; none may survive the scrub. */
+const CLAUDE_SECRETS: readonly string[] = [
+  "octocat",
+  "secret",
+  "sk-ant",
+  "aGVsbG8",
+  "1984-03-21",
+  "Alice",
+  "acme",
+  "/u/me",
+  "/tmp/a",
+  "has space",
+  "constructor",
+  CLAUDE_SESSION,
+  "25950bad",
+  "4111111111111111",
+  "5551234567",
+  "1234567890123",
+  "9876543210987",
+  "31337031",
+];
+
+/** Carried by the session_meta record as id and session_id; the scrub must drop it. */
+const CODEX_THREAD = "01a06f2d-2c46-7cb3-b769-258714552122";
+
+/** The three Codex records the reader keys on, each beside content that must go. */
+const CODEX_LINES = [
+  {
+    timestamp: "2026-09-05T00:35:24.019Z",
+    type: "session_meta",
+    payload: {
+      id: CODEX_THREAD,
+      session_id: CODEX_THREAD,
+      forked_from_id: "01a06f2d-1111-7cb3-b769-258714552122",
+      cwd: "/home/octocat/secret-project",
+      model_provider: "fake",
+      cli_version: "0.153.4",
+      base_instructions: { text: "You are a secret assistant" },
+    },
+  },
+  {
+    timestamp: "2026-09-05T00:35:24.030Z",
+    type: "turn_context",
+    payload: {
+      model: "gpt-5.4",
+      cwd: "/home/octocat/secret-project",
+      approval_policy: "never",
+    },
+  },
+  {
+    timestamp: "2026-09-05T00:35:24.040Z",
+    type: "event_msg",
+    payload: {
+      type: "token_count",
+      info: {
+        last_token_usage: {
+          input_tokens: 7895,
+          cached_input_tokens: 3000,
+          output_tokens: 117,
+        },
+        total_token_usage: { input_tokens: 7895 },
+      },
+    },
+  },
+]
+  .map((record) => JSON.stringify(record))
+  .join("\n");
+
+/** Positive control: what the readers key on is still there, ids as consistent pseudonyms. */
+function expectClaudeKept(parsed: Json): void {
+  expect(parsed.type).toBe("assistant");
+  expect(parsed.timestamp).toBe("2026-09-04T23:53:34.386Z");
+  expect(parsed.lastPrompt).toBe("SCRUBBED");
+  expect(parsed.version).toBe("2.1.258");
+  expect(parsed.uuid).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+  expect(parsed.sessionId).toBe(parsed.uuid);
+  expect(field(parsed, "message", "id")).toMatch(/^msg_[0-9a-f]{24}$/);
+  expect(field(parsed, "message", "model")).toBe("claude-sonnet-4-6");
+  expect(field(parsed, "message", "stop_reason")).toBe("tool_use");
+  expect(field(parsed, "message", "usage")).toEqual({
+    input_tokens: 12,
+    output_tokens: 3,
+    service_tier: "standard",
+  });
+  const blocks = field(parsed, "message", "content") as Json[];
+  expect(blocks[0]).toEqual({ type: "text", text: "SCRUBBED", citations: null });
+  expect(blocks[1]?.name).toBe("Read");
+  expect(blocks[1]?.input).toEqual({ SCRUBBED_KEY_0: "SCRUBBED", SCRUBBED_KEY_1: 0 });
+  expect(field(parsed, "toolUseResult", "SCRUBBED_KEY_2")).toBe(parsed.uuid); // the ref, pseudonymized
+  expect(field(parsed, "toolUseResult", "SCRUBBED_KEY_3")).toBe(0); // the count, a placeholder
+  expect(Object.values(parsed.settings as Json)).toEqual([0, 0, "SCRUBBED", 0]);
+  expect(parsed.path).toBe(0);
+  expect(parsed.total_tokens).toEqual([0]);
+  expect(parsed.SCRUBBED_KEY_1).toEqual({ SCRUBBED_KEY_0: 0 }); // account, content throughout
+  expect(parsed.name).toBe("SCRUBBED");
+  expect(parsed.summary).toBe("SCRUBBED");
+  expect(parsed.model).toBe("SCRUBBED");
+  expect(Object.keys(parsed.settings as Json).sort()).toEqual([
+    "SCRUBBED_KEY_0",
+    "SCRUBBED_KEY_1",
+    "SCRUBBED_KEY_2",
+    "SCRUBBED_KEY_3",
+  ]);
+  expect("customer" in parsed).toBe(false);
+}
+
+/** Everything the Codex reader needs survives, the rest goes. */
+function expectCodexKept(records: Json[]): void {
+  const [meta, turn, count] = records;
+  expect(meta?.type).toBe("session_meta");
+  expect(meta?.timestamp).toBe("2026-09-05T00:35:24.019Z");
+  expect(field(meta, "payload", "id")).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-/);
+  expect(field(meta, "payload", "session_id")).toBe(field(meta, "payload", "id"));
+  expect(field(meta, "payload", "forked_from_id")).not.toBe(field(meta, "payload", "id"));
+  expect(field(meta, "payload", "model_provider")).toBe("fake");
+  expect(field(meta, "payload", "cli_version")).toBe("0.153.4");
+  expect(field(meta, "payload", "cwd")).toBe("SCRUBBED");
+  expect(field(meta, "payload", "base_instructions", "text")).toBe("SCRUBBED");
+  expect(turn?.type).toBe("turn_context");
+  expect(field(turn, "payload", "model")).toBe("gpt-5.4");
+  expect(count?.type).toBe("event_msg");
+  expect(field(count, "payload", "type")).toBe("token_count");
+  expect(field(count, "payload", "info", "last_token_usage")).toEqual({
+    input_tokens: 7895,
+    cached_input_tokens: 3000,
+    output_tokens: 117,
+  });
+}
+
 describe("usage corpus scrub", () => {
   test("nothing private survives: secrets of every shape leave as SCRUBBED or a pseudonym", () => {
-    const session = "3b0d9160-c75b-415e-a217-bb97a9d60c33";
-    const line = JSON.stringify({
-      type: "assistant",
-      timestamp: "2026-09-04T23:53:34.386Z",
-      uuid: session,
-      sessionId: session,
-      version: "2.1.258",
-      // Content of every length and shape under known keys.
-      cwd: "/home/octocat/secret-project",
-      gitBranch: "sk-ant-1",
-      // Timestamp-shaped content: only a timestamp KEY keeps an ISO string.
-      lastPrompt: "1984-03-21T09:45:00.4111111111111111Z",
-      text: "aGVsbG8gd29ybGQ=",
-      // Identifier-shaped secrets under enum keys, and an unknown identifier-shaped key.
-      name: "Alice",
-      summary: "secret_project",
-      model: "acme-internal-model",
-      customer: "acme-corp",
-      // Numbers are content unless DIRECTLY under a known count key: a count key inside an
-      // unknown wrapper, a known non-numeric key, an array under a count key, and a tool
-      // input all carry one here.
-      account: { input_tokens: 4111111111111111 },
-      path: 5551234567,
-      total_tokens: [1234567890123],
-      // A user-keyed map: a count key inside it is a user's key, not a count.
-      settings: {
-        "/tmp/a.txt": 1,
-        "has space": 2,
-        constructor: "x",
-        input_tokens: 9876543210987,
-      },
-      message: {
-        id: "msg_25950bad28ce4ed1d19ffb13",
-        role: "assistant",
-        model: "claude-sonnet-4-6",
-        content: [
-          { type: "text", text: "a reply", citations: null },
-          {
-            type: "tool_use",
-            id: "toolu_01abc",
-            name: "Read",
-            input: { file_path: "/u/me", offset: 31337031 },
-          },
-        ],
-        stop_reason: "tool_use",
-        usage: { input_tokens: 12, output_tokens: 3, service_tier: "standard" },
-      },
-      toolUseResult: {
-        customer: "Alice",
-        when: "2026-09-04T23:53:34.386Z",
-        ref: session,
-        n: 2,
-      },
-    });
-    const result = scrubJsonl(line, isClaudeUsageLine, new IdMap("fixed-salt-for-tests"));
-    for (const secret of [
-      "octocat",
-      "secret",
-      "sk-ant",
-      "aGVsbG8",
-      "1984-03-21",
-      "Alice",
-      "acme",
-      "/u/me",
-      "/tmp/a",
-      "has space",
-      "constructor",
-      session,
-      "25950bad",
-      "4111111111111111",
-      "5551234567",
-      "1234567890123",
-      "9876543210987",
-      "31337031",
-    ]) {
-      expect(result.text).not.toContain(secret);
+    const claude = scrubJsonl(CLAUDE_LINE, isClaudeUsageLine, new IdMap("fixed-salt-for-tests"));
+    for (const secret of CLAUDE_SECRETS) {
+      expect(claude.text).not.toContain(secret);
     }
-    const parsed = JSON.parse(result.text) as Json;
-    // Positive control: what the readers key on is still there, ids as consistent pseudonyms.
-    expect(parsed.type).toBe("assistant");
-    expect(parsed.timestamp).toBe("2026-09-04T23:53:34.386Z");
-    expect(parsed.lastPrompt).toBe("SCRUBBED");
-    expect(parsed.version).toBe("2.1.258");
-    expect(parsed.uuid).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
-    expect(parsed.sessionId).toBe(parsed.uuid);
-    expect(field(parsed, "message", "id")).toMatch(/^msg_[0-9a-f]{24}$/);
-    expect(field(parsed, "message", "model")).toBe("claude-sonnet-4-6");
-    expect(field(parsed, "message", "stop_reason")).toBe("tool_use");
-    expect(field(parsed, "message", "usage")).toEqual({
-      input_tokens: 12,
-      output_tokens: 3,
-      service_tier: "standard",
-    });
-    const blocks = field(parsed, "message", "content") as Json[];
-    expect(blocks[0]).toEqual({ type: "text", text: "SCRUBBED", citations: null });
-    expect(blocks[1]?.name).toBe("Read");
-    expect(blocks[1]?.input).toEqual({ SCRUBBED_KEY_0: "SCRUBBED", SCRUBBED_KEY_1: 0 });
-    expect(field(parsed, "toolUseResult", "SCRUBBED_KEY_2")).toBe(parsed.uuid); // the ref, pseudonymized
-    expect(field(parsed, "toolUseResult", "SCRUBBED_KEY_3")).toBe(0); // the count, a placeholder
-    expect(Object.values(parsed.settings as Json)).toEqual([0, 0, "SCRUBBED", 0]);
-    expect(parsed.path).toBe(0);
-    expect(parsed.total_tokens).toEqual([0]);
-    expect(parsed.SCRUBBED_KEY_1).toEqual({ SCRUBBED_KEY_0: 0 }); // account, content throughout
-    expect(parsed.name).toBe("SCRUBBED");
-    expect(parsed.summary).toBe("SCRUBBED");
-    expect(parsed.model).toBe("SCRUBBED");
-    expect(Object.keys(parsed.settings as Json).sort()).toEqual([
-      "SCRUBBED_KEY_0",
-      "SCRUBBED_KEY_1",
-      "SCRUBBED_KEY_2",
-      "SCRUBBED_KEY_3",
-    ]);
-    expect("customer" in parsed).toBe(false);
-    expect(result.usageLines).toBe(1);
+    expectClaudeKept(JSON.parse(claude.text) as Json);
+    expect(claude.usageLines).toBe(1);
 
-    // Codex records: everything the Codex reader needs survives, the rest goes.
-    const thread = "01a06f2d-2c46-7cb3-b769-258714552122";
-    const codexLines = [
-      {
-        timestamp: "2026-09-05T00:35:24.019Z",
-        type: "session_meta",
-        payload: {
-          id: thread,
-          session_id: thread,
-          forked_from_id: "01a06f2d-1111-7cb3-b769-258714552122",
-          cwd: "/home/octocat/secret-project",
-          model_provider: "fake",
-          cli_version: "0.153.4",
-          base_instructions: { text: "You are a secret assistant" },
-        },
-      },
-      {
-        timestamp: "2026-09-05T00:35:24.030Z",
-        type: "turn_context",
-        payload: {
-          model: "gpt-5.4",
-          cwd: "/home/octocat/secret-project",
-          approval_policy: "never",
-        },
-      },
-      {
-        timestamp: "2026-09-05T00:35:24.040Z",
-        type: "event_msg",
-        payload: {
-          type: "token_count",
-          info: {
-            last_token_usage: {
-              input_tokens: 7895,
-              cached_input_tokens: 3000,
-              output_tokens: 117,
-            },
-            total_token_usage: { input_tokens: 7895 },
-          },
-        },
-      },
-    ]
-      .map((record) => JSON.stringify(record))
-      .join("\n");
-    const codex = scrubJsonl(codexLines, isCodexUsageLine, new IdMap("fixed-salt-for-tests"));
+    const codex = scrubJsonl(CODEX_LINES, isCodexUsageLine, new IdMap("fixed-salt-for-tests"));
     expect(codex.usageLines).toBe(1);
-    for (const secret of ["octocat", "secret", thread]) expect(codex.text).not.toContain(secret);
-    const [meta, turn, count] = codex.text.split("\n").map((l) => JSON.parse(l) as Json);
-    expect(meta?.type).toBe("session_meta");
-    expect(meta?.timestamp).toBe("2026-09-05T00:35:24.019Z");
-    expect(field(meta, "payload", "id")).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-/);
-    expect(field(meta, "payload", "session_id")).toBe(field(meta, "payload", "id"));
-    expect(field(meta, "payload", "forked_from_id")).not.toBe(field(meta, "payload", "id"));
-    expect(field(meta, "payload", "model_provider")).toBe("fake");
-    expect(field(meta, "payload", "cli_version")).toBe("0.153.4");
-    expect(field(meta, "payload", "cwd")).toBe("SCRUBBED");
-    expect(field(meta, "payload", "base_instructions", "text")).toBe("SCRUBBED");
-    expect(turn?.type).toBe("turn_context");
-    expect(field(turn, "payload", "model")).toBe("gpt-5.4");
-    expect(count?.type).toBe("event_msg");
-    expect(field(count, "payload", "type")).toBe("token_count");
-    expect(field(count, "payload", "info", "last_token_usage")).toEqual({
-      input_tokens: 7895,
-      cached_input_tokens: 3000,
-      output_tokens: 117,
-    });
+    for (const secret of ["octocat", "secret", CODEX_THREAD]) {
+      expect(codex.text).not.toContain(secret);
+    }
+    expectCodexKept(codex.text.split("\n").map((l) => JSON.parse(l) as Json));
   });
 });
 

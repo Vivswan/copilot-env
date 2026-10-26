@@ -28,8 +28,9 @@ import { removeScratchDir, type ScratchDir, scratchDir } from "../utils/fs_facad
 import { isRecord } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import { caught } from "../utils/message.ts";
+import { byCodeUnit } from "../utils/order.ts";
 import { isDue } from "../utils/time.ts";
-import { stringify } from "../utils/toml.ts";
+import { stringifyToml } from "../utils/toml.ts";
 import { codexConfigPath } from "./paths.ts";
 import {
   CODEX_VERSION_TIMEOUT_MS,
@@ -111,39 +112,56 @@ export interface CopilotCatalogModel {
   codexServable: boolean;
 }
 
+/** Both limits as positive finite numbers, else null. */
+function parseLimits(limits: unknown): CopilotModelLimits | null {
+  if (!isRecord(limits)) return null;
+  const window = limits.max_context_window_tokens;
+  const prompt = limits.max_prompt_tokens;
+  if (typeof window !== "number" || !Number.isFinite(window) || window <= 0) return null;
+  if (typeof prompt !== "number" || !Number.isFinite(prompt) || prompt <= 0) return null;
+  return { maxContextWindowTokens: window, maxPromptTokens: prompt };
+}
+
+/** One `/models` entry as its id (a display-only `[1m]` suffix stripped) and model; null for an
+ *  entry without an id or either limit. */
+function parseCopilotModel(entry: unknown): [string, CopilotCatalogModel] | null {
+  if (!isRecord(entry) || typeof entry.id !== "string") return null;
+  const id = entry.id.endsWith(ONE_M_SUFFIX) ? entry.id.slice(0, -ONE_M_SUFFIX.length) : entry.id;
+  const capabilities = entry.capabilities;
+  if (!isRecord(capabilities)) return null;
+  const limits = parseLimits(capabilities.limits);
+  if (limits === null) return null;
+  const supports = isRecord(capabilities.supports) ? capabilities.supports : {};
+  // An empty (or all ill-typed) list says nothing: unadvertised, like an absent one.
+  const efforts = Array.isArray(supports.reasoning_effort)
+    ? supports.reasoning_effort.filter((e): e is string => typeof e === "string")
+    : [];
+  const endpoints = Array.isArray(entry.supported_endpoints) ? entry.supported_endpoints : [];
+  const model: CopilotCatalogModel = {
+    limits,
+    name: typeof entry.name === "string" ? entry.name : null,
+    reasoningEfforts: nonEmpty(efforts),
+    parallelToolCalls:
+      typeof supports.parallel_tool_calls === "boolean" ? supports.parallel_tool_calls : null,
+    codexServable:
+      capabilities.type === "chat" &&
+      entry.model_picker_enabled === true &&
+      endpoints.includes(RESPONSES_ENDPOINT),
+  };
+  return [id, model];
+}
+
 /** The body has the same shape upstream and via the proxy. Entries missing either limit are skipped
  *  (the limits are what the overlay exists for); a display-only `[1m]` id suffix is stripped. */
 export function parseCopilotModels(body: unknown): Map<string, CopilotCatalogModel> {
   const out = new Map<string, CopilotCatalogModel>();
   const data = isRecord(body) && Array.isArray(body.data) ? body.data : [];
   for (const entry of data) {
-    if (!isRecord(entry) || typeof entry.id !== "string") continue;
-    const id = entry.id.endsWith(ONE_M_SUFFIX) ? entry.id.slice(0, -ONE_M_SUFFIX.length) : entry.id;
-    const capabilities = entry.capabilities;
-    if (!isRecord(capabilities) || !isRecord(capabilities.limits)) continue;
-    const window = capabilities.limits.max_context_window_tokens;
-    const prompt = capabilities.limits.max_prompt_tokens;
-    if (typeof window !== "number" || !Number.isFinite(window) || window <= 0) continue;
-    if (typeof prompt !== "number" || !Number.isFinite(prompt) || prompt <= 0) continue;
-    const supports = isRecord(capabilities.supports) ? capabilities.supports : {};
-    // An empty (or all ill-typed) list says nothing: unadvertised, like an absent one.
-    const efforts = Array.isArray(supports.reasoning_effort)
-      ? supports.reasoning_effort.filter((e): e is string => typeof e === "string")
-      : [];
-    const endpoints = Array.isArray(entry.supported_endpoints) ? entry.supported_endpoints : [];
-    const parsed: CopilotCatalogModel = {
-      limits: { maxContextWindowTokens: window, maxPromptTokens: prompt },
-      name: typeof entry.name === "string" ? entry.name : null,
-      reasoningEfforts: nonEmpty(efforts),
-      parallelToolCalls:
-        typeof supports.parallel_tool_calls === "boolean" ? supports.parallel_tool_calls : null,
-      codexServable:
-        capabilities.type === "chat" &&
-        entry.model_picker_enabled === true &&
-        endpoints.includes(RESPONSES_ENDPOINT),
-    };
+    const parsed = parseCopilotModel(entry);
+    if (parsed === null) continue;
+    const [id, model] = parsed;
     const existing = out.get(id);
-    out.set(id, existing === undefined ? parsed : mergeCopilotModels(existing, parsed));
+    out.set(id, existing === undefined ? model : mergeCopilotModels(existing, model));
   }
   return out;
 }
@@ -193,13 +211,16 @@ function commonPrefixLength(a: string, b: string): number {
   return i;
 }
 
+/** A bundled entry of the numbered family, which a Copilot-only model can be cloned from. */
+interface Donor {
+  slug: string;
+  model: Record<string, unknown>;
+}
+
 /** The same version with the longest shared slug prefix (gpt-5.6-sol-fast -> gpt-5.6-sol), else the
  *  nearest version, newer on a tie (gpt-6-astra -> gpt-5.6-*, gpt-5.3-codex -> gpt-5.4); dump order
  *  breaks remaining ties. Null when no gpt-* entry exists. */
-function pickDonor(
-  id: string,
-  donors: { slug: string; model: Record<string, unknown> }[],
-): Record<string, unknown> | null {
+function pickDonor(id: string, donors: readonly Donor[]): Record<string, unknown> | null {
   const version = gptVersion(id);
   if (version === null) return null;
   let best: { distance: number; tieBreak: number; model: Record<string, unknown> } | null = null;
@@ -286,6 +307,61 @@ function cloneForCopilotModel(
   return model;
 }
 
+/** The dump at the JSON level: an object with a non-empty `models` array (the document's own
+ *  array, so a push lands in it), else null. */
+function parseCatalogDoc(raw: string): { doc: Record<string, unknown>; models: unknown[] } | null {
+  let doc: unknown;
+  try {
+    doc = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!isRecord(doc) || !Array.isArray(doc.models) || doc.models.length === 0) return null;
+  return { doc, models: doc.models };
+}
+
+/** What the pass over the bundled entries hands the clones: the slugs already bundled, the donors
+ *  of the numbered family, and the highest priority seen. */
+interface BundledPass {
+  slugs: Set<string>;
+  donors: Donor[];
+  maxPriority: number;
+}
+
+/** One bundled entry kept with every field (tiers emptied, known extras filled, Copilot's limits
+ *  overlaid), and what the clones need of it gathered into `bundled`. */
+function patchBundledModel(
+  model: Record<string, unknown>,
+  copilotModels: Map<string, CopilotCatalogModel>,
+  bundled: BundledPass,
+): void {
+  for (const field of TIER_FIELDS) {
+    if (field in model) model[field] = [];
+  }
+  if (typeof model.priority === "number") {
+    bundled.maxPriority = Math.max(bundled.maxPriority, model.priority);
+  }
+  const slug = typeof model.slug === "string" ? model.slug : null;
+  const copilot = slug === null ? undefined : copilotModels.get(slug);
+  for (const [key, value] of Object.entries(requiredExtras(copilot))) {
+    if (!(key in model)) model[key] = value;
+  }
+  if (slug === null) return;
+  bundled.slugs.add(slug);
+  if (gptVersion(slug) !== null) bundled.donors.push({ slug, model });
+  if (copilot !== undefined) applyLimits(model, copilot.limits);
+}
+
+/** The servable Copilot-only models, in id order. */
+function copilotAdditions(
+  copilotModels: Map<string, CopilotCatalogModel>,
+  bundledSlugs: ReadonlySet<string>,
+): [string, CopilotCatalogModel][] {
+  return [...copilotModels.entries()]
+    .filter(([id, copilot]) => copilot.codexServable && !bundledSlugs.has(id))
+    .sort(([a], [b]) => byCodeUnit(a, b));
+}
+
 /** Every bundled entry is kept with every field (tiers emptied, limits overlaid, known extras
  *  filled); the servable Copilot-only models are appended in id order as clones. Null on a bad
  *  dump. Tiers are emptied because their advertisements make Codex send `service_tier`, and
@@ -295,42 +371,21 @@ export function patchModelCatalog(
   bundledJson: string,
   copilotModels: Map<string, CopilotCatalogModel>,
 ): Record<string, unknown> | null {
-  let doc: unknown;
-  try {
-    doc = JSON.parse(bundledJson);
-  } catch {
-    return null;
+  const parsed = parseCatalogDoc(bundledJson);
+  if (parsed === null) return null;
+  const bundled: BundledPass = { slugs: new Set(), donors: [], maxPriority: 0 };
+  for (const model of parsed.models) {
+    if (isRecord(model)) patchBundledModel(model, copilotModels, bundled);
   }
-  if (!isRecord(doc) || !Array.isArray(doc.models) || doc.models.length === 0) return null;
-  const bundledSlugs = new Set<string>();
-  const donors: { slug: string; model: Record<string, unknown> }[] = [];
-  let maxPriority = 0;
-  for (const model of doc.models) {
-    if (!isRecord(model)) continue;
-    for (const field of TIER_FIELDS) if (field in model) model[field] = [];
-    if (typeof model.priority === "number") maxPriority = Math.max(maxPriority, model.priority);
-    const slug = typeof model.slug === "string" ? model.slug : null;
-    const copilot = slug === null ? undefined : copilotModels.get(slug);
-    for (const [key, value] of Object.entries(requiredExtras(copilot))) {
-      if (!(key in model)) model[key] = value;
-    }
-    if (slug === null) continue;
-    bundledSlugs.add(slug);
-    if (gptVersion(slug) !== null) donors.push({ slug, model });
-    if (copilot !== undefined) applyLimits(model, copilot.limits);
-  }
-  const additions = [...copilotModels.entries()]
-    .filter(([id, copilot]) => copilot.codexServable && !bundledSlugs.has(id))
-    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-  for (const [id, copilot] of additions) {
-    const donor = pickDonor(id, donors);
+  for (const [id, copilot] of copilotAdditions(copilotModels, bundled.slugs)) {
+    const donor = pickDonor(id, bundled.donors);
     if (donor === null) continue;
-    const clone = cloneForCopilotModel(donor, id, copilot, maxPriority + 1);
+    const clone = cloneForCopilotModel(donor, id, copilot, bundled.maxPriority + 1);
     if (clone === null) continue;
-    maxPriority += 1;
-    doc.models.push(clone);
+    bundled.maxPriority += 1;
+    parsed.models.push(clone);
   }
-  return doc;
+  return parsed.doc;
 }
 
 let cachedCodexCliLook: AgentCliLook | undefined;
@@ -389,42 +444,39 @@ function runCodexDebugModels(
   }
 }
 
+/** Why a `codex debug models` run yielded no dump, for the warning line. */
+function debugModelsFailure(run: DebugModelsRun): string {
+  if (run.kind === "skipped") return `did not run: ${run.reason}`;
+  if (run.result.error) return errMessage(run.result.error);
+  return `exited ${run.result.status}: ${run.result.stderr.split("\n")[0] ?? ""}`;
+}
+
 /** `codex debug models --bundled` stdout, or null on any failure; one spawn per process, since the
  *  codex binary does not change under one run, so a generation on the fs overlay (an import's
  *  preview) and the real one after it share the dump. */
 let bundledDump: string | null | undefined;
 
 function bundledCatalog(): string | null {
-  if (bundledDump === undefined) {
-    const run = runCodexDebugModels(["--bundled"], () => {}, BUNDLED_DUMP_TIMEOUT_MS);
-    if (run.kind === "ran" && !run.result.error && run.result.status === 0) {
-      bundledDump = run.result.stdout;
-    } else {
-      const failure =
-        run.kind === "skipped"
-          ? `did not run: ${run.reason}`
-          : run.result.error
-            ? errMessage(run.result.error)
-            : `exited ${run.result.status}: ${run.result.stderr.split("\n")[0] ?? ""}`;
-      logger.warn(`codex model catalog not written: codex debug models --bundled ${failure}`);
-      bundledDump = null;
-    }
+  if (bundledDump !== undefined) return bundledDump;
+  const run = runCodexDebugModels(["--bundled"], () => {}, BUNDLED_DUMP_TIMEOUT_MS);
+  if (run.kind === "ran" && !run.result.error && run.result.status === 0) {
+    bundledDump = run.result.stdout;
+    return bundledDump;
   }
-  return bundledDump;
+  const failure = debugModelsFailure(run);
+  logger.warn(`codex model catalog not written: codex debug models --bundled ${failure}`);
+  bundledDump = null;
+  return null;
 }
 
 /** Null unless `raw` parses as a catalog at the JSON level (an object with a non-empty `models`
  *  array). */
 function catalogSlugs(raw: string): string[] | null {
-  try {
-    const doc: unknown = JSON.parse(raw);
-    if (!isRecord(doc) || !Array.isArray(doc.models) || doc.models.length === 0) return null;
-    return doc.models
-      .map((model) => (isRecord(model) && typeof model.slug === "string" ? model.slug : ""))
-      .sort();
-  } catch {
-    return null;
-  }
+  const parsed = parseCatalogDoc(raw);
+  if (parsed === null) return null;
+  return parsed.models
+    .map((model) => (isRecord(model) && typeof model.slug === "string" ? model.slug : ""))
+    .sort();
 }
 
 function parsesAsCatalog(raw: string): boolean {
@@ -493,7 +545,7 @@ function probeCatalog(catalogJson: string): boolean | null {
     (home: string): void => {
       const file = path.join(home, "candidate-catalog.json");
       fs.writeText(file, content, { secretKeys: [] });
-      fs.writeText(codexConfigPath(home), stringify({ model_catalog_json: file }), {
+      fs.writeText(codexConfigPath(home), stringifyToml({ model_catalog_json: file }), {
         secretKeys: [],
       });
     };
@@ -642,7 +694,8 @@ export function inspectCatalogFile(filePath: string): CatalogFileVerdict {
   const raw = read.text;
   if (!parsesAsCatalog(raw)) return "unusable";
   const accepted = judgeCatalog(raw);
-  return accepted === null ? "unverifiable" : accepted ? "accepted" : "rejected";
+  if (accepted === null) return "unverifiable";
+  return accepted ? "accepted" : "rejected";
 }
 
 /** At most one ATTEMPT per day, recorded before generating so a failure cannot retry on every launch;

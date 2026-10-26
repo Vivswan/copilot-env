@@ -14,7 +14,6 @@ import { type Overlay, openOverlay } from "./fs_overlay.ts";
 import { underScratch } from "./report_write.ts";
 
 export type { DirEntry, EntryStats, ScratchDir } from "./fs_disk.ts";
-export { assertNotDirectory, RenameRefusedError } from "./fs_disk.ts";
 
 let overlay: Overlay | null = null;
 
@@ -86,6 +85,23 @@ export function entryAbsent(path: string): boolean {
     return false;
   } catch (e) {
     return isEnoentOrNotdir(e);
+  }
+}
+
+function isDirectoryEntry(path: string): boolean {
+  try {
+    return lstat(path).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/** The refusal a caller that plans a removal ahead of its apply raises at plan time, so a dry run
+ *  refuses where the real run does instead of previewing a delete the apply would refuse. A
+ *  symlink is the link, not what it points at. */
+export function assertNotDirectory(path: string): void {
+  if (isDirectoryEntry(path)) {
+    throw new Error(`${path} is a directory; only a file can be removed here`);
   }
 }
 

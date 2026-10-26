@@ -3,6 +3,7 @@
 // readers' own semantics are pinned in their files (state, env_config, ownership); this pins the
 // store and the per-key setting|state rule.
 
+import { afterEach, beforeEach } from "bun:test";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { runConfig } from "../../src/commands/config.ts";
@@ -11,7 +12,7 @@ import { CopilotEnvState } from "../../src/copilot_api/env_state.ts";
 import { OwnershipLedger } from "../../src/copilot_api/ownership.ts";
 import { CopilotApiPaths } from "../../src/copilot_api/paths.ts";
 import { envSnapshot, isolateProxyHome } from "../helpers/env.ts";
-import { afterEach, beforeEach, expect, test } from "../helpers/testing.ts";
+import { expect, test } from "../helpers/testing.ts";
 
 const restoreEnv = envSnapshot();
 

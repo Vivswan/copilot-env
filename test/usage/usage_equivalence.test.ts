@@ -2,6 +2,8 @@
 // reader fixture is read three ways (no index, a cold index, a warm index) and
 // the three reports must be identical. The IndexStats of each run are the
 // oracle for what the index did (parsed whole, reused, tail-parsed, deleted).
+
+import { afterEach } from "bun:test";
 import { appendFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { ProbeFetch } from "../../src/copilot_api/integration_identity.ts";
@@ -28,7 +30,7 @@ import {
   writeTranscript,
 } from "../helpers/session_fixtures.ts";
 import { CLAUDE_SCENARIOS, CODEX_SCENARIOS } from "../helpers/session_scenarios.ts";
-import { afterEach, expect, removeDir, tempDir, test } from "../helpers/testing.ts";
+import { expect, removeDir, tempDir, test } from "../helpers/testing.ts";
 import { storedIndexPaths } from "../helpers/usage_index.ts";
 
 const dirs: string[] = [];

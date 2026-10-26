@@ -6,7 +6,7 @@ import { errMessage } from "../utils/error.ts";
 import { isEnoent } from "../utils/fs.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { dottedKey, isRecord } from "../utils/json.ts";
-import { isTomlTable, parseToml, stringify } from "../utils/toml.ts";
+import { isTomlTable, parseToml, stringifyToml } from "../utils/toml.ts";
 
 export type CodexTomlRead =
   | { kind: "absent" }
@@ -48,20 +48,24 @@ export function codexBearerLeaf(providerId: string): string {
   return `model_providers.${providerId}.http_headers.Authorization`;
 }
 
+/** The dotted keys of the authorization headers in one `http_headers` table at `path`.
+ *  Case-insensitive, as HTTP reads the header name (a user's own `authorization` spelling is a
+ *  bearer too). */
+function bearerHeaderLeaves(headers: Record<string, unknown>, path: readonly string[]): string[] {
+  return Object.keys(headers)
+    .filter((header) => header.toLowerCase() === "authorization")
+    .map((header) => dottedKey([...path, header]));
+}
+
 /** Every table is walked, not just the managed providers: a legacy `[profiles.<name>]` table a
- *  migration still moves carries one too. Case-insensitive, as HTTP reads the header name (a
- *  user's own `authorization` spelling is a bearer too). */
+ *  migration still moves carries one too. */
 export function codexBearerLeaves(doc: Record<string, unknown>): string[] {
   const leaves: string[] = [];
   const walk = (value: unknown, path: readonly string[]): void => {
     if (!isTomlTable(value)) return;
     for (const [key, child] of Object.entries(value)) {
       if (key === "http_headers" && isRecord(child)) {
-        for (const header of Object.keys(child)) {
-          if (header.toLowerCase() === "authorization") {
-            leaves.push(dottedKey([...path, key, header]));
-          }
-        }
+        leaves.push(...bearerHeaderLeaves(child, [...path, key]));
       }
       walk(child, [...path, key]);
     }
@@ -80,5 +84,5 @@ export function saveCodexToml(path: string, doc: Record<string, unknown>, detail
     ...codexBearerLeaves(doc),
     ...(current.kind === "ok" ? codexBearerLeaves(current.doc) : []),
   ]);
-  fs.writeText(path, stringify(doc), { atomic: false, detail, secretKeys });
+  fs.writeText(path, stringifyToml(doc), { atomic: false, detail, secretKeys });
 }

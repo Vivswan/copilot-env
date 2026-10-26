@@ -260,6 +260,77 @@ export interface CleanupOutcome {
   stopped: boolean;
 }
 
+/** The planned tracked-pid stop, its target re-derived at the signal boundary; true when signalled. */
+async function stopTrackedPid(
+  pid: number,
+  classifyPid: typeof classifyDaemonPid,
+): Promise<boolean> {
+  // The SAME classifier rides into terminatePid's SIGKILL re-proof, so the escalation never judges
+  // under a weaker (owner-blind) standard than the TERM.
+  switch (await classifyPid(pid)) {
+    case "yes":
+      consola.info(`   Stopping tracked proxy (pid=${pid}) ...`);
+      // Verdict unused: the clear-tracking action queued right behind unbinds the pid whichever
+      // way the kill went, and terminatePid reports a refused escalation itself.
+      await terminatePid(pid, DAEMON_SIGKILL_GRACE_MS, classifyPid);
+      return true;
+    case "unknown":
+      warnUnprovenTrackedPid(pid);
+      return false;
+    case "no":
+      return false;
+  }
+}
+
+/** The planned stop of this home's daemon.lock holder; a lapsed corroboration draws the same leave
+ *  the plan would have decided then. True when signalled. */
+async function stopPlannedHolder(home: string, pid: number): Promise<boolean> {
+  if (daemonLockHolderPid(home) !== pid) return false;
+  if (!(await corroborateLockHolder(home, pid))) {
+    warnLeaveHolder(pid);
+    return false;
+  }
+  consola.info(`   Stopping this home's daemon.lock holder (pid=${pid}) ...`);
+  await stopLockHolder(home, pid);
+  return true;
+}
+
+/** Only pids in both the plan and a FRESH scan are signalled: the tracked and holder stops before
+ *  this can take a grace, so a pid recycled since planning is never TERM'd off the stale snapshot.
+ *  True when any was signalled. */
+async function sweepPlannedOrphans(
+  planned: readonly number[],
+  listPids: (myPid: number, myPpid: number) => Promise<number[] | "unproven">,
+): Promise<boolean> {
+  const plannedSet = new Set(planned);
+  const stillUntracked = async (): Promise<number[]> =>
+    (await listUntrackedOrphans(process.pid, process.ppid, trackedDaemonPids(), listPids)).filter(
+      (p) => plannedSet.has(p),
+    );
+  const confirmed = await stillUntracked();
+  if (confirmed.length === 0) return false;
+
+  for (const opid of confirmed) {
+    if (!pidAlive(opid)) continue;
+    consola.info(`   Stopping orphaned proxy (pid=${opid}) ...`);
+    try {
+      process.kill(opid, "SIGTERM");
+    } catch {
+      /* OSError */
+    }
+  }
+  await sleep(DAEMON_SIGKILL_GRACE_MS);
+  for (const opid of await stillUntracked()) {
+    if (!pidAlive(opid)) continue;
+    try {
+      process.kill(opid, "SIGKILL");
+    } catch {
+      /* OSError */
+    }
+  }
+  return true;
+}
+
 /**
  * The plan only authorizes: every signal re-derives its target's identity at its own boundary.
  * Race-free only under the start lock (withStartLock, held by the one caller in commands/start.ts).
@@ -283,36 +354,16 @@ export async function cleanupExistingProxies(
   const orphans: number[] = [];
   for (const action of plan) {
     switch (action.kind) {
-      case "stop-tracked": {
-        // Re-derived at the signal boundary. The SAME classifier rides into terminatePid's SIGKILL
-        // re-proof, so the escalation never judges under a weaker (owner-blind) standard than the TERM.
-        const cls = await classifyPid(action.pid);
-        if (cls === "yes") {
-          consola.info(`   Stopping tracked proxy (pid=${action.pid}) ...`);
-          // Verdict unused: the clear-tracking action queued right behind unbinds the pid whichever
-          // way the kill went, and terminatePid reports a refused escalation itself.
-          await terminatePid(action.pid, DAEMON_SIGKILL_GRACE_MS, classifyPid);
-          stopped = true;
-        } else if (cls === "unknown") {
-          warnUnprovenTrackedPid(action.pid);
-        }
+      case "stop-tracked":
+        if (await stopTrackedPid(action.pid, classifyPid)) stopped = true;
         break;
-      }
       case "clear-tracking":
         state.set(
           daemonPolicy(profile).releasesPortOnStop ? { pid: null, port: null } : { pid: null },
         );
         break;
       case "stop-holder":
-        // A lapsed corroboration draws the same leave the plan would have decided then.
-        if (daemonLockHolderPid(home) !== action.pid) break;
-        if (await corroborateLockHolder(home, action.pid)) {
-          consola.info(`   Stopping this home's daemon.lock holder (pid=${action.pid}) ...`);
-          await stopLockHolder(home, action.pid);
-          stopped = true;
-        } else {
-          warnLeaveHolder(action.pid);
-        }
+        if (await stopPlannedHolder(home, action.pid)) stopped = true;
         break;
       case "leave-holder":
         warnLeaveHolder(action.pid);
@@ -326,38 +377,7 @@ export async function cleanupExistingProxies(
   }
 
   if (orphans.length > 0) {
-    // Only pids in both the plan and a FRESH scan are signalled: the tracked and holder stops above
-    // can take a grace, so a pid recycled since planning is never TERM'd off the stale snapshot.
-    const planned = new Set(orphans);
-    const confirmed = (
-      await listUntrackedOrphans(process.pid, process.ppid, trackedDaemonPids(), listPids)
-    ).filter((p) => planned.has(p));
-    if (confirmed.length > 0) {
-      stopped = true;
-      for (const opid of confirmed) {
-        if (pidAlive(opid)) {
-          consola.info(`   Stopping orphaned proxy (pid=${opid}) ...`);
-          try {
-            process.kill(opid, "SIGTERM");
-          } catch {
-            /* OSError */
-          }
-        }
-      }
-      await sleep(DAEMON_SIGKILL_GRACE_MS);
-      const survivors = (
-        await listUntrackedOrphans(process.pid, process.ppid, trackedDaemonPids(), listPids)
-      ).filter((p) => planned.has(p));
-      for (const opid of survivors) {
-        if (pidAlive(opid)) {
-          try {
-            process.kill(opid, "SIGKILL");
-          } catch {
-            /* OSError */
-          }
-        }
-      }
-    }
+    if (await sweepPlannedOrphans(orphans, listPids)) stopped = true;
   }
 
   await sleep(LAUNCH_SETTLE_MS);

@@ -13,7 +13,7 @@ import { zstdDecompressSync } from "node:zlib";
 import { consola } from "consola";
 import { knownCodexHomes } from "../codex/host.ts";
 import { isDir } from "../utils/fs.ts";
-import { isRecord } from "../utils/json.ts";
+import { isRecord, parseJsonRecord } from "../utils/json.ts";
 import { caught } from "../utils/message.ts";
 import { type DayKey, dayKeyIn, MILLISECONDS_PER_DAY } from "../utils/time.ts";
 import {
@@ -31,6 +31,7 @@ import {
 import { canonicalModelNames, LONG_CONTEXT_PROMPT_TOKENS } from "./pricing.ts";
 import { scanBytes, scanLines } from "./scan.ts";
 import {
+  inWindow,
   type OnCounted,
   record,
   sanitizeTokenCount,
@@ -162,73 +163,116 @@ export const parseCodexTail: ParseTail<CodexContribution> = (file, fromByte, pri
   });
 };
 
+/** What one fold carries across its files; `infoHashesBySession` holds every info hash seen per
+ *  session, counted or not, so a later fork can drop the events it copied. */
+interface CodexFold {
+  providers: Map<string, UsageReport>;
+  canonical: (model: string) => string;
+  infoHashesBySession: Map<string, Set<string>>;
+  dayKey: DayKey;
+  sinceMs: number | undefined;
+  onCounted: OnCounted | undefined;
+}
+
+/** A token_count the fork copied from its parent: one the parent's file carried, or, with the
+ *  parent unscanned, one inside FORK_PREFIX_WINDOW_MS of the session_meta. */
+function copiedFromParent(
+  parentHashes: Set<string> | undefined,
+  metaTsMs: number | undefined,
+  infoHash: string,
+  tsMs: number | null,
+): boolean {
+  if (parentHashes !== undefined) return parentHashes.has(infoHash);
+  if (metaTsMs === undefined || tsMs === null) return false;
+  return tsMs - metaTsMs <= FORK_PREFIX_WINDOW_MS;
+}
+
+function providerReport(providers: Map<string, UsageReport>, provider: string): UsageReport {
+  let report = providers.get(provider);
+  if (report === undefined) {
+    report = usageReport();
+    providers.set(provider, report);
+  }
+  return report;
+}
+
 /** Per event: the fork dedup (an info hash seen in this file or in the parent is a copied
  *  token_count; parent unscanned, the FORK_PREFIX_WINDOW_MS heuristic), THEN the window. Every hash
  *  enters the file's own set, counted or not. */
+function foldCodexFile(fold: CodexFold, { state, events }: CodexContribution): void {
+  const { fork, metaTsMs } = state;
+  const parentHashes =
+    fork === undefined ? undefined : fold.infoHashesBySession.get(fork.parentHash);
+  const ownHashes = new Set<string>();
+  for (const [index, event] of events.entries()) {
+    const [tsMs, rawProvider, rawModel, infoHash, input, output, cacheRead] = event;
+    const forked = fork !== undefined && index >= fork.knownAfter;
+    const duplicate =
+      ownHashes.has(infoHash) ||
+      (forked && copiedFromParent(parentHashes, metaTsMs, infoHash, tsMs));
+    ownHashes.add(infoHash);
+    if (duplicate) {
+      continue;
+    }
+    if (!inWindow(tsMs, fold.sinceMs)) {
+      continue;
+    }
+    const report = providerReport(fold.providers, rawProvider);
+    // The day is the user's local one, not the UTC day the timestamp spells; a line with no
+    // parseable timestamp still counts toward the totals. The prompt Codex reported is the input
+    // INCLUDING the cached part (tokenBuckets split them), which is the size the tier is cut on.
+    const model = fold.canonical(rawModel);
+    const buckets = { input, output, cacheRead, cacheCreation: 0 };
+    record(
+      report,
+      tsMs === null ? null : fold.dayKey(tsMs),
+      model,
+      { ...buckets, events: 1 },
+      {
+        longContext: input + cacheRead > LONG_CONTEXT_PROMPT_TOKENS,
+      },
+    );
+    fold.onCounted?.({ id: null, tsMs, model, buckets });
+  }
+  if (state.sessionIdHash !== undefined && ownHashes.size > 0) {
+    fold.infoHashesBySession.set(state.sessionIdHash, ownHashes);
+  }
+}
+
 export function foldCodex(
   records: readonly FileRecord<CodexContribution>[],
   sinceMs: number | undefined,
   dayKey: DayKey,
   onCounted?: OnCounted,
 ): Map<string, UsageReport> {
-  const providers = new Map<string, UsageReport>();
-  const canonical = canonicalModelNames();
-  // Every info hash seen per session, counted or not, so a later fork can drop the events it
-  // copied.
-  const infoHashesBySession = new Map<string, Set<string>>();
-  for (const {
-    contribution: { state, events },
-  } of records) {
-    const { fork, metaTsMs } = state;
-    const parentHashes = fork === undefined ? undefined : infoHashesBySession.get(fork.parentHash);
-    const ownHashes = new Set<string>();
-    for (const [index, event] of events.entries()) {
-      const [tsMs, rawProvider, rawModel, infoHash, input, output, cacheRead] = event;
-      const forked = fork !== undefined && index >= fork.knownAfter;
-      const duplicate =
-        ownHashes.has(infoHash) ||
-        (forked &&
-          (parentHashes?.has(infoHash) === true ||
-            (parentHashes === undefined &&
-              metaTsMs !== undefined &&
-              tsMs !== null &&
-              tsMs - metaTsMs <= FORK_PREFIX_WINDOW_MS)));
-      ownHashes.add(infoHash);
-      if (duplicate) {
-        continue;
-      }
-      if (sinceMs !== undefined && !(tsMs !== null && tsMs >= sinceMs)) {
-        continue; // outside the window (or no timestamp under a cutoff)
-      }
-      let report = providers.get(rawProvider);
-      if (report === undefined) {
-        report = usageReport();
-        providers.set(rawProvider, report);
-      }
-      // The day is the user's local one, not the UTC day the timestamp spells; a line with no
-      // parseable timestamp still counts toward the totals. The prompt Codex reported is the input
-      // INCLUDING the cached part (tokenBuckets split them), which is the size the tier is cut on.
-      const model = canonical(rawModel);
-      const buckets = { input, output, cacheRead, cacheCreation: 0 };
-      record(
-        report,
-        tsMs === null ? null : dayKey(tsMs),
-        model,
-        { ...buckets, events: 1 },
-        {
-          longContext: input + cacheRead > LONG_CONTEXT_PROMPT_TOKENS,
-        },
-      );
-      onCounted?.({ id: null, tsMs, model, buckets });
-    }
-    if (state.sessionIdHash !== undefined && ownHashes.size > 0) {
-      infoHashesBySession.set(state.sessionIdHash, ownHashes);
-    }
+  const fold: CodexFold = {
+    providers: new Map(),
+    canonical: canonicalModelNames(),
+    infoHashesBySession: new Map(),
+    dayKey,
+    sinceMs,
+    onCounted,
+  };
+  for (const { contribution } of records) {
+    foldCodexFile(fold, contribution);
   }
-  return providers;
+  return fold.providers;
 }
 
 // ---------- internals ----------
+
+/** A resumed session appends to its ORIGINAL rollout, so an old start date alone cannot exclude a
+ *  file; only an old start date AND no writes since the cutoff can. */
+function rolloutIsCandidate(
+  match: RegExpExecArray,
+  mtimeMs: number,
+  sinceMs: number | undefined,
+): boolean {
+  if (sinceMs === undefined) return true;
+  const startedMs = Date.parse(`${match[1]}-${match[2]}-${match[3]}T00:00:00Z`);
+  if (!Number.isFinite(startedMs) || startedMs + FILENAME_CUTOFF_SLACK_MS >= sinceMs) return true;
+  return !(mtimeMs < sinceMs);
+}
 
 function collectRolloutFiles(
   dir: string,
@@ -263,15 +307,7 @@ function collectRolloutFiles(
       consola.warn(caught(e, (message) => `could not read ${full} (${message}).`));
       continue;
     }
-    let candidate = true;
-    if (sinceMs !== undefined) {
-      // A resumed session appends to its ORIGINAL rollout, so an old start date alone cannot
-      // exclude a file; only an old start date AND no writes since the cutoff can.
-      const startedMs = Date.parse(`${m[1]}-${m[2]}-${m[3]}T00:00:00Z`);
-      if (Number.isFinite(startedMs) && startedMs + FILENAME_CUTOFF_SLACK_MS < sinceMs) {
-        candidate = !(mtimeMs < sinceMs);
-      }
-    }
+    const candidate = rolloutIsCandidate(m, mtimeMs, sinceMs);
     out.push({ path: full, size, mtimeMs, candidate, resumable: m[4] === undefined });
   }
 }
@@ -315,64 +351,43 @@ function tokenBuckets(last: Record<string, unknown>): TokenBuckets {
   };
 }
 
-/** A needle may sit inside another line's content, so the type checks stay. */
-function parseCodexLine(line: string, contribution: CodexContribution): void {
+/** A blank or missing model leaves the one in force. */
+function noteModel(state: CodexContribution["state"], model: unknown): void {
+  if (typeof model === "string" && model !== "") state.model = model;
+}
+
+/** The session's id, provider, fork parent, and start instant, from its session_meta. */
+function noteSessionMeta(
+  parsed: Record<string, unknown>,
+  payload: Record<string, unknown>,
+  contribution: CodexContribution,
+): void {
   const { state, events } = contribution;
-  const isMeta = line.includes('"session_meta"');
-  const isTurnContext = line.includes('"turn_context"');
-  const isTokenCount = line.includes('"token_count"');
-  const isSettings = line.includes('"thread_settings_applied"');
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(line);
-  } catch {
-    return; // torn or corrupt line
+  const id = payload.id ?? payload.session_id;
+  state.sessionIdHash = typeof id === "string" ? dedupKey(id) : undefined;
+  if (typeof payload.model_provider === "string" && payload.model_provider !== "") {
+    state.provider = payload.model_provider;
   }
-  if (!isRecord(parsed) || !isRecord(parsed.payload)) {
-    return;
+  if (typeof payload.forked_from_id === "string") {
+    state.fork = { parentHash: dedupKey(payload.forked_from_id), knownAfter: events.length };
   }
-  const payload = parsed.payload;
+  const ts = typeof parsed.timestamp === "string" ? Date.parse(parsed.timestamp) : Number.NaN;
+  state.metaTsMs = Number.isFinite(ts) ? ts : undefined;
+}
 
-  if (isMeta && parsed.type === "session_meta" && state.sessionIdHash === undefined) {
-    const id = payload.id ?? payload.session_id;
-    state.sessionIdHash = typeof id === "string" ? dedupKey(id) : undefined;
-    if (typeof payload.model_provider === "string" && payload.model_provider !== "") {
-      state.provider = payload.model_provider;
-    }
-    if (typeof payload.forked_from_id === "string") {
-      state.fork = { parentHash: dedupKey(payload.forked_from_id), knownAfter: events.length };
-    }
-    const ts = typeof parsed.timestamp === "string" ? Date.parse(parsed.timestamp) : Number.NaN;
-    state.metaTsMs = Number.isFinite(ts) ? ts : undefined;
-    return;
-  }
-
-  if (isTurnContext && parsed.type === "turn_context") {
-    if (typeof payload.model === "string" && payload.model !== "") {
-      state.model = payload.model;
-    }
-    return;
-  }
-
-  if (parsed.type !== "event_msg") {
-    return;
-  }
-
-  if (isSettings && payload.type === "thread_settings_applied") {
-    const settings = payload.thread_settings;
-    if (isRecord(settings) && typeof settings.model === "string" && settings.model !== "") {
-      state.model = settings.model;
-    }
-    return;
-  }
-
-  if (!isTokenCount || payload.type !== "token_count" || !isRecord(payload.info)) {
+function pushTokenCount(
+  parsed: Record<string, unknown>,
+  payload: Record<string, unknown>,
+  contribution: CodexContribution,
+): void {
+  if (!isRecord(payload.info)) {
     return;
   }
   const last = payload.info.last_token_usage;
   if (!isRecord(last)) {
     return;
   }
+  const { state, events } = contribution;
   const tsMs = typeof parsed.timestamp === "string" ? Date.parse(parsed.timestamp) : Number.NaN;
   const buckets = tokenBuckets(last);
   const event: CodexEvent = [
@@ -385,4 +400,43 @@ function parseCodexLine(line: string, contribution: CodexContribution): void {
     buckets.cacheRead,
   ];
   events.push(event);
+}
+
+/** A needle may sit inside another line's content, so the type checks stay. */
+function parseCodexLine(line: string, contribution: CodexContribution): void {
+  const { state } = contribution;
+  const isMeta = line.includes('"session_meta"');
+  const isTurnContext = line.includes('"turn_context"');
+  const isTokenCount = line.includes('"token_count"');
+  const isSettings = line.includes('"thread_settings_applied"');
+  const parsed = parseJsonRecord(line); // null for a torn or corrupt line
+  if (parsed === null || !isRecord(parsed.payload)) {
+    return;
+  }
+  const payload = parsed.payload;
+
+  if (isMeta && parsed.type === "session_meta") {
+    // A resume re-emits the session_meta; the first one speaks for the session.
+    if (state.sessionIdHash === undefined) noteSessionMeta(parsed, payload, contribution);
+    return;
+  }
+
+  if (isTurnContext && parsed.type === "turn_context") {
+    noteModel(state, payload.model);
+    return;
+  }
+
+  if (parsed.type !== "event_msg") {
+    return;
+  }
+
+  if (isSettings && payload.type === "thread_settings_applied") {
+    const settings = payload.thread_settings;
+    if (isRecord(settings)) noteModel(state, settings.model);
+    return;
+  }
+
+  if (isTokenCount && payload.type === "token_count") {
+    pushTokenCount(parsed, payload, contribution);
+  }
 }

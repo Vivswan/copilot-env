@@ -1,3 +1,4 @@
+import { describe } from "bun:test";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -7,7 +8,7 @@ import {
 import { CONTAINER_MARKERS, homeIsDisposable } from "../../.github/scripts/smoke-support.ts";
 import { agentHomeEnv } from "../helpers/env.ts";
 import { ROOT, runScript } from "../helpers/run.ts";
-import { describe, expect, tempDir, test } from "../helpers/testing.ts";
+import { expect, tempDir, test } from "../helpers/testing.ts";
 
 // The smokes rewire agent configs (or float a real proxy) in whatever HOME they see, so they
 // must refuse to start on a developer machine. Both scripts call one pure predicate.

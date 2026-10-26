@@ -3,6 +3,8 @@
 // real run's change set (the tree fingerprinted before and after; the real run is the control
 // that proves the assertion can fail). Content equality is test/utils/dry_run.e2e.test.ts's business (the
 // attribute-level plans); a refusal the real command gives is pinned as the same refusal here.
+
+import { afterEach } from "bun:test";
 import {
   existsSync,
   lstatSync,
@@ -78,7 +80,7 @@ import { writeRunState } from "../helpers/fixtures.ts";
 import { freePort } from "../helpers/net.ts";
 import { captureChannels } from "../helpers/output.ts";
 import { bunRunArgs, spawnChild } from "../helpers/run.ts";
-import { afterEach, expect, removeDir, tempDir, test } from "../helpers/testing.ts";
+import { expect, removeDir, tempDir, test } from "../helpers/testing.ts";
 
 const skipWin = test.skipIf(process.platform === "win32");
 const restoreEnv = envSnapshot([
@@ -194,6 +196,60 @@ test("a text diff prints the changed lines alone: a line kept between two change
   );
 });
 
+/** The production start dep under a dry run is `agent start --dry-run` itself. With no credential
+ *  its gate refuses, as the real child start does on its own stderr: the resolve says so, records
+ *  the heartbeat the real one records, and takes the same failed-start exit. */
+async function expectRefusedStartPlanned(
+  deps: NonNullable<Parameters<typeof resolveProxyToken>[1]>,
+): Promise<void> {
+  const stateFile = new CopilotApiPaths().stateFile;
+  const notes: string[] = [];
+  const production = {
+    ...deps,
+    launchProxy,
+    recordHeartbeat,
+    notify: (line: string) => void notes.push(line),
+  };
+  await captureChannels(async () => {
+    const { changes, result } = await dryRunChanges(() =>
+      resolveProxyToken({ assumeYes: false, profile: null }, production),
+    );
+    expect(result).toBe(1);
+    expect(changes.map((c) => c.path)).toContain(stateFile);
+  });
+  expect(notes.some((n) => n.includes("cannot start the proxy without a credential"))).toBe(true);
+  expect(notes.some((n) => n.startsWith("copilot proxy failed to start"))).toBe(true);
+  expect(existsSync(stateFile)).toBe(false);
+}
+
+/** With a credential the start is planned, its port recorded in the plan the way the real start
+ *  records it (a launcher's wiring reads that port), and nothing spawns. */
+async function expectStartPlanned(root: string): Promise<void> {
+  new CopilotEnvState().setCredential(null, {
+    kind: "stored",
+    provider: "gh-token",
+    token: "ghu_x",
+  });
+  // The start resolves the daemon's identity over the network; the stub accepts offline.
+  setIntegrationProbeFetch(() =>
+    Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 })),
+  );
+  const stateFile = new CopilotApiPaths().stateFile;
+  const before = fingerprintTree(root);
+  let plannedPort: unknown;
+  const { all } = await captureChannels(async () => {
+    const { changes } = await dryRunChanges(() => Promise.resolve(launchProxy(null, "suppressed")));
+    const state = changes.find((c) => c.path === stateFile);
+    plannedPort = state?.attributes.find((row) => row.key === "port")?.next;
+  });
+  const narrated = /Would spawn the proxy daemon on port (\d+) with the gh-token credential/.exec(
+    all,
+  );
+  expect(narrated).not.toBeNull();
+  expect(plannedPort).toBe(Number(narrated?.[1]));
+  expect(fingerprintTree(root)).toEqual(before);
+}
+
 test("proxy-token --dry-run takes the start's own preview, prints no key, and plans the API key the resolve would mint", async () => {
   dir = isolateProxyHome("copilot-dry2-token-");
   const launches: string[] = [];
@@ -237,53 +293,8 @@ test("proxy-token --dry-run takes the start's own preview, prints no key, and pl
     ),
   ).rejects.toThrow("a dry run never prompts");
 
-  // The production start dep under a dry run is `agent start --dry-run` itself. With no
-  // credential its gate refuses, as the real child start does on its own stderr: the resolve
-  // says so, records the heartbeat the real one records, and takes the same failed-start exit.
-  const stateFile = new CopilotApiPaths().stateFile;
-  const notes: string[] = [];
-  const production = {
-    ...deps,
-    launchProxy,
-    recordHeartbeat,
-    notify: (line: string) => void notes.push(line),
-  };
-  const refusedPlan = await captureChannels(async () => {
-    const { changes, result } = await dryRunChanges(() =>
-      resolveProxyToken({ assumeYes: false, profile: null }, production),
-    );
-    expect(result).toBe(1);
-    expect(changes.map((c) => c.path)).toContain(stateFile);
-  });
-  void refusedPlan;
-  expect(notes.some((n) => n.includes("cannot start the proxy without a credential"))).toBe(true);
-  expect(notes.some((n) => n.startsWith("copilot proxy failed to start"))).toBe(true);
-  expect(existsSync(stateFile)).toBe(false);
-
-  // With a credential the start is planned, its port recorded in the plan the way the real start
-  // records it (a launcher's wiring reads that port), and nothing spawns.
-  new CopilotEnvState().setCredential(null, {
-    kind: "stored",
-    provider: "gh-token",
-    token: "ghu_x",
-  });
-  // The start resolves the daemon's identity over the network; the stub accepts offline.
-  setIntegrationProbeFetch(() =>
-    Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 })),
-  );
-  const before = fingerprintTree(dir);
-  let plannedPort: unknown;
-  const { all } = await captureChannels(async () => {
-    const { changes } = await dryRunChanges(() => Promise.resolve(launchProxy(null, "suppressed")));
-    const state = changes.find((c) => c.path === stateFile);
-    plannedPort = state?.attributes.find((row) => row.key === "port")?.next;
-  });
-  const narrated = /Would spawn the proxy daemon on port (\d+) with the gh-token credential/.exec(
-    all,
-  );
-  expect(narrated).not.toBeNull();
-  expect(plannedPort).toBe(Number(narrated?.[1]));
-  expect(fingerprintTree(dir)).toEqual(before);
+  await expectRefusedStartPlanned(deps);
+  await expectStartPlanned(dir);
 
   const configFile = new CopilotApiPaths().configFile;
   const { stdout } = await captureChannels(async () => {
@@ -663,6 +674,29 @@ skipWin(
   },
 );
 
+/** A release whose binary records its calls and writes the manifest the provision step checks,
+ *  with its checksum line and attestation beside it. */
+async function writeFakeRelease(releaseDir: string): Promise<void> {
+  const target = currentReleaseTarget();
+  if (target === null) throw new Error("no release target for this platform");
+  const asset = releaseAssetName(target);
+  const binary = `#!/bin/sh
+HERE="$(dirname "$0")"
+echo "$@" >> "$HERE/../../../invocations.log"
+if [ "$1" = "install" ]; then
+  printf '{"version":"9.9.9","kind":"installed","assets":[]}' > "$HERE/../.copilot-env-install.json"
+fi
+`;
+  writeFileSync(join(releaseDir, asset), binary);
+  const digest = Array.from(
+    new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(binary))),
+  )
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+  writeFileSync(join(releaseDir, "checksums.txt"), `${digest}  ${asset}\n`);
+  writeFileSync(join(releaseDir, ATTESTATION_NAME), '{"fake":"attestation"}');
+}
+
 skipWin(
   "update --dry-run plans the version root, the current link, and the shims the real update lands",
   async () => {
@@ -672,25 +706,7 @@ skipWin(
     mkdirSync(releaseDir, { recursive: true });
     mkdirSync(join(installDir, "bin"), { recursive: true });
     process.env.COPILOT_ENV_DOWNLOAD_BASE = releaseDir;
-    const target = currentReleaseTarget();
-    if (target === null) throw new Error("no release target for this platform");
-    const asset = releaseAssetName(target);
-    // A release whose binary records its calls and writes the manifest the provision step checks.
-    const binary = `#!/bin/sh
-HERE="$(dirname "$0")"
-echo "$@" >> "$HERE/../../../invocations.log"
-if [ "$1" = "install" ]; then
-  printf '{"version":"9.9.9","kind":"installed","assets":[]}' > "$HERE/../.copilot-env-install.json"
-fi
-`;
-    writeFileSync(join(releaseDir, asset), binary);
-    const digest = Array.from(
-      new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(binary))),
-    )
-      .map((b) => b.toString(16).padStart(2, "0"))
-      .join("");
-    writeFileSync(join(releaseDir, "checksums.txt"), `${digest}  ${asset}\n`);
-    writeFileSync(join(releaseDir, ATTESTATION_NAME), '{"fake":"attestation"}');
+    await writeFakeRelease(releaseDir);
     const previous = join(installDir, VERSIONS_DIR, "v9.9.8", "bin");
     mkdirSync(previous, { recursive: true });
     writeFileSync(join(previous, installedBinaryName()), "OLD");

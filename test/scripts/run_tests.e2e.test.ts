@@ -40,6 +40,56 @@ function filesRan(stdout: string): number {
   return Number(/^(\d+) test files:/m.exec(stdout)?.[1] ?? 0);
 }
 
+/** The fixture files under `dir`: `passing` and `failing` are unit files, `realistic` an e2e
+ *  file, `spec` a real test body under a name outside the `*.test.ts` rule. */
+interface LauncherFixtures {
+  dir: string;
+  passing: string;
+  failing: string;
+  realistic: string;
+  spec: string;
+}
+
+/** One invocation and its verdict: the exit code, the files the summary line counts, the files
+ *  named `failed:` (none by default), and the words the output must mention (none by default);
+ *  `env` is OUTSIDE_CI unless given. */
+interface LauncherRow {
+  args: string[];
+  exitCode: number;
+  ran: number;
+  env?: Record<string, string | undefined>;
+  failed?: string[];
+  mentions?: string[];
+}
+
+function launcherRows(f: LauncherFixtures): LauncherRow[] {
+  const inCi = { ...OUTSIDE_CI, CI: "true" };
+  const inActions = { ...OUTSIDE_CI, GITHUB_ACTIONS: "true" };
+  return [
+    { args: [f.passing], exitCode: 0, ran: 1 },
+    // bun dims the summary's timing under FORCE_COLOR: the launcher still reads the line.
+    { args: [f.passing], env: { ...OUTSIDE_CI, FORCE_COLOR: "1" }, exitCode: 0, ran: 1 },
+    { args: [f.passing, f.failing], exitCode: 1, ran: 2, failed: [f.failing] },
+    { args: [join(f.dir, "absent.test.ts")], exitCode: 2, ran: 0 },
+    // The directory holds an e2e file: shut outside CI, open under either marker or the flag.
+    { args: [f.dir], exitCode: 2, ran: 0, mentions: ["--e2e", "test:unit"] },
+    { args: [f.dir], env: inCi, exitCode: 1, ran: 3, failed: [f.failing] },
+    { args: [f.dir], env: inActions, exitCode: 1, ran: 3, failed: [f.failing] },
+    { args: ["--e2e", f.dir], exitCode: 1, ran: 3, failed: [f.failing] },
+    // A file named outright is gated the same way.
+    { args: [f.realistic], exitCode: 2, ran: 0, mentions: ["--e2e"] },
+    { args: ["--e2e", f.realistic], exitCode: 0, ran: 1 },
+    // A file outside the name rule is refused whatever the flags: never handed to `bun test`.
+    { args: [f.spec], exitCode: 2, ran: 0, mentions: ["example.e2e.spec.ts"] },
+    { args: ["--e2e", f.spec], exitCode: 2, ran: 0, mentions: ["example.e2e.spec.ts"] },
+    // --unit: the e2e file is left out of a directory and refused when named.
+    { args: ["--unit", f.dir], exitCode: 1, ran: 2, failed: [f.failing] },
+    { args: ["--unit", f.realistic], exitCode: 2, ran: 0, mentions: [".e2e.test.ts"] },
+    { args: ["--unit", "--e2e", f.dir], exitCode: 2, ran: 0 },
+    { args: ["--help"], exitCode: 0, ran: 0, mentions: ["--unit", "--e2e"] },
+  ];
+}
+
 test("the launcher's exit code and file count over files, a directory, a missing path, and the e2e gate", () => {
   const dir = tempDir("run-tests-");
   const passing = testFile(dir, "passing.test.ts", 1);
@@ -48,129 +98,8 @@ test("the launcher's exit code and file count over files, a directory, a missing
   // A real test body under a name outside **/*.test.ts: discovery never finds it, and a name
   // without the suffix is also outside the e2e gate's reach.
   const spec = testFile(dir, "example.e2e.spec.ts", 1);
-  const none: string[] = [];
-  const rows = [
-    { args: [passing], env: OUTSIDE_CI, exitCode: 0, ran: 1, failed: none, mentions: none },
-    // bun dims the summary's timing under FORCE_COLOR: the launcher still reads the line.
-    {
-      args: [passing],
-      env: { ...OUTSIDE_CI, FORCE_COLOR: "1" },
-      exitCode: 0,
-      ran: 1,
-      failed: none,
-      mentions: none,
-    },
-    {
-      args: [passing, failing],
-      env: OUTSIDE_CI,
-      exitCode: 1,
-      ran: 2,
-      failed: [failing],
-      mentions: none,
-    },
-    {
-      args: [join(dir, "absent.test.ts")],
-      env: OUTSIDE_CI,
-      exitCode: 2,
-      ran: 0,
-      failed: none,
-      mentions: none,
-    },
-    // The directory holds an e2e file: shut outside CI, open under either marker or the flag.
-    {
-      args: [dir],
-      env: OUTSIDE_CI,
-      exitCode: 2,
-      ran: 0,
-      failed: none,
-      mentions: ["--e2e", "test:unit"],
-    },
-    {
-      args: [dir],
-      env: { ...OUTSIDE_CI, CI: "true" },
-      exitCode: 1,
-      ran: 3,
-      failed: [failing],
-      mentions: none,
-    },
-    {
-      args: [dir],
-      env: { ...OUTSIDE_CI, GITHUB_ACTIONS: "true" },
-      exitCode: 1,
-      ran: 3,
-      failed: [failing],
-      mentions: none,
-    },
-    {
-      args: ["--e2e", dir],
-      env: OUTSIDE_CI,
-      exitCode: 1,
-      ran: 3,
-      failed: [failing],
-      mentions: none,
-    },
-    // A file named outright is gated the same way.
-    { args: [realistic], env: OUTSIDE_CI, exitCode: 2, ran: 0, failed: none, mentions: ["--e2e"] },
-    {
-      args: ["--e2e", realistic],
-      env: OUTSIDE_CI,
-      exitCode: 0,
-      ran: 1,
-      failed: none,
-      mentions: none,
-    },
-    // A file outside the name rule is refused whatever the flags: never handed to `bun test`.
-    {
-      args: [spec],
-      env: OUTSIDE_CI,
-      exitCode: 2,
-      ran: 0,
-      failed: none,
-      mentions: ["example.e2e.spec.ts"],
-    },
-    {
-      args: ["--e2e", spec],
-      env: OUTSIDE_CI,
-      exitCode: 2,
-      ran: 0,
-      failed: none,
-      mentions: ["example.e2e.spec.ts"],
-    },
-    // --unit: the e2e file is left out of a directory and refused when named.
-    {
-      args: ["--unit", dir],
-      env: OUTSIDE_CI,
-      exitCode: 1,
-      ran: 2,
-      failed: [failing],
-      mentions: none,
-    },
-    {
-      args: ["--unit", realistic],
-      env: OUTSIDE_CI,
-      exitCode: 2,
-      ran: 0,
-      failed: none,
-      mentions: [".e2e.test.ts"],
-    },
-    {
-      args: ["--unit", "--e2e", dir],
-      env: OUTSIDE_CI,
-      exitCode: 2,
-      ran: 0,
-      failed: none,
-      mentions: none,
-    },
-    {
-      args: ["--help"],
-      env: OUTSIDE_CI,
-      exitCode: 0,
-      ran: 0,
-      failed: none,
-      mentions: ["--unit", "--e2e"],
-    },
-  ];
-  for (const { args, env, exitCode, ran, failed, mentions } of rows) {
+  const rows = launcherRows({ dir, passing, failing, realistic, spec });
+  for (const { args, env = OUTSIDE_CI, exitCode, ran, failed = [], mentions = [] } of rows) {
     const res = runSync(process.execPath, [...bunRunArgs(), LAUNCHER, ...args], {
       env: { ...process.env, ...env },
     });
@@ -279,6 +208,112 @@ test("a file whose process exits 0 before bun:test prints its summary fails the 
   );
 }, 90_000);
 
+/** How a bun process dies: the line it prints first (none for a fail-fast), its exit code, and
+ *  whether the launcher must run the file once more. */
+interface Death {
+  line: string;
+  exit: number;
+  rerun: boolean;
+}
+
+/** One file's script: crash `crashes` times, then a test expecting `expected`; `rerun` is the
+ *  launcher's verdict when the crash is rerun (or the file never crashes). */
+interface CrashRow {
+  name: string;
+  crashes: number;
+  expected: number;
+  rerun: { exitCode: number; runs: number; retried: number; header: (exit: number) => string };
+}
+
+/** What one launcher run showed, or what it was to show; a launcher killed by a signal has no
+ *  exit code. */
+interface CrashOutcome {
+  shape: string;
+  name: string;
+  exitCode: number | null;
+  runs: number;
+  retried: number;
+  linesPrinted: number;
+  header: boolean;
+  judged: number;
+}
+
+function retryHeader(exit: number): string {
+  return `died of a Bun runtime crash (exit ${exit}), running it once more`;
+}
+
+function count(text: string, needle: string): number {
+  return text.split(needle).length - 1;
+}
+
+/** One crashing file through the launcher: what the run showed beside what the row and the
+ *  death shape want of it. */
+function crashRun(
+  dir: string,
+  shape: string,
+  death: Death,
+  row: CrashRow,
+): { actual: CrashOutcome; expected: CrashOutcome } {
+  const file = join(dir, `${row.name}-${shape}.test.ts`);
+  const tally = join(dir, `${row.name}-${shape}.runs`);
+  writeFileSync(
+    file,
+    [
+      'import { appendFileSync, readFileSync } from "node:fs";',
+      'import { expect, test } from "bun:test";',
+      `const values = ${CHILD_VALUES};`,
+      'appendFileSync(values.tally, "run\\n");',
+      'if (readFileSync(values.tally, "utf8").split("\\n").length - 1 <= values.crashes) {',
+      // As data, never source: bun's failure excerpt reprints the source around a failed expect.
+      '  if (values.line !== "") console.error(values.line);',
+      "  process.exit(values.exit);",
+      "}",
+      `test(${JSON.stringify(row.name)}, () => { expect(1).toBe(values.expected); });`,
+      "",
+    ].join("\n"),
+  );
+  const res = runSync(process.execPath, [...bunRunArgs(), LAUNCHER, file], {
+    env: {
+      ...process.env,
+      ...OUTSIDE_CI,
+      ...childValuesEnv({
+        tally,
+        crashes: row.crashes,
+        expected: row.expected,
+        line: death.line,
+        exit: death.exit,
+      }),
+    },
+    timeoutMs: 60_000,
+  });
+  const want =
+    death.rerun || row.crashes === 0
+      ? { ...row.rerun, header: row.rerun.header(death.exit) }
+      : { exitCode: 1, runs: 1, retried: 0, header: `failed (exit ${death.exit})` };
+  return {
+    actual: {
+      shape,
+      name: row.name,
+      exitCode: res.exitCode,
+      runs: count(readFileSync(tally, "utf8"), "run\n"),
+      retried: count(res.stdout, `${file}: ${retryHeader(death.exit)}`),
+      linesPrinted: death.line === "" ? 0 : count(res.stdout, death.line),
+      header: res.stdout.includes(`=== ${file}: ${want.header} in `),
+      judged: filesRan(res.stdout),
+    },
+    expected: {
+      shape,
+      name: row.name,
+      exitCode: want.exitCode,
+      runs: want.runs,
+      retried: want.retried,
+      linesPrinted: death.line === "" ? 0 : Math.min(row.crashes, want.runs),
+      header: true,
+      judged: 1,
+    },
+  };
+}
+
 // Bun's crash handler labels a panic line by the thread that died: the main thread, a Windows
 // thread by id or by name, or a bare "panic: " for a thread on macOS or Linux. The launcher
 // joins stdout and stderr chunks in arrival order, so an unterminated stdout line may sit right
@@ -287,9 +322,7 @@ test("a file whose process exits 0 before bun:test prints its summary fails the 
 // is a test's own doing and final.
 test("a file whose bun process dies of a runtime crash runs once more, whichever thread the panic line names, or none on a Windows fail-fast; a test failure, a second crash, and an exit 9 off Windows are final", () => {
   const dir = tempDir("run-tests-panic-");
-  const retryHeader = (exit: number): string =>
-    `died of a Bun runtime crash (exit ${exit}), running it once more`;
-  const deaths = {
+  const deaths: Record<string, Death> = {
     main: { line: "panic(main thread): synthetic", exit: 3, rerun: true },
     "thread-id": { line: "panic(thread 7032): synthetic", exit: 3, rerun: true },
     "thread-name": { line: "panic(io thread): synthetic", exit: 3, rerun: true },
@@ -297,8 +330,7 @@ test("a file whose bun process dies of a runtime crash runs once more, whichever
     "mid-line": { line: "progresspanic: synthetic", exit: 3, rerun: true },
     "fail-fast": { line: "", exit: 9, rerun: process.platform === "win32" },
   };
-  const count = (text: string, needle: string): number => text.split(needle).length - 1;
-  const rows = [
+  const rows: CrashRow[] = [
     {
       name: "once",
       crashes: 1,
@@ -325,66 +357,7 @@ test("a file whose bun process dies of a runtime crash runs once more, whichever
   ];
   // Every case runs before the one assertion, so a red run names every shape that missed.
   const seen = Object.entries(deaths).flatMap(([shape, death]) =>
-    rows.map((row) => {
-      const file = join(dir, `${row.name}-${shape}.test.ts`);
-      const tally = join(dir, `${row.name}-${shape}.runs`);
-      writeFileSync(
-        file,
-        [
-          'import { appendFileSync, readFileSync } from "node:fs";',
-          'import { expect, test } from "bun:test";',
-          `const values = ${CHILD_VALUES};`,
-          'appendFileSync(values.tally, "run\\n");',
-          'if (readFileSync(values.tally, "utf8").split("\\n").length - 1 <= values.crashes) {',
-          // As data, never source: bun's failure excerpt reprints the source around a failed expect.
-          '  if (values.line !== "") console.error(values.line);',
-          "  process.exit(values.exit);",
-          "}",
-          `test(${JSON.stringify(row.name)}, () => { expect(1).toBe(values.expected); });`,
-          "",
-        ].join("\n"),
-      );
-      const res = runSync(process.execPath, [...bunRunArgs(), LAUNCHER, file], {
-        env: {
-          ...process.env,
-          ...OUTSIDE_CI,
-          ...childValuesEnv({
-            tally,
-            crashes: row.crashes,
-            expected: row.expected,
-            line: death.line,
-            exit: death.exit,
-          }),
-        },
-        timeoutMs: 60_000,
-      });
-      const want =
-        death.rerun || row.crashes === 0
-          ? { ...row.rerun, header: row.rerun.header(death.exit) }
-          : { exitCode: 1, runs: 1, retried: 0, header: `failed (exit ${death.exit})` };
-      return {
-        actual: {
-          shape,
-          name: row.name,
-          exitCode: res.exitCode,
-          runs: count(readFileSync(tally, "utf8"), "run\n"),
-          retried: count(res.stdout, `${file}: ${retryHeader(death.exit)}`),
-          linesPrinted: death.line === "" ? 0 : count(res.stdout, death.line),
-          header: res.stdout.includes(`=== ${file}: ${want.header} in `),
-          judged: filesRan(res.stdout),
-        },
-        expected: {
-          shape,
-          name: row.name,
-          exitCode: want.exitCode,
-          runs: want.runs,
-          retried: want.retried,
-          linesPrinted: death.line === "" ? 0 : Math.min(row.crashes, want.runs),
-          header: true,
-          judged: 1,
-        },
-      };
-    }),
+    rows.map((row) => crashRun(dir, shape, death, row)),
   );
   expect(seen.map((s) => s.actual)).toEqual(seen.map((s) => s.expected));
 }, 120_000);

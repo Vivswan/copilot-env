@@ -1,5 +1,6 @@
-// Error predicates and the read helpers callers share, each read on the fs seam
-// (src/utils/fs_facade.ts) so a dry run answers them from its planned state.
+// Error predicates, the one error class the seam's staged writers throw, and the read helpers
+// callers share, each read on the fs seam (src/utils/fs_facade.ts) so a dry run answers them from
+// its planned state.
 import * as fs from "./fs_facade.ts";
 import { isRecord } from "./json.ts";
 import { sleepSync } from "./time.ts";
@@ -51,6 +52,20 @@ export function retryOpenHandleRefusal(op: () => void, attempts = 5): void {
       if (i >= attempts || !isOpenHandleRefusal(err)) throw err;
       sleepSync(50);
     }
+  }
+}
+
+/** A staged write's rename over a live file was refused (Windows, the file held open): the live
+ *  file is untouched, the staged copy dropped where removal succeeded, a leftover reported. Thrown
+ *  by fs_disk.ts and mirrored by fs_overlay.ts; the one failure a caller may answer with a direct
+ *  write (the installer's launcher shims), every other failure propagates as itself. */
+export class RenameRefusedError extends Error {
+  constructor(
+    readonly path: string,
+    cause: unknown,
+  ) {
+    super(`rename over ${path} refused (the file is held open)`, { cause });
+    this.name = "RenameRefusedError";
   }
 }
 

@@ -118,10 +118,10 @@ function rawCredentialPatch(credential: ProvisionedCredential): RawCredentialPat
 
 /** A null token or pin is REMOVED from the slot, never stored as `null`. */
 function writeCredentialFields(raw: Record<string, unknown>, patch: RawCredentialPatch): void {
-  if (patch.githubToken !== null) raw.githubToken = patch.githubToken;
-  else delete raw.githubToken;
-  if (patch.ghUser !== null) raw.ghUser = patch.ghUser;
-  else delete raw.ghUser;
+  if (patch.githubToken === null) delete raw.githubToken;
+  else raw.githubToken = patch.githubToken;
+  if (patch.ghUser === null) delete raw.ghUser;
+  else raw.ghUser = patch.ghUser;
   raw.authProvider = patch.authProvider;
 }
 

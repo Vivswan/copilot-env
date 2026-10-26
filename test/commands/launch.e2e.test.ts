@@ -1,3 +1,4 @@
+import { afterEach } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:net";
 import { join } from "node:path";
@@ -29,7 +30,7 @@ import { type AgentHomes, agentHomeEnv, envSnapshot, isolateAgentHomes } from ".
 import { writeClaudeSettings, writeCodexConfigToml, writeRunState } from "../helpers/fixtures.ts";
 import { captureChannels } from "../helpers/output.ts";
 import { runCli } from "../helpers/run.ts";
-import { afterEach, expect, tempDir, test } from "../helpers/testing.ts";
+import { expect, tempDir, test } from "../helpers/testing.ts";
 
 const WORK = parseProfileName("work");
 const skipWin = test.skipIf(process.platform === "win32");

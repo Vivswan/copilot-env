@@ -15,17 +15,18 @@ const OTHER_URL = "http://127.0.0.1:1/other";
 
 type InputKind = "string" | "url" | "request";
 
+/** The fetch input the child builds for each shape, from the url its env carries. */
+const FETCH_INPUTS: Record<InputKind, string> = {
+  string: `${CHILD_VALUES}.url`,
+  url: `new URL(${CHILD_VALUES}.url)`,
+  request: `new Request(${CHILD_VALUES}.url)`,
+};
+
 function runPreloaded(url: string, token: string | null, inputKind: InputKind): string {
-  const input =
-    inputKind === "url"
-      ? `new URL(${CHILD_VALUES}.url)`
-      : inputKind === "request"
-        ? `new Request(${CHILD_VALUES}.url)`
-        : `${CHILD_VALUES}.url`;
   // Only the fetch itself may fail into PASSTHROUGH; an intercepted body that does not parse
   // fails the child instead of reading as a pass-through.
   const source = [
-    `const r = await fetch(${input}).catch(() => null);`,
+    `const r = await fetch(${FETCH_INPUTS[inputKind]}).catch(() => null);`,
     "if (r === null) {",
     "  console.log('PASSTHROUGH');",
     "} else {",

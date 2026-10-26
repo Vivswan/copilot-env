@@ -1,3 +1,4 @@
+import { afterEach } from "bun:test";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { assertKnownProfile, CopilotEnvState } from "../../src/copilot_api/env_state.ts";
@@ -6,7 +7,7 @@ import { CopilotEnvRunState } from "../../src/copilot_api/run_state.ts";
 import { errMessage } from "../../src/utils/error.ts";
 import { withColumns } from "../helpers/columns.ts";
 import { envSnapshot, isolateProxyHome } from "../helpers/env.ts";
-import { afterEach, expect, removeDir, test } from "../helpers/testing.ts";
+import { expect, removeDir, test } from "../helpers/testing.ts";
 
 // CopilotEnvState's SHARED store sits under COPILOT_API_HOME: each test gets a temp home, not the per-host .run state.
 const restoreEnv = envSnapshot();

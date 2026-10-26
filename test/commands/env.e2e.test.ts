@@ -1,3 +1,4 @@
+import { afterEach } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { directHelperCommand, proxyHelperCommand } from "../../src/claude/config.ts";
@@ -18,7 +19,7 @@ import {
   runCli,
   runSync,
 } from "../helpers/run.ts";
-import { afterEach, expect, removeDir, tempDir, test } from "../helpers/testing.ts";
+import { expect, removeDir, tempDir, test } from "../helpers/testing.ts";
 
 const restoreEnv = envSnapshot();
 let dir = "";
@@ -158,142 +159,152 @@ function layFarm(hostHome: string, farm: Farm): void {
   }
 }
 
+/** The drift line for a farm the key names but which is missing, as consola renders it (the
+ *  backticks dropped). */
+function missingFarmLine(hostHome: string): string {
+  return codexHostDriftLine({ kind: "missing", hostHome }).replaceAll("`", "");
+}
+
+function unrecordedFarmLine(hostHome: string): string {
+  return `no completed wiring pass is recorded for the per-host CODEX_HOME farm at ${hostHome}`;
+}
+
+/** One farm scenario: the keys, the farm on disk, and what `agent profile env` says of it. */
+interface FarmCase {
+  /** The states of the key, the farm and the shell, as the assertion messages name the row. */
+  name: string;
+
+  /** The keys set before the run; `root` sets `codex.home` to an explicit root the farm sits under. */
+  config: { "codex.host"?: boolean; root?: boolean };
+
+  /** What layFarm leaves at the host home before the run. */
+  farm: Farm;
+
+  /** The run-state record is what a successful wiring pass leaves; without it the farm is not active. */
+  recorded: boolean;
+
+  /** Whether the shell already carries OUR export of CODEX_HOME. */
+  exported: boolean;
+
+  /** The export lines expected on stdout, per host home. */
+  stdout: (hostHome: string) => string[];
+
+  /** The drift line expected on stderr, per host home; null: silent. */
+  stderr: ((hostHome: string) => string) | null;
+}
+
+const FARM_CASES: FarmCase[] = [
+  // The key is the switch: unset exports nothing even for an activated farm and clears OUR
+  // spelling at once.
+  {
+    name: "key unset, farm active",
+    config: {},
+    farm: "built",
+    recorded: true,
+    exported: false,
+    stdout: () => [],
+    stderr: null,
+  },
+  {
+    name: "key unset, farm active, shell exports it",
+    config: {},
+    farm: "built",
+    recorded: true,
+    exported: true,
+    stdout: () => ["unset CODEX_HOME"],
+    stderr: null,
+  },
+  {
+    name: "key false, no farm, shell exports it",
+    config: { "codex.host": false },
+    farm: "none",
+    recorded: false,
+    exported: true,
+    stdout: () => ["unset CODEX_HOME"],
+    stderr: null,
+  },
+  {
+    name: "key on, farm wired",
+    config: { "codex.host": true },
+    farm: "built",
+    recorded: true,
+    exported: false,
+    stdout: (h) => [`export CODEX_HOME='${h}'`],
+    stderr: null,
+  },
+  // Wired but not recorded (no managed write succeeded there yet), half-built, or gone: still
+  // the home the key names, so the export stays and the drift is warned about.
+  {
+    name: "key on, farm wired, no wiring pass recorded",
+    config: { "codex.host": true },
+    farm: "built",
+    recorded: false,
+    exported: false,
+    stdout: (h) => [`export CODEX_HOME='${h}'`],
+    stderr: unrecordedFarmLine,
+  },
+  {
+    name: "key on, blank config.toml",
+    config: { "codex.host": true },
+    farm: "empty",
+    recorded: true,
+    exported: false,
+    stdout: (h) => [`export CODEX_HOME='${h}'`],
+    stderr: missingFarmLine,
+  },
+  {
+    name: "key on, directory without config.toml",
+    config: { "codex.host": true },
+    farm: "dir",
+    recorded: true,
+    exported: false,
+    stdout: (h) => [`export CODEX_HOME='${h}'`],
+    stderr: missingFarmLine,
+  },
+  {
+    name: "key on, no farm",
+    config: { "codex.host": true },
+    farm: "none",
+    recorded: false,
+    exported: false,
+    stdout: (h) => [`export CODEX_HOME='${h}'`],
+    stderr: missingFarmLine,
+  },
+  {
+    name: "key on, no farm, shell exports it",
+    config: { "codex.host": true },
+    farm: "none",
+    recorded: false,
+    exported: true,
+    stdout: (h) => [`export CODEX_HOME='${h}'`],
+    stderr: missingFarmLine,
+  },
+  // With a codex-home path the farm under the path is the subject: exported all the same
+  // before it is built (the next `agent profile sync --codex` builds it), quiet once it is.
+  {
+    name: "key on under a codex-home root, not built",
+    config: { "codex.host": true, root: true },
+    farm: "none",
+    recorded: false,
+    exported: false,
+    stdout: (h) => [`export CODEX_HOME='${h}'`],
+    stderr: missingFarmLine,
+  },
+  {
+    name: "key on under a codex-home root, wired",
+    config: { "codex.host": true, root: true },
+    farm: "built",
+    recorded: true,
+    exported: false,
+    stdout: (h) => [`export CODEX_HOME='${h}'`],
+    stderr: null,
+  },
+];
+
 skipWin(
   "env and the per-host farm: the codex-host key is the switch, the farm is the export's subject, and any drift is named beside the export, never swallowed",
   () => {
-    const missing = (hostHome: string): string =>
-      codexHostDriftLine({ kind: "missing", hostHome }).replaceAll("`", "");
-    const unrecorded = (hostHome: string): string =>
-      `no completed wiring pass is recorded for the per-host CODEX_HOME farm at ${hostHome}`;
-    const cases: {
-      // The states of the key, the farm and the shell, as the assertion messages name the row.
-      name: string;
-
-      // The keys set before the run; `root` sets `codex.home` to an explicit root the farm sits under.
-      config: { "codex.host"?: boolean; root?: boolean };
-
-      // What layFarm leaves at the host home before the run.
-      farm: Farm;
-
-      // The run-state record is what a successful wiring pass leaves; without it the farm is not active.
-      recorded: boolean;
-
-      // Whether the shell already carries OUR export of CODEX_HOME.
-      exported: boolean;
-
-      // The export lines expected on stdout, per host home.
-      stdout: (hostHome: string) => string[];
-
-      // The drift line expected on stderr, per host home; null: silent.
-      stderr: ((hostHome: string) => string) | null;
-    }[] = [
-      // The key is the switch: unset exports nothing even for an activated farm and clears OUR
-      // spelling at once.
-      {
-        name: "key unset, farm active",
-        config: {},
-        farm: "built",
-        recorded: true,
-        exported: false,
-        stdout: () => [],
-        stderr: null,
-      },
-      {
-        name: "key unset, farm active, shell exports it",
-        config: {},
-        farm: "built",
-        recorded: true,
-        exported: true,
-        stdout: () => ["unset CODEX_HOME"],
-        stderr: null,
-      },
-      {
-        name: "key false, no farm, shell exports it",
-        config: { "codex.host": false },
-        farm: "none",
-        recorded: false,
-        exported: true,
-        stdout: () => ["unset CODEX_HOME"],
-        stderr: null,
-      },
-      {
-        name: "key on, farm wired",
-        config: { "codex.host": true },
-        farm: "built",
-        recorded: true,
-        exported: false,
-        stdout: (h) => [`export CODEX_HOME='${h}'`],
-        stderr: null,
-      },
-      // Wired but not recorded (no managed write succeeded there yet), half-built, or gone: still
-      // the home the key names, so the export stays and the drift is warned about.
-      {
-        name: "key on, farm wired, no wiring pass recorded",
-        config: { "codex.host": true },
-        farm: "built",
-        recorded: false,
-        exported: false,
-        stdout: (h) => [`export CODEX_HOME='${h}'`],
-        stderr: unrecorded,
-      },
-      {
-        name: "key on, blank config.toml",
-        config: { "codex.host": true },
-        farm: "empty",
-        recorded: true,
-        exported: false,
-        stdout: (h) => [`export CODEX_HOME='${h}'`],
-        stderr: missing,
-      },
-      {
-        name: "key on, directory without config.toml",
-        config: { "codex.host": true },
-        farm: "dir",
-        recorded: true,
-        exported: false,
-        stdout: (h) => [`export CODEX_HOME='${h}'`],
-        stderr: missing,
-      },
-      {
-        name: "key on, no farm",
-        config: { "codex.host": true },
-        farm: "none",
-        recorded: false,
-        exported: false,
-        stdout: (h) => [`export CODEX_HOME='${h}'`],
-        stderr: missing,
-      },
-      {
-        name: "key on, no farm, shell exports it",
-        config: { "codex.host": true },
-        farm: "none",
-        recorded: false,
-        exported: true,
-        stdout: (h) => [`export CODEX_HOME='${h}'`],
-        stderr: missing,
-      },
-      // With a codex-home path the farm under the path is the subject: exported all the same
-      // before it is built (the next `agent profile sync --codex` builds it), quiet once it is.
-      {
-        name: "key on under a codex-home root, not built",
-        config: { "codex.host": true, root: true },
-        farm: "none",
-        recorded: false,
-        exported: false,
-        stdout: (h) => [`export CODEX_HOME='${h}'`],
-        stderr: missing,
-      },
-      {
-        name: "key on under a codex-home root, wired",
-        config: { "codex.host": true, root: true },
-        farm: "built",
-        recorded: true,
-        exported: false,
-        stdout: (h) => [`export CODEX_HOME='${h}'`],
-        stderr: null,
-      },
-    ];
-    for (const c of cases) {
+    for (const c of FARM_CASES) {
       isolate();
       const root = join(dir, "explicit-root");
       const { root: underRoot, ...keys } = c.config;

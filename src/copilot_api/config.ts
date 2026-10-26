@@ -74,11 +74,8 @@ export class CopilotApiConfig {
   readonly lockPath: string;
 
   constructor(path?: string, lockPath?: string) {
-    if (path === undefined) {
-      path = new CopilotApiPaths().configFile;
-    }
-    this.path = path;
-    this.lockPath = lockPath ?? `${path}.lock`;
+    this.path = path ?? new CopilotApiPaths().configFile;
+    this.lockPath = lockPath ?? `${this.path}.lock`;
   }
 
   /** The proxy config for `profile`'s daemon home (null = the effective home). */

@@ -1,3 +1,4 @@
+import { afterEach } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -58,6 +59,7 @@ import {
   withUnprovablePidProbe,
 } from "../helpers/daemon.ts";
 import { defaultHomeDir, envSnapshot, isolateProxyHome } from "../helpers/env.ts";
+import { requestUrl } from "../helpers/fetch_input.ts";
 import { writeRunState } from "../helpers/fixtures.ts";
 import { closeServer, freePort } from "../helpers/net.ts";
 import { captureAllWrites, captureChannels } from "../helpers/output.ts";
@@ -69,7 +71,7 @@ import {
   ROOT,
   spawnChild,
 } from "../helpers/run.ts";
-import { afterEach, describe, expect, removeDir, test } from "../helpers/testing.ts";
+import { expect, removeDir, test } from "../helpers/testing.ts";
 
 // A branded fixture name: parseProfileName is the only mint for ProfileName.
 const WORK = parseProfileName("work");
@@ -186,109 +188,115 @@ test("resolveLaunchCredential: a stored PAT auto-enables passthrough and probes 
   );
 });
 
+type Launched = Awaited<ReturnType<typeof launchAuth>>["credential"];
+
+const acceptingProbe = (): Promise<Response> =>
+  Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 }));
+
+interface LaunchRow {
+  /** The row's label in the assertion messages. */
+  name: string;
+
+  /** The profile launched: the default (null), or WORK, whose slot may be missing. */
+  profile: Profile;
+
+  /** The DEFAULT slot's stored credential. */
+  stored: { provider: "gh-token" | "copilot"; token: string } | null;
+
+  /** The default profile's `passthrough` setting before the launch; absent leaves it unset. */
+  passthrough?: "on" | "off";
+
+  /** A spy answering this id, or the real selector over a probe fetch that accepts. */
+  identity: { spy: string | null } | "real";
+
+  /** The credential handed to the daemon, or the refusal (no daemon is spawned). */
+  credential: Launched | { refused: string };
+
+  /** The tokens the spy was asked about, in order; the real selector leaves it empty. */
+  probedTokens: string[];
+}
+
 // One decision table over the single-step launches: (profile, stored credential, passthrough
 // config, identity selector) -> the credential handed to the daemon, or the refusal, and the tokens
 // probed. A wrong row is a PAT sent raw, a daemon under the wrong identity, or a probe (or a daemon)
 // where no credential, or a profile that was never created, forbids one.
+
+const LAUNCH_ROWS: LaunchRow[] = [
+  {
+    // The daemon exchanges the token itself, and the codex identity (no id header) is what the
+    // client-headers shim applies upstream: one identity per credential, passthrough or not.
+    name: "copilot device-flow token: no passthrough, probed identity",
+    profile: null,
+    stored: { provider: "copilot", token: "gho_device_flow" },
+    identity: { spy: null },
+    credential: {
+      kind: "token",
+      token: "gho_device_flow",
+      clientHeaders: daemonClientHeaders(UA, null),
+    },
+    probedTokens: ["gho_device_flow"],
+  },
+  {
+    name: "passthrough off overrides even a PAT; the identity is selected all the same",
+    profile: null,
+    stored: { provider: "gh-token", token: "ghp_forced_off" },
+    passthrough: "off",
+    identity: { spy: COPILOT_CLI_INTEGRATION_ID },
+    credential: {
+      kind: "token",
+      token: "ghp_forced_off",
+      clientHeaders: daemonClientHeaders(UA, COPILOT_CLI_INTEGRATION_ID),
+    },
+    probedTokens: ["ghp_forced_off"],
+  },
+  {
+    // The real selector: every credential is probed, and the codex identity is accepted first.
+    name: "passthrough on forces the shim for a non-PAT token, probed like any credential",
+    profile: null,
+    stored: { provider: "gh-token", token: "ghu_user_to_server" },
+    passthrough: "on",
+    identity: "real",
+    credential: {
+      kind: "pat",
+      token: "ghu_user_to_server",
+      clientHeaders: daemonClientHeaders(UA, null),
+    },
+    probedTokens: [],
+  },
+  {
+    // The daemon never logs in on its own: no credential is a refusal naming the login, on a
+    // TTY or headless alike, before anything is probed or spawned.
+    name: "nothing resolved: refused with the `agent auth` hint, nothing probed",
+    profile: null,
+    stored: null,
+    identity: { spy: null },
+    credential: {
+      refused:
+        "cannot start the proxy without a credential: no GitHub credential configured - run `agent auth` to log in",
+    },
+    probedTokens: [],
+  },
+  {
+    // Hard-empty, not the default token: a named profile NEVER falls back to the default
+    // credential, and one that was never created is named as such (not sent to `agent auth`).
+    name: "a named profile never falls back to the default credential",
+    profile: WORK,
+    stored: { provider: "gh-token", token: "ghp_default_only" },
+    identity: { spy: COPILOT_CLI_INTEGRATION_ID },
+    credential: {
+      refused: [
+        "no such profile 'work'.",
+        "  no profiles exist",
+        "Fix:",
+        "  agent profile work add --direct|--proxy  create it",
+      ].join("\n"),
+    },
+    probedTokens: [],
+  },
+];
+
 test("a daemon launch: the credential, refusal, and probe decision per stored credential and config", async () => {
-  type Launched = Awaited<ReturnType<typeof launchAuth>>["credential"];
-  const acceptingProbe = (): Promise<Response> =>
-    Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 }));
-  const rows: Array<{
-    /** The row's label in the assertion messages. */
-    name: string;
-
-    /** The profile launched: the default (null), or WORK, whose slot may be missing. */
-    profile: Profile;
-
-    /** The DEFAULT slot's stored credential. */
-    stored: { provider: "gh-token" | "copilot"; token: string } | null;
-
-    /** The default profile's `passthrough` setting before the launch; absent leaves it unset. */
-    passthrough?: "on" | "off";
-
-    /** A spy answering this id, or the real selector over a probe fetch that accepts. */
-    identity: { spy: string | null } | "real";
-
-    /** The credential handed to the daemon, or the refusal (no daemon is spawned). */
-    credential: Launched | { refused: string };
-
-    /** The tokens the spy was asked about, in order; the real selector leaves it empty. */
-    probedTokens: string[];
-  }> = [
-    {
-      // The daemon exchanges the token itself, and the codex identity (no id header) is what the
-      // client-headers shim applies upstream: one identity per credential, passthrough or not.
-      name: "copilot device-flow token: no passthrough, probed identity",
-      profile: null,
-      stored: { provider: "copilot", token: "gho_device_flow" },
-      identity: { spy: null },
-      credential: {
-        kind: "token",
-        token: "gho_device_flow",
-        clientHeaders: daemonClientHeaders(UA, null),
-      },
-      probedTokens: ["gho_device_flow"],
-    },
-    {
-      name: "passthrough off overrides even a PAT; the identity is selected all the same",
-      profile: null,
-      stored: { provider: "gh-token", token: "ghp_forced_off" },
-      passthrough: "off",
-      identity: { spy: COPILOT_CLI_INTEGRATION_ID },
-      credential: {
-        kind: "token",
-        token: "ghp_forced_off",
-        clientHeaders: daemonClientHeaders(UA, COPILOT_CLI_INTEGRATION_ID),
-      },
-      probedTokens: ["ghp_forced_off"],
-    },
-    {
-      // The real selector: every credential is probed, and the codex identity is accepted first.
-      name: "passthrough on forces the shim for a non-PAT token, probed like any credential",
-      profile: null,
-      stored: { provider: "gh-token", token: "ghu_user_to_server" },
-      passthrough: "on",
-      identity: "real",
-      credential: {
-        kind: "pat",
-        token: "ghu_user_to_server",
-        clientHeaders: daemonClientHeaders(UA, null),
-      },
-      probedTokens: [],
-    },
-    {
-      // The daemon never logs in on its own: no credential is a refusal naming the login, on a
-      // TTY or headless alike, before anything is probed or spawned.
-      name: "nothing resolved: refused with the `agent auth` hint, nothing probed",
-      profile: null,
-      stored: null,
-      identity: { spy: null },
-      credential: {
-        refused:
-          "cannot start the proxy without a credential: no GitHub credential configured - run `agent auth` to log in",
-      },
-      probedTokens: [],
-    },
-    {
-      // Hard-empty, not the default token: a named profile NEVER falls back to the default
-      // credential, and one that was never created is named as such (not sent to `agent auth`).
-      name: "a named profile never falls back to the default credential",
-      profile: WORK,
-      stored: { provider: "gh-token", token: "ghp_default_only" },
-      identity: { spy: COPILOT_CLI_INTEGRATION_ID },
-      credential: {
-        refused: [
-          "no such profile 'work'.",
-          "  no profiles exist",
-          "Fix:",
-          "  agent profile work add --direct|--proxy  create it",
-        ].join("\n"),
-      },
-      probedTokens: [],
-    },
-  ];
-  for (const row of rows) {
+  for (const row of LAUNCH_ROWS) {
     dir = removeDir(dir);
     resetIntegrationIdentityCache();
     setIntegrationProbeFetch(null);
@@ -385,7 +393,7 @@ test("resolveLaunchCredential: PAT + real probe -- the injected fetch's accepted
   new Credential().store("gh-token", "github_pat_finegrained");
   // Mirrors the live endpoint: a PAT under the codex identity draws the 400 below, the CLI id is accepted.
   const stub: ProbeFetch = (input, init) => {
-    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    const url = requestUrl(input);
     if (url.includes("/copilot_internal/user")) {
       return Promise.resolve(new Response(JSON.stringify({}), { status: 200 }));
     }
@@ -1437,157 +1445,157 @@ function spawnInertChild(): Bun.Subprocess {
   });
 }
 
-describe("unproven tracked-pid identity scans", () => {
-  test("classifyOwnedDaemonPid: confirms our daemon-shaped child, denies self and a dead pid", async () => {
+// --- unproven tracked-pid identity scans ---------------------------------------------
+
+test("classifyOwnedDaemonPid: confirms our daemon-shaped child, denies self and a dead pid", async () => {
+  tmpHome();
+  // The lockless daemon-shaped fake (argv signature, no daemon.lock) -- the shape
+  // the courtesy stop's default classifier must confirm as OURS.
+  const child = spawnDaemonShapedChild(join(ROOT, "test", "copilot-api-fake.mjs"));
+  try {
+    await until(async () => (await classifyOwnedDaemonPid(child.pid)) === "yes");
+    // Controls: a live NON-daemon (this test process) and a dead pid read "no".
+    expect(await classifyOwnedDaemonPid(process.pid)).toBe("no");
+    expect(await classifyOwnedDaemonPid(DEAD_PID)).toBe("no");
+  } finally {
+    await killAndAwaitExit(child.pid);
+  }
+}, 30_000);
+
+// (classifier verdict) -> the plan and whether the skip is said. A wrong row stops a pid whose
+// identity was never proven, or flattens a FAILED look into a silent "proven not ours".
+test("planCleanup: 'yes' plans the stop, 'no' skips silently, a FAILED scan skips but SAYS so; the clear always lands", async () => {
+  const rows: Array<{
+    verdict: "yes" | "no" | "unknown";
+    plan: CleanupAction[];
+    saysSkip: boolean;
+  }> = [
+    {
+      verdict: "yes",
+      plan: [
+        { kind: "stop-tracked", pid: DEAD_PID },
+        { kind: "clear-tracking", pid: DEAD_PID },
+      ],
+      saysSkip: false,
+    },
+    { verdict: "no", plan: [{ kind: "clear-tracking", pid: DEAD_PID }], saysSkip: false },
+    { verdict: "unknown", plan: [{ kind: "clear-tracking", pid: DEAD_PID }], saysSkip: true },
+  ];
+  const home = tmpHome();
+  writeRunState({ pid: DEAD_PID, port: 4141 });
+  // The skip in the scannable shape at 80 columns: the why is evidence, the way out a command.
+  const skip = [
+    `Skipping the tracked-pid stop (pid=${DEAD_PID}).`,
+    "  identity unproven by the process scan",
+    "  no signal sent by this stop (fail-closed)",
+    "Fix:",
+    ...(process.platform === "win32"
+      ? [
+          `  taskkill /F /PID ${DEAD_PID}  if it remains running, from a shell that can read`,
+          "                               the process table",
+        ]
+      : [
+          `  kill ${DEAD_PID}  if it remains running, from a shell that can read the process`,
+          "                   table",
+        ]),
+    "",
+  ].join("\n");
+  for (const row of rows) {
+    let plan: CleanupAction[] = [];
+    const out = await withColumns(80, () =>
+      captureAllWrites(async () => {
+        plan = await planCleanup(home, null, new CopilotEnvRunState(), NO_ORPHANS, () =>
+          Promise.resolve(row.verdict),
+        );
+      }),
+    );
+    expect({ verdict: row.verdict, plan, saysSkip: out.includes(skip) }).toEqual({
+      verdict: row.verdict,
+      plan: row.plan,
+      saysSkip: row.saysSkip,
+    });
+  }
+});
+
+// (boundary re-scan verdict, after a plan-time CONFIRM) -> whether the SIGTERM lands and whether
+// the skip is said. A wrong row signals a pid the boundary could not re-prove, or stops saying so.
+test("cleanupExistingProxies: a boundary scan that CONFIRMS stops the daemon, one that FAILS skips the SIGTERM and says so", async () => {
+  const rows: Array<{ verdict: "yes" | "unknown"; stopped: boolean; saysSkip: boolean }> = [
+    { verdict: "yes", stopped: true, saysSkip: false },
+    { verdict: "unknown", stopped: false, saysSkip: true },
+  ];
+  for (const row of rows) {
+    dir = removeDir(dir);
     tmpHome();
-    // The lockless daemon-shaped fake (argv signature, no daemon.lock) -- the shape
-    // the courtesy stop's default classifier must confirm as OURS.
-    const child = spawnDaemonShapedChild(join(ROOT, "test", "copilot-api-fake.mjs"));
+    const child = spawnInertChild();
     try {
-      await until(async () => (await classifyOwnedDaemonPid(child.pid)) === "yes");
-      // Controls: a live NON-daemon (this test process) and a dead pid read "no".
-      expect(await classifyOwnedDaemonPid(process.pid)).toBe("no");
-      expect(await classifyOwnedDaemonPid(DEAD_PID)).toBe("no");
+      writeRunState({ pid: child.pid, port: 4141 });
+      let calls = 0;
+      const out = await captureAllWrites(async () => {
+        await withStartLock(() =>
+          cleanupExistingProxies(null, new CopilotEnvRunState(), NO_ORPHANS, () =>
+            Promise.resolve(++calls === 1 ? ("yes" as const) : row.verdict),
+          ),
+        );
+      });
+      const exitDeadline = Date.now() + 10_000;
+      if (row.stopped) await until(() => !pidAlive(child.pid) || Date.now() > exitDeadline);
+      expect({
+        verdict: row.verdict,
+        alive: pidAlive(child.pid),
+        saysStop: out.includes(`Stopping tracked proxy (pid=${child.pid})`),
+        saysSkip: out.includes(`Skipping the tracked-pid stop (pid=${child.pid})`),
+        tracked: new CopilotEnvRunState().read().pid,
+      }).toEqual({
+        verdict: row.verdict,
+        alive: !row.stopped,
+        saysStop: row.stopped,
+        saysSkip: row.saysSkip,
+        tracked: undefined,
+      });
     } finally {
       await killAndAwaitExit(child.pid);
     }
-  }, 30_000);
+  }
+}, 60_000);
 
-  // (classifier verdict) -> the plan and whether the skip is said. A wrong row stops a pid whose
-  // identity was never proven, or flattens a FAILED look into a silent "proven not ours".
-  test("planCleanup: 'yes' plans the stop, 'no' skips silently, a FAILED scan skips but SAYS so; the clear always lands", async () => {
-    const rows: Array<{
-      verdict: "yes" | "no" | "unknown";
-      plan: CleanupAction[];
-      saysSkip: boolean;
-    }> = [
-      {
-        verdict: "yes",
-        plan: [
-          { kind: "stop-tracked", pid: DEAD_PID },
-          { kind: "clear-tracking", pid: DEAD_PID },
-        ],
-        saysSkip: false,
-      },
-      { verdict: "no", plan: [{ kind: "clear-tracking", pid: DEAD_PID }], saysSkip: false },
-      { verdict: "unknown", plan: [{ kind: "clear-tracking", pid: DEAD_PID }], saysSkip: true },
-    ];
-    const home = tmpHome();
-    writeRunState({ pid: DEAD_PID, port: 4141 });
-    // The skip in the scannable shape at 80 columns: the why is evidence, the way out a command.
-    const skip = [
-      `Skipping the tracked-pid stop (pid=${DEAD_PID}).`,
-      "  identity unproven by the process scan",
-      "  no signal sent by this stop (fail-closed)",
-      "Fix:",
-      ...(process.platform === "win32"
-        ? [
-            `  taskkill /F /PID ${DEAD_PID}  if it remains running, from a shell that can read`,
-            "                               the process table",
-          ]
-        : [
-            `  kill ${DEAD_PID}  if it remains running, from a shell that can read the process`,
-            "                   table",
-          ]),
-      "",
-    ].join("\n");
-    for (const row of rows) {
-      let plan: CleanupAction[] = [];
-      const out = await withColumns(80, () =>
-        captureAllWrites(async () => {
-          plan = await planCleanup(home, null, new CopilotEnvRunState(), NO_ORPHANS, () =>
-            Promise.resolve(row.verdict),
-          );
-        }),
-      );
-      expect({ verdict: row.verdict, plan, saysSkip: out.includes(skip) }).toEqual({
-        verdict: row.verdict,
-        plan: row.plan,
-        saysSkip: row.saysSkip,
+// Windows has no trappable SIGTERM (process.kill maps to TerminateProcess), so the
+// escalation branch this pins is only reachable on POSIX.
+test.skipIf(process.platform === "win32")(
+  "cleanupExistingProxies hands ITS classifier to the SIGKILL escalation (one identity standard)",
+  async () => {
+    tmpHome();
+    const ready = join(dir, "term-trap-ready");
+    // A TERM-trapping child: only the escalation's SIGKILL can end it, and that kill
+    // must re-prove identity through the SAME injected seam as the plan and the TERM.
+    const child = spawnChild(process.execPath, {
+      args: [
+        "-e",
+        `process.on("SIGTERM", () => {}); require("node:fs").writeFileSync(${CHILD_VALUES}.ready, "r"); setTimeout(() => {}, 60000);`,
+      ],
+      env: childValuesEnv({ ready }),
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+    try {
+      await until(() => existsSync(ready));
+      writeRunState({ pid: child.pid, port: 4141 });
+      await captureAllWrites(async () => {
+        await withStartLock(() =>
+          cleanupExistingProxies(null, new CopilotEnvRunState(), NO_ORPHANS, () =>
+            Promise.resolve("yes" as const),
+          ),
+        );
       });
+      // SIGKILLed: the owner-blind default classifier reads this inert child as "no" and
+      // would refuse the escalation, so only the injected seam ends it.
+      await until(() => !pidAlive(child.pid));
+    } finally {
+      await killAndAwaitExit(child.pid);
     }
-  });
-
-  // (boundary re-scan verdict, after a plan-time CONFIRM) -> whether the SIGTERM lands and whether
-  // the skip is said. A wrong row signals a pid the boundary could not re-prove, or stops saying so.
-  test("cleanupExistingProxies: a boundary scan that CONFIRMS stops the daemon, one that FAILS skips the SIGTERM and says so", async () => {
-    const rows: Array<{ verdict: "yes" | "unknown"; stopped: boolean; saysSkip: boolean }> = [
-      { verdict: "yes", stopped: true, saysSkip: false },
-      { verdict: "unknown", stopped: false, saysSkip: true },
-    ];
-    for (const row of rows) {
-      dir = removeDir(dir);
-      tmpHome();
-      const child = spawnInertChild();
-      try {
-        writeRunState({ pid: child.pid, port: 4141 });
-        let calls = 0;
-        const out = await captureAllWrites(async () => {
-          await withStartLock(() =>
-            cleanupExistingProxies(null, new CopilotEnvRunState(), NO_ORPHANS, () =>
-              Promise.resolve(++calls === 1 ? ("yes" as const) : row.verdict),
-            ),
-          );
-        });
-        const exitDeadline = Date.now() + 10_000;
-        if (row.stopped) await until(() => !pidAlive(child.pid) || Date.now() > exitDeadline);
-        expect({
-          verdict: row.verdict,
-          alive: pidAlive(child.pid),
-          saysStop: out.includes(`Stopping tracked proxy (pid=${child.pid})`),
-          saysSkip: out.includes(`Skipping the tracked-pid stop (pid=${child.pid})`),
-          tracked: new CopilotEnvRunState().read().pid,
-        }).toEqual({
-          verdict: row.verdict,
-          alive: !row.stopped,
-          saysStop: row.stopped,
-          saysSkip: row.saysSkip,
-          tracked: undefined,
-        });
-      } finally {
-        await killAndAwaitExit(child.pid);
-      }
-    }
-  }, 60_000);
-
-  // Windows has no trappable SIGTERM (process.kill maps to TerminateProcess), so the
-  // escalation branch this pins is only reachable on POSIX.
-  test.skipIf(process.platform === "win32")(
-    "cleanupExistingProxies hands ITS classifier to the SIGKILL escalation (one identity standard)",
-    async () => {
-      tmpHome();
-      const ready = join(dir, "term-trap-ready");
-      // A TERM-trapping child: only the escalation's SIGKILL can end it, and that kill
-      // must re-prove identity through the SAME injected seam as the plan and the TERM.
-      const child = spawnChild(process.execPath, {
-        args: [
-          "-e",
-          `process.on("SIGTERM", () => {}); require("node:fs").writeFileSync(${CHILD_VALUES}.ready, "r"); setTimeout(() => {}, 60000);`,
-        ],
-        env: childValuesEnv({ ready }),
-        stdout: "ignore",
-        stderr: "ignore",
-      });
-      try {
-        await until(() => existsSync(ready));
-        writeRunState({ pid: child.pid, port: 4141 });
-        await captureAllWrites(async () => {
-          await withStartLock(() =>
-            cleanupExistingProxies(null, new CopilotEnvRunState(), NO_ORPHANS, () =>
-              Promise.resolve("yes" as const),
-            ),
-          );
-        });
-        // SIGKILLed: the owner-blind default classifier reads this inert child as "no" and
-        // would refuse the escalation, so only the injected seam ends it.
-        await until(() => !pidAlive(child.pid));
-      } finally {
-        await killAndAwaitExit(child.pid);
-      }
-    },
-    30_000,
-  );
-});
+  },
+  30_000,
+);
 
 // The start preview runs the floor gate's read-only half: with nothing recorded it names the
 // install the live gate would make and makes none, so a dry run reaches no registry and writes

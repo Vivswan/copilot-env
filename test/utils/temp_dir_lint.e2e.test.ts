@@ -7,7 +7,7 @@ import {
 import { expect, test } from "../helpers/testing.ts";
 
 // A no-op rule passes `biome ci` exactly as quietly as a clean tree does, so the rule's teeth
-// and the scope biome.json gives it are pinned here rather than assumed.
+// and the scope biome.local.jsonc gives it are pinned here rather than assumed.
 
 /** The rule under test: its grit file, checkout-relative. */
 const PLUGIN = "biome/no_unmanaged_temp_dir.grit";
@@ -65,7 +65,7 @@ test("no-unmanaged-temp-dir: every route to a temp path is rejected, and nothing
   expect(SOURCES.map(([source], i) => [source, counts[i]])).toEqual(SOURCES);
 });
 
-test("biome.json scopes the rule to the test tree, minus the helper that owns the root", () => {
+test("biome.local.jsonc scopes the rule to the test tree, minus the helper that owns the root", () => {
   const raw = 'import { mkdtempSync } from "node:fs";';
   const files = {
     "test/example.test.ts": raw,

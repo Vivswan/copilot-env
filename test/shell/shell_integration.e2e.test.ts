@@ -1,3 +1,4 @@
+import { afterEach, beforeEach } from "bun:test";
 import {
   chmodSync,
   copyFileSync,
@@ -22,7 +23,7 @@ import {
 } from "../../src/shell/integration.ts";
 import { quotePosix, quotePowerShell } from "../../src/utils/shell_quote.ts";
 import { ROOT, runCli, runSync } from "../helpers/run.ts";
-import { afterEach, beforeEach, expect, tempDir, test } from "../helpers/testing.ts";
+import { expect, tempDir, test } from "../helpers/testing.ts";
 
 // The POSIX path runs the real CLI under a throwaway $HOME so the real rc files are never touched.
 // On win32 the command takes the Windows code path (writes the PS $PROFILE, not an rc file), so the

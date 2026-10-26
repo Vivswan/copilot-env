@@ -53,6 +53,13 @@ export interface AvailableModel {
   endpoints: string[];
 }
 
+/** The proxy's own `/models` admission (picker-enabled, policy not disabled) narrowed to chat. */
+function isPickableChatModel(entry: Record<string, unknown>): boolean {
+  if (entry.model_picker_enabled !== true) return false;
+  if (isRecord(entry.policy) && entry.policy.state === "disabled") return false;
+  return isRecord(entry.capabilities) && entry.capabilities.type === "chat";
+}
+
 /**
  * The models a daemon or a Direct agent can address, as the proxy's own `/models` admits them
  * (a policy not disabled, picker-enabled) and narrowed to chat: an embeddings model answers no
@@ -64,9 +71,7 @@ export function parseAvailableModels(body: unknown): AvailableModel[] {
   const out: AvailableModel[] = [];
   for (const entry of data) {
     if (!isRecord(entry) || typeof entry.id !== "string" || entry.id === "") continue;
-    if (entry.model_picker_enabled !== true) continue;
-    if (isRecord(entry.policy) && entry.policy.state === "disabled") continue;
-    if (!isRecord(entry.capabilities) || entry.capabilities.type !== "chat") continue;
+    if (!isPickableChatModel(entry)) continue;
 
     const endpoints = Array.isArray(entry.supported_endpoints) ? entry.supported_endpoints : [];
     out.push({
@@ -150,19 +155,9 @@ function compareVersion(a: string, b: string): number {
   return 0;
 }
 
-/**
- * Deterministic; identity mappings are skipped because the proxy resolves an unmapped exact catalog id itself.
- *   claude-opus-4-7-high            -> claude-opus-4.7-high
- *   claude-opus-4-7[1m]             -> the family+version's 1m sibling, else the base id
- *   <family>, <family>[1m]          -> newest of that family, preferring its 1m sibling
- *   claude-latest                   -> newest of the most capable frontier family present (CLAUDE_FAMILY_RANK);
- *                                      reduced families (sonnet, haiku) never qualify, so with no frontier
- *                                      family there is no `claude-latest`
- *   gpt-latest                      -> newest non-reduced GPT; bare beats qualified on ties
- */
-export function generateAliases(catalog: CatalogModel[]): Record<string, string> {
-  const parsed = parseClaudeModels(catalog);
-
+/** The dash and dot spellings of every model and of its `[1m]` sibling (the base id when it has
+ *  none); an alias equal to the id itself is skipped, since the proxy resolves an exact catalog id. */
+function spellingAliases(parsed: ParsedModel[]): Record<string, string> {
   const oneMByKey = new Map<string, string>();
   for (const p of parsed) {
     if (p.is1m) {
@@ -179,18 +174,24 @@ export function generateAliases(catalog: CatalogModel[]): Record<string, string>
   };
   for (const p of parsed) {
     const dashVersion = p.version.replace(".", "-");
-    if (p.qualifier === null) {
-      put(`claude-${p.family}-${dashVersion}`, p.id);
-      const oneM = oneMByKey.get(`${p.family}|${p.version}`) ?? p.id;
-      put(`claude-${p.family}-${dashVersion}${ONE_M_SUFFIX}`, oneM);
-      if (dashVersion !== p.version) {
-        put(`claude-${p.family}-${p.version}${ONE_M_SUFFIX}`, oneM);
-      }
-    } else {
+    if (p.qualifier !== null) {
       put(`claude-${p.family}-${dashVersion}-${p.qualifier}`, p.id);
+      continue;
+    }
+    put(`claude-${p.family}-${dashVersion}`, p.id);
+    const oneM = oneMByKey.get(`${p.family}|${p.version}`) ?? p.id;
+    put(`claude-${p.family}-${dashVersion}${ONE_M_SUFFIX}`, oneM);
+    if (dashVersion !== p.version) {
+      put(`claude-${p.family}-${p.version}${ONE_M_SUFFIX}`, oneM);
     }
   }
+  return aliases;
+}
 
+/** `<family>` and `<family>[1m]` for every family present, the newest version preferring its 1m
+ *  sibling. */
+function familyAliases(parsed: ParsedModel[]): Record<string, string> {
+  const aliases: Record<string, string> = {};
   // Sorted so the emitted map's key order is deterministic; a version tie still falls to catalog order.
   const families = [...new Set(parsed.map((p) => p.family))].sort();
   for (const family of families) {
@@ -200,15 +201,37 @@ export function generateAliases(catalog: CatalogModel[]): Record<string, string>
       aliases[`${family}${ONE_M_SUFFIX}`] = pick.id;
     }
   }
+  return aliases;
+}
 
+/** `claude-latest` and its `[1m]` twin: the newest of the most capable frontier family present. */
+function claudeLatestAliases(parsed: ParsedModel[]): Record<string, string> {
   for (const family of CLAUDE_FAMILY_RANK) {
     const pick = newestPreferring1m(parsed, family);
     if (pick) {
-      aliases["claude-latest"] = pick.id;
-      aliases[`claude-latest${ONE_M_SUFFIX}`] = pick.id;
-      break;
+      return { "claude-latest": pick.id, [`claude-latest${ONE_M_SUFFIX}`]: pick.id };
     }
   }
+  return {};
+}
+
+/**
+ * Deterministic; identity mappings are skipped because the proxy resolves an unmapped exact catalog id itself.
+ *   claude-opus-4-7-high            -> claude-opus-4.7-high
+ *   claude-opus-4-7[1m]             -> the family+version's 1m sibling, else the base id
+ *   <family>, <family>[1m]          -> newest of that family, preferring its 1m sibling
+ *   claude-latest                   -> newest of the most capable frontier family present (CLAUDE_FAMILY_RANK);
+ *                                      reduced families (sonnet, haiku) never qualify, so with no frontier
+ *                                      family there is no `claude-latest`
+ *   gpt-latest                      -> newest non-reduced GPT; bare beats qualified on ties
+ */
+export function generateAliases(catalog: CatalogModel[]): Record<string, string> {
+  const parsed = parseClaudeModels(catalog);
+  const aliases: Record<string, string> = {
+    ...spellingAliases(parsed),
+    ...familyAliases(parsed),
+    ...claudeLatestAliases(parsed),
+  };
 
   const gptLatest = newestGpt(catalog);
   if (gptLatest) {

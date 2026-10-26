@@ -27,14 +27,9 @@
 import type { Stats } from "node:fs";
 import { basename, dirname, join, parse, resolve, sep } from "node:path";
 import type { Volume } from "memfs";
+import { RenameRefusedError } from "./fs.ts";
 import * as disk from "./fs_disk.ts";
-import {
-  type DirEntry,
-  type EntryStats,
-  errno,
-  RenameRefusedError,
-  rmDirectoryRefused,
-} from "./fs_disk.ts";
+import { type DirEntry, type EntryStats, errno, rmDirectoryRefused } from "./fs_disk.ts";
 
 /** What the run holds at a key, for the report: a planned file (its text when the run wrote it as
  *  text, else its bytes alone), a directory (fresh: the disk below it is hidden), a link, or a
@@ -60,6 +55,20 @@ interface OverlayWrite {
 }
 
 type Seen = { kind: "own"; stats: EntryStats } | { kind: "disk"; stats: Stats };
+
+/** What the walk does at one component: descends into it (with whether the disk still speaks
+ *  below), or follows the link there. */
+type WalkStep = { kind: "descend"; diskSpeaks: boolean } | { kind: "follow"; target: string };
+
+/** A volume entry a rename carries: its key relative to the moved root (`rel`; the root is ""),
+ *  the same path in the entries' own names (`name`), and its flags. */
+interface MovedEntry {
+  rel: string;
+  name: string;
+  dir: boolean;
+  text: boolean;
+  mode: number | undefined;
+}
 
 /** The kernel's bound on a chain of links. */
 const MAX_LINK_HOPS = 40;
@@ -119,6 +128,30 @@ function umask(): number {
   } catch {
     return 0;
   }
+}
+
+/** Windows opens a directory for writing with EINVAL, and refuses the staged rename over one with
+ *  the EPERM the real writer wraps as RenameRefusedError (the installer answers that class with a
+ *  direct write). */
+function directoryWriteRefusal(path: string, replace: boolean): Error {
+  if (replace) {
+    const staged = join(dirname(path), `${basename(path)}.tmp.${process.pid}`);
+    if (WINDOWS) return new RenameRefusedError(path, errno("EPERM", "rename", staged, path));
+    return errno("EISDIR", "rename", staged, path);
+  }
+  // bun's node:fs on Windows opens the directory and fails the write, with no path in the
+  // message; node refused the open with EINVAL. The dry run says what this runtime says.
+  if (WINDOWS) return errno("EISDIR", "write", null);
+  return errno("EISDIR", "open", path);
+}
+
+/** The mode a landed file reports: an explicit mode, or a fresh inode (nothing there, a staged
+ *  write, a link replaced), lands a fresh file's; an in-place write over a file keeps its mode. */
+function landedMode(write: OverlayWrite, seen: Seen | null): number {
+  if (write.mode !== undefined || seen === null || write.replace || seen.stats.isSymbolicLink()) {
+    return freshMode(write.mode, "file");
+  }
+  return seen.stats.mode & 0o777;
 }
 
 /** An absolute path as its root (`/`, `C:\`) and the components under it. resolve() has already
@@ -416,38 +449,44 @@ export class Overlay {
       const part = pending.shift() as string;
       const next = foldKey(join(cur, part));
       if (WINDOWS) this.walked.set(next, part);
-      let target: string | null = null;
-      if (this.gone.has(next)) {
-        diskSpeaks = false;
+      const step = this.walkStep(next, { diskSpeaks, stopAtLink: !follow && pending.length === 0 });
+      if (step.kind === "descend") {
         cur = next;
+        diskSpeaks = step.diskSpeaks;
         continue;
       }
-      if (this.rows.has(next)) {
-        const own = this.vol.lstatSync(volPath(next));
-        if (!own.isSymbolicLink() || (!follow && pending.length === 0)) {
-          diskSpeaks = own.isDirectory() && !this.fresh.has(next);
-          cur = next;
-          continue;
-        }
-        target = String(this.vol.readlinkSync(volPath(next)));
-      } else {
-        cur = next;
-        if (!diskSpeaks || (!follow && pending.length === 0)) continue;
-        try {
-          if (disk.lstat(next).isSymbolicLink()) target = disk.readlink(next);
-        } catch {
-          // Absent or under a file: the tail stays as spelled and view() judges it.
-        }
-        if (target === null) continue;
-      }
       // The kernel's own bound on a chain of links (a link to itself included).
-      if (++hops > MAX_LINK_HOPS) throw errno("ELOOP", syscall, path);
-      const restart = split(resolve(dirname(next), target));
+      hops += 1;
+      if (hops > MAX_LINK_HOPS) throw errno("ELOOP", syscall, path);
+      const restart = split(resolve(dirname(next), step.target));
       cur = restart.root;
       pending = [...restart.parts, ...pending];
       diskSpeaks = true;
     }
     return cur;
+  }
+
+  /** A tombstoned or planned path is never a disk link to follow; a disk link is followed only
+   *  while the disk speaks there; `stopAtLink` keeps the last component a link for the callers that
+   *  act on the link itself. */
+  private walkStep(next: string, walk: { diskSpeaks: boolean; stopAtLink: boolean }): WalkStep {
+    if (this.gone.has(next)) return { kind: "descend", diskSpeaks: false };
+    if (this.rows.has(next)) {
+      const own = this.vol.lstatSync(volPath(next));
+      if (!own.isSymbolicLink() || walk.stopAtLink) {
+        return { kind: "descend", diskSpeaks: own.isDirectory() && !this.fresh.has(next) };
+      }
+      return { kind: "follow", target: String(this.vol.readlinkSync(volPath(next))) };
+    }
+    if (!walk.diskSpeaks || walk.stopAtLink) {
+      return { kind: "descend", diskSpeaks: walk.diskSpeaks };
+    }
+    try {
+      if (disk.lstat(next).isSymbolicLink()) return { kind: "follow", target: disk.readlink(next) };
+    } catch {
+      // Absent or under a file: the tail stays as spelled and view() judges it.
+    }
+    return { kind: "descend", diskSpeaks: walk.diskSpeaks };
   }
 
   /** Whether the disk still speaks for `key`, judged by the nearest ancestor the run planned or
@@ -617,24 +656,8 @@ export class Overlay {
     const key = this.key(path, syscall, !write.replace);
     this.landingParent(key, "open", path);
     const seen = this.view(key, "open", path, !write.replace);
-    // Windows opens a directory for writing with EINVAL, and refuses the staged rename over one
-    // with the EPERM the real writer wraps as RenameRefusedError (the installer answers that class
-    // with a direct write).
-    if (seen?.stats.isDirectory()) {
-      if (write.replace) {
-        const staged = join(dirname(path), `${basename(path)}.tmp.${process.pid}`);
-        if (WINDOWS) throw new RenameRefusedError(path, errno("EPERM", "rename", staged, path));
-        throw errno("EISDIR", "rename", staged, path);
-      }
-      // bun's node:fs on Windows opens the directory and fails the write, with no path in the
-      // message; node refused the open with EINVAL. The dry run says what this runtime says.
-      if (WINDOWS) throw errno("EISDIR", "write", null);
-      throw errno("EISDIR", "open", path);
-    }
-    const mode =
-      write.mode !== undefined || seen === null || write.replace || seen.stats.isSymbolicLink()
-        ? freshMode(write.mode, "file")
-        : seen.stats.mode & 0o777;
+    if (seen?.stats.isDirectory()) throw directoryWriteRefusal(path, write.replace === true);
+    const mode = landedMode(write, seen);
     const target = volPath(key);
     this.scaffold(dirname(key));
     // A staged write over a planned link replaces the link itself.
@@ -645,53 +668,65 @@ export class Overlay {
     this.modes.set(key, mode);
     if (text) this.texts.add(key);
     else this.texts.delete(key);
+    this.declareSecrets(key, write);
+    this.set(key, resolve(path));
+  }
+
+  /** A key once declared secret stays so for the run, whether or not a later writer repeats it. */
+  private declareSecrets(key: string, write: OverlayWrite): void {
     if (write.secretKeys !== undefined) {
       const declared = this.secrets.get(key) ?? new Set<string>();
       for (const k of write.secretKeys) declared.add(k);
       this.secrets.set(key, declared);
     }
     if (write.secret) this.secretFiles.add(key);
-    this.set(key, resolve(path));
   }
 
   /** Always recursive (`mkdir -p`): an existing directory is a no-op, a regular file at the path or
    *  above it fails as node's recursive mkdir does. */
   mkdir(path: string, mode?: number): void {
     const asked = this.key(path, "mkdir");
-    // A link on the way whose target is gone (a `~/.local` link whose target the run removed) is
-    // what mkdir meets: node's recursive mkdir reports the missing target as ENOENT rather than
-    // creating it behind the link.
+    this.refuseDanglingLink(path);
+    for (const [dir, said] of this.missingAncestors(asked, path)) {
+      this.scaffold(dirname(dir));
+      this.vol.mkdirSync(volPath(dir));
+      this.modes.set(dir, freshMode(mode, "dir"));
+      this.fresh.add(dir);
+      this.set(dir, said);
+    }
+  }
+
+  /** A link on the way whose target is gone (a `~/.local` link whose target the run removed) is
+   *  what mkdir meets: node's recursive mkdir reports the missing target as ENOENT rather than
+   *  creating it behind the link. */
+  private refuseDanglingLink(path: string): void {
     const spelled = split(resolve(path));
-    for (let cur = spelled.root, i = 0; i < spelled.parts.length; i++) {
-      cur = join(cur, spelled.parts[i] as string);
+    let cur = spelled.root;
+    for (const part of spelled.parts) {
+      cur = join(cur, part);
       const link = this.view(this.key(cur, "mkdir", false), "mkdir", path, false);
-      if (
-        link?.stats.isSymbolicLink() &&
-        this.view(this.key(cur, "mkdir"), "mkdir", path) === null
-      ) {
+      if (!link?.stats.isSymbolicLink()) continue;
+      if (this.view(this.key(cur, "mkdir"), "mkdir", path) === null) {
         throw errno("ENOENT", "mkdir", path);
       }
     }
+  }
+
+  /** The directories mkdir makes, outermost first, each with the path the caller spelled it by:
+   *  the canonical and the spelled path climb together, so an ancestor made here is named as the
+   *  caller spelled it. */
+  private missingAncestors(asked: string, path: string): [string, string][] {
     const missing: [string, string][] = [];
-    // The canonical and the spelled path climb together, so an ancestor made here is named as the
-    // caller spelled it.
     for (let cur = asked, said = resolve(path); ; cur = dirname(cur), said = dirname(said)) {
       const seen = this.view(cur, "mkdir", path);
       if (seen !== null) {
         if (!seen.stats.isDirectory()) {
           throw errno(cur === asked ? "EEXIST" : "ENOTDIR", "mkdir", path);
         }
-        break;
+        return missing;
       }
       missing.unshift([cur, said]);
-      if (dirname(cur) === cur) break;
-    }
-    for (const [dir, said] of missing) {
-      this.scaffold(dirname(dir));
-      this.vol.mkdirSync(volPath(dir));
-      this.modes.set(dir, freshMode(mode, "dir"));
-      this.fresh.add(dir);
-      this.set(dir, said);
+      if (dirname(cur) === cur) return missing;
     }
   }
 
@@ -808,44 +843,56 @@ export class Overlay {
     this.dropBelow(dst);
     this.unplan(dst);
     this.scaffold(dirname(dst));
-    // memfs's rename follows a link at the source; a link moves as its target text.
-    if (source.stats.isSymbolicLink()) {
-      const target = String(this.vol.readlinkSync(volPath(src)));
-      this.vol.unlinkSync(volPath(src));
-      this.vol.symlinkSync(target, volPath(dst));
-    } else {
+    this.moveInVolume(src, dst, source.stats.isSymbolicLink());
+    this.rekeyMoved(moved, src, dst, resolve(to));
+  }
+
+  /** memfs's rename follows a link at the source; a link moves as its target text. */
+  private moveInVolume(src: string, dst: string, link: boolean): void {
+    if (!link) {
       this.vol.renameSync(volPath(src), volPath(dst));
+      return;
     }
-    const spelled = resolve(to);
+    const target = String(this.vol.readlinkSync(volPath(src)));
+    this.vol.unlinkSync(volPath(src));
+    this.vol.symlinkSync(target, volPath(dst));
+  }
+
+  /** The moved entries' rows and flags under their keys below `dst`, named as `spelled` names the
+   *  root. */
+  private rekeyMoved(moved: MovedEntry[], src: string, dst: string, spelled: string): void {
     for (const entry of moved) {
       const was = entry.rel === "" ? src : join(src, entry.rel);
       const key = entry.rel === "" ? dst : join(dst, entry.rel);
-      this.set(key, entry.rel === "" ? spelled : join(spelled, entry.name));
-      if (WINDOWS && entry.rel !== "") this.spellings.set(key, basename(entry.name));
-      // The destination's own flags go with what stood there: the moved entry's are the truth.
-      if (entry.dir) this.fresh.add(key);
-      else this.fresh.delete(key);
-      if (entry.text) this.texts.add(key);
-      else this.texts.delete(key);
-      if (entry.mode === undefined) this.modes.delete(key);
-      else this.modes.set(key, entry.mode);
-      // What a path declared secret travels with its content, so the report at the new path
-      // redacts the same values.
-      this.carrySecrets(was, key);
+      const said = entry.rel === "" ? spelled : join(spelled, entry.name);
+      this.placeMoved(entry, { was, key, said });
     }
   }
 
-  /** Every volume entry at and below `key`: its key relative to `key` (`rel`; the root is ""), the
-   *  same path in the entries' own names (`name`), and its flags, in the order the report lists a
-   *  moved tree: each directory before its children, children sorted. */
-  private subtree(
-    key: string,
-    rel = "",
-    name = "",
-  ): { rel: string; name: string; dir: boolean; text: boolean; mode: number | undefined }[] {
+  /** The destination's own flags go with what stood there: the moved entry's are the truth. */
+  private placeMoved(entry: MovedEntry, at: { was: string; key: string; said: string }): void {
+    const { was, key, said } = at;
+    this.set(key, said);
+    if (WINDOWS && entry.rel !== "") this.spellings.set(key, basename(entry.name));
+    if (entry.dir) this.fresh.add(key);
+    else this.fresh.delete(key);
+    if (entry.text) this.texts.add(key);
+    else this.texts.delete(key);
+    if (entry.mode === undefined) this.modes.delete(key);
+    else this.modes.set(key, entry.mode);
+    // What a path declared secret travels with its content, so the report at the new path
+    // redacts the same values.
+    this.carrySecrets(was, key);
+  }
+
+  /** Every volume entry at and below `key`, in the order the report lists a moved tree: each
+   *  directory before its children, children sorted. */
+  private subtree(key: string, rel = "", name = ""): MovedEntry[] {
     const path = volPath(key);
     const dir = this.vol.lstatSync(path).isDirectory();
-    const out = [{ rel, name, dir, text: this.texts.has(key), mode: this.modes.get(key) }];
+    const out: MovedEntry[] = [
+      { rel, name, dir, text: this.texts.has(key), mode: this.modes.get(key) },
+    ];
     if (!dir) return out;
     for (const child of this.volNames(path).sort()) {
       const childKey = join(key, child);

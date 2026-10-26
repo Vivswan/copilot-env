@@ -143,10 +143,14 @@ function testFiles(selection: Selection): string[] {
     const path = resolve(arg);
     const entry = statSync(path, { throwIfNoEntry: false });
     if (entry === undefined) throw new Error(`no such test file or directory: ${path}`);
-    if (entry.isDirectory()) expanded.push(...testFilesUnder(path));
-    else if (!path.endsWith(TEST_SUFFIX)) {
+    if (entry.isDirectory()) {
+      expanded.push(...testFilesUnder(path));
+      continue;
+    }
+    if (!path.endsWith(TEST_SUFFIX)) {
       throw new Error(`not a test file (${TEST_GLOB}): ${displayName(path)}`);
-    } else named.push(path);
+    }
+    named.push(path);
   }
   if (selection.paths.length === 0) expanded.push(...testFilesUnder(TEST_DIR));
   if (selection.unit) {
@@ -230,16 +234,73 @@ function childHome(): { home: string; dispose: () => void } {
 /** Aborted on SIGINT or SIGTERM, so an interrupted run leaves no `bun test` behind. */
 const cancel = new AbortController();
 
+/** Both pipes read into one text, chunks in arrival order. A descendant that inherited the pipes
+ *  and outlived the child keeps them open: past the grace the readers are cancelled, which
+ *  releases the pipes, so the launcher can exit. */
+function collectOutput(child: Bun.Subprocess<"ignore", "pipe", "pipe">): {
+  text: () => Promise<string>;
+} {
+  const chunks: string[] = [];
+  const readers: ReadableStreamDefaultReader<Uint8Array>[] = [];
+  const collect = async (stream: ReadableStream<Uint8Array>): Promise<void> => {
+    const reader = stream.getReader();
+    readers.push(reader);
+    const decoder = new TextDecoder();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(decoder.decode(value, { stream: true }));
+    }
+    chunks.push(decoder.decode());
+  };
+  const settled = Promise.all([collect(child.stdout), collect(child.stderr)]);
+  return {
+    text: async () => {
+      try {
+        await deadline(settled, PIPE_GRACE_MS);
+      } catch (error) {
+        if (!(error instanceof DOMException && error.name === "TimeoutError")) throw error;
+        for (const reader of readers) await reader.cancel();
+      }
+      return chunks.join("");
+    },
+  };
+}
+
 /**
- * One `bun test` child, killed and failed past the file budget: bun's --timeout covers test bodies
- * only, so a file that never registers one (a module-scope await that never settles) would otherwise
- * hold the run until the workflow's own timeout. A child without bun:test's end-of-run line ended
- * before bun:test reported, whatever ended it and whatever code it exited with.
- *
+ * The exited child's verdict. The crash rerun decides first: a crashed child printed no summary
+ * either, and its second run is the one judged. A budget overrun and a run that ended before
+ * bun:test reported are failed and say so at the end of the output.
  *   `Ran 8 tests across 1 file. [12.00ms]`  -> the line; the singular forms are bun's own
  *   FORCE_COLOR dims the timing              -> matched with the escape codes stripped
  *   stdout and stderr chunks join            -> unanchored, for the reason the panic marker is
  */
+function judge(
+  file: string,
+  exitCode: number,
+  printed: string,
+  overran: boolean,
+  budgetMs: number,
+): Pick<FileResult, "exitCode" | "output" | "crashed"> {
+  if (overran) {
+    const verdict = `ran past the launcher's file budget (${seconds(budgetMs)}) and was killed`;
+    return { exitCode: 1, output: `${printed}\n${displayName(file)} ${verdict}\n`, crashed: false };
+  }
+  if (bunCrashed(exitCode, printed)) return { exitCode, output: printed, crashed: true };
+  if (BUN_SUMMARY_LINE.test(stripVTControlCharacters(printed))) {
+    return { exitCode, output: printed, crashed: false };
+  }
+  const verdict = `exited ${exitCode} before bun:test printed its end-of-run summary (no "Ran N tests across 1 file" line), so the tests it never reached were not judged`;
+  return {
+    exitCode: exitCode === 0 ? 1 : exitCode,
+    output: `${printed}\n${displayName(file)} ${verdict}\n`,
+    crashed: false,
+  };
+}
+
+/** One `bun test` child, killed and failed past the file budget: bun's --timeout covers test
+ *  bodies only, so a file that never registers one (a module-scope await that never settles)
+ *  would otherwise hold the run until the workflow's own timeout. */
 async function runFile(file: string, budgetMs: number): Promise<FileResult> {
   const started = performance.now();
   const { home, dispose } = childHome();
@@ -256,20 +317,7 @@ async function runFile(file: string, budgetMs: number): Promise<FileResult> {
         killSignal: "SIGKILL",
       },
     );
-    const chunks: string[] = [];
-    const readers: ReadableStreamDefaultReader<Uint8Array>[] = [];
-    const collect = async (stream: ReadableStream<Uint8Array>): Promise<void> => {
-      const reader = stream.getReader();
-      readers.push(reader);
-      const decoder = new TextDecoder();
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        chunks.push(decoder.decode(value, { stream: true }));
-      }
-      chunks.push(decoder.decode());
-    };
-    const settled = Promise.all([collect(child.stdout), collect(child.stderr)]);
+    const output = collectOutput(child);
     let overran = false;
     let killed: Promise<void> = Promise.resolve();
     const timer = setTimeout(() => {
@@ -280,53 +328,34 @@ async function runFile(file: string, budgetMs: number): Promise<FileResult> {
     }, budgetMs);
     const exitCode = await child.exited.finally(() => clearTimeout(timer));
     await killed;
-    // A descendant that inherited the pipes and outlived the child keeps them open: past the
-    // grace the readers are cancelled, which releases the pipes, so the launcher can exit.
-    try {
-      await deadline(settled, PIPE_GRACE_MS);
-    } catch (error) {
-      if (!(error instanceof DOMException && error.name === "TimeoutError")) throw error;
-      for (const reader of readers) await reader.cancel();
-    }
-    const printed = chunks.join("");
-    // The crash rerun decides first: a crashed child printed no summary either, and its second
-    // run is the one judged.
-    const crashed = !overran && bunCrashed(exitCode, printed);
-    const unreported =
-      !overran && !crashed && !BUN_SUMMARY_LINE.test(stripVTControlCharacters(printed));
-    const verdict = overran
-      ? `ran past the launcher's file budget (${seconds(budgetMs)}) and was killed`
-      : unreported
-        ? `exited ${exitCode} before bun:test printed its end-of-run summary (no "Ran N tests across 1 file" line), so the tests it never reached were not judged`
-        : null;
+    const printed = await output.text();
     return {
       file,
-      exitCode: overran || (unreported && exitCode === 0) ? 1 : exitCode,
-      output: verdict === null ? printed : `${printed}\n${displayName(file)} ${verdict}\n`,
+      ...judge(file, exitCode, printed, overran, budgetMs),
       ms: performance.now() - started,
-      crashed,
     };
   } finally {
     dispose();
   }
 }
 
-/** The tool tree-kill lists descendants through on POSIX; killTree checks it is on PATH first. */
-const TREE_LISTER =
-  process.platform === "darwin" ? "pgrep" : process.platform === "linux" ? "ps" : null;
+/** tree-kill's descendant listers on POSIX; killTree checks the platform's is on PATH first. */
+const TREE_LISTERS: Partial<Record<NodeJS.Platform, string>> = { darwin: "pgrep", linux: "ps" };
 
 /** Resolves either way, and the child itself is dead either way: a tree already gone is the
  *  wanted state; a refused tree kill is said and the one pid is killed directly, so the budget
- *  still ends the file, though its descendants may survive. TREE_LISTER is checked first: without
- *  it the listing would be an unhandled spawn error inside the package, not a callback. */
+ *  still ends the file, though its descendants may survive. The platform's TREE_LISTERS tool is
+ *  checked first: without it the listing would be an unhandled spawn error inside the package,
+ *  not a callback. */
 function killTree(child: Bun.Subprocess): Promise<void> {
   const pid = child.pid;
   const alone = (reason: string): void => {
     console.error(`run_tests: ${reason}; killing pid ${pid} alone, so its descendants may survive`);
     child.kill("SIGKILL");
   };
-  if (TREE_LISTER !== null && Bun.which(TREE_LISTER) === null) {
-    alone(`${TREE_LISTER} is not on PATH, so the process tree under pid ${pid} cannot be listed`);
+  const lister = TREE_LISTERS[process.platform];
+  if (lister !== undefined && Bun.which(lister) === null) {
+    alone(`${lister} is not on PATH, so the process tree under pid ${pid} cannot be listed`);
     return Promise.resolve();
   }
   return new Promise((resolve) => {
@@ -371,16 +400,19 @@ function seconds(ms: number): string {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
+function outcome(result: FileResult, retrying?: "retrying"): string {
+  if (retrying) {
+    return `died of a Bun runtime crash (exit ${result.exitCode}), running it once more`;
+  }
+  if (result.exitCode === 0) return "passed";
+  return `failed (exit ${result.exitCode})`;
+}
+
 /** A failed file stays out of the GitHub Actions log group, so the failure shows without a click. */
 function report(result: FileResult, retrying?: "retrying"): void {
   const name = displayName(result.file);
   const passed = result.exitCode === 0;
-  const outcome = retrying
-    ? `died of a Bun runtime crash (exit ${result.exitCode}), running it once more`
-    : passed
-      ? "passed"
-      : `failed (exit ${result.exitCode})`;
-  const header = `${name}: ${outcome} in ${seconds(result.ms)}`;
+  const header = `${name}: ${outcome(result, retrying)} in ${seconds(result.ms)}`;
   const group = passed && process.env.GITHUB_ACTIONS === "true";
   const open = group ? `::group::${header}` : `=== ${header}`;
   const close = group ? "::endgroup::\n" : "\n";

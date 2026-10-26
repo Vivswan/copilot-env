@@ -1,3 +1,4 @@
+import { afterEach } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { UPDATE_LOCK_POLICY } from "../../src/autoupdate/lock.ts";
@@ -8,7 +9,7 @@ import { type LockOutcome, withFileLock } from "../../src/utils/file_lock.ts";
 import { isDue, MILLISECONDS_PER_DAY } from "../../src/utils/time.ts";
 import { packageVersion } from "../../src/utils/version.ts";
 import { envSnapshot } from "../helpers/env.ts";
-import { afterEach, expect, removeDir, tempDir, test } from "../helpers/testing.ts";
+import { expect, removeDir, tempDir, test } from "../helpers/testing.ts";
 
 const restoreEnv = envSnapshot();
 let dir = "";

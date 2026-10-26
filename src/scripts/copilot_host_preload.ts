@@ -33,6 +33,13 @@ function rebodied(res: Response, text: string): Response {
   return new Response(text, { status: res.status, statusText: res.statusText, headers });
 }
 
+/** The URL a fetch argument addresses, in each of its three spellings. */
+function requestUrl(input: Parameters<typeof fetch>[0]): string {
+  if (typeof input === "string") return input;
+  if (input instanceof URL) return input.href;
+  return input.url;
+}
+
 const host = process.env[COPILOT_HOST_ENV]?.trim() || null;
 if (host !== null) {
   const originalFetch = globalThis.fetch;
@@ -40,7 +47,7 @@ if (host !== null) {
     input: Parameters<typeof fetch>[0],
     init?: Parameters<typeof fetch>[1],
   ): Promise<Response> => {
-    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    const url = requestUrl(input);
     const res = await originalFetch(input, init);
     // Only a 2xx WITH a body can carry the field; a null-body status could not be re-bodied anyway.
     if (!url.includes(INTERNAL_PATH) || !res.ok || res.status === 204 || res.body === null) {

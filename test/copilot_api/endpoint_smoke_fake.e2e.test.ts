@@ -5,13 +5,15 @@
 //
 // The smoke's request shape is fixed (no prompt, no custom headers), so the scenario rides on a
 // fetch wrapper that adds the fake's scenario header; the fetch underneath is the real one.
+
+import { afterEach, beforeEach } from "bun:test";
 import { CLAUDE_ENDPOINT_SMOKE } from "../../src/claude/config.ts";
 import { CODEX_ENDPOINT_SMOKE } from "../../src/codex/config.ts";
 import { directSmoke } from "../../src/copilot_api/endpoint_smoke.ts";
 import type { ProbeFetch } from "../../src/copilot_api/integration_identity.ts";
 import { type ScenarioName, startFakeEndpoint } from "../helpers/fake_endpoint.ts";
 import { type FakeModelEndpoint, SCENARIO_HEADER } from "../helpers/fake_model_endpoint.ts";
-import { afterEach, beforeEach, expect, tempDir, test } from "../helpers/testing.ts";
+import { expect, tempDir, test } from "../helpers/testing.ts";
 
 let fake: FakeModelEndpoint;
 let dir = "";

@@ -1,7 +1,7 @@
 // A test may not build its own child process. The per-test deadline (test/helpers/testing.ts)
 // abandons a timed-out body instead of cancelling it, so a child it spawned runs on alongside
 // the tests that follow; test/helpers/run.ts is the suite's one process boundary, and
-// `spawnChild` there registers every child for abort teardown. biome.json scopes the rule to
+// `spawnChild` there registers every child for abort teardown. biome.local.jsonc scopes the rule to
 // test/ minus run.ts and testing.ts.
 //
 // The ban is on REACHING a child-process API at all: `Bun.spawn` / `Bun.spawnSync` under any

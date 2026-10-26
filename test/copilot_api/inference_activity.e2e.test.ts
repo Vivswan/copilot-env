@@ -1,3 +1,4 @@
+import { afterEach } from "bun:test";
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
@@ -12,7 +13,7 @@ import {
 } from "../../src/copilot_api/inference_activity.ts";
 import { envSnapshot, isolateProxyHome } from "../helpers/env.ts";
 import { bunRunArgs, importSpecifier, ROOT, resolvePackageDir, runSync } from "../helpers/run.ts";
-import { afterEach, expect, test } from "../helpers/testing.ts";
+import { expect, test } from "../helpers/testing.ts";
 
 const PRELOAD = join(ROOT, "src", "scripts", "daemon_runtime_preload.ts");
 

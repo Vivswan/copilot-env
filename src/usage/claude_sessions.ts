@@ -16,8 +16,9 @@ import path from "node:path";
 import { consola } from "consola";
 import { resolveClaudeHome } from "../claude/paths.ts";
 import { isDir } from "../utils/fs.ts";
-import { isRecord } from "../utils/json.ts";
+import { isRecord, parseJsonRecord } from "../utils/json.ts";
 import { caught } from "../utils/message.ts";
+import { byCodeUnit } from "../utils/order.ts";
 import { type DayKey, dayKeyIn, MILLISECONDS_PER_DAY } from "../utils/time.ts";
 import {
   type ClaudeContribution,
@@ -34,6 +35,7 @@ import {
 import { canonicalModelNames } from "./pricing.ts";
 import { scanLines } from "./scan.ts";
 import {
+  inWindow,
   type OnCounted,
   record,
   recordBilled,
@@ -98,7 +100,7 @@ export function walkClaudeSessions(roots: string[], sinceMs: number | undefined)
   for (const root of roots) {
     collectTranscriptFiles(root, 1, sinceMs, files);
   }
-  files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  files.sort((a, b) => byCodeUnit(a.path, b.path));
   return files;
 }
 
@@ -119,79 +121,106 @@ interface SeenMessage {
   nanoAiu: number;
 }
 
-/** Per occurrence: the window, THEN the running-max dedup (one map across all files). A billed
- *  message is booked beside the roll-up once every line of it is in: the bill and the request's
- *  full counts are both running maxes. */
+/** What one fold carries across its occurrences; `seenMessages` spans every file. */
+interface ClaudeFold {
+  report: UsageReport;
+  seenMessages: Map<string, SeenMessage>;
+  canonical: (model: string) => string;
+  dayKey: DayKey;
+  sinceMs: number | undefined;
+  onCounted: OnCounted | undefined;
+}
+
+/** The growth since the message's last line, never negative, with the message's running maxes
+ *  raised to this line's. */
+function growthSince(prev: SeenMessage, snapshot: TokenBuckets, nanoAiu: number): TokenBuckets {
+  const growth: TokenBuckets = {
+    input: Math.max(0, snapshot.input - prev.buckets.input),
+    output: Math.max(0, snapshot.output - prev.buckets.output),
+    cacheRead: Math.max(0, snapshot.cacheRead - prev.buckets.cacheRead),
+    cacheCreation: Math.max(0, snapshot.cacheCreation - prev.buckets.cacheCreation),
+  };
+  prev.buckets = {
+    input: Math.max(prev.buckets.input, snapshot.input),
+    output: Math.max(prev.buckets.output, snapshot.output),
+    cacheRead: Math.max(prev.buckets.cacheRead, snapshot.cacheRead),
+    cacheCreation: Math.max(prev.buckets.cacheCreation, snapshot.cacheCreation),
+  };
+  prev.nanoAiu = Math.max(prev.nanoAiu, nanoAiu);
+  return growth;
+}
+
+function noTokens(buckets: TokenBuckets): boolean {
+  return (
+    buckets.input === 0 &&
+    buckets.output === 0 &&
+    buckets.cacheRead === 0 &&
+    buckets.cacheCreation === 0
+  );
+}
+
+/** Per occurrence: the window, THEN the running-max dedup. */
+function foldOccurrence(fold: ClaudeFold, occurrence: ClaudeOccurrence): void {
+  const [idHash, tsMs, rawModel, input, output, cacheRead, cacheCreation, nanoAiu] = occurrence;
+  if (!inWindow(tsMs, fold.sinceMs)) {
+    return;
+  }
+  const model = fold.canonical(rawModel);
+  const snapshot: TokenBuckets = { input, output, cacheRead, cacheCreation };
+  // Id-less lines (not observed in practice) are counted unconditionally.
+  let buckets = snapshot;
+  let isNewMessage = true;
+  const prev = idHash === null ? undefined : fold.seenMessages.get(idHash);
+  if (prev !== undefined) {
+    isNewMessage = false;
+    buckets = growthSince(prev, snapshot, nanoAiu);
+    if (noTokens(buckets)) {
+      // An exact repeat adds nothing to the report, but it is still a line of the message, and
+      // the stream's final line often is one: the observer gets its clock.
+      fold.onCounted?.({ id: idHash, tsMs, model, buckets });
+      return;
+    }
+  } else if (idHash !== null) {
+    fold.seenMessages.set(idHash, { model, buckets: snapshot, nanoAiu });
+  } else if (nanoAiu > 0) {
+    recordBilled(fold.report, model, { ...snapshot, events: 1 }, nanoAiu);
+  }
+  // Only the first occurrence of an id is an event. The day is the user's local one, not the UTC
+  // day the timestamp spells; a line with no parseable timestamp still counts toward the totals.
+  record(fold.report, tsMs === null ? null : fold.dayKey(tsMs), model, {
+    ...buckets,
+    events: isNewMessage ? 1 : 0,
+  });
+  fold.onCounted?.({ id: idHash, tsMs, model, buckets });
+}
+
+/** A billed message is booked beside the roll-up once every line of it is in: the bill and the
+ *  request's full counts are both running maxes. */
 function foldClaude(
   records: readonly FileRecord<ClaudeContribution>[],
   sinceMs: number | undefined,
   dayKey: DayKey,
   onCounted?: OnCounted,
 ): UsageReport {
-  const report = usageReport();
-  const seenMessages = new Map<string, SeenMessage>();
-  // Transcripts log Anthropic's dashed, date-snapshotted ids; the canonical spelling merges them
-  // with the proxy's Copilot ids.
-  const canonical = canonicalModelNames();
+  const fold: ClaudeFold = {
+    report: usageReport(),
+    seenMessages: new Map(),
+    // Transcripts log Anthropic's dashed, date-snapshotted ids; the canonical spelling merges them
+    // with the proxy's Copilot ids.
+    canonical: canonicalModelNames(),
+    dayKey,
+    sinceMs,
+    onCounted,
+  };
   for (const { contribution } of records) {
     for (const occurrence of contribution.occurrences) {
-      const [idHash, tsMs, rawModel, input, output, cacheRead, cacheCreation, nanoAiu] = occurrence;
-      if (sinceMs !== undefined && !(tsMs !== null && tsMs >= sinceMs)) {
-        continue; // outside the window (or no timestamp under a cutoff)
-      }
-      const model = canonical(rawModel);
-      const snapshot: TokenBuckets = { input, output, cacheRead, cacheCreation };
-      // Id-less lines (not observed in practice) are counted unconditionally.
-      let buckets = snapshot;
-      let isNewMessage = true;
-      if (idHash !== null) {
-        const prev = seenMessages.get(idHash);
-        if (prev === undefined) {
-          seenMessages.set(idHash, { model, buckets: snapshot, nanoAiu });
-        } else {
-          isNewMessage = false;
-          buckets = {
-            input: Math.max(0, snapshot.input - prev.buckets.input),
-            output: Math.max(0, snapshot.output - prev.buckets.output),
-            cacheRead: Math.max(0, snapshot.cacheRead - prev.buckets.cacheRead),
-            cacheCreation: Math.max(0, snapshot.cacheCreation - prev.buckets.cacheCreation),
-          };
-          prev.buckets = {
-            input: Math.max(prev.buckets.input, snapshot.input),
-            output: Math.max(prev.buckets.output, snapshot.output),
-            cacheRead: Math.max(prev.buckets.cacheRead, snapshot.cacheRead),
-            cacheCreation: Math.max(prev.buckets.cacheCreation, snapshot.cacheCreation),
-          };
-          prev.nanoAiu = Math.max(prev.nanoAiu, nanoAiu);
-          if (
-            buckets.input === 0 &&
-            buckets.output === 0 &&
-            buckets.cacheRead === 0 &&
-            buckets.cacheCreation === 0
-          ) {
-            // An exact repeat adds nothing to the report, but it is still a line of the message,
-            // and the stream's final line often is one: the observer gets its clock.
-            onCounted?.({ id: idHash, tsMs, model, buckets });
-            continue;
-          }
-        }
-      } else if (nanoAiu > 0) {
-        recordBilled(report, model, { ...snapshot, events: 1 }, nanoAiu);
-      }
-      // Only the first occurrence of an id is an event. The day is the user's local one, not the
-      // UTC day the timestamp spells; a line with no parseable timestamp still counts toward the
-      // totals.
-      record(report, tsMs === null ? null : dayKey(tsMs), model, {
-        ...buckets,
-        events: isNewMessage ? 1 : 0,
-      });
-      onCounted?.({ id: idHash, tsMs, model, buckets });
+      foldOccurrence(fold, occurrence);
     }
   }
-  for (const { model, buckets, nanoAiu } of seenMessages.values()) {
-    if (nanoAiu > 0) recordBilled(report, model, { ...buckets, events: 1 }, nanoAiu);
+  for (const { model, buckets, nanoAiu } of fold.seenMessages.values()) {
+    if (nanoAiu > 0) recordBilled(fold.report, model, { ...buckets, events: 1 }, nanoAiu);
   }
-  return report;
+  return fold.report;
 }
 
 // ---------- internals ----------
@@ -261,13 +290,8 @@ function tokenBuckets(usage: Record<string, unknown>): TokenBuckets {
 /** A needle may sit inside another line's content, so the type checks stay. Synthetic placeholders
  *  touch no cross-file state, so they are dropped here rather than in the fold. */
 function parseClaudeLine(line: string, occurrences: ClaudeOccurrence[]): void {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(line);
-  } catch {
-    return; // torn or corrupt line
-  }
-  if (!isRecord(parsed) || parsed.type !== "assistant" || !isRecord(parsed.message)) {
+  const parsed = parseJsonRecord(line); // null for a torn or corrupt line
+  if (parsed === null || parsed.type !== "assistant" || !isRecord(parsed.message)) {
     return;
   }
   const message = parsed.message;

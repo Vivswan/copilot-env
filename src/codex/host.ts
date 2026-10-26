@@ -366,32 +366,28 @@ type PromoteResult = "promoted" | "refused";
  *    refused  -> the merge would overwrite shared content: warned, local left unchanged, no link */
 type PromoteDecision = "merge" | "refused";
 
+/** Whether one local entry fits where it would land in the shared directory: a link onto nothing
+ *  or onto a link with the same target text, a directory onto nothing or a directory, a file onto
+ *  nothing or an equal file. A link in the way, or an entry of any other kind, does not. */
+function entryFits(entry: string, targetPath: string): boolean {
+  if (isSymlinkPath(entry)) {
+    if (isSymlinkPath(targetPath)) return readlinkOrEmpty(entry) === readlinkOrEmpty(targetPath);
+    return !lexists(targetPath);
+  }
+  if (!lexists(targetPath)) return isDir(entry) || isFile(entry);
+  if (isSymlinkPath(targetPath)) return false;
+  if (isDir(entry)) return isDir(targetPath);
+  if (isFile(entry)) return isFile(targetPath) && filesEqual(entry, targetPath);
+  return false;
+}
+
 function promoteDecision(localPath: string, sharedPath: string): PromoteDecision {
   if (lexists(sharedPath) && (isSymlinkPath(sharedPath) || !isDir(sharedPath))) {
     return "refused";
   }
   for (const entry of listDescendants(localPath)) {
     const targetPath = path.join(sharedPath, path.relative(localPath, entry));
-    if (isSymlinkPath(entry)) {
-      if (isSymlinkPath(targetPath)) {
-        if (readlinkOrEmpty(entry) !== readlinkOrEmpty(targetPath)) return "refused";
-      } else if (lexists(targetPath)) {
-        return "refused";
-      }
-    } else if (isDir(entry)) {
-      if (lexists(targetPath) && (isSymlinkPath(targetPath) || !isDir(targetPath))) {
-        return "refused";
-      }
-    } else if (isFile(entry)) {
-      if (
-        lexists(targetPath) &&
-        (isSymlinkPath(targetPath) || !isFile(targetPath) || !filesEqual(entry, targetPath))
-      ) {
-        return "refused";
-      }
-    } else {
-      return "refused";
-    }
+    if (!entryFits(entry, targetPath)) return "refused";
   }
   return "merge";
 }

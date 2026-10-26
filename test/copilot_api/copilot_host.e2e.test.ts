@@ -2,6 +2,8 @@
 // daemon spawn receives. The auto rule itself is
 // pinned in integration_identity.test.ts, the survey render in auth_identity.e2e.test.ts, the shim's rewrite in
 // copilot_host_preload.e2e.test.ts.
+
+import { afterEach } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "smol-toml";
@@ -31,8 +33,9 @@ import {
 import { parseProfileName } from "../../src/copilot_api/profile.ts";
 import { launchAuth } from "../helpers/daemon.ts";
 import { envSnapshot, isolateAgentHomes } from "../helpers/env.ts";
+import { requestUrl } from "../helpers/fetch_input.ts";
 import { codexConfigToml } from "../helpers/fixtures.ts";
-import { afterEach, expect, test } from "../helpers/testing.ts";
+import { expect, test } from "../helpers/testing.ts";
 
 const restoreEnv = envSnapshot();
 
@@ -48,7 +51,7 @@ const GHE = "https://copilot-api.ghe.example";
  *  the enterprise host. `seen` records each probe's host and identity header. */
 function stubHosts(generic: number, seen: { host: string; id: string | null }[] = []): void {
   setIntegrationProbeFetch((input, init) => {
-    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    const url = requestUrl(input);
     if (url.includes("/copilot_internal/user")) {
       return Promise.resolve(
         new Response(JSON.stringify({ endpoints: { api: ENTERPRISE } }), { status: 200 }),
@@ -251,7 +254,7 @@ test("directWiringFor probe: under auto, a PAT moved off a blocked generic host 
   // The generic host is blocked for every identity (403 -> inconclusive, so the identity probe
   // keeps its default); the account's host accepts the CLI id alone.
   setIntegrationProbeFetch((input, init) => {
-    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    const url = requestUrl(input);
     if (url.includes("/copilot_internal/user")) {
       return Promise.resolve(
         new Response(JSON.stringify({ endpoints: { api: ENTERPRISE } }), { status: 200 }),
@@ -302,7 +305,7 @@ test("a daemon launch pairs identity and host: re-selected where auto moves, pas
   // account is served, so the daemon sends the id THAT host accepts.
   new Credential(state).store("gh-token", "github_pat_x");
   setIntegrationProbeFetch((input, init) => {
-    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    const url = requestUrl(input);
     if (url.includes("/copilot_internal/user")) {
       return Promise.resolve(
         new Response(JSON.stringify({ endpoints: { api: ENTERPRISE } }), { status: 200 }),

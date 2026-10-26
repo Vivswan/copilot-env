@@ -185,6 +185,23 @@ function desktopStatusBase(): DesktopStatusBase {
 
 type JudgedDesktopEntry = OwnedDesktopEntry & { profile: ReturnType<typeof entryProfileAt> };
 
+/** The entry's document and its bytes; a failed look is stale, never wired. */
+function readEntryDocument(
+  path: string,
+): { raw: string; doc: Record<string, unknown> } | { stale: string } {
+  let raw: string | null;
+  let parsed: unknown;
+  try {
+    raw = readFileOrNull(path);
+    parsed = raw === null ? null : JSON.parse(raw);
+  } catch {
+    return { stale: "the config file could not be read or parsed" };
+  }
+  if (raw === null) return { stale: "the config file is missing" };
+  if (!isRecord(parsed)) return { stale: "the config file is not a JSON object" };
+  return { raw, doc: parsed };
+}
+
 function entryVerdict(
   owned: JudgedDesktopEntry[],
   target: DesktopTarget,
@@ -206,16 +223,9 @@ function entryVerdict(
       fix: "delete the duplicate copilot-env entries in Claude Desktop's config picker, then re-run `agent profile sync --claude`",
     };
   }
-  let raw: string | null;
-  let doc: unknown;
-  try {
-    raw = readFileOrNull(path);
-    if (raw === null) return stale("the config file is missing");
-    doc = JSON.parse(raw);
-  } catch {
-    return stale("the config file could not be read or parsed");
-  }
-  if (!isRecord(doc)) return stale("the config file is not a JSON object");
+  const read = readEntryDocument(path);
+  if ("stale" in read) return stale(read.stale);
+  const { raw, doc } = read;
   const gateway = doc.inferenceGatewayBaseUrl;
   // What a rewire of this target bakes: renderDirectWiring, the same overlay-over-the-slot every
   // re-render takes. A Direct slot holding no pair is stale by construction: nothing in the entry
@@ -308,6 +318,178 @@ function desktopEntryFix(profile: Profile): string {
   return profile === null ? "agent profile sync --claude" : `agent profile ${profile} add`;
 }
 
+type InspectedDesktopStatus = Extract<ClaudeDesktopStatus, { kind: "inspected" }>;
+
+/** The lines and repair commands a render gathers; the fixes keep their first-seen order. */
+interface StatusReport {
+  lines: string[];
+  fixes: Set<string>;
+}
+
+/** The key-off render. The default's entry and helper stay by design; leftovers are the profile
+ *  entries (listed or not) and helper scripts an interrupted sweep can leave. */
+function renderDisabledStatus(
+  status: Extract<ClaudeDesktopStatus, { kind: "no-library" | "inspected" }>,
+): { lines: string[]; fix: string | null } {
+  const owned = status.kind === "inspected" ? status.owned : [];
+  const unlisted = status.kind === "inspected" ? status.unlisted : [];
+  const unmanaged = [
+    ...owned
+      .filter((e) => e.profile === null)
+      .map((e) => `"${e.name}" present at ${e.path}, unmanaged (claude.desktop false)`),
+    ...unlisted
+      .filter((c) => c.profile === null)
+      .map(
+        (c) =>
+          `${c.path} present but not listed in ${META_FILENAME}, unmanaged (claude.desktop false)`,
+      ),
+  ];
+  // A claim of unknown wiring is one the key-off sweep deliberately keeps (it may be the
+  // default's), so only the key-on reconcile (which removes it as an orphan) or uninstall clears
+  // it.
+  const claims = [...owned, ...unlisted];
+  const unknown = claims.filter((c) => c.profile === undefined).map((c) => c.path);
+  const left = [
+    ...claims.filter((c) => c.profile !== null && c.profile !== undefined).map((c) => c.path),
+    ...status.helperPaths.filter((p) => desktopHelperScriptWiring(basename(p))?.profile !== null),
+  ];
+  if (left.length === 0 && unknown.length === 0) {
+    return {
+      lines: [...unmanaged, "disabled (claude.desktop false); no copilot-env leftovers present"],
+      fix: null,
+    };
+  }
+  const total = left.length + unknown.length;
+  const fixes: string[] = [];
+  if (left.length > 0) fixes.push("agent profile sync --claude");
+  if (unknown.length > 0) {
+    fixes.push(
+      "for the entries of unknown wiring: set claude.desktop true and re-run `agent profile sync --claude` (it removes them as orphans), or `agent uninstall`",
+    );
+  }
+  return {
+    lines: [
+      ...unmanaged,
+      `disabled (claude.desktop false), but ${total} copilot-env leftover${
+        total === 1 ? " remains" : "s remain"
+      } (files or ownership claims)`,
+      ...left,
+      ...unknown.map((p) => `${p} (wiring unknown: it carries no copilot-env wiring)`),
+    ],
+    fix: fixes.join("; "),
+  };
+}
+
+/** An entry is labelled by the display name it carries in the app (the user's, possibly renamed);
+ *  a missing one by the name a wire would seed. */
+function shownEntryName(status: InspectedDesktopStatus, path: string): string | undefined {
+  return status.owned.find((o) => o.path === path)?.name;
+}
+
+function renderEntries(status: InspectedDesktopStatus, report: StatusReport): void {
+  for (const e of status.entries) {
+    const shown = "path" in e.verdict ? shownEntryName(status, e.verdict.path) : undefined;
+    const who = `"${shown ?? desktopEntryName(e.profile)}" (${e.mode})`;
+    switch (e.verdict.kind) {
+      case "wired":
+        report.lines.push(`${who} wired at ${e.verdict.path}`);
+        break;
+      case "missing":
+        report.lines.push(`${who} missing`);
+        report.fixes.add(desktopEntryFix(e.profile));
+        break;
+      case "stale":
+        report.lines.push(`${who} stale at ${e.verdict.path}: ${e.verdict.reason}`);
+        report.fixes.add(e.verdict.fix ?? desktopEntryFix(e.profile));
+        break;
+      default:
+        assertNever(e.verdict);
+    }
+  }
+}
+
+/** The two app files read at launch: deploymentMode and Developer Mode. */
+function renderAppFiles(
+  status: InspectedDesktopStatus,
+  hasExistingEntry: boolean,
+  report: StatusReport,
+): void {
+  if (status.app.kind === "unreadable") {
+    report.lines.push(
+      `${status.app.path} is ${status.app.reason}; what the app reads from it is unknown`,
+    );
+    report.fixes.add(`repair ${status.app.path}, then re-run \`agent profile sync --claude\``);
+    return;
+  }
+  if (!hasExistingEntry) return;
+  if (status.app.deploymentMode !== "3p") {
+    report.lines.push(
+      `the app will show the sign-in chooser at launch (deploymentMode ${
+        status.app.deploymentMode ?? "unset"
+      })`,
+    );
+    report.fixes.add("agent profile sync --claude");
+  }
+  if (!status.app.developerMode) {
+    report.lines.push("Developer Mode is off (no Developer menu)");
+    report.fixes.add("agent profile sync --claude");
+  }
+}
+
+/** The `_meta.json` applied slot: empty, one of ours, or the user's own config. */
+function renderAppliedSlot(
+  status: InspectedDesktopStatus,
+  hasExistingEntry: boolean,
+  report: StatusReport,
+): void {
+  const applied = status.applied;
+  if (applied === null) {
+    if (hasExistingEntry) {
+      report.lines.push("no entry is applied in the app");
+      report.fixes.add("agent profile sync --claude");
+    }
+    return;
+  }
+  if (status.owned.some((o) => o.path === applied.path)) {
+    if (hasExistingEntry) report.lines.push(`applied in the app: "${applied.name}"`);
+    return;
+  }
+  // The switch is the user's to make, to an entry a CURRENT target promises (the default's
+  // when promised, else the first profile's), by the name the app shows for it. An entry that
+  // does not exist yet has no name to give: its wire may adopt a same-gateway entry under
+  // THAT entry's name, so the switch is named once the entry is there.
+  report.lines.push(`the app applies "${applied.name}" (not a copilot-env entry)`);
+  const target = status.entries.find((e) => e.profile === null) ?? status.entries[0];
+  if (target !== undefined && "path" in target.verdict) {
+    report.fixes.add(
+      `in Claude Desktop (reopened): Developer > Configure Third-Party Inference..., select "${
+        shownEntryName(status, target.verdict.path) ?? desktopEntryName(target.profile)
+      }", Save & Restart`,
+    );
+  } else {
+    report.fixes.add(
+      "after that wire, `agent profile check --claude` names the entry to select in Claude Desktop",
+    );
+  }
+}
+
+/** The claims no current target explains: an interrupted removal's unlisted claims and the
+ *  orphans. */
+function renderLeftovers(status: InspectedDesktopStatus, report: StatusReport): void {
+  for (const { path } of status.unlisted) {
+    report.lines.push(
+      `${path} is still claimed in the ownership ledger but no longer listed in ${META_FILENAME}${
+        fs.entryAbsent(path) ? ", and its file is gone" : ""
+      } (an interrupted removal)`,
+    );
+    report.fixes.add("agent profile sync --claude");
+  }
+  for (const o of status.orphans) {
+    report.lines.push(`"${o.name}" orphaned at ${o.path} (no current wiring promises it)`);
+    report.fixes.add("agent profile sync --claude");
+  }
+}
+
 export function renderClaudeDesktopStatus(status: ClaudeDesktopStatus): {
   lines: string[];
   fix: string | null;
@@ -325,58 +507,7 @@ export function renderClaudeDesktopStatus(status: ClaudeDesktopStatus): {
       fix: "fix the cause named above, then re-run `agent profile sync --claude`",
     };
   }
-  if (!status.enabled) {
-    // The default's entry and helper stay by design; leftovers are the profile entries (listed or
-    // not) and helper scripts an interrupted sweep can leave.
-    const owned = status.kind === "inspected" ? status.owned : [];
-    const unlisted = status.kind === "inspected" ? status.unlisted : [];
-    const unmanaged = [
-      ...owned
-        .filter((e) => e.profile === null)
-        .map((e) => `"${e.name}" present at ${e.path}, unmanaged (claude.desktop false)`),
-      ...unlisted
-        .filter((c) => c.profile === null)
-        .map(
-          (c) =>
-            `${c.path} present but not listed in ${META_FILENAME}, unmanaged (claude.desktop false)`,
-        ),
-    ];
-    // A claim of unknown wiring is one the key-off sweep deliberately keeps (it may be the
-    // default's), so only the key-on reconcile (which removes it as an orphan) or uninstall clears
-    // it.
-    const claims = [...owned, ...unlisted];
-    const unknown = claims.filter((c) => c.profile === undefined).map((c) => c.path);
-    const left = [
-      ...claims.filter((c) => c.profile !== null && c.profile !== undefined).map((c) => c.path),
-      ...status.helperPaths.filter((p) => desktopHelperScriptWiring(basename(p))?.profile !== null),
-    ];
-    if (left.length === 0 && unknown.length === 0) {
-      return {
-        lines: [...unmanaged, "disabled (claude.desktop false); no copilot-env leftovers present"],
-        fix: null,
-      };
-    }
-    const total = left.length + unknown.length;
-    const fixes = [
-      ...(left.length > 0 ? ["agent profile sync --claude"] : []),
-      ...(unknown.length > 0
-        ? [
-            "for the entries of unknown wiring: set claude.desktop true and re-run `agent profile sync --claude` (it removes them as orphans), or `agent uninstall`",
-          ]
-        : []),
-    ];
-    return {
-      lines: [
-        ...unmanaged,
-        `disabled (claude.desktop false), but ${total} copilot-env leftover${
-          total === 1 ? " remains" : "s remain"
-        } (files or ownership claims)`,
-        ...left,
-        ...unknown.map((p) => `${p} (wiring unknown: it carries no copilot-env wiring)`),
-      ],
-      fix: fixes.join("; "),
-    };
-  }
+  if (!status.enabled) return renderDisabledStatus(status);
   if (!status.installed || status.kind === "no-library") {
     return { lines: ["Claude Desktop not detected on this machine; nothing to wire"], fix: null };
   }
@@ -386,30 +517,9 @@ export function renderClaudeDesktopStatus(status: ClaudeDesktopStatus): {
       fix: null,
     };
   }
-  const lines: string[] = [];
-  const fixes = new Set<string>();
-  // An entry is labelled by the display name it carries in the app (the user's, possibly renamed);
-  // a missing one by the name a wire would seed.
-  const nameAt = (path: string) => status.owned.find((o) => o.path === path)?.name;
-  for (const e of status.entries) {
-    const shown = "path" in e.verdict ? nameAt(e.verdict.path) : undefined;
-    const who = `"${shown ?? desktopEntryName(e.profile)}" (${e.mode})`;
-    switch (e.verdict.kind) {
-      case "wired":
-        lines.push(`${who} wired at ${e.verdict.path}`);
-        break;
-      case "missing":
-        lines.push(`${who} missing`);
-        fixes.add(desktopEntryFix(e.profile));
-        break;
-      case "stale":
-        lines.push(`${who} stale at ${e.verdict.path}: ${e.verdict.reason}`);
-        fixes.add(e.verdict.fix ?? desktopEntryFix(e.profile));
-        break;
-      default:
-        assertNever(e.verdict);
-    }
-  }
+
+  const report: StatusReport = { lines: [], fixes: new Set() };
+  renderEntries(status, report);
   if (status.entries.length > 0) {
     // App-side facts. What a rewire WRITES (deploymentMode, Developer Mode, an empty applied slot)
     // is reported once an entry exists (wired or stale): a missing entry's own fix writes them. What a rewire
@@ -417,64 +527,13 @@ export function renderClaudeDesktopStatus(status: ClaudeDesktopStatus): {
     // entries say, since no rewire is the repair. The app files come first in the fixes: the
     // in-app switch needs the Developer menu they turn on.
     const hasExistingEntry = status.entries.some((e) => e.verdict.kind !== "missing");
-    if (status.app.kind === "unreadable") {
-      lines.push(
-        `${status.app.path} is ${status.app.reason}; what the app reads from it is unknown`,
-      );
-      fixes.add(`repair ${status.app.path}, then re-run \`agent profile sync --claude\``);
-    } else if (hasExistingEntry) {
-      if (status.app.deploymentMode !== "3p") {
-        lines.push(
-          `the app will show the sign-in chooser at launch (deploymentMode ${
-            status.app.deploymentMode ?? "unset"
-          })`,
-        );
-        fixes.add("agent profile sync --claude");
-      }
-      if (!status.app.developerMode) {
-        lines.push("Developer Mode is off (no Developer menu)");
-        fixes.add("agent profile sync --claude");
-      }
-    }
-    const applied = status.applied;
-    if (applied === null) {
-      if (hasExistingEntry) {
-        lines.push("no entry is applied in the app");
-        fixes.add("agent profile sync --claude");
-      }
-    } else if (status.owned.some((o) => o.path === applied.path)) {
-      if (hasExistingEntry) lines.push(`applied in the app: "${applied.name}"`);
-    } else {
-      // The switch is the user's to make, to an entry a CURRENT target promises (the default's
-      // when promised, else the first profile's), by the name the app shows for it. An entry that
-      // does not exist yet has no name to give: its wire may adopt a same-gateway entry under
-      // THAT entry's name, so the switch is named once the entry is there.
-      lines.push(`the app applies "${applied.name}" (not a copilot-env entry)`);
-      const target = status.entries.find((e) => e.profile === null) ?? status.entries[0];
-      if (target !== undefined && "path" in target.verdict) {
-        fixes.add(
-          `in Claude Desktop (reopened): Developer > Configure Third-Party Inference..., select "${
-            nameAt(target.verdict.path) ?? desktopEntryName(target.profile)
-          }", Save & Restart`,
-        );
-      } else {
-        fixes.add(
-          "after that wire, `agent profile check --claude` names the entry to select in Claude Desktop",
-        );
-      }
-    }
+    renderAppFiles(status, hasExistingEntry, report);
+    renderAppliedSlot(status, hasExistingEntry, report);
   }
-  for (const { path } of status.unlisted) {
-    lines.push(
-      `${path} is still claimed in the ownership ledger but no longer listed in ${META_FILENAME}${
-        fs.entryAbsent(path) ? ", and its file is gone" : ""
-      } (an interrupted removal)`,
-    );
-    fixes.add("agent profile sync --claude");
-  }
-  for (const o of status.orphans) {
-    lines.push(`"${o.name}" orphaned at ${o.path} (no current wiring promises it)`);
-    fixes.add("agent profile sync --claude");
-  }
-  return { lines, fix: fixes.size === 0 ? null : [...fixes].join(", then ") };
+  renderLeftovers(status, report);
+
+  return {
+    lines: report.lines,
+    fix: report.fixes.size === 0 ? null : [...report.fixes].join(", then "),
+  };
 }

@@ -8,6 +8,8 @@
 //
 // Codex reconnects five times on a rejected request before it gives up, and a cold start on a CI
 // runner adds to that, hence the three-minute test budget.
+
+import { afterEach, beforeEach } from "bun:test";
 import { join } from "node:path";
 import { CODEX_PROBE, PROBE_PROMPT, summarizeProbeFailure } from "../../src/agents/live_probe.ts";
 import { codexLiveLaunch } from "../../src/health/live_launch.ts";
@@ -23,7 +25,7 @@ import {
   writeCodexFakeConfig,
 } from "../helpers/fake_endpoint.ts";
 import type { FakeModelEndpoint } from "../helpers/fake_model_endpoint.ts";
-import { afterEach, beforeEach, expect, tempDir, test } from "../helpers/testing.ts";
+import { expect, tempDir, test } from "../helpers/testing.ts";
 
 const LIVE_ENV = "COPILOT_ENV_LIVE_CLIS";
 const codexPath = resolveCommand("codex");

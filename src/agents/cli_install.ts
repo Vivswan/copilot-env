@@ -912,6 +912,36 @@ function discloseWrites(cli: AgentCli, command: InstallerCommand): void {
   }
 }
 
+/** The installer finished; the destination must prove itself, and a pinned version is checked
+ *  against what it proved (a mismatch warns: the vendor's installer decided). */
+function judgeInstalled(cli: AgentCli, pin: string | null, proof: Proof): void {
+  switch (proof.kind) {
+    case "found": {
+      if (pin === null || VENDORS[cli.command].releases === null) return;
+      const judged = judgePin(proof.version, pin);
+      if (judged.kind === "other") {
+        consola.warn(`${cli.name} proved ${judged.proved}, not the pinned ${pin}.`);
+      }
+      if (judged.kind === "unverifiable") {
+        consola.warn(
+          `${cli.name} proved "${proof.version}", a line naming no version to check against the pinned ${pin}.`,
+        );
+      }
+      return;
+    }
+    case "broken":
+      throw new Error(
+        `the installer finished, but '${proof.path} --version' did not run (${proof.detail})`,
+      );
+    case "absent":
+      throw new Error(
+        `the installer finished, but ${proof.candidate} is absent; rerun 'agent shell --clis'`,
+      );
+    default:
+      assertNever(proof);
+  }
+}
+
 async function installCli(cli: AgentCli, setup: CliInstall, deps: CliInstallDeps): Promise<void> {
   const pin = await resolvePin(cli, setup.cooldown, deps);
   if (pin.kind !== "pin") {
@@ -944,32 +974,7 @@ async function installCli(cli: AgentCli, setup: CliInstall, deps: CliInstallDeps
     consola.info(`winget reports ${cli.name} already installed and current (0x8A15002B).`);
   }
 
-  const proof = proveInstalled(cli, deps, hostSearchPath());
-  switch (proof.kind) {
-    case "found": {
-      if (pin.value === null || VENDORS[cli.command].releases === null) return;
-      const judged = judgePin(proof.version, pin.value);
-      if (judged.kind === "other") {
-        consola.warn(`${cli.name} proved ${judged.proved}, not the pinned ${pin.value}.`);
-      }
-      if (judged.kind === "unverifiable") {
-        consola.warn(
-          `${cli.name} proved "${proof.version}", a line naming no version to check against the pinned ${pin.value}.`,
-        );
-      }
-      return;
-    }
-    case "broken":
-      throw new Error(
-        `the installer finished, but '${proof.path} --version' did not run (${proof.detail})`,
-      );
-    case "absent":
-      throw new Error(
-        `the installer finished, but ${proof.candidate} is absent; rerun 'agent shell --clis'`,
-      );
-    default:
-      assertNever(proof);
-  }
+  judgeInstalled(cli, pin.value, proveInstalled(cli, deps, hostSearchPath()));
 }
 
 /** Best-effort per CLI: a vendor installer that fails, or a CLI that cannot be proven, warns and

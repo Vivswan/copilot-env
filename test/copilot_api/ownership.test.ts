@@ -1,10 +1,11 @@
+import { afterEach } from "bun:test";
 import { chmodSync, existsSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { OwnershipLedger } from "../../src/copilot_api/ownership.ts";
 import { CopilotApiPaths } from "../../src/copilot_api/paths.ts";
 import { deferWriteReports, flushWriteReports } from "../../src/utils/report_write.ts";
 import { envSnapshot, isolateProxyHome } from "../helpers/env.ts";
-import { afterEach, expect, removeDir, test } from "../helpers/testing.ts";
+import { expect, removeDir, test } from "../helpers/testing.ts";
 
 const restoreEnv = envSnapshot();
 let dir = "";

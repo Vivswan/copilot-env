@@ -1,8 +1,9 @@
+import { afterEach } from "bun:test";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { getOrphanPids } from "../../src/copilot_api/process.ts";
 import { envSnapshot, pathLedBy } from "../helpers/env.ts";
-import { afterEach, expect, step, tempDir, test } from "../helpers/testing.ts";
+import { expect, step, tempDir, test } from "../helpers/testing.ts";
 
 // Nothing in the runtime bounds a child, so a `ps` that never returns would hang the command that
 // scans for orphans. The scan must settle on its own and read "unproven" (the verdict

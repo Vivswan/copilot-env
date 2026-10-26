@@ -350,6 +350,19 @@ export async function addProfile(
   await step();
 }
 
+/** Before the default's credential step: a flagged mode is recorded, so both agents wait for the
+ *  credential; a probing default has nothing to record until the step lands one, so --no-auth is
+ *  refused. */
+function recordFlaggedDefault(flagged: ManagedAgentMode | null, args: AddArgs): void {
+  if (flagged === null) {
+    if (args.noAuth) throw new Error(NO_CREDENTIAL_TO_PROBE);
+    return;
+  }
+  new CopilotEnvState().recordDefaultMode(flagged);
+  if (args.dryRun) return;
+  logger.success(`the default profile records ${flagged}; both agents wait for its credential.`);
+}
+
 /** `agent init`: the default's landing. `flagged` null (no flag, or --auto) probes EVERY run and
  *  lands the verdict; a verdict that differs from the record asks first (followProbe). --direct /
  *  --proxy land that mode with no probe (the CLI asked before a move). The landing probes and
@@ -384,16 +397,7 @@ async function addDefault(
   // overlay: a step that plans a credential there is what lets the landing follow.
   const whole = async (): Promise<Awaited<ReturnType<typeof land>> | null> => {
     if (!new Credential().isAuthenticated()) {
-      if (flagged === null) {
-        if (args.noAuth) throw new Error(NO_CREDENTIAL_TO_PROBE);
-      } else {
-        new CopilotEnvState().recordDefaultMode(flagged);
-        if (!args.dryRun) {
-          logger.success(
-            `the default profile records ${flagged}; both agents wait for its credential.`,
-          );
-        }
-      }
+      recordFlaggedDefault(flagged, args);
       await step();
       // A printed step (--no-auth) or a planned bare step lands nothing, so the wiring waits for
       // the login that follows.
@@ -427,9 +431,13 @@ async function addDefault(
   printGuidance(codex, claude, new CopilotEnvState().read().githubToken !== null, failedAgents);
 }
 
-function resolveProvisioned(
-  credential: StoredCredential,
-): { credential: ProvisionedCredential; token: string } | null {
+/** A credential that resolves now, with its token. */
+interface ResolvedProvisioned {
+  credential: ProvisionedCredential;
+  token: string;
+}
+
+function resolveProvisioned(credential: StoredCredential): ResolvedProvisioned | null {
   if (credential.kind === "stored") return { credential, token: credential.token };
   if (credential.kind === "gh-cli") {
     const token = ghAuthToken(credential.ghUser);
@@ -472,6 +480,27 @@ async function addNamed(
   return landNamed(name, slot.mode, mode, resolved.credential, adapters);
 }
 
+/** The probe's credential: the slot's own when it resolves, else the sign-in, recorded at once
+ *  into a slot that exists (a fresh name's lands with the verdict, in one commit). */
+async function credentialForProbe(
+  name: ProfileName,
+  stored: ResolvedProvisioned | null,
+  exists: boolean,
+  args: AddArgs,
+  acquire: AcquireNamedCredential,
+  acquisition: CredentialAcquisition,
+): Promise<ResolvedProvisioned> {
+  if (stored !== null) return stored;
+  if (!args.dryRun) logger.log(loggingInLine(name));
+  const acquired = await acquire(name, acquisition);
+  if (exists) new Credential(undefined, name).record(acquired);
+  const resolved = resolveProvisioned(acquired);
+  if (resolved === null) {
+    throw new Error(`${profileLabel(name)}'s new credential does not resolve; retry the login`);
+  }
+  return resolved;
+}
+
 /** `agent profile <name> add --auto`: the profile's own credential first, then the Direct-vs-proxy
  *  probe under it, then the verdict landed and both agents wired. A slot a flagged `add` created
  *  records the sign-in at once, as `agent auth` would, so a probe that then throws costs no second
@@ -498,17 +527,14 @@ async function addNamedProbed(
     }
   }
   const land = async (): Promise<Narration> => {
-    let resolved = stored;
-    if (resolved === null) {
-      if (!args.dryRun) logger.log(loggingInLine(name));
-      const acquired = await acquire(name, acquisition);
-      if (exists) new Credential(undefined, name).record(acquired);
-      resolved = resolveProvisioned(acquired);
-      if (resolved === null) {
-        throw new Error(`${profileLabel(name)}'s new credential does not resolve; retry the login`);
-      }
-    }
-    const { credential, token } = resolved;
+    const { credential, token } = await credentialForProbe(
+      name,
+      stored,
+      exists,
+      args,
+      acquire,
+      acquisition,
+    );
     // The probe runs as THIS profile: its own pair, selected ONCE and shared by both agents' probes
     // and the landing (the pair the probe validated is the pair that lands), and its token baked
     // into the throwaway config the agent CLI runs against (a fresh name has no slot a resolver
@@ -662,7 +688,9 @@ export async function delProfile(name: ProfileName, dryRun: boolean): Promise<vo
 /** The daemon cell of `show` and the list. A direct profile has no daemon: "-", never a blank that
  *  reads as missing data. */
 function daemonCell(daemon: ProxyStatus | null): string {
-  return daemon === null ? "-" : daemon.up ? `up (port ${daemon.port})` : "down";
+  if (daemon === null) return "-";
+  if (daemon.up) return `up (port ${daemon.port})`;
+  return "down";
 }
 
 /** One profile's row of the list, as key/value lines: the same words. */

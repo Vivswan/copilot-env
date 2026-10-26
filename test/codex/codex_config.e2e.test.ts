@@ -1,3 +1,4 @@
+import { afterEach } from "bun:test";
 import {
   chmodSync,
   existsSync,
@@ -17,7 +18,7 @@ import {
   syncCodexCatalogReference,
 } from "../../src/codex/catalog_reference.ts";
 import { configureCodexConfig, detectCodexDirect } from "../../src/codex/config.ts";
-import { inspectCodexWiring } from "../../src/codex/inspect.ts";
+import { type CodexWiringStatus, inspectCodexWiring } from "../../src/codex/inspect.ts";
 import { CI_NO_LIVE_LOOKUPS_ENV, FALLBACK_CODEX_UA_VERSION } from "../../src/codex/user_agent.ts";
 import { runDryRun } from "../../src/commands/dry_run.ts";
 import { CopilotEnvConfig } from "../../src/copilot_api/env_config.ts";
@@ -32,7 +33,7 @@ import { envSnapshot, isolateAgentHomes } from "../helpers/env.ts";
 import { type FakeCodex, type FakeCodexProbe, fakeCodexOnPath } from "../helpers/fake_codex.ts";
 import { codexConfigToml } from "../helpers/fixtures.ts";
 import { captureChannels, captureChannelsSync } from "../helpers/output.ts";
-import { afterEach, expect, removeDir, test } from "../helpers/testing.ts";
+import { expect, removeDir, test } from "../helpers/testing.ts";
 
 /** A recorded Direct default whose slot holds its pair, so a single-agent write is a re-render
  *  (zero probes, no credential needed); with no pair it would land both agents and ask to log in. */
@@ -80,7 +81,43 @@ function installedCodex(accepts: boolean | null): FakeCodex {
 }
 
 function probeFor(accepts: boolean | null): FakeCodexProbe {
-  return accepts === null ? "dump-other" : accepts ? "accept" : "reject";
+  if (accepts === null) return "dump-other";
+  return accepts ? "accept" : "reject";
+}
+
+/** The managed fields of a direct write as Codex reads them; `integrationId` is the probed
+ *  identity header, absent when none was passed. Returns the document and its provider table for
+ *  the caller's own checks. */
+function expectDirectManagedFields(
+  configPath: string,
+  c: { name: string; integrationId: string | undefined },
+): { doc: Record<string, unknown>; provider: Record<string, unknown> } {
+  const doc = asRecord(parse(readFileSync(configPath, "utf8")));
+  expect(doc.model_provider, c.name).toBe("copilot-env");
+  expect(doc.web_search, c.name).toBe("live");
+  expect(doc.sandbox_workspace_write, c.name).toBeUndefined();
+  const provider = asRecord(asRecord(doc.model_providers)["copilot-env"]);
+  expect(provider.name, c.name).toBe("copilot-env");
+  expect(provider.base_url, c.name).toBe("https://api.githubcopilot.com");
+  expect(provider.wire_api, c.name).toBe("responses");
+  expect(provider.supports_websockets, c.name).toBe(false);
+  expect(provider.requires_openai_auth, c.name).toBe(false);
+  const headers = asRecord(provider.http_headers);
+  expect(headers["Openai-Intent"], c.name).toBe("conversation-edits");
+  expect(headers["User-Agent"], c.name).toBe(`codex_exec/${FALLBACK_CODEX_UA_VERSION}`);
+  // No probed identity passed -> no Copilot-Integration-Id header (the codex identity).
+  expect(headers["Copilot-Integration-Id"], c.name).toBe(c.integrationId);
+  const auth = asRecord(provider.auth);
+  const expected = agentLauncherCommand(["auth", "--get"]);
+  expect(auth.command, c.name).toBe(expected.command);
+  expect(auth.args, c.name).toEqual(expected.args);
+  expect(auth.timeout_ms, c.name).toBe(30000);
+  expect(auth.refresh_interval_ms, c.name).toBe(300000);
+  expect(provider.env_key, c.name).toBeUndefined();
+  const wiring = inspectCodexWiring(readFileSync(configPath, "utf8"), null, 4141, false);
+  expect(wiring.providerMode, c.name).toBe("direct");
+  expect(wiring.directUsesToken, c.name).toBe(true);
+  return { doc, provider };
 }
 
 test("the direct write: every managed field enforced, user keys and tables preserved, the probed id baked when passed, nothing at rest", () => {
@@ -146,31 +183,7 @@ test("the direct write: every managed field enforced, user keys and tables prese
 
     configureCodexConfig(codexHome, { mode: "direct", direct: c.direct, credential: COMMAND });
 
-    const doc = asRecord(parse(readFileSync(configPath, "utf8")));
-    expect(doc.model_provider, c.name).toBe("copilot-env");
-    expect(doc.web_search, c.name).toBe("live");
-    expect(doc.sandbox_workspace_write, c.name).toBeUndefined();
-    const provider = asRecord(asRecord(doc.model_providers)["copilot-env"]);
-    expect(provider.name, c.name).toBe("copilot-env");
-    expect(provider.base_url, c.name).toBe("https://api.githubcopilot.com");
-    expect(provider.wire_api, c.name).toBe("responses");
-    expect(provider.supports_websockets, c.name).toBe(false);
-    expect(provider.requires_openai_auth, c.name).toBe(false);
-    const headers = asRecord(provider.http_headers);
-    expect(headers["Openai-Intent"], c.name).toBe("conversation-edits");
-    expect(headers["User-Agent"], c.name).toBe(`codex_exec/${FALLBACK_CODEX_UA_VERSION}`);
-    // No probed identity passed -> no Copilot-Integration-Id header (the codex identity).
-    expect(headers["Copilot-Integration-Id"], c.name).toBe(c.integrationId);
-    const auth = asRecord(provider.auth);
-    const expected = agentLauncherCommand(["auth", "--get"]);
-    expect(auth.command, c.name).toBe(expected.command);
-    expect(auth.args, c.name).toEqual(expected.args);
-    expect(auth.timeout_ms, c.name).toBe(30000);
-    expect(auth.refresh_interval_ms, c.name).toBe(300000);
-    expect(provider.env_key, c.name).toBeUndefined();
-    const wiring = inspectCodexWiring(readFileSync(configPath, "utf8"), null, 4141, false);
-    expect(wiring.providerMode, c.name).toBe("direct");
-    expect(wiring.directUsesToken, c.name).toBe(true);
+    const { doc, provider } = expectDirectManagedFields(configPath, c);
     if (c.existing === null) {
       expect(doc.features, c.name).toBeUndefined();
       expect(existsSync(envPath), c.name).toBe(false);
@@ -347,17 +360,19 @@ test("a static-key write previews its bearer leaf redacted and every other leaf 
   expect(flat).not.toContain("ghu_baked_token");
 });
 
+/** The managed provider table as config.toml in `home` holds it. */
+function providerTable(home: string): Record<string, unknown> {
+  const doc = asRecord(parse(readFileSync(join(home, "config.toml"), "utf8")));
+  return asRecord(asRecord(doc.model_providers)["copilot-env"]);
+}
+
+function wiringOf(home: string): CodexWiringStatus {
+  return inspectCodexWiring(readFileSync(join(home, "config.toml"), "utf8"), null, 4141, false);
+}
+
 test("static-key bakes the bearer as http_headers.Authorization with no auth table, in both modes", () => {
   isolate();
   const STATIC = { kind: "static", token: "ghu_baked_token" } as const;
-  const provider = (home: string): Record<string, unknown> =>
-    asRecord(
-      asRecord(asRecord(parse(readFileSync(join(home, "config.toml"), "utf8"))).model_providers)[
-        "copilot-env"
-      ],
-    );
-  const wiring = (home: string) =>
-    inspectCodexWiring(readFileSync(join(home, "config.toml"), "utf8"), null, 4141, false);
 
   // Direct: the bearer rides beside the client headers; the write's line names the shape, never the value.
   const directHome = join(dir, ".codex");
@@ -372,7 +387,7 @@ test("static-key bakes the bearer as http_headers.Authorization with no auth tab
     `created -> ${join(directHome, "config.toml")} (Codex config; static key)`,
   ]);
   expect(said).not.toContain(STATIC.token);
-  let table = provider(directHome);
+  let table = providerTable(directHome);
   expect(table.auth).toBeUndefined();
   expect(table.env_key).toBeUndefined();
   expect(table.requires_openai_auth).toBe(false);
@@ -381,7 +396,7 @@ test("static-key bakes the bearer as http_headers.Authorization with no auth tab
     "User-Agent": `codex_exec/${FALLBACK_CODEX_UA_VERSION}`,
     Authorization: `Bearer ${STATIC.token}`,
   });
-  let seen = wiring(directHome);
+  let seen = wiringOf(directHome);
   expect(seen.providerMode).toBe("direct");
   expect(seen.credential).toBe("static");
   expect(seen.providerWired).toBe(true);
@@ -393,13 +408,13 @@ test("static-key bakes the bearer as http_headers.Authorization with no auth tab
     direct: null,
     credential: COMMAND,
   });
-  table = provider(directHome);
+  table = providerTable(directHome);
   expect(asRecord(table.http_headers).Authorization).toBeUndefined();
   expect(asRecord(table.http_headers)["User-Agent"]).toBe(
     `codex_exec/${FALLBACK_CODEX_UA_VERSION}`,
   );
   expect(asRecord(table.auth).args).toEqual(agentLauncherCommand(["auth", "--get"]).args);
-  expect(wiring(directHome).credential).toBe("command");
+  expect(wiringOf(directHome).credential).toBe("command");
 
   // Proxy (a second home, since the seam names a path once per process): the bearer is the
   // table's only header, and the line says the daemon is the user's to start.
@@ -416,12 +431,12 @@ test("static-key bakes the bearer as http_headers.Authorization with no auth tab
       "yourself (agent start, or the cx launcher))",
   ]);
   expect(proxySaid).not.toContain(STATIC.token);
-  table = provider(proxyHome);
+  table = providerTable(proxyHome);
   expect(table.auth).toBeUndefined();
   expect(table.env_key).toBeUndefined();
   expect(table.requires_openai_auth).toBe(false);
   expect(table.http_headers).toEqual({ Authorization: `Bearer ${STATIC.token}` });
-  seen = wiring(proxyHome);
+  seen = wiringOf(proxyHome);
   expect(seen.providerMode).toBe("proxy");
   expect(seen.credential).toBe("static");
   expect(seen.providerWired).toBe(true);
@@ -432,10 +447,10 @@ test("static-key bakes the bearer as http_headers.Authorization with no auth tab
     credential: COMMAND,
     baseUrl: "http://localhost:4141/v1",
   });
-  table = provider(proxyHome);
+  table = providerTable(proxyHome);
   expect(table.http_headers).toBeUndefined();
   expect(asRecord(table.auth).args).toEqual(proxyTokenCommand().args);
-  expect(wiring(proxyHome).credential).toBe("command");
+  expect(wiringOf(proxyHome).credential).toBe("command");
 });
 
 test("detectCodexDirect: the CLI runs the catalog's codex-servable model and its verdict decides; gh is optional", async () => {
@@ -644,137 +659,154 @@ test("detectCodexDirect: the probe home carries the Direct provider table alone,
   expect([realDoc.web_search, realDoc.model_catalog_json]).toEqual(["live", catalogFile]);
 });
 
+type CatalogFileState = "usable" | "absent" | "corrupt" | "dir";
+
+/** What the config already carries: a reference to our file (with the ledger's claim), or a
+ *  reference to a path that never existed and was never ours. */
+type CatalogSeed = "ours" | "foreign-missing";
+
+const FOREIGN_MISSING = "/nonexistent/codex-model-catalog.json";
+
+interface CatalogReferenceCase {
+  name: string;
+  enabled: boolean;
+  mode: "direct" | "proxy";
+  file: CatalogFileState;
+  seed?: CatalogSeed;
+  accepts?: boolean | null;
+  key: boolean;
+  claimed: boolean;
+}
+
+// Per write: the opt-in, the catalog file's state, what the config already carries, the installed
+// codex's verdict, and whether the key lands and is claimed.
+
+const CATALOG_REFERENCE_CASES: CatalogReferenceCase[] = [
+  {
+    name: "direct, enabled, usable",
+    enabled: true,
+    mode: "direct",
+    file: "usable",
+    key: true,
+    claimed: true,
+  },
+  {
+    name: "proxy, enabled, usable",
+    enabled: true,
+    mode: "proxy",
+    file: "usable",
+    key: true,
+    claimed: true,
+  },
+  {
+    name: "disabled: a usable file, our reference and claim seeded",
+    enabled: false,
+    mode: "direct",
+    file: "usable",
+    seed: "ours",
+    key: false,
+    claimed: false,
+  },
+  {
+    name: "enabled: our seeded reference, the file gone",
+    enabled: true,
+    mode: "direct",
+    file: "absent",
+    seed: "ours",
+    key: false,
+    claimed: false,
+  },
+  {
+    // A dangling reference is a startup error whoever wrote it: the full write scrubs it.
+    name: "enabled: a seeded reference to a path that never existed",
+    enabled: true,
+    mode: "direct",
+    file: "absent",
+    seed: "foreign-missing",
+    key: false,
+    claimed: false,
+  },
+  {
+    name: "enabled: a corrupt file",
+    enabled: true,
+    mode: "direct",
+    file: "corrupt",
+    key: false,
+    claimed: false,
+  },
+  {
+    name: "enabled: the installed codex accepts",
+    enabled: true,
+    mode: "direct",
+    file: "usable",
+    accepts: true,
+    key: true,
+    claimed: true,
+  },
+  {
+    name: "enabled: the installed codex rejects (the reference IS the startup failure)",
+    enabled: true,
+    mode: "direct",
+    file: "usable",
+    seed: "ours",
+    accepts: false,
+    key: false,
+    claimed: false,
+  },
+  {
+    name: "enabled: unverifiable keeps the pre-probe behaviour",
+    enabled: true,
+    mode: "direct",
+    file: "usable",
+    accepts: null,
+    key: true,
+    claimed: true,
+  },
+  {
+    name: "enabled: our seeded reference, the file now a directory, even when a probe would accept",
+    enabled: true,
+    mode: "direct",
+    file: "dir",
+    seed: "ours",
+    accepts: true,
+    key: false,
+    claimed: false,
+  },
+];
+
+/** The state one case starts from: the catalog file as asked, the config's seeded reference with
+ *  the ledger's claim when it is ours, and a codex on PATH with the asked-for verdict. */
+function seedCatalogCase(c: CatalogReferenceCase, codexHome: string): void {
+  const configPath = join(codexHome, "config.toml");
+  const catalogFile = new CopilotApiPaths().codexModelCatalogFile;
+  if (c.enabled) enableCatalog();
+  if (c.file === "usable") writeFileSync(catalogFile, '{"models":[{"slug":"gpt-5.5"}]}\n');
+  if (c.file === "corrupt") writeFileSync(catalogFile, "{ corrupt");
+  if (c.file === "dir") mkdirSync(catalogFile);
+  if (c.seed !== undefined) {
+    mkdirSync(codexHome, { recursive: true });
+    writeFileSync(
+      configPath,
+      stringify({ model_catalog_json: c.seed === "ours" ? catalogFile : FOREIGN_MISSING }),
+    );
+    if (c.seed === "ours") new OwnershipLedger().record("codexCatalog", configPath);
+  }
+  installedCodex(c.accepts ?? null);
+}
+
 test("model_catalog_json on the write: set and claimed only with the opt-in on, a usable file, and the installed codex not rejecting it; otherwise scrubbed and the claim released, the file kept, both modes alike", () => {
   // A dangling or unparseable model_catalog_json is a Codex STARTUP error, so usability (not
   // existence) gates the key; a schema the installed codex rejects is the same failure, while an
   // unverifiable verdict (no codex to ask) keeps the pre-probe behaviour. The write never deletes
   // the file (that is the disabled sync's job). Seeded references go through the TOML writer,
   // never a hand-quoted string: a raw Windows path inside a basic string reads as escapes.
-  type File = "usable" | "absent" | "corrupt" | "dir";
-  /** What the config already carries: a reference to our file (with the ledger's claim), or a
-   *  reference to a path that never existed and was never ours. */
-  type Seed = "ours" | "foreign-missing";
-  const FOREIGN_MISSING = "/nonexistent/codex-model-catalog.json";
-  const cases: {
-    name: string;
-    enabled: boolean;
-    mode: "direct" | "proxy";
-    file: File;
-    seed?: Seed;
-    accepts?: boolean | null;
-    key: boolean;
-    claimed: boolean;
-  }[] = [
-    {
-      name: "direct, enabled, usable",
-      enabled: true,
-      mode: "direct",
-      file: "usable",
-      key: true,
-      claimed: true,
-    },
-    {
-      name: "proxy, enabled, usable",
-      enabled: true,
-      mode: "proxy",
-      file: "usable",
-      key: true,
-      claimed: true,
-    },
-    {
-      name: "disabled: a usable file, our reference and claim seeded",
-      enabled: false,
-      mode: "direct",
-      file: "usable",
-      seed: "ours",
-      key: false,
-      claimed: false,
-    },
-    {
-      name: "enabled: our seeded reference, the file gone",
-      enabled: true,
-      mode: "direct",
-      file: "absent",
-      seed: "ours",
-      key: false,
-      claimed: false,
-    },
-    {
-      // A dangling reference is a startup error whoever wrote it: the full write scrubs it.
-      name: "enabled: a seeded reference to a path that never existed",
-      enabled: true,
-      mode: "direct",
-      file: "absent",
-      seed: "foreign-missing",
-      key: false,
-      claimed: false,
-    },
-    {
-      name: "enabled: a corrupt file",
-      enabled: true,
-      mode: "direct",
-      file: "corrupt",
-      key: false,
-      claimed: false,
-    },
-    {
-      name: "enabled: the installed codex accepts",
-      enabled: true,
-      mode: "direct",
-      file: "usable",
-      accepts: true,
-      key: true,
-      claimed: true,
-    },
-    {
-      name: "enabled: the installed codex rejects (the reference IS the startup failure)",
-      enabled: true,
-      mode: "direct",
-      file: "usable",
-      seed: "ours",
-      accepts: false,
-      key: false,
-      claimed: false,
-    },
-    {
-      name: "enabled: unverifiable keeps the pre-probe behaviour",
-      enabled: true,
-      mode: "direct",
-      file: "usable",
-      accepts: null,
-      key: true,
-      claimed: true,
-    },
-    {
-      name: "enabled: our seeded reference, the file now a directory, even when a probe would accept",
-      enabled: true,
-      mode: "direct",
-      file: "dir",
-      seed: "ours",
-      accepts: true,
-      key: false,
-      claimed: false,
-    },
-  ];
-  for (const c of cases) {
+  for (const c of CATALOG_REFERENCE_CASES) {
     dir = removeDir(dir);
     isolate();
     const codexHome = join(dir, ".codex");
     const configPath = join(codexHome, "config.toml");
     const catalogFile = new CopilotApiPaths().codexModelCatalogFile;
-    if (c.enabled) enableCatalog();
-    if (c.file === "usable") writeFileSync(catalogFile, '{"models":[{"slug":"gpt-5.5"}]}\n');
-    if (c.file === "corrupt") writeFileSync(catalogFile, "{ corrupt");
-    if (c.file === "dir") mkdirSync(catalogFile);
-    if (c.seed !== undefined) {
-      mkdirSync(codexHome, { recursive: true });
-      writeFileSync(
-        configPath,
-        stringify({ model_catalog_json: c.seed === "ours" ? catalogFile : FOREIGN_MISSING }),
-      );
-      if (c.seed === "ours") new OwnershipLedger().record("codexCatalog", configPath);
-    }
-    installedCodex(c.accepts ?? null);
+    seedCatalogCase(c, codexHome);
     configureCodexConfig(
       codexHome,
       c.mode === "direct"

@@ -1,118 +1,33 @@
 {
-  "$schema": "https://biomejs.dev/schemas/2.5.15/schema.json",
-  "vcs": {
-    "enabled": true,
-    "clientKind": "git",
-    "useIgnoreFile": true
-  },
-  "files": {
-    "includes": [
-      "**",
-      "!node_modules",
-      "!dist",
-      "!.claude",
-      "!CHANGELOG.md",
-      "!.repo-platform.yml",
-      "!.typography-allow",
-      "!AGENTS.md",
-      "!CLAUDE.md",
-      "!.github/agents.md",
-      "!.github/copilot-instructions.md",
-      "!.github/dependabot.yml",
-      "!.github/instructions/review.instructions.md",
-      "!.github/repo-platform-manifest.json",
-      "!.github/settings.yml",
-      "!.github/workflows/auto-assign.yml",
-      "!.github/workflows/ci.yml",
-      "!.github/workflows/pr-title.yml",
-      "!test/fixtures/provenance/v4.0.0/attestation.json",
-      "!test/fixtures/provenance/v4.0.0/trusted_root.json",
-      "!test/fixtures/github-rate-card.yml"
-    ]
-  },
-  "formatter": {
-    "enabled": true,
-    "indentStyle": "space",
-    "indentWidth": 2,
-    "lineWidth": 100,
-    "lineEnding": "lf"
-  },
-  "javascript": {
-    "formatter": {
-      "quoteStyle": "double",
-      "semicolons": "always",
-      "trailingCommas": "all"
-    }
-  },
+  "$schema": "https://biomejs.dev/schemas/2.5.11/schema.json",
+  "extends": ["./biome.local.jsonc"],
   "linter": {
     "enabled": true,
     "rules": {
-      "preset": "recommended",
       "complexity": {
-        "noCommaOperator": "error",
-        "noUselessStringRaw": "error",
-        "useLiteralKeys": "error",
-        "useOptionalChain": "error"
-      },
-      "correctness": {
-        "noUnusedImports": "error",
-        "noUnusedVariables": "error"
-      },
-      "performance": {
-        "noAccumulatingSpread": "error"
+        "noExcessiveCognitiveComplexity": {
+          "level": "error",
+          "options": { "maxAllowedComplexity": 15 }
+        },
+        "noExcessiveLinesPerFunction": { "level": "error", "options": { "maxLines": 80 } },
+        "useMaxParams": { "level": "error", "options": { "max": 6 } }
       },
       "style": {
-        "noNonNullAssertion": "error",
-        "useImportType": "error",
-        "useNodejsImportProtocol": "error",
-        "useTemplate": "error"
+        "noNestedTernary": "error",
+        "noUselessElse": "error",
+        "noNegationElse": "error",
+        "noParameterAssign": "error"
       },
-      "suspicious": {
-        "noConfusingVoidType": "error",
-        "noTemplateCurlyInString": "error"
-      }
+      "suspicious": { "noAssignInExpressions": "error", "noUnusedExpressions": "error" },
+      "performance": { "noBarrelFile": "error", "noReExportAll": "error" },
+      "correctness": { "noInvalidUseBeforeDeclaration": "error" }
     }
   },
-  "plugins": [],
   "overrides": [
     {
-      "includes": [
-        "src/scripts/token_argv_preload.ts",
-        "src/scripts/pat_passthrough_preload.ts",
-        "src/scripts/client_headers_preload.ts",
-        "src/scripts/copilot_host_preload.ts"
-      ],
-      "plugins": ["./biome/no_shim_imports.grit"]
-    },
-    {
-      "includes": ["src/**"],
-      "plugins": ["./biome/no_unbounded_child_spawn.grit"]
-    },
-    {
-      "includes": ["test/**", "!test/helpers/run.ts", "!test/helpers/testing.ts"],
-      "plugins": ["./biome/no_unmanaged_child_spawn.grit"]
-    },
-    {
-      "includes": ["test/**", "!test/helpers/testing.ts"],
-      "plugins": ["./biome/no_unmanaged_temp_dir.grit"]
-    },
-    {
-      "includes": [
-        "test/**/*.ts",
-        "!**/*.e2e.test.ts",
-        "!test/helpers/testing.ts",
-        "!test/helpers/run.ts",
-        "!test/helpers/net.ts",
-        "!test/helpers/fake_model_endpoint.ts",
-        "!test/helpers/fake_codex.ts",
-        "!test/helpers/usage_goldens.ts",
-        "!test/helpers/biome_plugin.ts",
-        "!test/helpers/daemon.ts",
-        "!test/helpers/fake_endpoint.ts",
-        "!test/helpers/mcp.ts",
-        "!test/helpers/scratch_home.ts"
-      ],
-      "plugins": ["./biome/no_e2e_helper_imports.grit"]
+      "includes": ["biome.json", ".github/repo-platform-manifest.json"],
+      "formatter": { "enabled": false },
+      "assist": { "enabled": false }
     }
   ]
 }

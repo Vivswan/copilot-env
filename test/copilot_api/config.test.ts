@@ -1,3 +1,4 @@
+import { afterEach } from "bun:test";
 import {
   chmodSync,
   lstatSync,
@@ -16,7 +17,7 @@ import { renameWithRetry } from "../../src/utils/fs_disk.ts";
 import { readProjectConfig } from "../../src/utils/project_config.ts";
 import { versionLessThan } from "../../src/utils/semver.ts";
 import { withColumns } from "../helpers/columns.ts";
-import { afterEach, expect, tempDir, test } from "../helpers/testing.ts";
+import { expect, tempDir, test } from "../helpers/testing.ts";
 
 let dir = "";
 

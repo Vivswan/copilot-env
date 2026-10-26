@@ -21,7 +21,7 @@ import { isRecord } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import { ScannableError } from "../utils/message.ts";
 import { prompt } from "../utils/prompt.ts";
-import { parseToml, stringify } from "../utils/toml.ts";
+import { parseToml, stringifyToml } from "../utils/toml.ts";
 import { inspectCatalogFile } from "./catalog.ts";
 import { effectiveCodexHome } from "./host.ts";
 import { CODEX_PROVIDER_ID, codexConfigPath } from "./paths.ts";
@@ -70,7 +70,7 @@ export function stripModelProvider(configToml: string): string {
   delete doc.model_provider;
   delete doc.model_catalog_json;
   ensureNoForcedOpenaiAuth(doc);
-  return stringify(doc);
+  return stringifyToml(doc);
 }
 
 export function restoreModelProvider(
@@ -82,7 +82,7 @@ export function restoreModelProvider(
   doc.model_provider = provider;
   if (modelCatalogJson !== null) doc.model_catalog_json = modelCatalogJson;
   ensureNoForcedOpenaiAuth(doc);
-  return stringify(doc);
+  return stringifyToml(doc);
 }
 
 // --- desktop app control ----------------------------------------------------
@@ -220,6 +220,144 @@ export async function quitApp(): Promise<void> {
 
 // --- orchestration ----------------------------------------------------------
 
+/** The config as the pairing found it: its text, the provider to put back, and the catalog
+ *  reference captured alongside so the restore puts BOTH keys back. */
+interface PairingConfig {
+  original: string;
+  provider: string;
+  catalogPath: string | null;
+}
+
+function readPairingConfig(configPath: string): PairingConfig {
+  let original: string;
+  try {
+    original = fs.readText(configPath);
+  } catch {
+    throw new Error(
+      `No Codex config at ${configPath}. Run \`agent profile sync --codex\` first, then retry.`,
+    );
+  }
+  const provider = readTopLevelString(original, "model_provider");
+  if (provider === null) {
+    throw new ScannableError({
+      headline: "No model_provider is configured in config.toml.",
+      evidence: [`config.toml: ${configPath}`],
+      lead: "Fix:",
+      actions: [["agent profile sync --codex", "wire it, then retry --mobile"]],
+    });
+  }
+  return { original, provider, catalogPath: readTopLevelString(original, "model_catalog_json") };
+}
+
+/** False when the pairing stops here: the app is not installed, or the scan could not tell and the
+ *  user declines. */
+async function confirmAppInstalled(): Promise<boolean> {
+  const gate = installGateFromScan(await installedState());
+  if (gate.kind === "proceed") return true;
+  logger.warn(gate.warn);
+  if (gate.kind === "abort") {
+    logger.info(gate.info);
+    return false;
+  }
+  const cont = await prompt(gate.prompt, { type: "confirm", initial: true });
+  if (!cont) {
+    logger.info("Aborted - nothing was changed.");
+    return false;
+  }
+  return true;
+}
+
+/** The app is closed first (asked, default yes) so the config swap is clean; false when the user
+ *  declines. */
+async function confirmAppClosed(): Promise<boolean> {
+  const gate = closeGateFromScan(await runningState());
+  if (!gate.close) return true;
+  if (gate.warn !== null) logger.warn(gate.warn);
+  const close = await prompt(gate.prompt, { type: "confirm", initial: true });
+  if (!close) {
+    logger.info("Aborted - the app must be closed to re-pair. Nothing was changed.");
+    return false;
+  }
+  await quitApp();
+  return true;
+}
+
+/** A durable backup so a hard kill mid-pairing leaves a recovery file rather than a Codex with no
+ *  provider; false when it could not be written. Removed on a clean finish. */
+function writePairingBackup(backupPath: string, original: string): boolean {
+  try {
+    fs.writeText(backupPath, original, {
+      atomic: false,
+      secretKeys: CONFIG_SECRETS,
+      detail: "Codex config backup for the pairing",
+    });
+    return true;
+  } catch {
+    logger.warn(`Could not write a backup at ${backupPath}; proceeding from memory.`);
+    return false;
+  }
+}
+
+function removePairingBackup(backupPath: string): void {
+  try {
+    fs.rm(backupPath, { force: true, detail: "pairing finished" });
+  } catch {
+    logger.warn(`Could not remove the backup at ${backupPath}.`);
+  }
+}
+
+/** The restore the `finally` and the signal handler share: once, re-applied onto the current file
+ *  (the app may have edited it), falling back to the pre-flow config when that is now unreadable or
+ *  invalid. */
+function pairingRestore(
+  configPath: string,
+  config: PairingConfig,
+): { restore: () => void; onSignal: () => void } {
+  const { original, provider, catalogPath } = config;
+  const usableCatalog = (): string | null => {
+    // Re-checked at write time: disabling the opt-in catalog mid-pairing deletes the file, and a
+    // dangling or schema-rejected reference is a Codex startup error.
+    if (catalogPath === null) return null;
+    const verdict = inspectCatalogFile(catalogPath);
+    return verdict === "accepted" || verdict === "unverifiable" ? catalogPath : null;
+  };
+  const rebuildFromOriginal = (): string =>
+    // Strip+restore so the catalog guard applies (`original` may carry the deleted path verbatim);
+    // the pure rewrites cannot throw, since `original` parsed at flow start.
+    restoreModelProvider(stripModelProvider(original), provider, usableCatalog());
+  let restored = false;
+  const restore = (): void => {
+    if (restored) return;
+    restored = true;
+    let next: string;
+    try {
+      next = restoreModelProvider(fs.readText(configPath), provider, usableCatalog());
+    } catch {
+      next = rebuildFromOriginal();
+    }
+    // A rewrite of the path the pairing's strip already named: the seam says nothing more.
+    fs.writeText(configPath, next, { atomic: false, secretKeys: CONFIG_SECRETS });
+  };
+  // `finally` does not run on a signal, so restore synchronously on SIGINT/SIGTERM too; otherwise
+  // Ctrl-C during pairing leaves config.toml without a provider.
+  const onSignal = (): void => {
+    try {
+      restore();
+    } catch {
+      try {
+        fs.writeText(configPath, rebuildFromOriginal(), {
+          atomic: false,
+          secretKeys: CONFIG_SECRETS,
+        });
+      } catch {
+        // give up -- the backup file is the last resort
+      }
+    }
+    process.exit(130);
+  };
+  return { restore, onSignal };
+}
+
 /** Interactive (TTY required). Restore re-applies onto the current file and falls back to the
  *  pre-flow one; it runs in a `finally` and again on SIGINT/SIGTERM, and those two paths part
  *  company once the write itself fails.
@@ -244,132 +382,23 @@ export async function runCodexMobile(): Promise<void> {
     });
   }
 
-  const home = effectiveCodexHome();
-  const configPath = codexConfigPath(home);
-  let original: string;
-  try {
-    original = fs.readText(configPath);
-  } catch {
-    throw new Error(
-      `No Codex config at ${configPath}. Run \`agent profile sync --codex\` first, then retry.`,
-    );
-  }
+  const configPath = codexConfigPath(effectiveCodexHome());
+  const config = readPairingConfig(configPath);
+  if (!(await confirmAppInstalled())) return;
+  if (!(await confirmAppClosed())) return;
 
-  const provider = readTopLevelString(original, "model_provider");
-  if (provider === null) {
-    throw new ScannableError({
-      headline: "No model_provider is configured in config.toml.",
-      evidence: [`config.toml: ${configPath}`],
-      lead: "Fix:",
-      actions: [["agent profile sync --codex", "wire it, then retry --mobile"]],
-    });
-  }
-  // Captured alongside the provider so restore() puts BOTH keys back.
-  const catalogPath = readTopLevelString(original, "model_catalog_json");
-
-  const installGate = installGateFromScan(await installedState());
-  if (installGate.kind === "abort") {
-    logger.warn(installGate.warn);
-    logger.info(installGate.info);
-    return;
-  }
-  if (installGate.kind === "confirm") {
-    logger.warn(installGate.warn);
-    const cont = await prompt(installGate.prompt, {
-      type: "confirm",
-      initial: true,
-    });
-    if (!cont) {
-      logger.info("Aborted - nothing was changed.");
-      return;
-    }
-  }
-
-  // Close the app first (ask permission, default yes) so the config swap is clean.
-  const gate = closeGateFromScan(await runningState());
-  if (gate.close) {
-    if (gate.warn !== null) logger.warn(gate.warn);
-    const close = await prompt(gate.prompt, {
-      type: "confirm",
-      initial: true,
-    });
-    if (!close) {
-      logger.info("Aborted - the app must be closed to re-pair. Nothing was changed.");
-      return;
-    }
-    await quitApp();
-  }
-
-  // A durable backup so a hard kill mid-pairing leaves a recovery file rather than a Codex with no
-  // provider. Removed on a clean finish.
   const backupPath = `${configPath}.copilot-env-mobile.bak`;
-  let backupWritten = false;
-  try {
-    fs.writeText(backupPath, original, {
-      atomic: false,
-      secretKeys: CONFIG_SECRETS,
-      detail: "Codex config backup for the pairing",
-    });
-    backupWritten = true;
-  } catch {
-    logger.warn(`Could not write a backup at ${backupPath}; proceeding from memory.`);
-  }
-
-  const usableCatalog = (): string | null => {
-    // Re-checked at write time: disabling the opt-in catalog mid-pairing deletes the file, and a
-    // dangling or schema-rejected reference is a Codex startup error.
-    if (catalogPath === null) return null;
-    const verdict = inspectCatalogFile(catalogPath);
-    return verdict === "accepted" || verdict === "unverifiable" ? catalogPath : null;
-  };
-  const rebuildFromOriginal = (): string =>
-    // Strip+restore so the catalog guard applies (`original` may carry the deleted path verbatim);
-    // the pure rewrites cannot throw, since `original` parsed at flow start.
-    restoreModelProvider(stripModelProvider(original), provider, usableCatalog());
-
-  let restored = false;
-  const restore = (): void => {
-    if (restored) return;
-    restored = true;
-    let next: string;
-    try {
-      // The app may have edited the file, so re-apply onto the current one; fall back to the
-      // pre-flow config when it is now unreadable or invalid.
-      next = restoreModelProvider(fs.readText(configPath), provider, usableCatalog());
-    } catch {
-      next = rebuildFromOriginal();
-    }
-    // A rewrite of the path the strip below already named: the seam says nothing more.
-    fs.writeText(configPath, next, { atomic: false, secretKeys: CONFIG_SECRETS });
-  };
-
-  // `finally` does not run on a signal, so restore synchronously on SIGINT/SIGTERM too; otherwise
-  // Ctrl-C during pairing leaves config.toml without a provider.
-  const onSignal = (): void => {
-    try {
-      restore();
-    } catch {
-      try {
-        fs.writeText(configPath, rebuildFromOriginal(), {
-          atomic: false,
-          secretKeys: CONFIG_SECRETS,
-        });
-      } catch {
-        // give up -- the backup file is the last resort
-      }
-    }
-    process.exit(130);
-  };
+  const backupWritten = writePairingBackup(backupPath, config.original);
+  const { restore, onSignal } = pairingRestore(configPath, config);
   process.once("SIGINT", onSignal);
   process.once("SIGTERM", onSignal);
-
   try {
     // The restore below rewrites the same path silently (the seam names a path once per process),
     // so this line names the act and nothing about a write not yet made.
-    fs.writeText(configPath, stripModelProvider(original), {
+    fs.writeText(configPath, stripModelProvider(config.original), {
       atomic: false,
       secretKeys: CONFIG_SECRETS,
-      detail: `Codex config, rewritten around the pairing (model_provider "${provider}")`,
+      detail: `Codex config, rewritten around the pairing (model_provider "${config.provider}")`,
     });
 
     await openApp();
@@ -394,13 +423,7 @@ export async function runCodexMobile(): Promise<void> {
     process.off("SIGINT", onSignal);
     process.off("SIGTERM", onSignal);
     restore();
-    if (backupWritten) {
-      try {
-        fs.rm(backupPath, { force: true, detail: "pairing finished" });
-      } catch {
-        logger.warn(`Could not remove the backup at ${backupPath}.`);
-      }
-    }
+    if (backupWritten) removePairingBackup(backupPath);
   }
 
   await openApp();
@@ -409,7 +432,7 @@ export async function runCodexMobile(): Promise<void> {
       "Done",
       "",
       `  The ${APP_NAME} app is reopening. Check that it's connected to your phone`,
-      `  and using your configured provider ("${provider}").`,
+      `  and using your configured provider ("${config.provider}").`,
     ].join("\n"),
   );
 }

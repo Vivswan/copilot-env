@@ -86,6 +86,32 @@ function unjudged(enabled: boolean, reason: string): ClaudeDesktopStatus {
   };
 }
 
+type ResolvedDesktopTargets = Extract<DesktopTargetResolution, { kind: "resolved" }>;
+
+/** A scoped pass syncs one entry and removes nothing, whoever's; it runs before the key-off sweep
+ *  would. */
+async function syncOneTarget(resolution: ResolvedDesktopTargets, only: ProfileName): Promise<void> {
+  if (!new CopilotEnvConfig().claudeDesktopEnabled() || !claudeDesktopInstalled()) return;
+  const target = resolution.targets.find((t) => t.profile === only);
+  if (target !== undefined) await syncTarget(target);
+}
+
+/** The default is upserted too: a key flipped back on by a config-only import has no adapter write
+ *  to ride on. A default already judged wired is skipped: init / `agent profile sync --claude` just
+ *  synced it, and re-discovering its models would be a network call for a byte-identical no-op. */
+async function upsertTargets(
+  resolution: ResolvedDesktopTargets,
+  status: Extract<ClaudeDesktopStatus, { kind: "inspected" }>,
+): Promise<void> {
+  const defaultWired = status.entries.some((e) => e.profile === null && e.verdict.kind === "wired");
+  for (const target of resolution.targets) {
+    if (target.profile === null && defaultWired) continue;
+    await syncTarget(target);
+  }
+  if (resolution.targets.length === 0) return;
+  await reportClaudeDesktopReady(resolution);
+}
+
 /** Cleanup runs before the upserts so an orphan holding the applied slot hands it to the entry
  *  replacing it. This is the ONE caller of the key-off sweep, so its notice naming the default's
  *  leftover entry prints from here and nowhere else; the default write's own key-off stays
@@ -98,58 +124,50 @@ export async function reconcileClaudeDesktopWiring(
   opts: { quiet?: boolean; only?: ProfileName } = {},
 ): Promise<void> {
   try {
-    // Resolved targets gate EVERY cleanup, the key-off sweep included: a store that
-    // cannot be trusted must not decide what is ours to remove.
-    const resolution = resolveClaudeDesktopTargets();
-    if (resolution.kind === "unresolvable") {
-      logger.warn(`  Claude Desktop: ${resolution.reason}; leaving the config library alone.`);
-      return;
-    }
-    if (opts.only !== undefined) {
-      // Before the key-off sweep: a scoped pass syncs one entry and removes nothing, whoever's.
-      if (!new CopilotEnvConfig().claudeDesktopEnabled() || !claudeDesktopInstalled()) return;
-      const target = resolution.targets.find((t) => t.profile === opts.only);
-      if (target !== undefined) await syncTarget(target);
-      return;
-    }
-    if (!new CopilotEnvConfig().claudeDesktopEnabled()) {
-      removeUnmanagedClaudeDesktopWiring({ quiet: opts.quiet });
-      return;
-    }
-    if (!claudeDesktopInstalled()) return;
-    const status = inspectClaudeDesktopWiring(resolution);
-    if (status.kind === "unreadable") {
-      logger.warn(
-        `  Claude Desktop: ${status.metaPath} has an unexpected shape; leaving the config library alone.`,
-      );
-      return;
-    }
-    if (status.kind === "unjudged") {
-      logger.warn(`  Claude Desktop: ${status.reason}; leaving the config library alone.`);
-      return;
-    }
-    if (status.kind !== "inspected") return;
-    for (const orphan of status.orphans) removeClaudeDesktopOrphan(orphan);
-    if (status.unlisted.length > 0) removeUnlistedClaudeDesktopClaims();
-    if (opts.quiet) return;
-    // The default is upserted too: a key flipped back on by a config-only import has no
-    // adapter write to ride on. A default already judged wired is skipped: init / `agent
-    // profile sync --claude` just synced it, and re-discovering its models would be a network call for a
-    // byte-identical no-op.
-    const defaultWired = status.entries.some(
-      (e) => e.profile === null && e.verdict.kind === "wired",
-    );
-    for (const target of resolution.targets) {
-      if (target.profile === null && defaultWired) continue;
-      await syncTarget(target);
-    }
-    if (resolution.targets.length === 0) return;
-    await reportClaudeDesktopReady(resolution);
+    await reconcileClaudeDesktopWiringOrThrow(opts);
   } catch (e) {
     logger.warn(
       caught(e, (message) => `  Could not reconcile the Claude Desktop wiring: ${message}`),
     );
   }
+}
+
+async function reconcileClaudeDesktopWiringOrThrow(opts: {
+  quiet?: boolean;
+  only?: ProfileName;
+}): Promise<void> {
+  // Resolved targets gate EVERY cleanup, the key-off sweep included: a store that
+  // cannot be trusted must not decide what is ours to remove.
+  const resolution = resolveClaudeDesktopTargets();
+  if (resolution.kind === "unresolvable") {
+    logger.warn(`  Claude Desktop: ${resolution.reason}; leaving the config library alone.`);
+    return;
+  }
+  if (opts.only !== undefined) {
+    await syncOneTarget(resolution, opts.only);
+    return;
+  }
+  if (!new CopilotEnvConfig().claudeDesktopEnabled()) {
+    removeUnmanagedClaudeDesktopWiring({ quiet: opts.quiet });
+    return;
+  }
+  if (!claudeDesktopInstalled()) return;
+  const status = inspectClaudeDesktopWiring(resolution);
+  if (status.kind === "unreadable") {
+    logger.warn(
+      `  Claude Desktop: ${status.metaPath} has an unexpected shape; leaving the config library alone.`,
+    );
+    return;
+  }
+  if (status.kind === "unjudged") {
+    logger.warn(`  Claude Desktop: ${status.reason}; leaving the config library alone.`);
+    return;
+  }
+  if (status.kind !== "inspected") return;
+  for (const orphan of status.orphans) removeClaudeDesktopOrphan(orphan);
+  if (status.unlisted.length > 0) removeUnlistedClaudeDesktopClaims();
+  if (opts.quiet) return;
+  await upsertTargets(resolution, status);
 }
 
 /** One line, only when the app WILL come up on the default entry at its next launch: the default is

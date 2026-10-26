@@ -1,6 +1,8 @@
 // Sigstore judges the certificate at the log-integrated time, not now, so the v4.0.0 fixtures never
 // expire. Every case passes its trust root in, so none reaches the network; the one control that
 // must find no trust root fails the global fetch for its span.
+
+import { describe } from "bun:test";
 import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { TrustedRoot } from "@sigstore/protobuf-specs";
@@ -15,7 +17,7 @@ import {
 } from "../../src/install/attestation.ts";
 import { fileSha256 } from "../../src/install/checksums.ts";
 import { verifyReleaseProvenance } from "../../src/install/provenance.ts";
-import { describe, expect, tempDir, test } from "../helpers/testing.ts";
+import { expect, tempDir, test } from "../helpers/testing.ts";
 
 /** The v4.0.0 bundle, checksums, and trust root; the header says why they never expire. */
 const FIXTURES = join(import.meta.dirname, "..", "fixtures", "provenance", "v4.0.0");
@@ -120,7 +122,9 @@ describe("verifyReleaseProvenance", () => {
     ])
       expect(pattern.test(rejected), rejected).toBe(false);
   });
+});
 
+describe("verifyReleaseProvenance on an altered or malformed bundle", () => {
   test("a signed envelope whose payload or payload type was altered is a FAILED verdict", async () => {
     const original = JSON.parse(BUNDLE) as {
       dsseEnvelope: { payload: string; payloadType: string };
@@ -168,7 +172,9 @@ describe("verifyReleaseProvenance", () => {
       rmSync(cachePath, { recursive: true, force: true });
     }
   });
+});
 
+describe("verifyReleaseProvenance without a usable trust root", () => {
   test("control: a valid bundle with no reachable trust root is the fail-closed message", async () => {
     // Unreachable by construction: tuf-js refreshes the empty cache through the global fetch, and
     // for this test every fetch fails as a dead network does, or the mirror would answer and the

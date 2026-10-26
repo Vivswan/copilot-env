@@ -1,3 +1,4 @@
+import { afterEach } from "bun:test";
 import { writeFileSync } from "node:fs";
 import { delimiter, join, relative, resolve } from "node:path";
 import {
@@ -8,7 +9,7 @@ import {
 } from "../../src/utils/command.ts";
 import { pathLedBy } from "../helpers/env.ts";
 import { runSync } from "../helpers/run.ts";
-import { afterEach, expect, step, tempDir, test } from "../helpers/testing.ts";
+import { expect, step, tempDir, test } from "../helpers/testing.ts";
 
 /** Restored after each case: the rows lead or replace it. */
 const SAVED_PATH = process.env.PATH;

@@ -20,6 +20,7 @@ import { canonicalModelName } from "../../src/usage/pricing.ts";
 import { type ModelUsage, type ReadonlyUsageReport, usageReport } from "../../src/usage/usage.ts";
 import { must } from "../../src/utils/assert.ts";
 import { stableStringify } from "../../src/utils/json.ts";
+import { byCodeUnit } from "../../src/utils/order.ts";
 import {
   DEFAULT_DAYS,
   DEFAULT_END,
@@ -158,7 +159,7 @@ export async function generateGoldenTree(entry: GoldenCase, root: string): Promi
 export function treeSha256(tree: GeneratedTree): string {
   const entries = tree.files
     .map((f) => ({ rel: path.relative(tree.root, f.path).replaceAll("\\", "/"), path: f.path }))
-    .sort((a, b) => (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0));
+    .sort((a, b) => byCodeUnit(a.rel, b.rel));
   const hash = createHash("sha256");
   for (const entry of entries) {
     hash.update(`${entry.rel}\n`);

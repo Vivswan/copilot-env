@@ -18,7 +18,7 @@
 import { createServer } from "node:http";
 
 const portIdx = process.argv.indexOf("--port");
-const port = portIdx !== -1 ? Number(process.argv[portIdx + 1]) : 4141;
+const port = portIdx === -1 ? 4141 : Number(process.argv[portIdx + 1]);
 
 function json(res, status, obj) {
   // The real copilot-api stamps every response with an x-trace-id header;

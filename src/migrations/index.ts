@@ -85,6 +85,20 @@ function requireSemver(value: string, what: string): SemverString {
   return parsed;
 }
 
+function layoutRank(m: Migration): number {
+  return m.layout === true ? 0 : 1;
+}
+
+/** Layout steps first, then version ascending. Equal ranks compare 0: Array.sort is stable, so
+ *  within a version the registry order is the run order. */
+function runOrder(a: Migration, b: Migration): number {
+  const byLayout = layoutRank(a) - layoutRank(b);
+  if (byLayout !== 0) return byLayout;
+  if (versionLessThan(a.version, b.version)) return -1;
+  if (versionLessThan(b.version, a.version)) return 1;
+  return 0;
+}
+
 /** The migrations whose version falls in [from, to): every version an update from `from` to
  *  `to` leaves behind, layout steps first (Migration.layout), then version-ascending. Pure and
  *  exported so the selection is unit-tested without running one. `from`/`to` may carry a
@@ -101,20 +115,9 @@ export function dueMigrations(
   }
   const f = requireSemver(from, "from version");
   const t = requireSemver(to, "to version");
-  // Equal ranks compare 0: Array.sort is stable, so within a version the
-  // registry order is the run order.
-  const layoutRank = (m: Migration) => (m.layout === true ? 0 : 1);
   return migrations
     .filter((m) => !versionLessThan(m.version, f) && versionLessThan(m.version, t))
-    .sort(
-      (a, b) =>
-        layoutRank(a) - layoutRank(b) ||
-        (versionLessThan(a.version, b.version)
-          ? -1
-          : versionLessThan(b.version, a.version)
-            ? 1
-            : 0),
-    );
+    .sort(runOrder);
 }
 
 /** Best-effort: a failing migration warns and the rest still run; migrations must never abort

@@ -114,6 +114,18 @@ function headlineOf(node: Expression, consts: StringConsts): Headline | null {
   return { text, columns, openEnded: last !== undefined && last.value.cooked === "" };
 }
 
+function literalLead(value: Expression): string | undefined {
+  return value.type === "Literal" && typeof value.value === "string" ? value.value : undefined;
+}
+
+/** `actions` as its row count; undefined for a value that is no array literal, or one with a
+ *  spread. */
+function literalActionRows(value: Expression): number | undefined {
+  if (value.type !== "ArrayExpression") return undefined;
+  if (value.elements.some((row) => row?.type === "SpreadElement")) return undefined;
+  return value.elements.length;
+}
+
 /** The literal fields of a parts object: `lead` as its string, `actions` as its row count; a
  *  field written otherwise is undefined. A spread, a string key, or a literal computed key leaves
  *  no field literal; a computed identifier key (`[k]`) is read as the name it spells, a stated
@@ -131,15 +143,8 @@ function fieldsOf(parts: ObjectExpression): {
     if (property.type !== "Property" || property.key.type !== "Identifier") return {};
     const { value } = property;
     if (property.key.name === "headline") fields.headline = value as Expression;
-    if (property.key.name === "lead") {
-      fields.lead =
-        value.type === "Literal" && typeof value.value === "string" ? value.value : undefined;
-    }
-    if (property.key.name === "actions") {
-      const rows = value.type === "ArrayExpression" ? value.elements : null;
-      const literal = rows?.every((row) => row?.type !== "SpreadElement");
-      fields.actions = literal ? rows.length : undefined;
-    }
+    if (property.key.name === "lead") fields.lead = literalLead(value);
+    if (property.key.name === "actions") fields.actions = literalActionRows(value);
   }
   return fields;
 }

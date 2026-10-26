@@ -2,6 +2,7 @@
 // command and interactive layer. The agent Direct configs shell into `agent auth --get` at fetch
 // time, so this command is also their resolver.
 import { wireBothAgents } from "../agents/profile_wiring.ts";
+import type { StaticKeyScope } from "../copilot_api/config_registry.ts";
 import {
   accountSourceLabel,
   Credential,
@@ -24,6 +25,7 @@ import {
   activeGhLogin,
   GH_COPILOT_HOST,
   GH_LOGIN_RE,
+  type GhAccount,
   type GhEnvToken,
   ghTokenEnvVarsLabel,
   ghTokenEnvVarsList,
@@ -69,6 +71,13 @@ const logger = createStderrLogger();
 
 // Derived from AUTH_PROVIDERS (env_state.ts owns the list) so the flag hints can never drift.
 const PROVIDER_CHOICES = AUTH_PROVIDERS.join("|");
+
+/** Whose baked value a static-key scope names (noteStaticKeyStale). */
+const STATIC_KEY_SCOPE_OWNER: Record<Exclude<StaticKeyScope, "none">, string> = {
+  all: "Claude's and Codex's",
+  claude: "Claude's",
+  codex: "Codex's",
+};
 
 /** A dry run runs no login and no prompt; the read-only lookups do (gh-cli's `gh auth token`
  *  resolve and the saved-account look, gh-env's env read), so the slot is planned from what the
@@ -231,6 +240,52 @@ async function chooseProvider(authCommand: string): Promise<AuthProvider> {
  *  never asks) pin the active account or refuse with the flag that answers. */
 type GhAccountChooserMode = "interactive" | "headless" | "dry-run";
 
+/** The env var a login is listed through when its EVERY listing is an env-token source, so it may
+ *  have no saved credential behind it; null while a saved one is listed. */
+function ghEnvOnlySource(github: readonly GhAccount[], login: string): string | null {
+  const sources = github.filter((a) => a.login === login).map((a) => a.source);
+  const envSource = sources.find((s) => /_TOKEN$/.test(s));
+  if (envSource === undefined) return null;
+  return sources.every((s) => /_TOKEN$/.test(s)) ? envSource : null;
+}
+
+/** Without a terminal the active account is pinned, the escape hatches named; anything but the
+ *  active account would guess whose credit to spend, so it is an error, never a fallback. */
+function settleGhAccountHeadless(
+  retry: string,
+  mode: "headless" | "dry-run",
+  logins: readonly string[],
+  allLogins: readonly string[],
+  active: string | null,
+): GhAccountSelection {
+  if (active !== null && logins.includes(active)) {
+    logger.info(
+      scannable({
+        headline: `gh has ${allLogins.length} logged-in accounts; pinning the active one.`,
+        evidence: [`active account: ${active}`],
+        lead: "Pick one:",
+        actions: [
+          [`${retry} --gh-user <login>`, "pin another account"],
+          [retry, "choose in a terminal (auto included)"],
+        ],
+      }),
+    );
+    return { kind: "pinned", login: active };
+  }
+  const dryRun = mode === "dry-run";
+  throw new ScannableError({
+    headline: `gh has ${allLogins.length} logged-in accounts and no pinnable active one.`,
+    evidence: [`pinnable: ${logins.join(", ")}`],
+    lead: dryRun ? "Fix:" : "Pick one:",
+    actions: dryRun
+      ? [["--gh-user <login>", "add it to plan that landing (a dry run never prompts)"]]
+      : [
+          [`${retry} --gh-user <login>`, "pin one of them"],
+          [retry, "choose in a terminal"],
+        ],
+  });
+}
+
 /**
  * Pinning is the only default: a later `gh auth login` must never switch whose Copilot credit gets
  * spent. When nothing can be pinned honestly this throws naming the escape hatches; auto is only
@@ -244,7 +299,6 @@ export async function chooseGhAccount(
   look: () => GhAccountsLook = ghAccountsLook,
   mode: GhAccountChooserMode = process.stdin.isTTY ? "interactive" : "headless",
 ): Promise<GhAccountSelection> {
-  const interactive = mode === "interactive";
   const listing = look();
   if (listing.kind === "unproven") {
     throw new ScannableError({
@@ -272,12 +326,7 @@ export async function chooseGhAccount(
     ...new Set(accounts.filter((a) => a.host === GH_COPILOT_HOST).map((a) => a.login)),
   ];
   const active = activeGhLogin(accounts);
-  // A login whose EVERY listing is an env-token source may have no saved credential behind it.
-  const envOnly = (login: string): string | null => {
-    const sources = github.filter((a) => a.login === login).map((a) => a.source);
-    const envSource = sources.find((s) => /_TOKEN$/.test(s));
-    return envSource !== undefined && sources.every((s) => /_TOKEN$/.test(s)) ? envSource : null;
-  };
+  const envOnly = (login: string): string | null => ghEnvOnlySource(github, login);
   if (logins.length === 0) {
     throw new ScannableError({
       headline: "gh has no logged-in github.com account.",
@@ -293,37 +342,10 @@ export async function chooseGhAccount(
     // A sole env-only login's pin can fail verification with no other account to escape to;
     // interactively the user decides, without a TTY the pin proceeds and a failure names the
     // recovery.
-    if (envOnly(only) === null || !interactive) return { kind: "pinned", login: only };
+    if (envOnly(only) === null || mode !== "interactive") return { kind: "pinned", login: only };
   }
-  if (!interactive) {
-    // Anything but the active account would guess whose credit to spend, so it is an error, never a
-    // fallback.
-    if (active !== null && logins.includes(active)) {
-      logger.info(
-        scannable({
-          headline: `gh has ${allLogins.length} logged-in accounts; pinning the active one.`,
-          evidence: [`active account: ${active}`],
-          lead: "Pick one:",
-          actions: [
-            [`${retry} --gh-user <login>`, "pin another account"],
-            [retry, "choose in a terminal (auto included)"],
-          ],
-        }),
-      );
-      return { kind: "pinned", login: active };
-    }
-    const dryRun = mode === "dry-run";
-    throw new ScannableError({
-      headline: `gh has ${allLogins.length} logged-in accounts and no pinnable active one.`,
-      evidence: [`pinnable: ${logins.join(", ")}`],
-      lead: dryRun ? "Fix:" : "Pick one:",
-      actions: dryRun
-        ? [["--gh-user <login>", "add it to plan that landing (a dry run never prompts)"]]
-        : [
-            [`${retry} --gh-user <login>`, "pin one of them"],
-            [retry, "choose in a terminal"],
-          ],
-    });
+  if (mode !== "interactive") {
+    return settleGhAccountHeadless(retry, mode, logins, allLogins, active);
   }
   // The active account leads (the default selection); auto is LAST and explicit.
   const ordered = [...logins].sort((a, b) => Number(b === active) - Number(a === active));
@@ -870,7 +892,18 @@ async function runDel(profile: Profile): Promise<() => void> {
       const { signalled, stopped } = stop;
       // `stopped` first: a stop REFUSED (unprovable pid, nothing signalled) must report the
       // still-running daemon, never the plain success.
-      if (!stopped) {
+      if (stopped) {
+        const evidence = [...forSlot];
+        if (signalled) evidence.push(`stopped ${its} proxy`);
+        logger.success(
+          scannable({
+            headline: "De-authenticated.",
+            evidence,
+            lead: "Then:",
+            actions: [[again, "log in again"]],
+          }),
+        );
+      } else {
         logger.warn(
           scannable({
             headline: "De-authenticated.",
@@ -881,17 +914,6 @@ async function runDel(profile: Profile): Promise<() => void> {
             ],
             lead: "Fix:",
             actions: [[agentStopCommand(profile), "stop it"]],
-          }),
-        );
-      } else {
-        const evidence = [...forSlot];
-        if (signalled) evidence.push(`stopped ${its} proxy`);
-        logger.success(
-          scannable({
-            headline: "De-authenticated.",
-            evidence,
-            lead: "Then:",
-            actions: [[again, "log in again"]],
           }),
         );
       }
@@ -1016,14 +1038,9 @@ function ghUserConflictError(): Error {
   );
 }
 
-function parseAuthAction(args: AuthArgs): AuthAction {
-  const subActions = [
-    args.get,
-    args.del,
-    args.check,
-    args.identities,
-    args.identity !== undefined,
-  ].filter(Boolean).length;
+/** The flag pairs that cannot ride together: two sub-actions, a sub-action with `--set`, or a
+ *  read-only sub-action with `--dry-run`. */
+function refuseSubActionConflicts(args: AuthArgs, subActions: number): void {
   if (subActions > 1) {
     throw new Error("--get, --del, and --check are mutually exclusive");
   }
@@ -1037,6 +1054,17 @@ function parseAuthAction(args: AuthArgs): AuthAction {
         "--get/--check",
     );
   }
+}
+
+function parseAuthAction(args: AuthArgs): AuthAction {
+  const subActions = [
+    args.get,
+    args.del,
+    args.check,
+    args.identities,
+    args.identity !== undefined,
+  ].filter(Boolean).length;
+  refuseSubActionConflicts(args, subActions);
   // Ahead of the provider conflict, so an invalid name keeps reporting itself when a stray
   // --provider rides along.
   const profile: Profile = parseProfileFlag(args.profile);
@@ -1164,7 +1192,16 @@ async function runAuthenticate(
           actions: [["agent init", "configure Codex and Claude"]],
         }),
       );
-    } else if (mode !== null) {
+    } else if (mode === null) {
+      logger.success(
+        scannable({
+          headline: `Authenticated (${provider}).`,
+          evidence: [`for ${profileLabel(profile)}`],
+          lead: "Then:",
+          actions: [[`agent profile ${profile} add --direct|--proxy`, "wire it into both agents"]],
+        }),
+      );
+    } else {
       logger.success(
         scannable({
           headline: `Authenticated (${provider}).`,
@@ -1176,15 +1213,6 @@ async function runAuthenticate(
           ],
         }),
       );
-    } else {
-      logger.success(
-        scannable({
-          headline: `Authenticated (${provider}).`,
-          evidence: [`for ${profileLabel(profile)}`],
-          lead: "Then:",
-          actions: [[`agent profile ${profile} add --direct|--proxy`, "wire it into both agents"]],
-        }),
-      );
     }
     if (mode === null) noteStaticKeyStale(profile);
   };
@@ -1194,8 +1222,7 @@ async function runAuthenticate(
 function noteStaticKeyStale(profile: Profile): void {
   const scope = new CopilotEnvConfig().staticKeyScope(profile);
   if (scope === "none") return;
-  const whose =
-    scope === "all" ? "Claude's and Codex's" : scope === "claude" ? "Claude's" : "Codex's";
+  const whose = STATIC_KEY_SCOPE_OWNER[scope];
   const rewire = profile === null ? "agent init" : `agent profile ${profile} add --direct|--proxy`;
   logger.info(
     scannable({

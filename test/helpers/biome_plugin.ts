@@ -7,14 +7,14 @@ import { dirname, join } from "node:path";
 import { ROOT, runSync } from "./run.ts";
 import { tempDir } from "./testing.ts";
 
-/** biome.json's `overrides` entry, as this repository writes it: a path scope and the plugins it
+/** biome.local.jsonc's `overrides` entry, as this repository writes it: a path scope and the plugins it
  *  turns on there. */
 export interface PluginOverride {
   includes: string[];
   plugins: string[];
 }
 
-/** biome.json's plugin paths are config-relative; the scratch config is elsewhere, so each
+/** biome.local.jsonc's plugin paths are config-relative; the scratch config is elsewhere, so each
  *  becomes absolute. Forward slashes: biome reads the config as JSON on every platform. */
 function absolutePlugin(plugin: string): string {
   return join(ROOT, plugin).replaceAll("\\", "/");
@@ -83,13 +83,15 @@ export function everywhere(plugin: string): PluginOverride[] {
   return [{ includes: ["**"], plugins: [plugin] }];
 }
 
-/** The repository's own scopes, read from biome.json, so a scope test lints under exactly what
- *  `biome ci` applies. */
+/** The repository's own scopes, read from biome.local.jsonc (the layer the managed biome.json
+ *  extends), so a scope test lints under exactly what `biome ci` applies. */
 export function repositoryOverrides(): PluginOverride[] {
-  const config = JSON.parse(readFileSync(join(ROOT, "biome.json"), "utf8")) as {
-    overrides?: PluginOverride[];
+  const config = Bun.JSONC.parse(readFileSync(join(ROOT, "biome.local.jsonc"), "utf8")) as {
+    overrides?: Partial<PluginOverride>[];
   };
-  return (config.overrides ?? []).filter((entry) => entry.plugins !== undefined);
+  return (config.overrides ?? []).filter(
+    (entry): entry is PluginOverride => entry.plugins !== undefined,
+  );
 }
 
 /** Per-case counts for one rule: `cases[i]` is linted as its own file and its count returned in

@@ -31,6 +31,7 @@ import { proxyTokenDeps, resolveProxyToken } from "./proxy_token.ts";
 
 /** Each name is also the command spawned. */
 const LAUNCH_CLIS = ["claude", "codex", "copilot"] as const;
+
 type LaunchCliName = (typeof LAUNCH_CLIS)[number];
 
 export interface LaunchFlags {
@@ -73,9 +74,15 @@ export function parseLaunchAction(flags: LaunchFlags): LaunchAction {
 
 /** Pure data, so tests assert the composition without spawning an agent. */
 export interface LaunchPlan {
+  /** Resolved on PATH before anything is prepared (requireCli); the path found is what is spawned. */
   command: LaunchCliName;
+
+  /** The managed flags first, the user's own after them. */
   args: string[];
+
+  /** Laid over the inherited environment once `scrub` removed every casing of its names (childEnv). */
   env: Record<string, string>;
+
   /** Canonical UPPER-CASE names. */
   scrub: string[];
 }

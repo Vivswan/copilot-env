@@ -19,9 +19,12 @@ import { AutoupdateState, effectiveUpdateCooldownDays } from "./state.ts";
 const logger = createStderrLogger();
 
 export interface PreflightOptions {
+  /** Read by the due check and handed to the lock as its clock, so a test pins time. */
   nowMs: number;
+
   /** Injectable for tests; defaults to the real on-disk state. */
   state?: AutoupdateState;
+
   /** Injectable for tests (a hermetic lock path); defaults to THE update lock. */
   lock?: typeof withUpdateLock;
 }

@@ -316,8 +316,7 @@ test("renderReport prints the Direct no-credential verdict at 80 columns: the au
   );
 });
 
-// Both agents wired Direct on a gh-cli slot, gh found and authenticated; the direct-auth tests
-// swap in the verdict under test.
+// Direct on a gh-cli slot, gh authenticated; the direct-auth tests swap in the verdict under test.
 const CODEX_DIRECT = {
   home: "/c",
   configExists: true,
@@ -339,6 +338,8 @@ const CODEX_DIRECT = {
   provider: "gh-cli",
   directAuth: { kind: "found", command: "/bin/gh", ghCommand: "gh auth token" },
 } satisfies CodexFacts;
+
+// Claude's half of the same fixture: Direct on the gh-cli slot, gh authenticated.
 const CLAUDE_DIRECT = {
   home: "/h/.claude",
   settingsPath: join("/h/.claude", "settings.json"),
@@ -354,6 +355,7 @@ const CLAUDE_DIRECT = {
   directUsesToken: false,
   provider: "gh-cli",
 } satisfies ClaudeFacts;
+
 // `gh auth token` spawned but never completed (error / timeout kill).
 const UNPROVEN_TOKEN_CALL = {
   kind: "unproven",

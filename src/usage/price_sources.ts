@@ -10,7 +10,9 @@ import { loadPricing, type PricingTier, withGitHubRates } from "./pricing.ts";
 
 export type SourceRead =
   | {
+      /** Fetched today, or served from a copy under 24 hours old. */
       kind: "read";
+
       /** Set when today's fetched copy could not be kept for the day: the next run fetches again. */
       cacheWriteError?: string;
     }
@@ -19,12 +21,16 @@ export type SourceRead =
   | { kind: "none"; problem: string };
 
 export interface PriceSources {
-  /** What the run prices at: GitHub's card over OpenRouter's list when both price, either one
-   *  alone, or an empty map (tokens only). */
+  /** GitHub's card over OpenRouter's list when both price, either alone, or empty (tokens only). */
   pricing: Map<string, PricingTier>;
+
   /** The card `pricing` carries GitHub's rates from; absent when no card prices the run. */
   rateCard: RateCardSource | undefined;
+
+  /** The list's read; `none` leaves every model to the card, or unpriced. */
   openRouter: SourceRead;
+
+  /** The card's read; `none` prices from the list alone. */
   gitHub: SourceRead;
 }
 

@@ -504,6 +504,7 @@ test("newestClaudeModel: the highest version across families, a dated snapshot o
 
 // parseCatalogModels never throws: the catalog feeds a best-effort alias table, so a malformed body
 // reads as an empty catalog and a malformed entry is skipped.
+
 const CATALOG_ROWS: { name: string; body: unknown; models: CatalogModel[] }[] = [
   {
     name: "the [1m] suffix is stripped and flags the entry 1m",
@@ -604,12 +605,12 @@ test("mergeUnlistedModels appends verified extras as tagged Anthropic rows, id-s
 
 // --- the credential's pickable models and the cheapest pick ------------------------------
 
-/** One entry per rule the availability parse applies (Copilot's own picker fields), in an order
- *  that lets the picks tell the endpoint axis from the tier axis: the haiku is the first
- *  lightweight model listed but serves no Responses call. */
+/** One entry per rule the availability parse applies, in Copilot's own picker fields. */
 const AVAILABILITY_BODY = {
   data: [
     pickerEntry("claude-sonnet-5.5", "versatile", ["/v1/messages", "/chat/completions"]),
+    // The first lightweight model listed, yet it serves no Responses call: the picks must tell the
+    // endpoint axis from the tier axis.
     pickerEntry("claude-haiku-5.5", "lightweight", ["/v1/messages"]),
     pickerEntry("gpt-6-sol", "powerful", [RESPONSES_ENDPOINT, "ws:/responses"]),
     pickerEntry("gpt-5.6-luna", "lightweight", [RESPONSES_ENDPOINT]),

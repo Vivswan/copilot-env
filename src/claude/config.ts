@@ -79,37 +79,38 @@ import {
 } from "./mcp_registration.ts";
 import { resolveClaudeHome, settingsPathFor } from "./paths.ts";
 
+// Narration goes to stderr; stdout is the `--check` report's (printKeyValue).
 const logger = createStderrLogger();
 
-// Copilot serving Claude is undocumented; CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS is a knob proven
-// by test, not by docs. The Copilot hosts live in integration_identity.ts so the identity probe
-// judges the same host the agents bake.
+// The host is integration_identity.ts's, so the identity probe judges the one the agents bake.
 export const BASE_URL_ENV = "ANTHROPIC_BASE_URL";
+
+// Copilot serving Claude is undocumented; this knob is proven by test, not by docs.
 export const DISABLE_BETAS_ENV = "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS";
-// Copilot Direct gates on an editor-client identity, and Claude has no http_headers knob: it reads
-// extra request headers from this env var as newline-separated `Name: Value` pairs. The proxy
-// speaks native Anthropic and needs none.
+
+// Newline-separated `Name: Value` pairs, Claude's one header knob; Direct's identity gate needs it.
 export const CUSTOM_HEADERS_ENV = "ANTHROPIC_CUSTOM_HEADERS";
-// The static-key carrier: Claude sends it as `Authorization: Bearer`, which Copilot Direct and the
-// proxy both accept.
+
+// The static-key carrier, sent as `Authorization: Bearer`, which Direct and the proxy both accept.
 export const AUTH_TOKEN_ENV = "ANTHROPIC_AUTH_TOKEN";
 
 function shToken(s: string): string {
   return /^[A-Za-z0-9_.:/=-]+$/.test(s) ? s : quotePosix(s);
 }
 
-// Recognized by SHAPE, not byte-exact against this root: a sibling install's wiring (a dev checkout
-// vs ~/.copilot-env) must still read as managed, or the verdict would depend on which copilot-env
-// binary was asking. Each arm admits only spellings the writers produce.
-//   bare POSIX path     -> shToken's charset only, so `evil;/bin/agent` never reads as managed
-//   Windows -File path  -> always winQuote-quoted (a real path carries `\` and `:`), so no bare arm
+// A quoted path, or shToken's bare charset alone, so `evil;/bin/agent` never reads as managed.
 const POSIX_LAUNCHER_SHAPE = String.raw`(?:'(?:[^']|'\\'')*/bin/agent'|[A-Za-z0-9_.:/=-]*/bin/agent)`;
-// No line breaks inside the quotes: a value smuggling a second line must never read as managed. Raw
-// `%` stays legal: the inline command is not a batch file, so the writer never doubles it.
+
+// Always winQuote-quoted, no line break inside the quotes: a two-line value never reads as managed.
 const WIN_LAUNCHER_SHAPE = String.raw`powershell -NoProfile -ExecutionPolicy Bypass -File "[^"\r\n]*\\bin\\agent\.ps1"`;
 
-/** `win` is a parameter rather than the ambient platform so both shapes are testable on every CI
- *  runner. */
+/** Recognized by SHAPE, not byte-exact against this root: a sibling install's wiring (a dev
+ *  checkout vs ~/.copilot-env) must still read as managed, or the verdict would depend on which
+ *  copilot-env binary was asking. Each arm admits only spellings the writers produce: the POSIX arm
+ *  a bare path in shToken's charset or a quoted one; the Windows arm a winQuote-quoted `-File` path
+ *  alone (a real path carries `\` and `:`), with raw `%` legal, since the inline command is no
+ *  batch file and the writer never doubles it. `win` is a parameter rather than the ambient
+ *  platform so both shapes are testable on every CI runner. */
 export function managedHelperShape(
   helperValue: string,
   subArgs: readonly string[],
@@ -152,6 +153,11 @@ type ClaudeManagedCredential =
  * Discriminated on providerMode so a pair the classifier never mints ("other" without a reason, a
  * managed mode without a credential shape) is unrepresentable. `wired` is computed here, in the
  * owner, so consumers never re-derive it from the mode.
+ *   settingsExists  -> on the "none" arm, false is no settings file at all; true is one with no relevant keys
+ *   baseUrlMatches  -> the proxy-port check defaultSetupNeedsProxy keys off (mode itself keys off
+ *                      the credential shape alone)
+ *   helperPath      -> under "other", the foreign apiKeyHelper value; null when the file could not
+ *                      be read or parsed at all
  */
 export type ClaudeWiringStatus =
   | (ClaudeManagedCredential & {
@@ -160,13 +166,10 @@ export type ClaudeWiringStatus =
       wired: true;
       otherReason: null;
       baseUrl: string | null;
-      /** The proxy-port check; defaultSetupNeedsProxy keys off it (mode itself keys off the
-       *  credential shape alone). */
       baseUrlMatches: boolean;
     })
   | {
       providerMode: "none";
-      /** False = no settings file at all; true = one with no relevant keys. */
       settingsExists: boolean;
       wired: false;
       otherReason: null;
@@ -181,7 +184,6 @@ export type ClaudeWiringStatus =
       wired: false;
       otherReason: ClaudeOtherReason;
       credential: null;
-      /** The foreign apiKeyHelper value; null when the file could not be read or parsed at all. */
       helperPath: string | null;
       baseUrl: string | null;
       baseUrlMatches: boolean;
@@ -357,7 +359,9 @@ function saveOrRemoveSettings(settingsPath: string, doc: Record<string, unknown>
 }
 
 /** Serialized from the same builder Codex Direct bakes as `http_headers`, so Copilot's
- *  editor-client allowlist accepts Claude the same way. */
+ *  editor-client allowlist accepts Claude the same way: Copilot Direct gates on that identity, and
+ *  Claude has no http_headers knob, only ANTHROPIC_CUSTOM_HEADERS. The proxy speaks native
+ *  Anthropic and needs none. */
 function directCustomHeaders(integrationId?: string | null): string {
   return Object.entries(directClientHeaders(codexUserAgent(), integrationId))
     .map(([name, value]) => `${name}: ${value}`)
@@ -717,10 +721,10 @@ export function removeClaudeProfile(
   }
 }
 
+/** The strip's outcome; while an owned deny stands the MCP registration must stay too: never a
+ *  denied builtin with no replacement. */
 interface ClaudeDefaultWiringRemoval {
-  /** The strip could not land (file unreadable, malformed, or unwritable), so the ledger still owns
-   *  a deny here. While it stands the MCP registration must stay too: never a denied builtin with
-   *  no replacement. */
+  /** The strip did not land (unreadable, malformed, or unwritable), so an owned deny stands. */
   ownedDenyRemains: boolean;
 }
 
@@ -767,15 +771,10 @@ export function removeClaudeDefaultWiring(claudeHome: string): ClaudeDefaultWiri
   return { ownedDenyRemains: new OwnershipLedger().owns("webSearchDeny", settingsPath) };
 }
 
-/** The CLI's own alias for its haiku model, resolved inside the CLI to an id it recognises: the
- *  CLI sends `output_config.effort` for any model id it does not recognise, and Copilot rejects
- *  that for a model without the capability, so a Copilot catalog id can fail the smoke while
- *  Direct itself works. */
+/** The CLI's own alias, resolved inside it to an id it recognises (detectClaudeDirect says why). */
 export const CLAUDE_HAIKU_ALIAS = "haiku";
 
-/** The cheapest advertised claude model proves the messages wire (cheapestClaudeModel says why);
- *  the CLI smoke's hops are the haiku alias, then the newest catalog model (probeDirectWorks
- *  walks them). */
+/** Wire pick: the cheapest advertised claude model. CLI hops: the haiku alias, then the newest. */
 export const CLAUDE_ENDPOINT_SMOKE: EndpointSmoke = {
   wire: "messages",
   pickModel: (body) => cheapestClaudeModel(parseCatalogModels(body)),
@@ -785,7 +784,11 @@ export const CLAUDE_ENDPOINT_SMOKE: EndpointSmoke = {
 
 /** With no claude CLI on the machine the endpoint smoke judges the credential instead. False means
  *  the caller writes proxy. `credential` is the probe subject's: the resolver command, or a named
- *  profile's token baked. */
+ *  profile's token baked. The CLI hops start at CLAUDE_HAIKU_ALIAS because the CLI sends
+ *  `output_config.effort` for any model id it does not recognise, and Copilot rejects that for a
+ *  model without the capability, so a Copilot catalog id can fail the smoke while Direct itself
+ *  works; the wire proves on the cheapest advertised model (cheapestClaudeModel says why), and
+ *  probeDirectWorks walks the alias, then the newest catalog model. */
 export function detectClaudeDirect(
   direct: DirectWiring,
   ghToken: string | null,

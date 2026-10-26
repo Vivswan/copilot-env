@@ -1,6 +1,7 @@
 // The lock around the autoupdate preflight, so two shells racing at the same
 // moment do not both download and apply one release. A parameterization of the shared advisory
-// file lock (utils/file_lock.ts, which also carries the no-flock rationale).
+// file lock (utils/file_lock.ts, which also carries the no-flock rationale); tests lock a hermetic
+// path under the same policy.
 //
 //   best-effort, a once-a-day personal self-update -> not a distributed mutex
 //   the 30-minute stale window dwarfs any update  -> a second scope in THIS process never
@@ -9,8 +10,7 @@ import type { LockOutcome } from "../utils/file_lock.ts";
 import { withFileLock } from "../utils/file_lock.ts";
 import { autoupdateLockFile } from "./state.ts";
 
-/** One acquisition attempt, never a retry; 30 minutes stale, chosen to dwarf any real update (the
- *  invariant above). Tests lock a hermetic path under the same policy. */
+/** One attempt, never a retry; 30 minutes stale, chosen to dwarf any real update (the header's invariant). */
 export const UPDATE_LOCK_POLICY = { staleMs: 30 * 60 * 1000, waitMs: 0 } as const;
 
 /** Always THE update lock: no caller can aim it elsewhere.

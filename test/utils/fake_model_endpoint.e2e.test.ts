@@ -103,8 +103,7 @@ test("a child that exits before listening fails the start at once, naming its ex
   expect(Date.now() - started).toBeLessThan(15_000);
 });
 
-/** How long aimock gets to notice its parent is gone: the stdin EOF is immediate; the pid poll,
- *  the fallback, runs once a second. */
+/** aimock's time to notice its parent is gone: stdin EOF is immediate, the fallback pid poll runs once a second. */
 const ORPHAN_GRACE_MS = 5_000;
 
 /** Whether anything listens on aimock's port. Read at the socket, not the pid: an orphan that

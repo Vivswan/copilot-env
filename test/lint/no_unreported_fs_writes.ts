@@ -5,7 +5,8 @@
 //
 // Two rules, one per direction, because their exemptions differ; each ALLOWED set below carries its
 // files' reasons. A file handle whose flags cannot be read counts as a write, and a read-exempt
-// file still may not open one for writing: openWritable / openWriteFd are the seam's way.
+// file still may not open one for writing: openWritable / openWriteFd are the seam's way. A file
+// allowed a raw read handle or a raw fd write keeps every other read and write guarded.
 //
 // A child process running a filesystem command (`rm`, `mv`, `Remove-Item`, ...) is refused too; a
 // command the rule cannot read (a variable) passes, since a spawn's command is often computed.
@@ -25,44 +26,40 @@ import type {
 } from "oxc-parser";
 import { parseModule, visit } from "../helpers/syntax.ts";
 
+/** The specifiers that bind node:fs; reaching a name from either, by any alias, is what both rules report. */
 const FS_MODULES = new Set(["node:fs", "node:fs/promises"]);
 
-/** Repo-relative; why each may write raw:
- *    fs_disk.ts           -> the seam's disk side
- *    dry_run.ts           -> the marker a child process probes under a held lock, so it must be
- *                            real
- *    file_lock.ts         -> the lock protocol's per-acquisition marker, a transient the seam
- *                            documents
- *    log_mute_preload.ts  -> patches the PROXY's own createWriteStream, no write of ours */
+/** Repo-relative files that may write raw; each row says why. */
 const ALLOWED = new Set([
+  // the seam's disk side
   "src/utils/fs_disk.ts",
+  // the marker a child process probes under a held lock, so it must be real
   "src/utils/dry_run.ts",
+  // the lock protocol's per-acquisition marker, a transient the seam documents
   "src/utils/file_lock.ts",
+  // patches the PROXY's own createWriteStream, no write of ours
   "src/scripts/log_mute_preload.ts",
 ]);
 
 /** One-time fix-ups that narrate their own moves. */
 const EXEMPT_PREFIX = "src/migrations/";
 
-/** Raw reads the seam does not cover: the usage scanners (partial reads through a fd, on a hot
- *  path, over inputs no dry run touches). */
+/** Raw reads outside the seam: the usage scanners' partial fd reads, on a hot path, over inputs no dry run touches. */
 const READ_EXEMPT_PREFIX = "src/usage/";
 
-/** The two read handles no run plans, opened raw where they are used (the release binary the
- *  updater hashes, the daemon's `/dev/null` stdin); every other read in these files still goes
- *  through the seam. */
+/** Two read handles no run plans, opened raw: the updater hashing the release binary, the daemon's /dev/null stdin. */
 const READ_HANDLE_ALLOWED = new Set(["src/install/checksums.ts", "src/copilot_api/process.ts"]);
 
-/** The one `Bun.file` read: the import-free preload's load hook reading the proxy's own chunk text.
- *  Allowed only as `Bun.file(...)` consumed by one read call in the same expression (`.text()`,
- *  `.json()`, ...); a stored handle, or `.write` / `.delete` on one, is still a write and a read. */
+/** The one `Bun.file` read: the import-free preload's load hook reading the proxy's own chunk text. */
 const BUN_FILE_READ_ALLOWED = new Set(["src/scripts/client_headers_preload.ts"]);
+
+/** The one-expression consumers that make `Bun.file(...)` a read; a stored handle stays a write and a read. */
 const BUN_FILE_READ_METHODS = new Set(["text", "json", "arrayBuffer", "bytes", "stream", "exists"]);
 
-/** The one file that writes a descriptor rather than a path: the seam's own report line goes to
- *  fd 2 through node:fs `writeSync`, which is console output, not a mutation. Every path write in
- *  that file is still guarded. */
+/** The one file writing a descriptor rather than a path: the seam's own report line, to fd 2 through `writeSync`. */
 const STDERR_WRITE_ALLOWED = new Set(["src/utils/report_write.ts"]);
+
+/** The descriptor writes; in STDERR_WRITE_ALLOWED they are console output, not a mutation, so they pass. */
 const FD_WRITE_NAMES = new Set(["write", "writeSync"]);
 
 /** node:fs mutation entry points, sync and promise spellings alike. */
@@ -165,9 +162,10 @@ const FS_READ_NAMES = new Set([
   "unwatchFile",
 ]);
 
-/** Bun's own file APIs: `Bun.write` mutates, `Bun.file` hands out a readable (and, through its
- *  writer, a writable) handle the seam never sees. */
+/** `Bun.write` mutates; `Bun.file` hands out a readable (via its writer, a writable) handle the seam never sees. */
 const BUN_WRITE_NAMES = new Set(["write", "file"]);
+
+/** `Bun.file` alone: the handle it hands out reads behind any dry run's plan. */
 const BUN_READ_NAMES = new Set(["file"]);
 
 /** The node:fs open calls: a read by name, a write when the flag says so. */
@@ -181,12 +179,18 @@ function withoutFdWrites(names: ReadonlySet<string>): ReadonlySet<string> {
   return new Set([...names].filter((name) => !FD_WRITE_NAMES.has(name)));
 }
 
+/** The module whose spawns are read for a filesystem command; only the write rule tracks it. */
 const CHILD_PROCESS_MODULE = "node:child_process";
+
 /** The spawn entry points whose first argument names the command (`exec*` take a command line). */
 const SPAWN_NAMES = new Set(["spawn", "spawnSync", "execFile", "execFileSync", "fork"]);
+
+/** The entry points whose first argument is a whole command line (commandLineMutates reads it). */
 const EXEC_NAMES = new Set(["exec", "execSync"]);
+
 /** A shell whose argument vector carries a command line of its own. */
 const SHELLS = new Set(["sh", "bash", "zsh", "dash", "cmd", "powershell", "pwsh"]);
+
 /** Commands that mutate the filesystem, POSIX, cmd.exe, and PowerShell (cmdlets and aliases). */
 const MUTATING_COMMANDS = new Set([
   "rm",
@@ -233,12 +237,15 @@ const MUTATING_COMMANDS = new Set([
   "clc",
 ]);
 
+/** The write direction's name on a finding, exported for the lint's test. */
 export const WRITES_RULE = "no-unreported-fs-writes";
+
+/** The read direction's name on a finding, exported for the lint's test. */
 export const READS_RULE = "no-raw-fs-reads";
 
+/** One finding; `start` is the zero-based offset of the offending node in the source. */
 export interface FsFinding {
   rule: typeof WRITES_RULE | typeof READS_RULE;
-  /** Zero-based offset of the offending node in the source. */
   start: number;
   message: string;
 }
@@ -390,30 +397,45 @@ function isFsNamespace(node: Expression, locals: ReadonlySet<string>): boolean {
   );
 }
 
-/** The API names one direction of the seam covers, and the message for reaching one raw. */
+/** The API names one direction of the seam covers, and the message for reaching one raw. `bunFileReads`
+ *  lets `Bun.file(...).text()` and its kin pass; every other reach of `Bun.file` (a stored handle, `.write` or
+ *  `.delete` on one) is reported. */
 interface Direction {
   fs: ReadonlySet<string>;
   bun: ReadonlySet<string>;
-  /** `Bun.file(...).text()` and its kin pass; every other reach of `Bun.file` is reported. */
   bunFileReads: boolean;
   message: string;
 }
 
 interface Scan {
+  /** Every finding the scan appended, each stamped with `rule`; the caller sorts them into source order. */
   findings: FsFinding[];
+
+  /** Stamped on every finding appended: WRITES_RULE for the mutation scan, READS_RULE for the read scan. */
   rule: FsFinding["rule"];
+
+  /** The names this scan watches and the message it reports with. */
   direction: Direction;
-  /** Local names bound to a whole node:fs module (`import * as fs`, `import fs`, the `promises`
-   *  namespace, and aliases of either). */
+
+  /** Local names bound to a whole node:fs module: `import * as fs`, `import fs`, the `promises` namespace, aliases. */
   fsNamespaces: Set<string>;
+
+  /** Local names bound to the Bun global (`const b = Bun`, and aliases of those). */
   bunAliases: Set<string>;
+
   /** Start offsets of the `Bun.file` members a read call consumes in place (bunFileReads). */
   bunFileReadChains: Set<number>;
+
   /** Local names bound to node:fs `open`/`openSync`. */
   fsOpens: Set<string>;
-  /** Local names bound to a child_process spawn entry point, by kind, and to the whole module. */
+
+  /** Local names bound to a child_process spawn entry point (SPAWN_NAMES). */
   spawns: Set<string>;
+
+  /** Local names bound to an exec entry point (EXEC_NAMES). */
   execs: Set<string>;
+
+  /** Local names bound to the whole child_process module. */
   childProcessNamespaces: Set<string>;
 }
 

@@ -183,37 +183,56 @@ const DEFAULT_SESSION_ROOTS: SessionRootDiscovery = {
 /** Tests inject a fetch and their own session roots, because the default discovery sweeps the real
  *  Codex and Claude homes. */
 export interface CostDeps {
+  /** Serves both price sources; unset, the global fetch. */
   fetchImpl?: ProbeFetch;
+
+  /** Unset sweeps the real Codex and Claude homes. */
   sessionRoots?: SessionRootDiscovery;
+
   /** The clock every `runtime.timing` figure is read from, in ms. */
   now?: () => number;
 }
 
 export interface CostArgs {
+  /** The raw flag text: a whole number counts calendar days, a decimal exact 24-hour days. */
   days?: string;
+
   /** This UTC calendar month, the period `agent credits` meters; not with `days`. */
   month?: boolean;
+
+  /** One payload on stdout, nothing else; the proxy overlap pass is skipped. */
   json?: boolean;
+
+  /** Adds the day table under each report, and the per-day block to the JSON payload. */
   perDay?: boolean;
+
   /** Unset defers to the `cost.pricing-url` config key. */
   pricingUrl?: string;
+
+  /** Each source reported whole, in place of the combined view and its overlap pass. */
   sources?: boolean;
+
   /** The usage index is neither opened nor written. */
   noIndex?: boolean;
 }
 
 /** How the run went, never what it found, so consumers comparing two runs' numbers drop it.
  *  `timing` is wall-clock ms per phase; `pricing` is the price-list load (network, or the cache
- *  read), and `total` runs from the start to the moment the JSON payload is built. */
+ *  read), and `total` runs from the start to the moment the JSON payload is built. `githubRates`
+ *  sits here too (`cached` is served fresh or in place of a fetch that failed today): a fetched and
+ *  a cached run price the same, and the fetch stamp would otherwise make two runs over one tree
+ *  differ. */
 export interface CostRuntime {
   /** False under --no-index and when the index could not be opened. */
   indexed: boolean;
+
+  /** Both readers' reconcile counters summed; parseEveryCandidate's under --no-index. */
   index: IndexStats;
+
+  /** Each read off `CostDeps.now`, rounded to whole ms. */
   timing: { walk: number; parse: number; fold: number; pricing: number; total: number };
-  /** Where the GitHub rate card came from: `cached` is a copy an earlier run fetched at
-   *  `fetchedAt`, served fresh or in place of a fetch that failed today; absent when no card priced
-   *  the run. Under `runtime` with the other run facts: a fetched and a cached run price the same,
-   *  and the fetch stamp would otherwise make two runs over one tree differ. */
+
+  /** `cached`: a copy an earlier run fetched at `fetchedAt`; absent when no card priced the run. */
   githubRates?: { source: "fetched" | "cached"; fetchedAt: string };
 }
 
@@ -242,10 +261,15 @@ function addIndexStats(into: IndexStats, more: IndexStats): void {
  *  exactly once. */
 export class ReconcileMeter {
   readonly stats: IndexStats = emptyIndexStats();
+
   readonly timing = { walk: 0, parse: 0, fold: 0 };
+
   readonly reconcile: Reconcile;
+
   readonly #now: () => number;
+
   #enteredAt = 0;
+
   #exitedAt = 0;
 
   constructor(inner: Reconcile, now: () => number = () => performance.now()) {
@@ -301,12 +325,22 @@ export async function runCost(args: CostArgs, deps: CostDeps = {}): Promise<void
 }
 
 interface CostRun {
+  /** Undefined when neither `--days` nor `--month` was given: everything read counts. */
   window: DaysWindow | undefined;
+
+  /** `now()` at entry; `timing.total` runs from it. */
   startedAt: number;
+
+  /** `CostDeps.now`, else performance.now. */
   now: () => number;
+
+  /** The flag, else the stored `cost.pricing-url` key, else the built-in. */
   pricingUrl: string;
+
   /** The stored `cost.github-pricing-url` key, else the built-in. */
   rateCardUrl: string;
+
+  /** `CostDeps.fetchImpl`; undefined is the global fetch. */
   fetchImpl: ProbeFetch | undefined;
 }
 
@@ -476,12 +510,19 @@ async function reportCost(
 }
 
 interface SessionLogs {
+  /** One report per `model_provider`; Codex's built-in provider is `default`. */
   codexByProvider: Map<string, UsageReport>;
+
+  /** One report; a Claude transcript names no provider. */
   claudeReport: UsageReport;
+
   /** Every request the two folds counted, for the proxy overlap pass; empty when not collected. */
   clients: readonly ClientRequest[];
+
   /** False under --no-index and when the index could not be opened. */
   indexed: boolean;
+
+  /** Both reads' timing and reconcile counters, summed. */
   meter: ReconcileMeter;
 }
 
@@ -567,19 +608,33 @@ export function formatBytesCompact(bytes: number): string {
 }
 
 interface ReportOpts {
+  /** GitHub's card over OpenRouter's list, either alone, or empty for a tokens-only report. */
   pricing: Map<string, PricingTier>;
+
   /** The card `pricing` carries GitHub's rates from; absent when no card priced the run. */
   rateCard: RateCardSource | undefined;
+
+  /** Undefined is all time; the header names the period from it. */
   window: DaysWindow | undefined;
+
+  /** A per-day breakdown follows each table. */
   perDay: boolean;
+
+  /** Codex session roots walked, for the header's source label. */
   roots: number;
 }
 
 interface ProxySource {
+  /** Folded from `requests` before any overlap pass. */
   report: ReadonlyUsageReport;
+
   /** The rows `report` folds, for the combined view's overlap pass. */
   requests: readonly UsageRequest[];
+
+  /** `report` priced as is; the combined view prices its own merge instead. */
   estimate: CostEstimate;
+
+  /** Usage databases found under the proxy home; zero skips the proxy section. */
   dbCount: number;
 }
 
@@ -908,8 +963,12 @@ function printCostReport(
   estimate: CostEstimate,
   opts: ReportOpts,
   view: {
+    /** The header's first phrase, before the period. */
     title: string;
+
+    /** The header's source phrase: db and root counts. */
     sourceLabel: string;
+
     /** Follows the request count; empty when there is nothing to say about it. */
     requestsNote?: string;
   },

@@ -26,21 +26,34 @@ import {
   type UsageSource,
 } from "./usage_profile_contract.ts";
 
+/** test/fixtures/usage/: the committed profile, the templates, and the goldens with their sidecars. */
 export const FIXTURES_DIR = fileURLToPath(new URL("../fixtures/usage/", import.meta.url));
+
+/** The HAND-AUTHORED profile the header describes; loadProfile's default. */
 const PROFILE_PATH = path.join(FIXTURES_DIR, "profile.json");
+
+/** One template file per source (codex.json, claude.json): the line shapes the generator fills. */
 const TEMPLATES_DIR = path.join(FIXTURES_DIR, "templates");
+
+/** The unit of `mb`, binary. */
 const MEGABYTE = 1024 * 1024;
 
 /** The window's end when a caller names none: a fixed instant, never the clock. */
 export const DEFAULT_END = "2026-09-01T00:00:00.000Z";
+
+/** The window's length when a caller names none; the goldens' sidecars record it. */
 export const DEFAULT_DAYS = 40;
-/** Under the default byte shares the floor leaves the Codex budget room for one MIN_FILE_BYTES
- *  session, so a default tree always carries a timestamped line and its span is defined; a
- *  Codex share near 0.1 at this size gets no session. */
+
+/** The floor of `mb`: room for one MIN_FILE_BYTES Codex session under the default shares, so a tree has a span. */
 export const MIN_MB = 0.01;
+
+/** The ceiling of `mb`; the goldens' sidecar schema enforces the same bounds. */
 export const MAX_MB = 1024 * 1024;
+
+/** The ceiling of `days`, a hundred years; the sidecar schema enforces it too. */
 export const MAX_DAYS = 36_500;
 
+/** Both readers' sources, in the order the templates load and the tree is generated. */
 const USAGE_SOURCES: readonly UsageSource[] = ["codex", "claude"];
 
 /** JSON text parsed with a fixed error: the runtime's own message quotes the input. */
@@ -174,6 +187,7 @@ function isJsonObject(value: Json | undefined): value is JsonObject {
 interface SourceTemplates {
   /** Whole-line templates keyed by line type (codexLineType / claudeLineType labels). */
   lines: Record<string, Json>;
+
   /** Content-block templates spliced into `@content` arrays. */
   blocks: Record<string, Json>;
 }
@@ -233,13 +247,7 @@ const KEEP_FILL: Record<string, Json> = { fill: "@fill" };
 
 type FillKind = "prose" | "opaque";
 
-/**
- * Code points no filler may carry: node:readline (the pre-index reader) splits lines on the
- * first two, so a filler holding one would vanish from the goldens recorded with it. Every
- * other non-ASCII code point is welcome.
- *   U+2028, U+2029  -> readline splits here
- *   U+0085 (NEL)    -> readline does not split; kept out for uniformity only
- */
+/** Code points no filler may carry: readline splits a line at the first two; NEL is kept out for uniformity only. */
 export const LINE_SPLITTING_CODE_POINTS: readonly string[] = ["\u2028", "\u2029", "\u0085"];
 
 /** Written in escapes so this file stays ASCII; the shapes pasted prose and tool output carry. */
@@ -282,8 +290,12 @@ const PROSE_TOKENS: readonly string[] = [
   '{"k":1}',
 ];
 
+/** Base64's alphabet: the shape of an opaque filler (a blob, a hash), drawn one character at a time. */
 const OPAQUE_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
+// node:readline, the pre-index reader, split lines at U+2028 and U+2029, so a filler holding one
+// would vanish from the goldens recorded with it; a U+0085 (NEL) line survives in both readers
+// and is kept out for uniformity only. Every other non-ASCII code point is welcome.
 for (const token of [...PROSE_TOKENS, OPAQUE_ALPHABET]) {
   for (const cp of LINE_SPLITTING_CODE_POINTS) {
     if (token.includes(cp)) throw new Error("filler alphabet carries a line-splitting code point");
@@ -361,14 +373,25 @@ function utcParts(ms: number): { date: string; time: string; y: string; m: strin
 // ---------- the generator ----------
 
 interface GenerateOptions {
+  /** Where the tree lands: `.codex` and `.claude` under it. */
   root: string;
+
+  /** The tree's byte budget in MEGABYTE units, MIN_MB to MAX_MB. */
   mb: number;
+
+  /** The PRNG's seed: the same seed gives the same tree on every OS. */
   seed: number;
+
+  /** The window's length, ending at `end`; DEFAULT_DAYS when omitted. */
   days?: number;
+
+  /** The distributions to sample; the committed profile when omitted. */
   profile?: Profile;
+
+  /** Plant the scripted edge-case sessions, forks, repeats, and needles too; on when omitted. */
   adversarial?: boolean;
-  /** RFC 3339 instant with a zone (`Z` or an offset) the window ends at; the default is a
-   *  fixed date, never the clock. */
+
+  /** RFC 3339 instant with a zone (`Z` or an offset) the window ends at; DEFAULT_END, never the clock, when omitted. */
   end?: string;
 }
 
@@ -436,35 +459,62 @@ function copyReport(report: ExpectedReport): ExpectedReport {
 }
 
 export interface GeneratedTree {
+  /** The HOME the readers are pointed at (usageTreeEnv in usage_goldens.ts). */
   root: string;
+
+  /** `<root>/.codex`, the CODEX_HOME the rollouts sit under. */
   codexRoot: string;
+
+  /** `<root>/.claude`, the CLAUDE_CONFIG_DIR the transcripts sit under. */
   claudeRoot: string;
+
+  /** Every file written, with its on-disk byte count. */
   files: GeneratedFile[];
+
   /** Distinctive strings planted inside prompt text, for the content tests. */
   markers: string[];
+
+  /** The ledger: what was planted, as the readers should report it. */
   expected: ExpectedUsage;
-  /** The earliest and latest timestamp any line in the tree carries (unix ms, UTC). */
+
+  /** The earliest timestamp any line in the tree carries (unix ms, UTC). */
   firstEventMs: number;
+
+  /** The latest timestamp any line in the tree carries (unix ms, UTC). */
   lastEventMs: number;
 }
 
+/** How many distinctive marker strings a tree can draw for prompts; a small tree uses fewer (GeneratedTree.markers). */
 const MARKER_COUNT = 8;
+
+/** A session's smallest target; MIN_MB leaves the Codex budget room for exactly one. */
 const MIN_FILE_BYTES = 2_048;
+
+/** A session's largest target, whatever the profile's ladder draws. */
 const MAX_FILE_BYTES = 256 * MEGABYTE;
+
 /** A hard stop on one turn's round trips, so a tiny line-size draw can never spin forever. */
 const MAX_EVENTS_PER_TURN = 5_000;
-/** The scripted edge-case sessions (the first few of each source; see generateCodex and
- *  generateClaude) are capped so all of them fit a few-MB tree. */
+
+/** The scripted edge-case sessions are the first few of each source (generateCodex); capped to fit a few-MB tree. */
 const CODEX_SCRIPTED_SESSIONS = 5;
+
+/** Claude's scripted sessions (generateClaude), under the same cap. */
 const CLAUDE_SCRIPTED_SESSIONS = 3;
+
+/** The per-session cap on a scripted session, so all of them fit a few-MB tree. */
 const SCRIPTED_MAX_BYTES = 96 * 1024;
+
 /** A single between-line gap is capped here; longer breaks are resumes, modelled apart. */
 const MAX_LINE_GAP_MS = 10 * 60 * 1000;
-/** The readers' orphan-fork fallback drops every token_count inside READER_FORK_WINDOW_MS of
- *  the session_meta, so a fork's copied prefix lands inside FORK_COPY_WINDOW_MS and its own
- *  first line waits past the reader window. */
+
+/** A fork's copied prefix lands inside this, under READER_FORK_WINDOW_MS; its own first line waits past the window. */
 const FORK_COPY_WINDOW_MS = 800;
+
+/** The readers' orphan-fork fallback drops every token_count inside this of the session_meta. */
 const READER_FORK_WINDOW_MS = 2_000;
+
+/** The context window the turn_context and token_count lines claim for the model. */
 const CODEX_MODEL_CONTEXT_WINDOW = 272_000;
 
 /** Needles a user might paste: the readers' substring gates, inside content. */
@@ -631,6 +681,7 @@ class LineBuffer {
 
 /** Every placeholder a template fills with an instant; durations are not instants. */
 const INSTANT_PLACEHOLDERS = ["ts", "startedMs", "nowMs"] as const;
+
 type InstantPlaceholder = (typeof INSTANT_PLACEHOLDERS)[number];
 const TEMPLATE_INSTANTS = new Map<Json, InstantPlaceholder[]>();
 
@@ -654,13 +705,21 @@ function lineStamps(template: Json, ctx: Record<string, Json>): LineStamps {
 }
 
 interface LineOptions {
+  /** The line's target size; sampled from the profile's bytesPerLine for its type when omitted. */
   bytes?: number;
+
+  /** Prose or opaque filler; prose when omitted. */
   kind?: FillKind;
+
   /** The clock advance before this line, instead of a sampled gap. */
   gapMs?: number;
+
+  /** Context keys rendered into the template over the generated defaults. */
   extra?: Record<string, Json>;
+
   /** Leads the filled text: a marker or needle inside a prompt. */
   prefix?: string;
+
   /** Insert or reorder top-level keys after rendering (a fork's parent id, a subagent's id). */
   reshape?: (line: JsonObject) => JsonObject;
 }
@@ -676,17 +735,33 @@ interface CodexSession {
 }
 
 interface CodexState {
+  /** The running line number, advanced per line and written only when withOrdinal. */
   ordinal: number;
+
+  /** The session clock, advanced by a sampled or a given gap before each line. */
   nowMs: number;
+
+  /** The cumulative usage a token_count snapshot reports for the thread. */
   totals: Usage;
+
+  /** The current turn's id, shared by every line of the turn. */
   turnId: string;
+
+  /** The RAW model id the lines spell (canonicalize before comparing with a reader). */
   model: string;
+
+  /** The working directory the session_meta and turn_context lines name. */
   cwd: string;
+
+  /** The `git` block the templates render where a line carries one, fixed per session. */
   git: Json;
+
   /** `ordinal` and `item_completed` arrived with newer Codex releases; older rollouts lack them. */
   withOrdinal: boolean;
+
   /** `token_usage_record` is newer still; the profile's share decides how often it appears. */
   withUsageRecord: boolean;
+
   /** The floor on token_count repeats (2 for the scripted re-emitting session). */
   minCountRepeats: number;
 }
@@ -954,11 +1029,15 @@ function codexTurn(
 }
 
 interface CodexSessionOptions {
+  /** The parent whose items are copied first, the way a fork persists. */
   forkOf?: CodexSession;
+
   /** A break of this length before the second turn (a resume), forcing at least two turns. */
   spanMs?: number;
+
   /** Write every token_count at least twice (a re-emitted count the readers must book once). */
   repeatCounts?: boolean;
+
   /** Paste this needle into the opening prompt (the fork parent carries "session_meta"). */
   needle?: string;
 }
@@ -1175,15 +1254,28 @@ function generateCodex(g: Generator, codexHome: string, budget: number): void {
 // ----- Claude -----
 
 interface ClaudeSession {
+  /** The session UUID the session's own lines name as sessionId; a top-level file's basename. */
   id: string;
+
+  /** The project slug directory the file sits under. */
   slug: string;
+
+  /** The whole file as written so far, the header lines included. */
   buffer: LineBuffer;
+
   /** Conversation lines (everything but the file header), what a resume copies. */
   body: LineBuffer;
+
   /** The final streamed line a truncated original never wrote; the resume carries it. */
   pendingFinal?: PendingLine;
+
+  /** The previous conversation line's uuid, the next line's parentUuid; "" before the first. */
   lastUuid: string;
+
+  /** The clock at the first line; a resume's starts RESUME_GAP_MS or more past the original's endMs. */
   startMs: number;
+
+  /** The clock after the last turn written. */
   endMs: number;
 }
 
@@ -1418,8 +1510,12 @@ function claudeTurn(
 }
 
 interface ClaudeSessionOptions {
+  /** The original whose body is copied first, as a resume persists it. */
   resumeOf?: ClaudeSession;
+
+  /** Write a subagent's file: an `agent-name` header instead of the session's. */
   agentId?: string;
+
   /** Cut the last message mid-stream, holding its final line for a resume. */
   truncate?: boolean;
 }
@@ -1639,6 +1735,9 @@ export async function generateUsageTree(opts: GenerateOptions): Promise<Generate
   if (!Number.isInteger(days) || days <= 0 || days > MAX_DAYS) {
     throw new Error(`days must be an integer from 1 to ${MAX_DAYS}, got ${opts.days}`);
   }
+  // MIN_MB: under the default byte shares the floor leaves the Codex budget room for one
+  // MIN_FILE_BYTES session, so a default tree always carries a timestamped line and its span is
+  // defined; a Codex share near 0.1 at this size gets no session.
   if (!Number.isFinite(opts.mb) || opts.mb < MIN_MB || opts.mb > MAX_MB) {
     throw new Error(`mb must be a number from ${MIN_MB} to ${MAX_MB}, got ${opts.mb}`);
   }

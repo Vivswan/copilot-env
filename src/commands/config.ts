@@ -67,9 +67,7 @@ function viewProfile(view: ConfigView): Profile {
   return view.kind === "config" ? null : view.profile;
 }
 
-/** The state keys sharing the store's maps with the settings, each with the commands that write
- *  it. The spellings are the schemas' own (derived there), so a renamed key cannot leave this list
- *  stale. */
+/** The state keys sharing the store's maps with the settings, each with the commands that write it. */
 const STATE_KEY_OWNERS: ReadonlyArray<readonly [readonly string[], string]> = [
   [
     PROFILE_STATE_KEYS,
@@ -81,7 +79,9 @@ const STATE_KEY_OWNERS: ReadonlyArray<readonly [readonly string[], string]> = [
 ];
 
 /** The verbs write settings only: a state key (spelled bare, or as a path into the file such as
- *  `profiles.default.githubToken`) is refused with its owner, never written or deleted here. */
+ *  `profiles.default.githubToken`) is refused with its owner, never written or deleted here. The
+ *  owner list's spellings are the schemas' own (derived there), so a renamed key cannot leave it
+ *  stale. */
 function refuseStateKey(key: string): void {
   const leaf = key.split(".").at(-1) ?? key;
   const owner = STATE_KEY_OWNERS.find(([keys]) => keys.includes(leaf))?.[1];
@@ -299,14 +299,19 @@ function runGet(get: string | undefined, view: ConfigView, platform: NodeJS.Plat
 
 /** A lead that leaves the right column fewer than this goes on its own line instead. */
 const MIN_RIGHT_COLUMNS = 30;
+
 /** Indent of a right column stacked under its key row on a narrow terminal. */
 const STACKED_INDENT = 6;
-/** A group heading and its rows sit one level under the GLOBAL banner; the profile rows sit
- *  directly under theirs. */
+
+/** A group heading and its rows sit one level under the GLOBAL banner; profile rows sit directly under theirs. */
 const GROUP_INDENT = 2;
+
 /** For a key that is unset AND has no built-in default. */
 const UNSET_VALUE = "<unset>";
+
+/** Beside a stored key a live daemon read at launch; the daemonUp flags say which daemon counts. */
 const RESTART_LINE = "restart the proxy to apply";
+
 /** Between the header's parts, on one line. */
 const HEADER_GAP = "  |  ";
 
@@ -335,15 +340,22 @@ interface Cell {
 }
 
 interface ConfigTableOptions {
+  /** The inert note's test seam: a POSIX-only key's stored value is inert on win32. */
   platform: NodeJS.Platform;
+
+  /** Columns to lay out in; infinite off a TTY, so nothing wraps. */
   width: number;
-  /** Which face is listing: the config view (the shared defaults, then the machine's keys) or one
-   *  profile's view (its own keys, then the profile-default groups resolved for it). */
+
+  /** Which face is listing: the config view (the shared defaults, then the machine's keys) or one profile's. */
   view: ConfigView;
-  /** A stored key a live daemon read at launch earns the restart line: any daemon for a value
-   *  from the global map, the viewed profile's own daemon for a value from its section. */
+
+  /** Any tracked daemon is alive: a stored value from the global map earns the restart line. */
   daemonUp: boolean;
+
+  /** The viewed profile's own daemon is alive: a stored value from its section earns the restart line. */
   profileDaemonUp: boolean;
+
+  /** colorEnabled() at the command edge; plain off a TTY. */
   color: boolean;
 }
 
@@ -537,14 +549,14 @@ export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions
   return [header, sharedBlock, globalBlock].join("\n\n");
 }
 
-/** What reads a profile-default group's value for the profile: the PROFILE heading's note. A
- *  group with no profile-default key needs no entry; one that gains such a key must add its, or
- *  its heading throws (the table test renders every group). */
+/** What reads a profile-default group's value for the profile: the PROFILE heading's note. */
 const PROFILE_DEFAULT_CONSUMER: Partial<Record<ConfigGroup, string>> = {
   probe: "this profile's Direct probe",
   proxy: "this profile's daemon",
 };
 
+/** A group with no profile-default key needs no entry; one that gains such a key must add its, or
+ *  this throws (the table test renders every group). */
 function profileDefaultConsumer(group: ConfigGroup): string {
   const consumer = PROFILE_DEFAULT_CONSUMER[group];
   if (consumer === undefined) throw new Error(`no PROFILE heading note for the ${group} group`);

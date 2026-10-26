@@ -25,26 +25,37 @@ import { claudeLiveLaunch, codexLiveLaunch, type LiveLaunch } from "./live_launc
 
 export interface ProbeDeps {
   reach(url: string, timeoutMs: number): Promise<boolean>;
+
   /** Whether the responder at `url` carries copilot-api's x-trace-id identity header. */
   proxyIdentity(url: string, timeoutMs: number): Promise<boolean | null>;
+
   /** Three-state identity of the tracked pid (classifyDaemonPid): "unknown" means the scan
    *  FAILED and must render as "could not verify", never as a confident "not tracked"; the
    *  boolean flatten this replaced read a broken scan as an orphan. */
   classifyTrackedPid(pid: number): Promise<"yes" | "no" | "unknown">;
+
   /** The clock the idle watchdog is judged against. */
   now(): number;
+
   /** The PATH look behind the CLI census. */
   commandLook(command: string): CommandLook;
+
   shellTargets(): string[];
+
   codexHome(): string;
+
   claudeHome(): string;
+
   /** One `gh auth token` probe, pinned to `ghUser`'s account (null = gh's active). */
   codexDirectAuth(ghUser: string | null): Promise<CodexDirectAuthFacts>;
+
   /** The github.com login an auto gh-cli slot follows right now, or null. */
   ghActiveLogin(): Promise<string | null>;
+
   /** `--live` end-to-end prompts against the configured Codex/Claude homes;
    *  `profile` selects a named profile's wiring. */
   codexLive(home: string, profile: Profile): Promise<LiveProbeFacts>;
+
   claudeLive(home: string, profile: Profile): Promise<LiveProbeFacts>;
 }
 

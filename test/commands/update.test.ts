@@ -19,7 +19,9 @@ import { describe, expect, removeDir, test } from "../helpers/testing.ts";
 // update` and the autoupdate preflight move to. The network side is thin; the
 // logic worth testing is parsing + selection.
 
+// Seconds since the epoch, the unit Release.dateSeconds holds.
 const secs = (iso: string): number => Math.floor(Date.parse(iso) / 1000);
+
 // A release row in the GitHub Releases API's shape.
 const rel = (tag: string, date: string, over: Record<string, unknown> = {}): unknown => ({
   tag_name: tag,
@@ -28,6 +30,8 @@ const rel = (tag: string, date: string, over: Record<string, unknown> = {}): unk
   prerelease: false,
   ...over,
 });
+
+// The Release the parser yields for rel(tag, date): the tag and its seconds.
 const parsed = (tag: string, date: string): Release => ({ tag, dateSeconds: secs(date) });
 
 // The flags parse ONCE into an UpdateAction, so a combination like `--auto-status --check` is
@@ -190,13 +194,18 @@ function pagedFetch(pages: unknown[][], failPage?: number) {
   return { fetchImpl, seen };
 }
 
+/** The unit daysAgo counts in. */
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** A published_at this many days before now, in the API's ISO form. */
 const daysAgo = (days: number): string => new Date(Date.now() - days * DAY_MS).toISOString();
-/** A full page of too-fresh prereleases: what a vendor that publishes many alphas a day returns
- *  first. */
+
+/** A full page of too-fresh prereleases: what a vendor that publishes many alphas a day returns first. */
 const FRESH_PAGE: unknown[] = Array.from({ length: 100 }, (_, i) =>
   rel(`v9.0.0-alpha.${i}`, daysAgo(0), { prerelease: true }),
 );
+
+/** The source resolveAged reads: a repo and the tag pattern its stable releases match. */
 const COPILOT_ENV = { repo: "example/repo", tagPattern: /^v\d+\.\d+\.\d+$/ };
 
 // The vendors' release lists are longer than one API page, and a page can be all prereleases;

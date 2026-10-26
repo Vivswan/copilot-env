@@ -5,10 +5,11 @@ import { expect, test } from "../helpers/testing.ts";
 
 // The shim wraps globalThis.fetch when COPILOT_ENV_DAEMON_COPILOT_HOST is set, so it is exercised
 // as a real `--preload` subprocess under the running bun, the way launchDaemon loads it, against a
-// loopback server that
-// answers the two GitHub bodies copilot-api reads its host from, the PAT shim's synthetic exchange
-// body (no endpoints at all), and one unrelated path.
+// loopback server that answers the two GitHub bodies copilot-api reads its host from, the PAT shim's
+// synthetic exchange body (no endpoints at all), and one unrelated path.
+
 const SHIM = join(ROOT, "src", "scripts", "copilot_host_preload.ts");
+
 const HOST_ENV = "COPILOT_ENV_DAEMON_COPILOT_HOST";
 const PINNED = "https://api.business.githubcopilot.com";
 const ACCOUNT = "https://api.enterprise.githubcopilot.com";

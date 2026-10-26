@@ -83,10 +83,10 @@ import { installedProxyVersion, PROXY_PACKAGE_NAME, proxyVersionFloorStatus } fr
 
 // --- the start lock -----------------------------------------------------------
 
-// Two concurrent `agent start` (two agents auto-starting at once) would each reap the OTHER's freshly
-// launched daemon. The lock reclaims ONLY a DEAD holder (staleMs = Infinity): a start may hold it
-// for a while (the float, the cleanup), and age-stealing it would let the waiter kill its daemon.
+// The poll while another start holds the lock (withStartLock).
 const START_LOCK_RETRY_MS = 250;
+
+// A waiter says so after this long; the wait itself is unbounded (withStartLock).
 const START_LOCK_NOTICE_MS = 2000;
 
 /** ONE GLOBAL lock in the DEFAULT run dir: the orphan sweep scans machine-wide, so two starts of
@@ -96,11 +96,15 @@ export function startLockPath(): string {
   return join(new CopilotApiPaths().runDir, ".start.lock");
 }
 
-/** The wait is UNBOUNDED and never proceeds unlocked, which could let a waiter reap the holder's daemon.
- *  Only a DEAD holder is reclaimed (staleMs Infinity), so a live holder keeps every other start waiting for
- *  as long as it runs -- and an uncreatable `.start.lock` (EACCES) retries forever, with no holder.
- *  So fn ALWAYS runs held: the launch critical section (ensureProxyFloor, cleanupExistingProxies) runs
- *  inside it, an order its one caller (commands/start.ts) keeps. */
+/** Two concurrent `agent start` (two agents auto-starting at once) would each reap the OTHER's freshly
+ *  launched daemon, so the wait is UNBOUNDED and never proceeds unlocked. Only a DEAD holder is
+ *  reclaimed (staleMs Infinity): a start may hold the lock for a while (the float, the cleanup), and
+ *  age-stealing it would let the waiter kill its daemon.
+ *
+ *  So a live holder keeps every other start waiting for as long as it runs -- and an uncreatable
+ *  `.start.lock` (EACCES) retries forever, with no holder. fn ALWAYS runs held: the launch critical
+ *  section (ensureProxyFloor, cleanupExistingProxies) runs inside it, an order its one caller
+ *  (commands/start.ts) keeps. */
 export function withStartLock<T>(fn: () => Promise<T>): Promise<T> {
   const lockPath = startLockPath();
   fs.mkdir(dirname(lockPath));
@@ -427,18 +431,24 @@ export function daemonLifecycleEnv(
 }
 
 /** The credential's own environment and preload set are derived inside launchDaemon from the
- *  DaemonCredential, so they cannot disagree with it here. */
+ *  DaemonCredential, so they cannot disagree with it here. `copilotHost` is resolveLaunchCredential's
+ *  host for `credential` (one pair), so the spawn never re-probes; `entry` is the one ensureProxyFloor
+ *  judged (the caller runs that gate first), and every bind-race relaunch runs exactly it. */
 export function spawnConfiguredDaemon(opts: {
   port: number;
+
   logFile: string;
+
   profile: Profile;
+
   paths: CopilotApiPaths;
+
   credential: DaemonCredential;
-  /** resolveLaunchCredential's host for `credential` (one pair), so the spawn never re-probes. */
+
   copilotHost: string;
-  /** The entry ensureProxyFloor judged (the caller runs that gate first); every bind-race relaunch
-   *  runs exactly it. */
+
   entry: RunnableEntry;
+
   config?: CopilotEnvConfig;
 }): SpawnedDaemon {
   const { port, logFile, profile, paths, credential, copilotHost, entry } = opts;
@@ -497,20 +507,27 @@ function copilotTokenFailureHint(log: string, profile: Profile): ScannableMessag
 
 /**
  * A lost bind race (EADDRINUSE in the log) retries ONCE on another port, unless the port was pinned by
- * `--port` or `daemon.strict-port` steers the DEFAULT daemon; a named profile's reservation is soft, so its
- * bind race always retries. Readiness is the "Listening on:" log line.
+ * `--port` (`pinnedPort`: a lost race there fails, never moves) or `daemon.strict-port` steers the
+ * DEFAULT daemon; a named profile's reservation is soft, so its bind race always retries. Readiness is
+ * the "Listening on:" log line. `findPort` is a test seam, to avoid real port scans.
  */
 export async function awaitReadiness(opts: {
   pid: number;
+
   port: number;
+
   logFile: string;
+
   profile: Profile;
-  /** A lost bind race on a pinned port fails, never moves. */
+
   pinnedPort: number | undefined;
+
   state: CopilotEnvRunState;
+
   relaunch: (port: number) => number;
+
   config?: CopilotEnvConfig;
-  /** Test seam, to avoid real port scans. */
+
   findPort?: (start: number) => Promise<number>;
 }): Promise<{ pid: number; port: number }> {
   const { logFile, profile, pinnedPort, state, relaunch } = opts;
@@ -651,22 +668,27 @@ function deleteProxyConfigValue(doc: Record<string, unknown>, path: ProxyConfigP
   delete node[leaf];
 }
 
-/** One projected path, as it lands. */
+/** One projected path, as it lands. A `value` of undefined is an opt-in key with nothing stored: the
+ *  path is CLEARED so the proxy's own default stands, whatever a previous start wrote there. In the
+ *  second arm `value` is the catalog's pick (CatalogFallback) over the built-in model default in
+ *  `replaced`, which the catalog given lacked. */
 export type ProjectedProxyEntry =
   | {
       key: ConfigKey;
+
       path: ProxyConfigPath;
-      /** undefined = an opt-in key with nothing stored: the path is CLEARED so the proxy's own
-       *  default stands, whatever a previous start wrote there. */
+
       value: ConfigValue | undefined;
+
       replaced?: undefined;
     }
   | {
       key: ConfigKey;
+
       path: ProxyConfigPath;
-      /** The catalog's pick (CatalogFallback) over the built-in model default in `replaced`,
-       *  which the catalog given lacked. */
+
       value: string;
+
       replaced: string;
     };
 

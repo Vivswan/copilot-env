@@ -11,14 +11,15 @@ import type { ProbeFetch } from "../copilot_api/integration_identity.ts";
 import { SECONDS_PER_DAY } from "../utils/time.ts";
 import { COPILOT_ENV_USER_AGENT } from "../utils/user_agent.ts";
 
-/** A repository whose releases are read: `tagPattern` admits its stable tags alone (a vendor
- *  marks prereleases, but a tag shape such as `rust-vX.Y.Z-alpha.N` is dropped here too). */
+/** A repository whose releases are read. `repo` is `owner/name`; `tagPattern` admits its stable
+ *  tags alone (a vendor marks prereleases, but a tag shape such as `rust-vX.Y.Z-alpha.N` is
+ *  dropped here too). */
 export interface ReleaseRepo {
-  /** `owner/name`. */
   repo: string;
   tagPattern: RegExp;
 }
 
+/** copilot-env's own releases, for `agent update` and the autoupdate preflight. */
 const COPILOT_ENV_RELEASES: ReleaseRepo = {
   repo: "Vivswan/copilot-env",
   tagPattern: /^v\d+\.\d+\.\d+$/,
@@ -26,9 +27,10 @@ const COPILOT_ENV_RELEASES: ReleaseRepo = {
 
 /** The API's page ceiling, newest first. */
 const PER_PAGE = 100;
-/** Pages an aged pick reads before giving up: a vendor that publishes several prereleases a day
- *  pushes a week-old stable release past the first page. */
+
+/** An aged pick's page budget; daily vendor prereleases push a week-old stable past page one. */
 const MAX_PAGES = 5;
+
 /** How far back an aged pick looks, for the message that says nothing was old enough. */
 export const AGED_RELEASE_HORIZON = PER_PAGE * MAX_PAGES;
 
@@ -92,10 +94,13 @@ export function pickAged(releases: Release[], nowSeconds: number, days: number):
   return releases.find((r) => r.dateSeconds <= cutoff) ?? null; // newest-first
 }
 
-// The releases endpoint occasionally 5xx's, rate-limits, or drops the connection; a few
-// backed-off retries turn those into a resolve instead of a spurious "no release found".
+// The endpoint occasionally 5xx's, rate-limits, or drops; a few backed-off retries resolve those.
 const RETRYABLE_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
+
+// Three backoffs doubling from RETRY_BASE_MS before the fault reads as "no release found".
 const MAX_FETCH_ATTEMPTS = 4;
+
+// The first backoff (doubled, jittered); ResolveOptions.retryBaseMs overrides it, tests with 0.
 const RETRY_BASE_MS = 400;
 
 export interface ResolveOptions {
@@ -103,7 +108,9 @@ export interface ResolveOptions {
   retryBaseMs?: number;
 }
 
-/** A non-retryable response (401/404) gives up immediately: retrying would not fix it. */
+/** A non-retryable response (401/404) gives up immediately: retrying would not fix it; a retryable
+ *  one is retried with backoff, so a transient fault resolves instead of reading as a spurious "no
+ *  release found". */
 async function fetchReleasesText(
   url: string,
   fetchImpl: ProbeFetch,

@@ -13,7 +13,11 @@ import { CopilotEnvRunState } from "./run_state.ts";
 
 /** Whole seconds; `0` or negative disables the watchdog. */
 export const IDLE_TIMEOUT_ENV = "COPILOT_API_IDLE_TIMEOUT";
+
+/** The tick is timeout/4, capped so a long timeout is still noticed within a minute of falling idle. */
 const MAX_CHECK_INTERVAL_MS = 60_000;
+
+/** The tick's floor, so a tiny test timeout never spins. */
 const MIN_CHECK_INTERVAL_MS = 1_000;
 
 /** A non-numeric env value falls through to the config rather than throwing: a bad env var must

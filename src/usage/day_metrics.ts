@@ -15,9 +15,10 @@ export type DaysWindow =
   | { kind: "exact"; days: number }
   | { kind: "month" };
 
-/** Number() would also admit a sign, whitespace, an exponent, or hex, and each would silently land
- *  in a window kind the user never chose. */
+/** Number() also admits a sign, spaces, an exponent, or hex, each landing in an unchosen kind. */
 const WHOLE_DAYS = /^\d+$/;
+
+/** A dot with digits on at least one side: the same closed shape, for the exact kind. */
 const DECIMAL_DAYS = /^(\d+\.\d*|\.\d+)$/;
 
 /** Date represents 8.64e15 ms either side of the epoch, which is exactly this many 24-hour days. */

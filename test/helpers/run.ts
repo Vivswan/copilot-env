@@ -1,11 +1,18 @@
 // Every spawn is gated on the running test's abort signal (testing.ts): a body the deadline
 // abandoned keeps executing, and its next spawn would otherwise land inside a later test.
+//
+// Child programs are SOURCE TEXT: a runtime value (a tmp path, a URL) travels as data in one JSON
+// env var (childValuesEnv) the program reads back through CHILD_VALUES. Splicing values through
+// JSON.stringify would leave U+2028/U+2029 and `</script>` unescaped inside code (CodeQL
+// js/bad-code-sanitization).
 import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { ISOLATE_ROOT, TEST_ROOT_ENV, testAbortSignal } from "./testing.ts";
 
+/** The checkout: the default cwd of every runSync child, whose NODE_PATH is its node_modules. */
 export const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+
 /** What the `agent` binary runs (scripts/compile.ts compiles this module). */
 export const CLI_ENTRY = join(ROOT, "src", "cli.ts");
 
@@ -17,14 +24,10 @@ export function importSpecifier(path: string): string {
   return JSON.stringify(pathToFileURL(path).href);
 }
 
+/** The one env var a child program's runtime values travel in, as JSON; childValuesEnv fills it. */
 const CHILD_VALUES_ENV = "COPILOT_ENV_TEST_CHILD_VALUES";
 
-/**
- * Child programs are SOURCE TEXT, and a runtime value (a tmp path, a URL) travels as data in one
- * JSON env var the program reads back through this expression (`${CHILD_VALUES}.ready`).
- * Splicing values through JSON.stringify would leave U+2028/U+2029 and `</script>` unescaped
- * inside code (CodeQL js/bad-code-sanitization).
- */
+/** The expression a child program reads its values back through, as `${CHILD_VALUES}.ready`. */
 export const CHILD_VALUES = `JSON.parse(process.env.${CHILD_VALUES_ENV} ?? "{}")`;
 
 /** Spread into the spawn's `env`. spawnChild merges `env` over the parent's; runSync REPLACES
@@ -47,10 +50,15 @@ interface RunResult {
 }
 
 export interface RunOptions {
+  /** ROOT, the checkout, when omitted. */
   cwd?: string;
+
+  /** The child's WHOLE env, plus the harness keys; omitted = this process's. */
   env?: Record<string, string | undefined>;
+
   /** Text fed to the child's stdin, then closed; omitted = an immediately-EOF stdin. */
   input?: string;
+
   /** Hard kill for a wedged child; sync spawns block the deadline race in testing.ts. */
   timeoutMs?: number;
 }
@@ -93,17 +101,30 @@ export interface SpawnChildOptions<
   Out extends StdioMode = "pipe",
   Err extends StdioMode = "inherit",
 > {
+  /** The argv after `cmd`, verbatim: nothing is quoted or split. */
   args?: string[];
+
+  /** This process's cwd when omitted (Bun's default), not ROOT as runSync's is. */
   cwd?: string;
-  /** Merged over the parent's env, or the whole env under `clearEnv` (PATH included, for a
-   *  bare command name). */
+
+  /** Merged over the parent's env, or the whole env under `clearEnv` (PATH included, for a bare command). */
   env?: Record<string, string | undefined>;
+
+  /** Start from an empty env instead of this process's; the harness keys are added either way. */
   clearEnv?: boolean;
+
+  /** "ignore" by default, an immediately-EOF stdin; "pipe" gives a FileSink. */
   stdin?: In;
+
+  /** "pipe" by default: a ReadableStream on the subprocess. */
   stdout?: Out;
+
+  /** "inherit" by default: the child's stderr lands in the runner's. */
   stderr?: Err;
+
   /** Bun's own: the argv is handed to CreateProcess as written, for a prequoted cmd.exe line. */
   windowsVerbatimArguments?: boolean;
+
   /** A pty the child's three streams attach to (POSIX only), so it sees a real terminal. */
   terminal?: Bun.Terminal;
 }

@@ -57,10 +57,13 @@ export type OnCounted = (usage: CountedUsage) => void;
  *  when it recorded the response's usage. parseUsageRow is the only mint, so nothing downstream
  *  re-checks the counts or the model spelling. */
 export interface UsageRequest {
+  /** Null when the row's timestamp is missing or not finite. */
   tsMs: number | null;
-  /** The canonical spelling (canonicalModelName), so a proxy row and a client log line for the same
-   *  request carry the same model. */
+
+  /** canonicalModelName's spelling, so a proxy row and a client line for one request agree. */
   model: string;
+
+  /** Each count floored by sanitizeTokenCount; a missing or hostile value reads as 0. */
   buckets: TokenBuckets;
 }
 
@@ -91,6 +94,7 @@ export function parseUsageRow(raw: unknown): UsageRequest | null {
 interface UsageTotals {
   /** Derived from the same rows as `perDay`; kept so callers do not recompute it. */
   byModel: Map<string, ModelUsage>;
+
   /** Keyed by LOCAL calendar day, YYYY-MM-DD in the user's timezone. */
   perDay: Map<string, Map<string, ModelUsage>>;
 }
@@ -109,11 +113,10 @@ export interface BilledUsage extends ModelUsage {
 /** The mutable shape is for producers, which fold through record(); readers take
  *  ReadonlyUsageReport. */
 export interface UsageReport extends UsageTotals {
-  /** The share of the same rows whose request prompt exceeded the long-context threshold, which
-   *  pricing.ts bills at the long-context tier. Always a subset: record() books both. */
+  /** The subset past the long-context threshold, which pricing.ts tiers; record() books both. */
   longContext: UsageTotals;
-  /** Per model, the requests that carried GitHub's own bill: a like-for-like check on the
-   *  estimate, never part of it. */
+
+  /** Per model, GitHub's own bill: a like-for-like check on the estimate, never part of it. */
   billed: Map<string, BilledUsage>;
 }
 

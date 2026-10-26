@@ -26,8 +26,7 @@ export function resolveHome(): string {
 /** Directory under a daemon home that holds the per-host runtime dirs (`.run/<host>/`). */
 export const RUN_DIR_NAME = ".run";
 
-/** The daemon writes this file too, whole bytes by rename (the floor in copilot-env.config admits
- *  no older writer). */
+/** The daemon writes it too, whole bytes by rename: the floor in copilot-env.config admits no older writer. */
 export const PROXY_CONFIG_FILENAME = "config.json";
 
 /** One per host dir (usageDbsUnderHome). */
@@ -76,9 +75,13 @@ function statIfPresent(path: string): fs.EntryStats | null {
 // EVERY profile's daemon, the default included, runs against its own home (`<root>/profiles/<name>`): two
 // daemons over one home would contend on sqlite and config.json. The ACCOUNT-WIDE files anchor at the ROOT
 // home instead, so every profile shares one credential store and one preference set.
-//   COPILOT_API_HOME       -> the daemon's own profile home
-//   COPILOT_ENV_ROOT_HOME  -> the root home, where the preloads' zero-arg constructors find the shared files
+//   COPILOT_API_HOME              -> the daemon's own profile home
+//   COPILOT_ENV_ROOT_HOME         -> the root home, where the preloads' zero-arg constructors find the shared files
+//   COPILOT_ENV_DAEMON_KEEP_PORT  -> DaemonPolicy.releasesPortOnStop, decided once in port.ts and carried so the
+//                                    in-daemon idle watchdog never re-derives the policy; declared here, not in
+//                                    port.ts, because the watchdog's preload import closure already has paths.ts
 
+/** Under the ROOT home; every daemon home, the default's included, is `profiles/<name>` (defaultDaemonHome). */
 export const PROFILES_DIR_NAME = "profiles";
 
 /** Reserved: a user profile can never claim this name (profile.ts rejects it), so the join can never collide. */
@@ -90,9 +93,7 @@ export const LOGS_DIR_NAME = "logs";
 /** Env var carrying the ROOT home inside a profile daemon (set at spawn). */
 export const ROOT_HOME_ENV = "COPILOT_ENV_ROOT_HOME";
 
-/** Set on EVERY spawn ("1"/"0"): DaemonPolicy.releasesPortOnStop, decided once in port.ts and transported
- *  so the in-daemon idle watchdog never re-derives the policy. Declared here, not in port.ts, because the
- *  watchdog's preload import closure already has paths.ts. */
+/** "1"/"0" on EVERY spawn: DaemonPolicy.releasesPortOnStop, carried so the idle watchdog never re-derives it. */
 export const DAEMON_KEEP_PORT_ENV = "COPILOT_ENV_DAEMON_KEEP_PORT";
 
 export function resolveRootHome(): string {
@@ -158,43 +159,60 @@ export const RUN_STATE_FILENAME = ".state.json";
 /** The one account-wide store at the ROOT home (src/copilot_api/state_store.ts). */
 export const STATE_STORE_FILENAME = "state.json";
 
-/** The root stores' lock markers park here instead of cluttering the home listing. Locks inside
- *  daemon homes stay beside their files: a daemon home is the proxy's territory, not ours to
- *  reorganize. */
+/** The root stores' lock markers park here instead of cluttering the home listing (CopilotApiPaths.locksDir). */
 export const LOCKS_DIR_NAME = "locks";
 
-/** Generated helper scripts that FOREIGN programs execute (the Claude Desktop credential helpers).
- *  Undotted contents, like codex-model-catalog.json: something other than copilot-env reads them. */
+/** Scripts FOREIGN programs run (the Claude Desktop credential helpers); undotted, like codex-model-catalog.json. */
 export const HELPERS_DIR_NAME = "helpers";
 
+/**
+ * Every path of one daemon home and of the ROOT home. `.activity.json` is separate from `.state.json`
+ * on purpose: the CLI and the daemon write state concurrently, and a single-writer file sidesteps the
+ * lost-update race. In `state.json`, `global` and each `profiles.<name>` hold the settings
+ * (`agent config`) beside the state (the credential slots, the catalog throttle), and `ownership`
+ * holds the claims on files we wrote.
+ *
+ * Undotted files (codex-model-catalog.json, which the managed Codex config.toml references by
+ * absolute path, and the helpers) are the ones something other than copilot-env reads.
+ */
 export class CopilotApiPaths {
+  /** The daemon home: `profiles/<name>`, or the default's (defaultDaemonHome); never the root. */
   home: string;
+
+  /** The proxy's own config.json in the daemon home; the daemon writes it too (PROXY_CONFIG_FILENAME). */
   configFile: string;
+
+  /** `.run/<sanitized hostname>/` under the home: the per-host runtime files. */
   runDir: string;
+
+  /** `.state.json` under runDir: port, pid, active CODEX_HOME (RUN_STATE_FILENAME). */
   stateFile: string;
-  /** Written ONLY by the in-daemon observer (src/copilot_api/inference_activity.ts) and read by
-   *  `agent health`. Separate from `.state.json` on purpose: the CLI and the daemon write state
-   *  concurrently, and a single-writer file sidesteps the lost-update race. */
+
+  /** Single-writer: only the in-daemon observer (inference_activity.ts) writes it, and `agent health` reads it. */
   activityFile: string;
+
+  /** The daemon's stdout and stderr, redirected at spawn; liveness pings land here too. */
   logFile: string;
-  /** The proxy's per-endpoint handler logs, distinct from the access `logFile` (which also records
-   *  liveness pings); the `daemon.logs` config key (off) discards writes here entirely. */
+
+  /** The proxy's per-endpoint handler logs, apart from the access `logFile`; `daemon.logs` off discards them. */
   logsDir: string;
+
+  /** The proxy's usage database for this host (COPILOT_API_SQLITE_DB_PATH); `agent cost` sweeps these. */
   sqliteDb: string;
-  /** `state.json`: the ONE account-wide store (src/copilot_api/state_store.ts): `global` and each
-   *  `profiles.<name>` hold the settings (`agent config`) beside the state (the credential slots,
-   *  the catalog throttle), and `ownership` holds the claims on files we wrote. Account-wide, so it
-   *  anchors at the ROOT home, never under `.run/<host>/` or a profile home. */
+
+  /** `state.json` (state_store.ts): the ONE account-wide store, at the ROOT home and never in a daemon home. */
   stateStoreFile: string;
+
+  /** `locks/` at the ROOT; a daemon home's locks stay beside their files, that home being the proxy's to lay out. */
   locksDir: string;
+
   /** The store's one lock, derived from its basename so a rename cannot silently orphan it. */
   stateStoreLock: string;
-  /** One root-wide mutex for reserveProfilePort (port.ts): a holder past its bounded wait is an
-   *  error, so two racing reservers never mint the same port. */
+
+  /** reserveProfilePort's root-wide mutex (port.ts): a late holder errors, so two reservers never mint one port. */
   profilePortsLock: string;
-  /** The bundled `codex debug models` catalog with Copilot's live context-window limits overlaid; the
-   *  managed Codex config.toml references it by absolute path (`model_catalog_json`). Not dot-prefixed:
-   *  Codex and users read it. */
+
+  /** The managed Codex config.toml's `model_catalog_json`: the bundled catalog, Copilot's live limits overlaid. */
   codexModelCatalogFile: string;
 
   /** null = the default profile's home (defaultDaemonHome). Account-wide files anchor at the root either way. */
@@ -218,8 +236,7 @@ export class CopilotApiPaths {
   }
 }
 
-/** `agent cost`'s pre-index and the price-list cache (src/usage/index.ts, src/usage/pricing.ts) share
- *  this ROOT-home dir: both are re-derivable bookkeeping, never truth. */
+/** The usage pre-index and the price cache (src/usage/index.ts, pricing.ts) share it: bookkeeping, never truth. */
 export const USAGE_INDEX_DIR_NAME = "usage-index";
 
 export function usageIndexDir(): string {

@@ -73,11 +73,16 @@ async function addWork(mode: "direct" | "proxy", token: string): Promise<void> {
   await addProfile(WORK, { mode, noAuth: true });
   await runAuth({ set: token, profile: "work" });
 }
+
+/** The host a Direct wiring bakes; the plan lines quote it as the new value. */
 const DIRECT_HOST = "https://api.githubcopilot.com";
 
+/** Taken at load, before any case moves a key; afterEach calls it. */
 const restoreEnv = envSnapshot();
+
 /** The process's real fetch: a case that stubs the global for model discovery is reset here. */
 const REAL_FETCH = globalThis.fetch;
+
 let homes: AgentHomes | null = null;
 
 beforeEach(() => {
@@ -826,14 +831,24 @@ function mkdirFailure(path: string): string {
 // warning, no delete row, the directory kept, and the rest of the command still planned and landed.
 test("a directory where a writer would remove a file takes the real decision in the dry run: the codex catalog file, a profile's Desktop helper, the retired Desktop helper", async () => {
   const rows: {
+    /** The row's label in a failed expectation. */
     name: string;
+
     /** Lays the fixture and answers the path the writer would remove. */
     setup: () => Promise<string>;
+
+    /** The exact warning line both runs print for the path setup answered. */
     warning: (path: string) => string;
+
+    /** The command in a dry run; its plan must still print stillPlans. */
     dry: () => Promise<void>;
+
+    /** The same command for real; `landed` then checks what it left. */
     real: () => Promise<void>;
+
     /** A line the plan still prints past the warning. */
     stillPlans: string;
+
     /** What the real run landed around the kept directory. */
     landed: () => void;
   }[] = [

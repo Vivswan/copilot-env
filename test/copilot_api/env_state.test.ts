@@ -8,11 +8,12 @@ import { withColumns } from "../helpers/columns.ts";
 import { envSnapshot, isolateProxyHome } from "../helpers/env.ts";
 import { afterEach, expect, removeDir, test } from "../helpers/testing.ts";
 
-// CopilotEnvState reads/writes the SHARED store under COPILOT_API_HOME, so isolate
-// each test in a temp home (not the per-host .run state).
+// CopilotEnvState's SHARED store sits under COPILOT_API_HOME: each test gets a temp home, not the per-host .run state.
 const restoreEnv = envSnapshot();
+
 // A branded fixture name: parseProfileName is the only mint for ProfileName.
 const WORK = parseProfileName("work");
+
 let dir = "";
 
 afterEach(() => {

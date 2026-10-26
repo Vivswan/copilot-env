@@ -19,12 +19,16 @@ import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
 // (resolve the (OneDrive-redirectable) Documents folder, toggle execution policy).
 // The marker is a comment in both bash and PowerShell, so the wire/remove core is
 // shared; only the block body and the target files differ per OS.
-
+//
 // The end marker closes the fenced block. An unfenced block (written before the end
 // fence existed) is converted in place by the 4.0.0 shell migration, never recognized
 // here: a marker with no end fence owns only its own line, and whatever follows is the
 // user's.
+
+/** The opening fence; src/migrations/4.0.0.ts imports it to find the blocks it fences. */
 export const MARKER = "# copilot-env shell integration";
+
+/** The closing fence: without it a marker owns only its own line (the tell above). */
 export const MARKER_END = `${MARKER} end`;
 
 /** The one spelling of an owned block: leading blank, open fence, body, end fence,
@@ -46,8 +50,7 @@ type ShellIntegrationAction =
 /** A line equals the given marker ignoring a trailing CR (rc/profile files may be CRLF). */
 const lineIs = (line: string, marker: string): boolean => line.replace(/\r$/, "") === marker;
 
-/** A blank line, CR-tolerant. NOTE: the final "" a trailing newline splits into is the
- *  file TERMINATOR, not a blank line -- callers that walk split arrays must exclude it. */
+/** CR-tolerant; the "" a trailing newline splits into is the file TERMINATOR, not a blank, so callers exclude it. */
 const isBlankLine = (line: string | undefined): boolean => (line ?? "").replace(/\r$/, "") === "";
 
 export function runShellIntegration(action: ShellIntegrationAction): void {
@@ -290,17 +293,17 @@ function homeTail(path: string): string | null {
   return sep + tail;
 }
 
-/** Tails that stay literal inside a double-quoted string (no $, backtick, ", \\,
- *  or newline in POSIX; no $, backtick, or " in PowerShell) -- every real install.
- *  `!` is also excluded on the POSIX side: sourced rc files skip history expansion,
- *  but a user pasting the line into an interactive bash would not. Anything else
- *  falls back to the concatenated form below. */
+/** A tail literal inside POSIX double quotes, every real install's; `!` excluded too (quotePosixHomeAnchored). */
 const POSIX_DQ_SAFE = /^[^$`"\\\n!]*$/;
+
+/** A tail literal inside PowerShell double quotes; anything else takes the concatenated form. */
 const PS_DQ_SAFE = /^[^$`"\n]*$/;
 
 /** Quote `path` for a POSIX assignment, `$HOME`-anchored when possible: the readable
  *  `"$HOME/tail"` when the tail needs no escaping, else `"$HOME"'<tail>'` so only
- *  `$HOME` expands and the tail's metacharacters remain literal. */
+ *  `$HOME` expands and the tail's metacharacters remain literal. `!` is excluded from the safe
+ *  tails too: sourced rc files skip history expansion, but a user pasting the line into an
+ *  interactive bash would not. */
 function quotePosixHomeAnchored(path: string): string {
   const tail = homeTail(path);
   if (tail === null) return quotePosix(path);
@@ -356,12 +359,10 @@ function windowsExecutionPolicyCommand(): string {
 // remembers to set it, which is exactly what a structural isolation floor must not depend
 // on. Set them ONLY from tests, like the other COPILOT_ENV_CI_* variables.
 
-/** The Documents FOLDER the Windows `$PROFILE` resolvers build on -- the parent of the
- *  per-edition `WindowsPowerShell/` and `PowerShell/` directories, not a profile dir. */
+/** The Documents FOLDER the `$PROFILE` resolvers build on: the parent of the per-edition dirs, not a profile dir. */
 export const CI_PS_DOCUMENTS_DIR_ENV = "COPILOT_ENV_CI_PS_DOCUMENTS_DIR";
 
-/** The directory the POSIX rc files (`.bashrc` / `.zshrc`) resolve under, in place of
- *  `homedir()`. Takes precedence over `$HOME`. */
+/** Where the POSIX rc files (`.bashrc` / `.zshrc`) resolve, in place of `homedir()`; takes precedence over `$HOME`. */
 export const CI_RC_DIR_ENV = "COPILOT_ENV_CI_RC_DIR";
 
 /**
@@ -404,11 +405,17 @@ export function shellTargetFiles(): string[] {
 // The per-edition dirs under Documents (5.1 vs pwsh 7) and the current-host /
 // all-hosts profile filenames. The CI redirect short-circuits the Documents lookup,
 // so a redirected run cannot wire one tree and inspect another.
+
+/** Per edition under Documents, 5.1 then pwsh 7; index-for-index with PS_EXES. */
 const PS_PROFILE_DIRS = ["WindowsPowerShell", "PowerShell"] as const;
+
+/** The file `$PROFILE` itself names; the default target. */
 const PS_PROFILE_CURRENT_HOST = "Microsoft.PowerShell_profile.ps1";
+
+/** `$PROFILE.CurrentUserAllHosts`; what `--all-hosts` wires. */
 const PS_PROFILE_ALL_HOSTS = "profile.ps1";
-/** The two PowerShell editions, in the order to try them: 5.1, then 7. Index-for-index
- *  with PS_PROFILE_DIRS above (WindowsPowerShell = 5.1, PowerShell = 7). */
+
+/** In the order to try them, 5.1 then 7; index-for-index with PS_PROFILE_DIRS (WindowsPowerShell, PowerShell). */
 const PS_EXES = ["powershell", "pwsh"] as const;
 
 function profilePathsUnder(documentRoots: string[], names: string[]): string[] {

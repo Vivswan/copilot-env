@@ -1,6 +1,13 @@
 // Golden `agent cost --json` payloads recorded from the pre-index implementation, shared
 // by the recorder (scripts/usage/goldens.ts) and the pinning test (test/usage/usage_golden.e2e.test.ts)
 // so the two agree on the matrix, the paths, the serializer, the digest, and the run.
+//
+// Both price sources point at UNREACHABLE_PRICING_URL, so both implementations produce the
+// token-only report the same way, offline, and no price cache is ever written. GOLDEN_COST_ARGS
+// carries no `--days`: a window puts `sinceMs`, a function of the clock, into the payload, while
+// the default all-time window holds every generated day with a constant `null`. On the four
+// 20 MiB trees of GOLDEN_MATRIX the old and the current implementation must agree; the split
+// case is the one known deviation, pinned as a quantified delta.
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -32,17 +39,13 @@ import {
 /** The last commit before any reader change: the implementation the goldens were recorded from. */
 export const PRE_INDEX_COMMIT = "48384eaa9352b90c5d9f80894add828937d042e2";
 
-/** Port 1 is on the fetch spec's bad-port list, so the request fails inside the runtime
- *  before any socket opens: both price sources point here, so both implementations produce
- *  the token-only report the same way, offline, and no price cache is ever written. */
+/** Port 1 is on the fetch spec's bad-port list, so the request fails in the runtime before any socket opens. */
 const UNREACHABLE_PRICING_URL = "https://127.0.0.1:1/unreachable";
 
 /** The zone the goldens' per-day buckets are cut in: the generator's synthetic user's own. */
 export const GOLDEN_TIME_ZONE = "UTC";
 
-/** The `cost` argv both implementations ran, after the executable and entrypoint. No
- *  `--days`: a window puts `sinceMs`, a function of the clock, into the payload, while
- *  the default all-time window holds every generated day with a constant `null`. */
+/** The `cost` argv both implementations ran, after the executable and entrypoint; never `--days`. */
 export const GOLDEN_COST_ARGS: readonly string[] = [
   "cost",
   "--json",
@@ -58,8 +61,7 @@ const ZONED_INSTANT = v.pipe(
   v.check((s) => Number.isFinite(Date.parse(s)), "not a parsable instant"),
 );
 
-/** Every parameter that determines a generated tree, spelled out so a sidecar is complete
- *  on its own. */
+/** Every parameter that determines a generated tree, spelled out so a sidecar is complete on its own. */
 const GeneratorParamsSchema = v.strictObject({
   mb: v.pipe(v.number(), v.minValue(MIN_MB), v.maxValue(MAX_MB)),
   seed: v.pipe(v.number(), v.integer()),
@@ -67,6 +69,7 @@ const GeneratorParamsSchema = v.strictObject({
   days: v.pipe(v.number(), v.integer(), v.minValue(1), v.maxValue(MAX_DAYS)),
   end: ZONED_INSTANT,
 });
+
 type GeneratorParams = v.InferOutput<typeof GeneratorParamsSchema>;
 
 function generatorParams(mb: number, seed: number, adversarial: boolean): GeneratorParams {
@@ -74,17 +77,17 @@ function generatorParams(mb: number, seed: number, adversarial: boolean): Genera
 }
 
 export interface GoldenCase {
+  /** The golden's file stem under FIXTURES_DIR (goldenFilesFor). */
   name: string;
+
+  /** The tree's parameters, recorded in the sidecar as well. */
   generator: GeneratorParams;
-  /** Plant the line-splitting assistant lines (plantSplitLines) after generating: the old
-   *  reader drops the OLD_READER_SPLITS ones, so this golden is expected to differ from the
-   *  current output by exactly their usage. */
+
+  /** Plant plantSplitLines's lines after generating; the old reader dropped the OLD_READER_SPLITS ones. */
   split: boolean;
 }
 
-/** THE recorded matrix: three adversarial trees and one plain at 20 MiB, where the old and
- *  the current implementation must agree, plus one small plain tree carrying the planted
- *  line-splitting lines, the one known deviation, pinned as a quantified delta. */
+/** THE recorded matrix: three adversarial trees and one plain at 20 MiB, plus a small plain tree with the split. */
 export const GOLDEN_MATRIX: readonly GoldenCase[] = [
   { name: "golden-1", generator: generatorParams(20, 1, true), split: false },
   { name: "golden-2", generator: generatorParams(20, 2, true), split: false },
@@ -105,6 +108,7 @@ export function goldenFilesFor(name: string, dir: string = FIXTURES_DIR): Golden
   };
 }
 
+/** A full 40-hex sha, the only spelling of `oldCommit` a sidecar may carry. */
 const COMMIT_SHA = v.pipe(v.string(), v.regex(/^[0-9a-f]{40}$/));
 
 /** The sidecar beside a golden: how its tree was made and how the old cli was run. */
@@ -116,6 +120,7 @@ const RecordingSchema = v.strictObject({
   args: v.array(v.string()),
   timeZone: v.literal(GOLDEN_TIME_ZONE),
 });
+
 export type Recording = v.InferOutput<typeof RecordingSchema>;
 
 export function readRecording(files: GoldenFiles, what: string): Recording {
@@ -134,7 +139,9 @@ export function readText(file: string): string {
 }
 
 export interface GoldenTree {
+  /** The generated tree, the planted transcript included for a split case. */
   tree: GeneratedTree;
+
   /** The planted lines' usage (a split case), or null. */
   delta: PlantedDelta | null;
 }
@@ -166,29 +173,26 @@ export function treeSha256(tree: GeneratedTree): string {
 
 // ---------- the planted line-splitting lines ----------
 
-/**
- * The planted code points the OLD reader lost a line to, measured against it: node:readline
- * breaks a line at U+2028 and U+2029, while a U+0085 (NEL) line survives in both readers.
- * The delta a split golden differs by is the usage of exactly these lines.
- */
+/** The code points the OLD reader lost a line to: node:readline broke at U+2028 and U+2029, never at U+0085 (NEL). */
 const OLD_READER_SPLITS: ReadonlySet<string> = new Set(["\u2028", "\u2029"]);
 
 /** What the old reader missed of plantSplitLines: the canonical model and UTC day the lines
- *  land on, and the summed usage of the OLD_READER_SPLITS lines (one event each). */
+ *  land on, and the summed usage of the OLD_READER_SPLITS lines (one event each), measured
+ *  against that reader: the delta a split golden differs by is the usage of exactly those lines. */
 interface PlantedDelta {
   model: string;
   day: string;
   usage: ModelUsage;
 }
 
-/** Token counts per planted line, one row per LINE_SPLITTING_CODE_POINTS member; distinct
- *  primes, so a line counted twice or attributed elsewhere is visible in the sum. */
+/** One row per LINE_SPLITTING_CODE_POINTS member; distinct primes, so a double or misplaced count shows in the sum. */
 const PLANTED_USAGE: readonly Omit<ModelUsage, "events">[] = [
   { input: 1009, output: 101, cacheRead: 2003, cacheCreation: 31 },
   { input: 1013, output: 103, cacheRead: 2011, cacheCreation: 37 },
   { input: 1019, output: 107, cacheRead: 2017, cacheCreation: 41 },
 ];
 
+/** The planted transcript's session id, its basename too; fixed, so the tree is reproducible. */
 const PLANTED_SESSION_ID = "00000000-0000-4000-a000-000000002028";
 
 /** One assistant line per LINE_SPLITTING_CODE_POINTS member, the code point raw in the text
@@ -373,17 +377,17 @@ export function describeMismatch(actual: unknown, expected: unknown): string | n
   return null;
 }
 
-/** The key the current implementation reserves for run metadata the old one never emitted;
- *  parseCostPayload drops it. */
+/** The current implementation's run metadata, which the old one never emitted; parseCostPayload drops the key. */
 const RUNTIME_KEY = "runtime";
 
-/** The payload's explanatory prose, a public key of `agent cost --json` whose wording the two
- *  implementations may differ on. parseCostPayload requires it and swaps the text for
- *  NOTE_SENTINEL on every side of a compare, so a rewording never fails a golden while a missing
- *  or renamed key does. */
+/** The payload's prose, a public key of `agent cost --json` whose wording may differ between the implementations. */
 export const NOTE_KEY = "note";
+
+/** Stands in for the note's text on every side of a compare. */
 const NOTE_SENTINEL = "<note: wording not compared>";
 
+/** The payload as a golden compares it: RUNTIME_KEY dropped, and NOTE_KEY required but swapped for
+ *  NOTE_SENTINEL, so a rewording never fails a golden while a missing or renamed key does. */
 export function parseCostPayload(stdout: string, what: string): Record<string, unknown> {
   let parsed: unknown;
   try {
@@ -466,14 +470,18 @@ export function utcPinnable(): boolean {
 interface CurrentCostRun {
   /** The payload without the runtime key: what a golden compares against. */
   payload: Record<string, unknown>;
+
+  /** The run metadata that sat under RUNTIME_KEY, split off before the compare. */
   runtime: CostRuntime;
 }
 
 interface CurrentCostOptions {
   /** `--no-index`: parse every file, never open the index. */
   noIndex?: boolean;
+
   /** The copilot-api home (where the index lives); default the tree's own `.copilot-env`. */
   copilotApiHome?: string;
+
   /** `--days`, when the run should be windowed. */
   days?: string;
 }

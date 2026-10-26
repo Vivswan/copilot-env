@@ -10,20 +10,19 @@
 // Two failure classes, told apart because the right next step differs:
 //   "cannot verify"        -> the bundle or trust root could not be fetched; names the opt-outs
 //   "verification FAILED"  -> the bytes are not attested or the signer is wrong; never names them
+//
+// The signing certificate's SAN names the workflow that ran the attest step
+// (`<workflow url>@<ref>`). RELEASE_SIGNER_SAN admits any workflow of any repository under the
+// owner's GitHub account, at any ref: the fleet's publish leg runs in another repository and from a
+// tag. The certificate proves that GitHub Actions under this account signed the bytes; the release
+// download URL, not the certificate, pins the repository.
 import { configSetCommand } from "../copilot_api/env_config.ts";
 import { isRecord } from "../utils/json.ts";
 
-/** The release asset carrying the Sigstore bundle (uploaded by the release workflow's publish
- *  stage). */
+/** The Sigstore bundle's release asset, uploaded by the release workflow's publish stage. */
 export const ATTESTATION_NAME = "attestation.json";
 
-/**
- * The certificate SAN names the workflow that ran the attest step (`<workflow url>@<ref>`). Any
- * workflow of any repository under Vivswan's GitHub account may publish a release, at any ref:
- * the fleet's publish leg runs in another repository and from a tag. The certificate proves that
- * GitHub Actions under this account signed the bytes; the release download URL, not the
- * certificate, pins the repository.
- */
+/** Any workflow under the owner's account, any repo, any ref; the download URL pins the repo. */
 const RELEASE_SIGNER_SAN =
   /^https:\/\/github\.com\/Vivswan\/[^/]+\/\.github\/workflows\/[^@]+@refs\/.+$/;
 
@@ -33,14 +32,17 @@ const GITHUB_OIDC_ISSUER = "https://token.actions.githubusercontent.com";
 /** The DSSE payload type of an in-toto statement. */
 export const IN_TOTO_PAYLOAD_TYPE = "application/vnd.in-toto+json";
 
-/** The in-toto statement envelope and the SLSA predicate GitHub attests with. */
+/** The in-toto statement envelope GitHub attests with (the statement's `_type`). */
 export const IN_TOTO_STATEMENT_V1 = "https://in-toto.io/Statement/v1";
+
+/** The SLSA predicate GitHub attests with (the statement's `predicateType`). */
 export const SLSA_PROVENANCE_V1 = "https://slsa.dev/provenance/v1";
 
 /** Who may have signed the bundle. */
 export interface SignerPolicy {
   /** The anchored pattern the certificate SAN must match. */
   signerSan: RegExp;
+
   /** The exact OIDC issuer extension. */
   issuer: string;
 }

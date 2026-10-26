@@ -20,12 +20,18 @@ import { runDryRun } from "./dry_run.ts";
 // resolveTarget is shared with the autoupdate preflight so the release-pick logic has one home.
 
 interface UpdateArgs {
+  /** Report only; exit 0 current, 1 update, 2 unresolved. */
   check?: boolean;
+
+  /** Update a source checkout too (overwrites local files); the manual update only. */
   force?: boolean;
+
+  /** Report the daily self-update's status and exit; exclusive with --check. */
   autoStatus?: boolean;
-  /** Commander folds `--verify`/`--no-verify` into one option (last wins), so it arrives as one
-   *  optional boolean; absent defers to the stored `update.verify-provenance` key. */
+
+  /** Commander folds --verify/--no-verify into one (last wins); absent defers to `update.verify-provenance`. */
   verify?: boolean;
+
   /** Resolve the release, then print what the update would lay down and flip; download nothing. */
   dryRun?: boolean;
 }

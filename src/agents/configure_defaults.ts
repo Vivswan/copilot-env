@@ -25,8 +25,7 @@ import {
 import { bothAgents, directPairIncomplete, renderDirectWiring } from "./profile_wiring.ts";
 import type { AgentProviderMode, ManagedAgentMode, RequestedMode } from "./provider_mode.ts";
 
-// All output goes to stderr (one logger) so it interleaves deterministically with
-// the per-agent probe/config narration (also stderr) and never pollutes any stdout.
+// One stderr logger: interleaves in order with the per-agent probe narration, never touches stdout.
 const logger = createStderrLogger();
 
 function initCommand(mode: RequestedMode): string {
@@ -110,23 +109,24 @@ export async function runCodex(action: AgentRunAction): Promise<void> {
 
 /** null leaves that agent alone (its own re-render, or nothing) unless the default has no record,
  *  where the other agent's request is the first landing and wires both. Indexed by `adapter.id`,
- *  so a new agent in bothAgents() is a compile error here until the request names it. */
+ *  so a new agent in bothAgents() is a compile error here until the request names it.
+ *    ghToken    -> the pre-resolved default credential for BOTH writers (undefined = each writer
+ *                  resolves from the store itself; see AgentRunOptions.ghToken)
+ *    onVerdict  -> a both-`auto` request whose probe verdict differs from the recorded mode asks it
+ *                  which one lands (the CLI asks the user; a script or a dry run keeps the record);
+ *                  absent, the verdict lands, as on a fresh default */
 interface DefaultAgentRequest {
   codex: RequestedMode | null;
   claude: RequestedMode | null;
-  /** Pre-resolved default credential for BOTH writers (undefined = each writer
-   *  resolves from the store itself) -- see AgentRunOptions.ghToken. */
   ghToken?: string | null;
-  /** A both-`auto` request whose probe verdict differs from the recorded mode asks this which one
-   *  lands (the CLI asks the user; a script or a dry run keeps the record). Absent, the verdict
-   *  lands, as it does on a fresh default. */
   onVerdict?: (recorded: ProfileMode, verdict: ProfileMode) => Promise<ProfileMode>;
 }
 
+/** What configureDefaultAgents landed; `failures` keeps each thrown scannable's parts under its
+ *  agent's name. */
 interface DefaultAgentsOutcome {
   codex: AgentProviderMode;
   claude: AgentProviderMode;
-  /** Each failed write under its agent's name, a thrown scannable with its parts kept. */
   failures: Message[];
   failedAgents: ManagedAgentId[];
 }

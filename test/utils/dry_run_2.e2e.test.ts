@@ -389,10 +389,18 @@ test("settings --export refuses in the dry run where the real write refuses: a m
   }
   const enoent = /ENOENT: no such file or directory, open '/;
   const rows: {
+    /** The row's label in a failed expectation. */
     name: string;
+
+    /** A state Windows reports differently: the fixture's symlinks, or its own rename refusal. */
     posixOnly?: boolean;
+
+    /** runSettings's arguments; the dry run adds `dryRun: true` to the same. */
     args: { exportTo: string; withCredentials?: boolean };
+
+    /** The real run's refusal, matched on its message; the dry run must refuse identically. */
     refusal: RegExp;
+
     /** A path both refused runs must leave absent: no parent or link target is invented. */
     stillAbsent?: string;
   }[] = [

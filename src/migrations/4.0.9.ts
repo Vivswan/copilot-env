@@ -209,22 +209,14 @@ function moveCodexProfileTablesEverywhere(): void {
   }
 }
 
+/** Each Codex home converts on its own; the ones left unconverted fail the step together, named. */
 export const v409CodexProfileFiles: Migration = {
   version: "4.0.9",
   description: "move Codex named profiles from [profiles.<name>] to <name>.config.toml",
   run: moveCodexProfileTablesEverywhere,
 };
 
-// --- the preference store's shape: scoped, grouped keys -----------------------------------
-//
-// Away from 4.0.9: the preference store was one flat map of camelCase keys. It is now a `global` map
-// of dotted, grouped keys plus a `profiles` section (one map per profile), and the four keys that
-// follow the credential (identity, host, passthrough, static-key) live only in a profile's
-// section. A reader knows only the new shape, so this is the one place the old names exist.
-
-/** Old stored key, its old CLI spelling, new key. Every old key moves; the profile keys land in the
- *  profile sections. Exported so test/copilot_api/config_key_lint.test.ts can refuse the old spellings anywhere
- *  outside this directory, the one place they legitimately live. */
+/** Old key, old CLI spelling, new key; exported so config_key_lint.test.ts refuses the old spellings elsewhere. */
 export const PREFERENCE_RENAMES: ReadonlyArray<readonly [string, string, ConfigKey]> = [
   ["alphaSearchCodexPriority", "alpha-search-codex-priority", "proxy.alpha-search.codex-priority"],
   ["alphaSearchModel", "alpha-search-model", "proxy.alpha-search.model"],
@@ -265,6 +257,15 @@ export const PREFERENCE_RENAMES: ReadonlyArray<readonly [string, string, ConfigK
   ["verifyProvenance", "verify-provenance", "update.verify-provenance"],
   ["wireMcp", "wire-mcp", "claude.wire-mcp"],
 ];
+
+// --- the preference store's shape: scoped, grouped keys -----------------------------------
+//
+// Away from 4.0.9: the preference store was one flat map of camelCase keys. It is now a `global` map
+// of dotted, grouped keys plus a `profiles` section (one map per profile), and the four keys that
+// follow the credential (identity, host, passthrough, static-key) live only in a profile's
+// section. A reader knows only the new shape, so this is the one place the old names exist: every
+// old key in PREFERENCE_RENAMES moves, the profile keys into the profile sections, and
+// test/copilot_api/config_key_lint.test.ts refuses the old spellings anywhere outside this directory.
 
 /** Pure over the raw preferences document; the fold applies it as preferences.json folds, so a
  *  store still flat at 4.0.9 lands grouped in one pass. Values move verbatim (the other 4.0.9 steps
@@ -374,20 +375,21 @@ export function scopeStaticKeyBoolean(): void {
   }
 }
 
+/** Per profile section; left alone, a stored boolean reads as `none` and both agents lose the baked key untold. */
 export const v409StaticKeyScope: Migration = {
   version: "4.0.9",
   description: "turn the static-key boolean into its scope (`true` -> `all`, `false` -> unset)",
   run: scopeStaticKeyBoolean,
 };
 
+/** A line equals `marker` ignoring a trailing CR (rc/profile files may be CRLF). */
+const lineIs = (line: string | undefined, marker: string): boolean =>
+  (line ?? "").replace(/\r$/, "") === marker;
+
 // --- the launchers rc block ------------------------------------------------------------------
 //
 // Away from 4.0.9: `agent shell` stripped the launchers block every pre-4.0.0 release wrote on
 // every wire. The strip is a migration now, so an rc still carrying the block loses it once here.
-
-/** A line equals `marker` ignoring a trailing CR (rc/profile files may be CRLF). */
-const lineIs = (line: string | undefined, marker: string): boolean =>
-  (line ?? "").replace(/\r$/, "") === marker;
 
 /**
  * Every launchers block, bounded as the shell writer bounded its blocks: the marker through its
@@ -458,11 +460,23 @@ function stripLaunchersRcBlocks(): void {
   failIfAny(failed);
 }
 
+/** Every rc file shellTargetFiles names; a file that cannot be read fails the step after the others ran. */
 export const v409LaunchersBlock: Migration = {
   version: "4.0.9",
   description: "remove the launchers rc block (the launchers are `agent profile env` emissions)",
   run: stripLaunchersRcBlocks,
 };
+
+/** The four keys the old slot shape cached; dropSlotIdentityCache deletes them from a slot in that shape. */
+const SLOT_CACHE_KEYS = [
+  "integrationIdentity",
+  "copilotHost",
+  "copilotHostIdentity",
+  "copilotHostSource",
+] as const;
+
+/** The old shape's marker: a slot without these two validity keys is already in the new shape. */
+const OLD_SHAPE_KEYS = ["copilotHostIdentity", "copilotHostSource"] as const;
 
 // --- the per-profile identity and host cache ---------------------------------------------------
 //
@@ -474,14 +488,6 @@ export const v409LaunchersBlock: Migration = {
 // through the no-pair gap. Store writes preserve unknown keys, so the four would otherwise ride
 // along forever. The two validity keys are the old shape's marker: a slot without them is already
 // in the new shape (the pair the new wiring stored), so a re-run leaves it alone.
-
-const SLOT_CACHE_KEYS = [
-  "integrationIdentity",
-  "copilotHost",
-  "copilotHostIdentity",
-  "copilotHostSource",
-] as const;
-const OLD_SHAPE_KEYS = ["copilotHostIdentity", "copilotHostSource"] as const;
 
 function inOldShape(slot: unknown): slot is Record<string, unknown> {
   return isRecord(slot) && OLD_SHAPE_KEYS.some((key) => key in slot);
@@ -507,20 +513,16 @@ export function dropSlotIdentityCache(): void {
   );
 }
 
+/** Store writes keep unknown keys, so without this step the four would ride along forever. */
 export const v409IdentityCache: Migration = {
   version: "4.0.9",
   description: "drop the cached Direct identity and host from the profile slots",
   run: dropSlotIdentityCache,
 };
 
-// --- one store: state.json ---------------------------------------------------------------
-//
-// A `layout` step: every other 4.0.9 step reads the merged maps, so the fold runs first. It is also
-// the one reader left of a flat (pre-4.0.9) preferences.json, regrouped as it folds. Each debris
-// path is named as it goes; `opencode/github_token` was copilot-api's login under a host selector
-// the proxy no longer runs under.
-
+/** In fold order: preferences.json folds after credentials.json, so its value wins a key both spell. */
 const FOLDED_STORES = ["credentials.json", "preferences.json", "ownership.json"] as const;
+
 type FoldedStore = (typeof FOLDED_STORES)[number];
 
 /** Lock sidecars of the three folded stores, under `locks/`. */
@@ -539,6 +541,12 @@ const ROOT_DEBRIS: readonly string[] = [
   join(LOCKS_DIR_NAME, "github_token.login.lock"),
   join(LOCKS_DIR_NAME, "github_token.login.lock.oslock"),
 ];
+
+// --- one store: state.json ---------------------------------------------------------------
+//
+// The fold is also the one reader left of a flat (pre-4.0.9) preferences.json, regrouped as it
+// folds. Each debris path is named as it goes; `opencode/github_token` was copilot-api's login under
+// a host selector the proxy no longer runs under.
 
 function mapHasKey(map: unknown, keys: readonly string[]): boolean {
   return isRecord(map) && keys.some((key) => Object.hasOwn(map, key));
@@ -719,6 +727,7 @@ export function renameAutoupdateThrottle(autoupdateHome: string): void {
   }
 }
 
+/** A `layout` step: every other 4.0.9 step reads the merged maps, so the fold runs first. */
 export const v409StateFold: Migration = {
   version: "4.0.9",
   layout: true,
@@ -730,14 +739,7 @@ export const v409StateFold: Migration = {
   },
 };
 
-// --- the default daemon's home ----------------------------------------------------------
-
-/** The daemon files the pre-5.0.0 reader accepted AT the root as the default daemon's home, frozen
- *  here: a device-flow login with COPILOT_API_HOME pinned left the proxy's config.json there, and
- *  the first `agent start` followed it. Any one of them makes the root a daemon home to move (the
- *  login alone leaves config.json and no `.run`); `.run` goes LAST, so a run interrupted mid-way
- *  still finds it at the root and resumes. The usage database lives under `.run/<host>/` and travels
- *  with it; a `copilot-api.sqlite` directly at the root predates 4.0.0 and has no reader. */
+/** Frozen: the files the pre-5.0.0 reader accepted AT the root as the default daemon's home; `.run` goes LAST. */
 const ROOT_DAEMON_ARTIFACTS: readonly string[] = [
   PROXY_CONFIG_FILENAME,
   // The projection record earlier releases wrote beside config.json; nothing reads it any more.
@@ -745,6 +747,15 @@ const ROOT_DAEMON_ARTIFACTS: readonly string[] = [
   LOGS_DIR_NAME,
   RUN_DIR_NAME,
 ];
+
+// --- the default daemon's home ----------------------------------------------------------
+//
+// Away from 4.0.9: a device-flow login with COPILOT_API_HOME pinned left the proxy's config.json at
+// the root, and the first `agent start` followed it. Any one of ROOT_DAEMON_ARTIFACTS makes the root
+// a daemon home to move (the login alone leaves config.json and no `.run`); `.run` goes LAST, so a
+// run interrupted mid-way still finds it at the root and resumes. The usage database lives under
+// `.run/<host>/` and travels with it; a `copilot-api.sqlite` directly at the root predates 4.0.0 and
+// has no reader.
 
 /** The `.run/<host>/.state.json` files that may belong to a live daemon: another host's recording a
  *  pid (it means nothing on this host, so nothing here can stop it), or any host's that cannot be
@@ -1274,8 +1285,7 @@ export async function moveProfilesToVerbTree(): Promise<void> {
   if (failed.length > 0) throw new Error(`not moved: ${failed.join(", ")}`);
 }
 
-// Registered under 4.0.9 although the tree lands in 5.0.0: 5.0.0 is unreleased, so every install
-// that meets the verbs upgrades away from 4.0.9 and runs this step exactly once.
+/** Under 4.0.9, not 5.0.0 (unreleased): every install that meets the verbs leaves 4.0.9, so this runs exactly once. */
 export const v409ProfileVerbTree: Migration = {
   version: "4.0.9",
   description:

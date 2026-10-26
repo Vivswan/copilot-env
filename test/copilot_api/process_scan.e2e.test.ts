@@ -10,8 +10,7 @@ import { afterEach, expect, step, tempDir, test } from "../helpers/testing.ts";
 
 afterEach(envSnapshot(["PATH"]));
 
-// The shim ignores TERM and execs the sleeper under its own pid, so only a KILL ends it and the
-// stdout pipe closes with it.
+// The shim ignores TERM and execs the sleeper under its own pid: only a KILL ends it and closes the stdout pipe.
 const HANGING_SHIM = "#!/bin/sh\ntrap '' TERM\nexec sleep 20\n";
 
 test.skipIf(process.platform === "win32")(

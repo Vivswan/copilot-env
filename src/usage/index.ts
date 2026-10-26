@@ -3,9 +3,12 @@
 // fails to open or read degrades to whole parses, never to a missing or "unreadable" session.
 //
 // No session text and no raw ids on disk: a contribution holds only numbers, model names, and dedup
-// keys (contribution.ts), the tail probe is stored hashed, and secure_delete plus a truncating
+// keys (contribution.ts), the tail probe is stored hashed (the last bytes of a session line are
+// session text, and the equality check needs only a hash), and secure_delete plus a truncating
 // checkpoint keep deleted rows out of free pages and old WAL frames. The open and each run's one
 // write transaction take the advisory lock; without it a run keeps its results and saves nothing.
+// A table-layout change bumps CONTRIBUTION_VERSION with it, so the rows are rebuilt at once instead
+// of row by row.
 
 import { Database } from "bun:sqlite";
 import { closeSync, openSync, readSync } from "node:fs";
@@ -37,32 +40,31 @@ import {
 // `cost --json` owns stdout and its consumers parse the whole of it.
 const logger = createStderrLogger();
 
+/** Under usageIndexDir(); the SQLite sidecars take DB_FILE_SUFFIXES. */
 export const USAGE_INDEX_DB_NAME = "index.sqlite";
+
+/** Beside the database; the open and each run's write transaction take it. */
 export const USAGE_INDEX_LOCK_NAME = "index.lock";
 
-/** The one stamp: a database stamped otherwise, or holding unstamped rows, has its rows deleted and
- *  is restamped. A table-layout change bumps CONTRIBUTION_VERSION with it, so the rows are rebuilt
- *  at once instead of row by row. */
+/** The one stamp: rows under another stamp, or under none, are deleted and the stamp rewritten. */
 const DEFAULT_PARSER_FINGERPRINT = `contribution-v${CONTRIBUTION_VERSION}`;
 
-/** The advisory lock serializes our own writers, so this only covers a writer from a release that
- *  does not take it. */
+/** Covers only a writer from a release without the advisory lock; our own serialize on it. */
 const BUSY_TIMEOUT_MS = 2_000;
 
+/** The database and its SQLite sidecars, removed together when the file must be recreated. */
 const DB_FILE_SUFFIXES = ["", "-wal", "-shm", "-journal"] as const;
 
+/** The `meta` key the stamp sits under; rows in `files` without it are unstamped and dropped. */
 const META_PARSER_FINGERPRINT = "parser_fingerprint";
 
 /** A garbage file no connection can hold. */
 const SQLITE_NOTADB = "SQLITE_NOTADB";
 
-/** Our own statements against a sound database whose tables are not ours: an index a build with
- *  another table layout left behind. */
+/** Our statements against a sound database with another build's tables: a rebuild, not an error. */
 const LAYOUT_MISMATCH_RE = /^(no such column: |table "?\w+"? has no column named )/;
 
-// The quoted snake_case names are the on-disk contract. `tail_probe` holds dedupKey(tailProbeHex),
-// never the probe bytes: the last bytes of a session line are session text, and the equality check
-// needs only a hash.
+// Quoted names are the on-disk contract; `tail_probe` is dedupKey(tailProbeHex), never the bytes.
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS "meta" (
   "key" TEXT PRIMARY KEY,
@@ -80,9 +82,13 @@ CREATE TABLE IF NOT EXISTS "files" (
 `;
 
 interface OpenUsageIndexOptions {
+  /** Defaults to usageIndexDir(); tests point it at a temp root. */
   dir?: string;
+
   /** A database stamped differently is rebuilt. */
   fingerprint?: string;
+
+  /** Defaults to BOUNDED_LOCK_POLICY; a lock not taken in time means the run saves nothing. */
   lockPolicy?: LockPolicy;
 }
 
@@ -103,9 +109,15 @@ function parseStoredContribution<S extends UsageSource>(text: string): Contribut
 
 /** The identity columns of a stored row, as the reuse and resume decisions read them. */
 interface KnownFile {
+  /** As walked when the row was written; the same size and mtime now means reuse. */
   size: number;
+
+  /** As walked when the row was written; a change at the same size means a whole parse. */
   mtimeMs: number;
+
+  /** Where a tail parse resumes once the probe before it matches. */
   parsedThrough: number;
+
   /** dedupKey of the parse's tailProbeHex. */
   tailProbeKey: string;
 }
@@ -149,14 +161,20 @@ type PendingWrite =
  *  one, so every instance has been stamped, configured, and locked the same way. */
 export interface UsageIndex {
   readonly reconcile: Reconcile;
+
   /** Checkpoints the WAL (best effort) before closing; the close finalizes every statement, so
    *  the file is released when it returns. */
   close(): void;
 }
 
 class SqliteUsageIndex implements UsageIndex {
+  /** Opened and configured by openUsageIndex alone; closed once, at the run's end. */
   readonly #db: Database;
+
+  /** Taken around each reconcile's one write transaction. */
   readonly #lockPath: string;
+
+  /** How long a held lock is waited on; past that the run keeps its results and saves nothing. */
   readonly #lockPolicy: LockPolicy;
 
   constructor(db: Database, lockPath: string, lockPolicy: LockPolicy) {
@@ -216,8 +234,7 @@ class SqliteUsageIndex implements UsageIndex {
     return transaction.immediate();
   }
 
-  /** `bytesRead` counts successful parses and probe reads only: a parse that throws contributes no
-   *  bytes, so the warm-run and append oracles stay exact. */
+  /** `bytesRead`: successful parses and probe reads only, for the warm-run and append oracles. */
   readonly reconcile: Reconcile = <S extends UsageSource>(
     source: S,
     walked: readonly WalkedFile[],

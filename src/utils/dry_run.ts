@@ -2,6 +2,10 @@
 // an overlay, and at the end the overlay is diffed against the disk into the changes the command
 // prints. The marker a run hands its child processes lives here too: a child that finds it runs as
 // a silent dry run, so nothing this CLI does on the child's behalf lands behind the preview.
+//
+// PLANNED_SECRET stands in for a secret the run never acquires. A store leaf holding it is redacted
+// like any secret, so it never prints, and nothing in the same run may bake or send it: a Direct
+// wiring or a model discovery planned from it would select nothing.
 import { randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -27,10 +31,7 @@ export async function withDryRun<T>(body: () => Promise<T>): Promise<DryRunOutco
     : { status: "failed", error: run.error, changes };
 }
 
-/** The value a dry run lands in place of a secret it never acquires (a login that did not run).
- *  A store leaf holding it is redacted like any secret, so it never prints, and nothing in the
- *  same run may bake or send it: a Direct wiring or a model discovery planned from it would select
- *  nothing. */
+/** The value a dry run lands in place of a secret it never acquires (a login that did not run). */
 export const PLANNED_SECRET = "<the value the real run lands>";
 
 /** The error a dry run raises where the real command would prompt: a preview never asks, and
@@ -43,28 +44,32 @@ export function promptRefusedInDryRun(what: string): Error {
 
 // --- the marker a run hands its children ---------------------------------------------------------
 
-/** Set in the environment of every process a dry run spawns (the Direct probes' agent CLIs, whose
- *  auth helper is this CLI again) so a child that finds it runs as a silent dry run, and nothing
- *  this CLI does on the child's behalf lands behind the plan either. The value is the marker the
- *  spawning run minted (underDryRunMarker): the path of a scratch directory named with a fresh
- *  nonce, whose hold file that run keeps as its lock (src/utils/file_lock.ts: the file names the
- *  minting pid) for as long as it collects. A child honours the value only while the process the
- *  hold names lives (spawnedByDryRun), so a value that reached an environment any other way (`=1`
- *  exported in a shell, a pid, a nonce with no run behind it, a directory made by hand, a marker a
- *  crashed run left behind) names nothing and changes nothing. */
+/** Exported to every process a dry run spawns, so the child runs as a silent dry run too. */
 export const DRY_RUN_ENV = "COPILOT_ENV_DRY_RUN";
 
+/** A marker directory's name is this prefix and a fresh 32-hex nonce (DRY_RUN_MARKER_NAME). */
 const DRY_RUN_MARKER_PREFIX = "copilot-env-dry-run-";
+
+/** What spawnedByDryRun accepts as a marker's name; any other value names nothing. */
 const DRY_RUN_MARKER_NAME = new RegExp(`^${DRY_RUN_MARKER_PREFIX}[0-9a-f]{32}$`);
+
 /** The lock file inside the marker the minting run holds. */
 const DRY_RUN_MARKER_HOLD = "held";
 
 /**
  * Runs `body` with a dry run's marker minted, held, and exported (DRY_RUN_ENV), so every process
- * the body spawns inherits it and runs as a silent dry run. When the body ends the lock is
- * released, the marker removed, and the variable restored, so no value outlives the run that
- * minted it. The marker is real disk (a child probes its lock), so it is minted beside the seam,
- * never through it.
+ * the body spawns (the Direct probes' agent CLIs, whose auth helper is this CLI again) inherits it
+ * and runs as a silent dry run: nothing this CLI does on the child's behalf lands behind the plan
+ * either. When the body ends the lock is released, the marker removed, and the variable restored,
+ * so no value outlives the run that minted it. The marker is real disk (a child probes its lock),
+ * so it is minted beside the seam, never through it.
+ *
+ * The value is the marker's path: a scratch directory named with a fresh nonce, whose hold file
+ * this run keeps as its lock (src/utils/file_lock.ts: the file names the minting pid) for as long
+ * as it collects. A child honours the value only while the process the hold names lives
+ * (spawnedByDryRun), so a value that reached an environment any other way (`=1` exported in a
+ * shell, a pid, a nonce with no run behind it, a directory made by hand, a marker a crashed run
+ * left behind) names nothing and changes nothing.
  */
 export async function underDryRunMarker<T>(body: () => Promise<T>): Promise<T> {
   const marker = join(

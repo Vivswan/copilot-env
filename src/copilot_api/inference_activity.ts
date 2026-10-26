@@ -20,8 +20,7 @@ export const PERSIST_INTERVAL_MS = 60_000;
 /** A string literal contract: `agent health` reads it back by the same name. */
 const LAST_INFERENCE_KEY = "lastInferenceAt";
 
-/** The leading slash keeps the suffix match segment-bounded. `/count_tokens` and `/models` are
- *  excluded on purpose: counting or listing is observation, not usage. */
+/** Slash-led so the suffix match is segment-bounded; `/count_tokens` and `/models` are observation, not usage. */
 const INFERENCE_PATH_SUFFIXES = [
   "/chat/completions",
   "/messages",

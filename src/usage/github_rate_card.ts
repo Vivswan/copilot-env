@@ -1,7 +1,9 @@
 // GitHub's Copilot rate card: the table behind the docs' models-and-pricing page, read from the data
 // file that page renders and cached for a day beside the OpenRouter list (both are PUBLIC data). A
 // card that cannot be fetched or does not parse WHOLE is never priced from: the last good cached
-// card prices the run, else the OpenRouter list alone, and the caller says so in one line.
+// card prices the run, else the OpenRouter list alone, and the caller says so in one line. The
+// file is a YAML list of flat maps of text cells, one per row; a cell that is a number or empty, a
+// row without a model, or a document that is not a list or is empty is a reshaped file.
 
 import { createHash } from "node:crypto";
 import { join } from "node:path";
@@ -18,11 +20,18 @@ import { MILLISECONDS_PER_DAY } from "../utils/time.ts";
 import { COPILOT_ENV_USER_AGENT } from "../utils/user_agent.ts";
 import type { PricingTier } from "./pricing.ts";
 
+/** Per request; a timeout is a failed fetch, and the last good cached card prices the run. */
 const FETCH_TIMEOUT_MS = 10_000;
+
+/** A cached card younger than this answers without a fetch; an older one is refetched. */
 const CACHE_TTL_MS = MILLISECONDS_PER_DAY;
-/** USD per million tokens a card rate must fall within; a number outside it is a misread cell. */
+
+/** The floor of a card rate, USD per million tokens; outside the bounds is a misread cell. */
 const MIN_RATE_PER_MILLION = 0.001;
+
+/** The ceiling of a card rate, USD per million tokens. */
 const MAX_RATE_PER_MILLION = 500;
+
 /** The card's spelling for a cell that does not apply to the row. */
 const NOT_APPLICABLE = "Not applicable";
 
@@ -35,8 +44,12 @@ interface LongContextTier {
 
 /** Keyed by the OpenRouter id DISPLAY_NAME_IDS gives the card's display name. */
 export interface GitHubRateCard {
+  /** The base row's rates, USD per million tokens; a `Not applicable` bucket is absent. */
   rates: ReadonlyMap<string, PricingTier>;
+
+  /** Models with a `> NK` row (OpenAI's); the default row at the same cut sits in `rates`. */
   longContext: ReadonlyMap<string, LongContextTier>;
+
   /** Display names on the card that DISPLAY_NAME_IDS does not know, sorted: GitHub added a row. */
   unmapped: readonly string[];
 }
@@ -51,20 +64,24 @@ export interface RateCardSource {
  *  from the OpenRouter list alone. */
 export type LoadedRateCard =
   | {
+      /** A card prices the run: today's, or the last good one. */
       kind: "card";
+
+      /** Today's card, or with `problem` set the last good cached one. */
       card: GitHubRateCard;
+
+      /** `fetched` this run, or `cached` with the stamp of the run that fetched it. */
       from: RateCardSource;
-      /** Why today's card was not read (the run then prices from `card`, the last good one); absent
-       *  when it was. */
+
+      /** Why today's card was not read; absent when it was. */
       problem?: string;
+
       /** Set when a fetched card could not be persisted: the next run fetches again. */
       cacheWriteError?: string;
     }
   | { kind: "none"; problem: string };
 
-/** The card's display names and the OpenRouter id each one prices. `null` marks a row for an
- *  offering no id here names (a fast-mode variant): it is neither priced nor reported. A name
- *  missing from this map is a row GitHub added since, reported as unmapped. */
+/** Card display names and the OpenRouter id each prices; `null` is neither priced nor reported. */
 const DISPLAY_NAME_IDS: ReadonlyMap<string, string | null> = new Map([
   ["GPT-5 mini", "openai/gpt-5-mini"],
   ["GPT-5.3-Codex", "openai/gpt-5.3-codex"],
@@ -97,25 +114,29 @@ const DISPLAY_NAME_IDS: ReadonlyMap<string, string | null> = new Map([
   ["Kimi K3", "moonshotai/kimi-k3"],
 ]);
 
-// ---------- the data file ----------
-
-// The file is a YAML list of flat maps of text cells, one per row. Anything else (a cell that is a
-// number or empty, a row without a model, a document that is not a list or an empty one) is a
-// reshaped file, and a reshaped file is not priced from.
+// One row: a flat map of text cells with a `model`; a number or empty cell is a reshaped file.
 const ROW_SCHEMA = v.objectWithRest({ model: v.string() }, v.string());
+
+// The document: a non-empty list of rows; anything else is a reshaped file.
 const CARD_SCHEMA = v.pipe(
   v.array(ROW_SCHEMA, "the rate card is not a list of rows"),
   v.nonEmpty("the rate card has no rows"),
 );
+
+// A `$4.00` cell; apart from the not-applicable marker, any other text in a price cell fails the parse.
 const PRICE = /^\$(\d+(?:\.\d+)?)$/;
+
 /** "<= 272K" (the card spells the first with U+2264) or "> 272K"; a zero size is no threshold. */
 const THRESHOLD = /^(\u2264|>) ?([1-9]\d*)K$/;
+
 /** A footnote marker on a display name, `[^gemini-flash-promo]`. */
 const FOOTNOTE = /\[\^[^\]]*\]/g;
 
 interface Row {
   /** 1-based position on the card; the YAML reader keeps no line numbers. */
   position: number;
+
+  /** Every cell as text, the model name under `model`. */
   cells: v.InferOutput<typeof ROW_SCHEMA>;
 }
 
@@ -210,7 +231,9 @@ function setOnce<T>(into: Map<string, T>, id: string, value: T, row: Row): void 
 }
 
 /** Every row is read in full before any is mapped, so a reshaped column anywhere in the file fails
- *  the whole parse rather than the rows it happened to touch. */
+ *  the whole parse rather than the rows it happened to touch. A display name DISPLAY_NAME_IDS maps
+ *  to `null` is an offering no id here names (a fast-mode variant): neither priced nor reported. A
+ *  name missing from that map is a row GitHub added since, reported as unmapped. */
 export function parseRateCard(text: string): GitHubRateCard {
   const parsed = readRows(text).map((row) => ({
     row,
@@ -328,7 +351,10 @@ function sha256Hex(text: string): string {
   return createHash("sha256").update(text).digest("hex");
 }
 
+// A cached rate: finite and non-negative; a bucket the card did not price is absent.
 const RATE_SCHEMA = v.optional(v.pipe(v.number(), v.finite(), v.minValue(0)));
+
+// PricingTier's four buckets, strict: an unknown key fails the read.
 const TIER_SCHEMA = v.strictObject({
   input: RATE_SCHEMA,
   output: RATE_SCHEMA,
@@ -336,8 +362,7 @@ const TIER_SCHEMA = v.strictObject({
   cacheCreation: RATE_SCHEMA,
 });
 
-// The URL is stored as a digest only. The quoted snake_case keys are the on-disk contract; the
-// record is this program's own and is read back as written.
+// On-disk contract: snake_case keys, the URL a digest only; our own record, read back as written.
 const CACHE_RECORD_SCHEMA = v.strictObject({
   url_sha256: v.string(),
   fetched_at_ms: v.pipe(v.number(), v.finite()),

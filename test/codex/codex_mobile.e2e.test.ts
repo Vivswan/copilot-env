@@ -161,10 +161,11 @@ test("installGateFromScan: present proceeds; proven absence aborts; unproven ask
   });
 });
 
-// pgrep/open/osascript/pkill are the POSIX primitives; a PATH pinned to a dir holding ONLY the
-// fakes means the real tools can never answer for one, and a removed fake is a REAL spawn failure.
+// pgrep/open/osascript/pkill are the POSIX primitives, so the scan tests skip on Windows.
 const onPosix = test.skipIf(process.platform === "win32");
 
+/** PATH is pinned to a dir holding ONLY the fakes, so the real tools can never answer for one and a
+ *  removed fake is a REAL spawn failure. */
 function fakeTools(): {
   dir: string;
   fake: (tool: string, body: string) => void;

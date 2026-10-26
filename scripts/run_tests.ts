@@ -17,29 +17,46 @@ import { deadline } from "@std/async";
 import { Command, CommanderError, Option } from "commander";
 import treeKill from "tree-kill";
 
+/** The checkout: every child's cwd, and what displayName shortens paths against. */
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
+
+/** Walked whole when no PATH is named. */
 const TEST_DIR = join(ROOT, "test");
+
+/** Discovery under a directory, and the name rule a file named outright is held to as well. */
 const TEST_GLOB = "**/*.test.ts";
+
+/** How a named file is held to TEST_GLOB: a plain suffix test. */
 const TEST_SUFFIX = ".test.ts";
+
+/** The realistic files: run in CI or under --e2e only, and left out by --unit. */
 const E2E_SUFFIX = ".e2e.test.ts";
+
+/** Files run at a time; unset, min(4, the CPU count). */
 const JOBS_ENV = "COPILOT_ENV_TEST_JOBS";
-/** A persistent HOME for every `bun test` child, in place of the per-child scratch one. Every
- *  child also receives it set to the HOME it runs under: test/helpers/home_guard.ts refuses a
- *  test file whose HOME this variable does not name. */
+
+/** Read by childHome as a persistent HOME, and set in every child for test/helpers/home_guard.ts to check. */
 const TEST_HOME_ENV = "COPILOT_ENV_TEST_HOME";
+
 // Windows runners are the slow leg.
 const PER_TEST_TIMEOUT_MS = process.platform === "win32" ? 120_000 : 60_000;
-/** The whole file, wall clock: bun's --timeout covers test bodies only, so a file that never
- *  registers one (a module-scope await that never settles) would otherwise hold the run until the
- *  workflow's own timeout. Generous: the longest file takes a quarter of it. */
+
+/** The whole file's wall clock; generous, the longest file takes a quarter of it (runFile says why it exists). */
 const FILE_BUDGET_MS = 10 * 60_000;
+
+/** Overrides FILE_BUDGET_MS; the launcher's own e2e test shortens the budget through it. */
 const FILE_BUDGET_ENV = "COPILOT_ENV_TEST_FILE_BUDGET_MS";
+
 /** The pipes settle with the child unless a descendant still holds them. */
 const PIPE_GRACE_MS = 5_000;
+
+/** Bun's crash-handler exit; a panic line must accompany it (bunCrashed). */
 const BUN_PANIC_EXIT = 3;
+
+/** The crash handler's line, labelled by the dying thread (bunCrashed lists the spellings). */
 const BUN_PANIC_MARKER = /panic(\([^)]*\))?: /;
-/** Read as the low byte of NTSTATUS 0xC0000409, the fail-fast status: inferred from three CI
- *  deaths and oven-sh/bun#40376's exit list, not read from Bun's source. */
+
+/** The low byte of NTSTATUS 0xC0000409, the fail-fast status (bunCrashed says how it was inferred). */
 const WINDOWS_FAIL_FAST_EXIT = 9;
 
 /**
@@ -49,18 +66,16 @@ const WINDOWS_FAIL_FAST_EXIT = 9;
  *                             (`panic(main thread): `, `panic(thread 7032): `, a bare `panic: `);
  *                             unanchored, as stdout and stderr chunks join in arrival order
  *   exit 9 on Windows      -> a silent fail-fast; oven-sh/bun#40376 (the Windows event loop's
- *                             use-after-free in socket teardown, still in 1.4.3) dies either way
+ *                             use-after-free in socket teardown, still in 1.4.3) dies either way;
+ *                             the 9 is inferred from three CI deaths and the issue's exit list,
+ *                             not read from Bun's source
  */
 function bunCrashed(exitCode: number, output: string): boolean {
   if (exitCode === BUN_PANIC_EXIT) return BUN_PANIC_MARKER.test(output);
   return process.platform === "win32" && exitCode === WINDOWS_FAIL_FAST_EXIT;
 }
 
-/** bun:test's end-of-run line, `Ran 8 tests across 1 file. [12.00ms]`: a child without it ended
- *  before bun:test reported, whatever ended it and whatever code it exited with. The singular
- *  forms are bun's own. Matched with the escape codes stripped, since FORCE_COLOR dims the timing
- *  with codes between the period and the bracket. Not anchored to a line start, for the reason
- *  the panic marker is not. */
+/** bun:test's end-of-run line; a child without it ended before bun:test reported, whatever its exit code. */
 const BUN_SUMMARY_LINE = /Ran \d+ tests? across \d+ files?\. \[/;
 
 interface FileResult {
@@ -173,7 +188,8 @@ function fileBudgetMs(): number {
  * it is unset, which consola reads as a test run and silences the info output the logger tests
  * assert on, in the test process and in every child that inherits its env (test/helpers/testing.ts
  * pins the same value once loaded). `--no-env-file` on the same child keeps a .env in the
- * checkout out of the suite.
+ * checkout out of the suite. TEST_HOME_ENV is set to the same HOME: test/helpers/home_guard.ts
+ * refuses a test file whose HOME the variable does not name.
  */
 function childEnv(home: string): Record<string, string | undefined> {
   const env: Record<string, string | undefined> = {
@@ -214,6 +230,16 @@ function childHome(): { home: string; dispose: () => void } {
 /** Aborted on SIGINT or SIGTERM, so an interrupted run leaves no `bun test` behind. */
 const cancel = new AbortController();
 
+/**
+ * One `bun test` child, killed and failed past the file budget: bun's --timeout covers test bodies
+ * only, so a file that never registers one (a module-scope await that never settles) would otherwise
+ * hold the run until the workflow's own timeout. A child without bun:test's end-of-run line ended
+ * before bun:test reported, whatever ended it and whatever code it exited with.
+ *
+ *   `Ran 8 tests across 1 file. [12.00ms]`  -> the line; the singular forms are bun's own
+ *   FORCE_COLOR dims the timing              -> matched with the escape codes stripped
+ *   stdout and stderr chunks join            -> unanchored, for the reason the panic marker is
+ */
 async function runFile(file: string, budgetMs: number): Promise<FileResult> {
   const started = performance.now();
   const { home, dispose } = childHome();
@@ -285,14 +311,14 @@ async function runFile(file: string, budgetMs: number): Promise<FileResult> {
   }
 }
 
-/** tree-kill lists descendants through this tool on POSIX; without it the listing would be an
- *  unhandled spawn error inside the package, not a callback. */
+/** The tool tree-kill lists descendants through on POSIX; killTree checks it is on PATH first. */
 const TREE_LISTER =
   process.platform === "darwin" ? "pgrep" : process.platform === "linux" ? "ps" : null;
 
 /** Resolves either way, and the child itself is dead either way: a tree already gone is the
  *  wanted state; a refused tree kill is said and the one pid is killed directly, so the budget
- *  still ends the file, though its descendants may survive. */
+ *  still ends the file, though its descendants may survive. TREE_LISTER is checked first: without
+ *  it the listing would be an unhandled spawn error inside the package, not a callback. */
 function killTree(child: Bun.Subprocess): Promise<void> {
   const pid = child.pid;
   const alone = (reason: string): void => {

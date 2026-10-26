@@ -38,15 +38,22 @@ export interface JsonRpcMessage {
 }
 
 /** Drives the server over newline-delimited JSON-RPC: the stdio MCP framing has no
- *  Content-Length headers. */
+ *  Content-Length headers. `exitCode` reads null while the server is still running. */
 export class McpClient {
   private readonly proc: Bun.Subprocess;
+
   private readonly decoder = new TextDecoder();
+
   private readonly encoder = new TextEncoder();
+
   private readonly reader: ReadableStreamDefaultReader<Uint8Array>;
+
   private readonly writer: Bun.FileSink;
+
   private exit: number | null = null;
+
   private buffer = "";
+
   readonly stdoutLines: string[] = [];
 
   /** `agent profile [<name>] mcp --serve <args>`: a named profile's server resolves that profile's
@@ -80,7 +87,6 @@ export class McpClient {
     });
   }
 
-  /** null while the process is still running. */
   get exitCode(): number | null {
     return this.exit;
   }

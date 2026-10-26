@@ -9,8 +9,7 @@ import { join } from "node:path";
 import { CHILD_VALUES, childValuesEnv, importSpecifier, ROOT, runScript } from "../helpers/run.ts";
 import { expect, tempDir, test } from "../helpers/testing.ts";
 
-/** Each row: the wrapper call a child makes against a stdin that ends (after `input`, when given),
- *  and the one line it prints: the resolved value, or the error the call threw. */
+/** Each row: a wrapper call against a stdin that ends (after `input`, if given); `printed` is its value or error. */
 const ROWS: { name: string; asked: Record<string, unknown>; input?: string; printed: string }[] = [
   {
     name: "a confirm that rejects on cancel rejects on EOF too",

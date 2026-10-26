@@ -7,11 +7,10 @@ import { delimiter, isAbsolute, join } from "node:path";
 import { deadline } from "@std/async/deadline";
 import * as fs from "./fs_facade.ts";
 
-/** A one-shot PowerShell command's cost is its startup: Windows PowerShell 5.1 takes seconds on a
- *  cold or loaded machine, the work itself milliseconds. */
+/** Mostly startup: PowerShell 5.1 takes seconds cold or under load; the work takes milliseconds. */
 export const POWERSHELL_COMMAND_TIMEOUT_MS = 10_000;
-/** SIGKILL, not the default TERM: a child that ignores TERM holds a sync spawn forever, since the
- *  runtime waits for the exit, not for the signal. */
+
+/** Not TERM: a child ignoring it holds a sync spawn forever; the runtime waits for the exit. */
 export const LOOK_KILL_SIGNAL = "SIGKILL";
 
 /** `found` carries the path Bun.which resolved (a relative PATH entry answers relative on Windows,

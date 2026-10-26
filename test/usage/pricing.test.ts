@@ -29,6 +29,7 @@ test("roundUsd pins the 4-decimal USD rounding rule", () => {
   expect(roundUsd(12)).toBe(12);
 });
 
+/** The price ids RESOLUTIONS resolve against: two versions of one Anthropic family, one OpenAI. */
 const CATALOG = new Set<string>([
   "anthropic/claude-opus-4.8",
   "anthropic/claude-opus-4.1",
@@ -181,8 +182,7 @@ test("canonicalModelName unifies the source spellings of one model", () => {
   expect(canonicalModelName("vendor/widget-20251001")).toBe("vendor/widget-20251001");
 });
 
-/** A price list and a usage map, and the estimate they must produce; USD amounts are
- *  compared to 10 places, well inside what pre-rounding to 4 would move. */
+/** A price list and a usage map, and the estimate due; USD to 10 places, inside rounding to 4. */
 const ESTIMATES: {
   name: string;
   pricing: Map<string, PricingTier>;
@@ -298,6 +298,7 @@ for (const { name, pricing, usage, perModel, totalUsd, unpriced } of ESTIMATES) 
 
 // ---------- GitHub's rate card ----------
 
+/** A million in every bucket, so a model's cost is its four per-million rates summed. */
 const ONE_MILLION_EACH: UsageTokens = {
   input: 1_000_000,
   output: 1_000_000,
@@ -608,8 +609,7 @@ test("loadPricing fetches on a cold cache, persists the list, and reports `fetch
     });
   }));
 
-/** A cache stamped at `seededAt`, read at `readAt`: fresh answers from disk, expired refreshes,
- *  and either way the stamp on disk is the last successful fetch. */
+/** Seeded `seededAt`, read `readAt`: fresh reads disk, expired refetches; stamp = last fetch. */
 const CACHE_AGES: {
   name: string;
   seededAt: number;

@@ -1,4 +1,3 @@
-import type { ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { realpathSync, writeFileSync } from "node:fs";
 import { delimiter, join, resolve } from "node:path";
@@ -92,8 +91,7 @@ function fakeSmoke(
 
 // --- summarizeProbeFailure: the reason surfaced on fallback --------------------
 
-/** A `claude --print --output-format stream-json` result event on an endpoint 400: the counters
- *  come first and the reason rides in `result`. */
+/** A `--print --output-format stream-json` result event on a 400: the reason rides in `result`. */
 const CLAUDE_API_ERROR_RESULT =
   '{"duration_api_ms":0,"stop_reason":"stop_sequence","session_id":"00000000-0000-4000-8000-000000000000","total_cost_usd":0,' +
   '"usage":{"output_tokens_details":{"thinking_tokens":0},"input_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,' +
@@ -102,8 +100,7 @@ const CLAUDE_API_ERROR_RESULT =
   '"result":"API Error: 400 output_config.effort \\"high\\" was provided, but model claude-haiku-4.5 does not support reasoning effort",' +
   '"type":"result","duration_ms":126}';
 
-/** The assistant event the same stream emits before the result event on an API error: a bare
- *  code in `error`, the API's text as the message content. */
+/** The assistant event before that result: a bare code in `error`, the API's text as content. */
 const CLAUDE_API_ERROR_ASSISTANT =
   '{"type":"assistant","message":{"model":"<synthetic>","role":"assistant","stop_reason":"stop_sequence",' +
   '"usage":{"input_tokens":0,"output_tokens":0},"content":[{"type":"text","text":"API Error: 429 rate limited"}]},' +
@@ -485,7 +482,7 @@ test("probeChildOutcome settles on the child's exit and stream ends when its clo
     const stderr = new PassThrough();
     const child = Object.assign(new EventEmitter(), { stdout, stderr, killed: false, unref() {} });
     step(`probeChildOutcome: exit ${c.code}, streams end, no close`);
-    const settled = probeChildOutcome(child as unknown as ChildProcess);
+    const settled = probeChildOutcome(child as unknown as Parameters<typeof probeChildOutcome>[0]);
     stderr.end(c.stderr);
     stdout.end();
     child.emit("exit", c.code, null);

@@ -12,11 +12,20 @@ const MODELS_TIMEOUT_MS = 5000;
 interface FetchModelCatalogOptions {
   /** The Copilot API origin. */
   host: string;
+
+  /** Sent as the bearer; the Authorization header is built here, never by a consumer. */
   token: string;
+
   /** The client identity's headers; Authorization is added here. */
   headers: Record<string, string>;
+
+  /** Injection seam for tests; absent = the shared default fetch. */
   fetchImpl?: ProbeFetch;
+
+  /** Absent = MODELS_TIMEOUT_MS; a caller's `signal` adds to it rather than replacing it. */
   timeoutMs?: number;
+
+  /** A caller's wider deadline, raced with the per-request timeout rather than replacing it. */
   signal?: AbortSignal;
 }
 

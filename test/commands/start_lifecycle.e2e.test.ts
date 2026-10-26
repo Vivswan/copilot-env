@@ -64,6 +64,7 @@ import { afterEach, expect, step, test } from "../helpers/testing.ts";
 
 // `start --record-event` (the heartbeat) and `start --check` (the is-it-up probe) are the
 // primitives the proxy-token resolver orchestrates.
+
 // A branded fixture name: parseProfileName is the only mint for ProfileName.
 const WORK = parseProfileName("work");
 
@@ -78,7 +79,9 @@ function seedWork(): void {
 // A pid no real process holds (far above any OS pid ceiling we run on).
 const DEAD_PID = 2_147_483_646;
 
+// Taken at module load, before any test touches the environment; afterEach restores it.
 const restoreEnv = envSnapshot(["COPILOT_API_ENTRY", "PATH", CI_NO_LIVE_LOOKUPS_ENV, "COLUMNS"]);
+
 let dir = "";
 
 afterEach(() => {
@@ -205,11 +208,14 @@ test("start --dry-run refuses a recorded proxy below the version floor with the 
 // reads `nowMs` once.
 //   gate pass over a stale record          -> two reads
 //   gate pass over the record just written -> one read, the verify look alone
-//
-// The versions sit above the floor copilot-env.config pins, and the installer plants the fake proxy
-// as the package's bin, so the launch runs what the float installed.
+
+// Above the floor copilot-env.config pins; the fake proxy is planted as the package's bin, so the launch runs it.
 const FLOATED_A = "2.9.0";
+
+// Also above the floor; the registry doc offers it over FLOATED_A, so the float moves to it.
 const FLOATED_B = "2.9.1";
+
+// The cooldown the float deps get: the 30-day-old seeded record is stale under it.
 const WEEK_SECONDS = 604_800;
 
 function updateToB(): {

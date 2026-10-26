@@ -32,14 +32,14 @@ function assertIncludes(path: string, text: string): void {
   console.log(`${path}: contains ${text}`);
 }
 
+/** `needle` is the unpinned line byte-exact as it sits in the repo installer; prepare() replaces it
+ *  with `pinned(tag)` and validate() asserts the result. */
 interface InstallerPin {
   needle: string;
   pinned: (tag: string) => string;
 }
 
-// `needle` is the unpinned line byte-exact as it sits in the repo installer; prepare() replaces
-// it with `pinned(tag)` and validate() asserts the result. test/install/installer_pinning.e2e.test.ts pins
-// the match at PR time, so an installer reformat fails in CI instead of at release.
+// test/install/installer_pinning.e2e.test.ts pins each needle at PR time: a reformat fails in CI, not at release.
 export const INSTALLER_PINS: Record<"install.sh" | "install.ps1", InstallerPin[]> = {
   "install.sh": [
     {
@@ -80,13 +80,14 @@ function validate(tag: string): void {
   }
 }
 
-// scripts/compile.ts already fails `bun run build` when a target does not compile. What only this
-// catches is a zero-exit compile that left a stub or a truncated artifact (a bun runtime that
-// failed to embed, a download cut short): the size floor and the host's --help run expose both.
-// The expected names come from the targets' one source of truth (src/utils/targets.ts), since
-// checksums.txt lists only what compile wrote.
+// Below this a zero-exit compile left a stub or a truncated artifact, not a binary.
 const COMPILED_BINARY_SIZE_FLOOR = 10_000_000;
 
+/** scripts/compile.ts already fails `bun run build` when a target does not compile. What only this
+ *  catches is a zero-exit compile that left a stub or a truncated artifact (a bun runtime that
+ *  failed to embed, a download cut short): the size floor and the host's --help run expose both.
+ *  The expected names come from the targets' one source of truth (src/utils/targets.ts), since
+ *  checksums.txt lists only what compile wrote. */
 function assertAssets(): void {
   for (const target of RELEASE_TARGETS) {
     const path = `dist/${releaseAssetName(target)}`;

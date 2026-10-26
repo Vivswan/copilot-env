@@ -56,6 +56,7 @@ export function removeOsLockSidecars(roots: readonly string[]): void {
   }
 }
 
+/** Clears the root home and the install's `.autoupdate/` of sidecars; silent when none is left. */
 export const v501OsLockSidecars: Migration = {
   version: "5.0.1",
   description: "remove the file locks' retired .oslock sidecars",

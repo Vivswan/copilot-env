@@ -49,16 +49,26 @@ import { runDryRun } from "./dry_run.ts";
 // Narration to stderr so `--export`'s stdout stays a clean machine-readable bundle.
 const logger = createStderrLogger();
 
+/** A dry run of --import skips only the confirmation: the pre-import backup and its prune are
+ *  planned too. A dry run of --export names no key or token, since the file it replaces may hold
+ *  real ones. */
 export interface SettingsArgs {
+  /** `--export [file]`: a path, or `true` for stdout (which a dry run cannot preview). */
   exportTo?: string | boolean;
+
+  /** `--import <file>`: asks first and backs up first, unless --force and --no-backup say otherwise. */
   importFrom?: string;
+
+  /** Export the real tokens too; refused with --import. */
   withCredentials?: boolean;
+
+  /** Import without asking; refused with --export. */
   force?: boolean;
+
+  /** Import without the pre-import backup; refused with --export. */
   noBackup?: boolean;
-  /** With --import: print what the bundle would change, attribute by attribute, and write nothing.
-   *  Only the confirmation is skipped: the pre-import backup and its prune are planned too. With
-   *  --export <file>: name the file the bundle would land in, and never its keys or tokens (the file
-   *  it replaces may hold real ones). */
+
+  /** --import: print what the bundle would change, write nothing; --export <file>: name the file, never its keys. */
   dryRun?: boolean;
 }
 

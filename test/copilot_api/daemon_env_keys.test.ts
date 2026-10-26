@@ -17,11 +17,13 @@ import { tsFilesUnder } from "../helpers/tree.ts";
 //   the shim's runtime imports        -> none; `biome ci` runs biome/no_shim_imports.grit over them
 //                                        (scope and teeth pinned by test/utils/shim_imports_lint.e2e.test.ts)
 
+/** The CLI side: the sweep reads every file under it that is not a shim. */
 const SRC_DIR = join(PROJECT_ROOT, "src");
+
+/** Where the import-free shims live; each is read as text, never imported. */
 const SCRIPTS_DIR = join(SRC_DIR, "scripts");
 
-/** Every env key spelled both as a CLI constant and as a local literal in an import-free
- *  shim. The sweep test below fails when a new cross-boundary key appears, pointing here. */
+/** Each env key spelled as a CLI constant and as a shim's literal; the sweep fails on a new pair, pointing here. */
 const PINNED_PAIRS = [
   {
     key: DAEMON_GH_TOKEN_ENV,
@@ -90,9 +92,7 @@ for (const { key, keyName, shim, localConst } of PINNED_PAIRS) {
   });
 }
 
-/** Escape hatch for a COPILOT_ENV_* key legitimately spelled in a script yet NOT a
- *  shim/CLI pair (say, a user-facing message naming a key). Empty today; add to it
- *  consciously, never to silence a real new pair. */
+/** Script-only COPILOT_ENV_* keys (a message naming one), no shim/CLI pair; empty today, never to hide a real pair. */
 const SCRIPT_ONLY_KEYS: ReadonlySet<string> = new Set();
 
 test("every env key spelled in a script is a pinned CLI pair (sweep)", () => {

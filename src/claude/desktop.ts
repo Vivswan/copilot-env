@@ -60,13 +60,13 @@ import {
 } from "./desktop_payload.ts";
 import type { DesktopOwnedEntry } from "./desktop_status.ts";
 
+// Narration goes to stderr, like every writer's, so no stdout contract ever picks it up.
 const logger = createStderrLogger();
 
 /** How a removal's report names an entry file. */
 const ENTRY = "Claude Desktop entry";
 
-/** A new entry's uuid, reserved across an overlay preview and the real wire while its slot stays
- *  unused, so the confirmation names the file the wire then creates. */
+/** A new entry's uuid, kept from the preview to the wire while free, so both name the same file. */
 const mintedEntryIds = new Map<string, string>();
 
 function mintedEntryId(dir: string, profile: Profile, free: (id: string) => boolean): string {
@@ -78,10 +78,15 @@ function mintedEntryId(dir: string, profile: Profile, free: (id: string) => bool
 }
 
 export type DesktopWireOptions = ManagedWrite & {
+  /** Null is the default profile; it names the entry and picks the helper script. */
   profile: Profile;
+
   /** Direct only: credential for the catalog fetch (never re-resolved when given). */
   directToken?: string | null;
+
+  /** The launcher hot path: no discovery (its probes are billed requests) and no notices. */
   quiet?: boolean;
+
   /** Test seam, threaded to fetchRawModels. */
   fetchImpl?: ProbeFetch;
 };
@@ -533,13 +538,14 @@ function announceUnmanagedDefault(): void {
  *    entries      -> owned config files present (listed and unlisted claims alike)
  *    staleClaims  -> owned paths whose file is gone (their _meta.json row and claim still go)
  *    helpers      -> the generated helper scripts
+ *    metaRewrite  -> the `_meta.json` path when removing the listed owned rows will rewrite it
+ *                    (null: nothing listed is ours); outside our homes, so the dry run names the
+ *                    rewrite like the live sweep
  *    blocked      -> a not-understood _meta.json; the library is left alone */
 export interface ClaudeDesktopOwnedArtifacts {
   entries: string[];
   staleClaims: string[];
   helpers: string[];
-  /** The `_meta.json` path when removing the listed owned rows will rewrite it (null: nothing
-   *  listed is ours). Outside our homes, so the dry run names the rewrite like the live sweep. */
   metaRewrite: string | null;
   blocked: boolean;
 }
@@ -573,10 +579,13 @@ export interface OwnedDesktopEntry {
 }
 
 interface OwnedLibrary {
+  /** The parsed `_meta.json`, every row ours or not, so a save keeps the foreign ones. */
   meta: DesktopMeta;
+
+  /** The listed rows whose entry file the ledger claims, each with its path. */
   owned: OwnedDesktopEntry[];
-  /** Ledger claims under the dir that _meta.json no longer lists: an interrupted removal's
-   *  invisible leftovers, config file present or not. */
+
+  /** Claims `_meta.json` no longer lists: an interrupted removal's leftovers, file there or not. */
   unlisted: string[];
 }
 

@@ -23,9 +23,12 @@ type DaemonPolicy =
       readonly releasesPortOnStop: true;
     }
   | {
+      /** The profile's reservation, minted once by reserveProfilePort and kept across stops. */
       readonly port: { readonly source: "reservation"; readonly name: ProfileName };
+
       /** A named profile's reservation is soft and always auto-increments. */
       readonly strictPortEligible: false;
+
       /** The baked agent wiring points at the reservation, so it survives a stop. */
       readonly releasesPortOnStop: false;
     };

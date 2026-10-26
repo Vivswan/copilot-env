@@ -94,13 +94,18 @@ type Narration = () => void;
 export type AddMode = ManagedAgentMode | "auto" | "unflagged";
 
 export interface AddArgs {
+  /** The flag parse's verdict; a named profile with no recorded mode refuses `unflagged` (AddMode). */
   mode: AddMode;
+
   /** Print what the landing would write, attribute by attribute, and write nothing. */
   dryRun?: boolean;
+
   /** Record the mode alone and print the credential step instead of running it. */
   noAuth?: boolean;
+
   /** Move a recorded mode without asking: to the flag's mode, or to the probe's verdict. */
   yes?: boolean;
+
   /** `--gh-user <login|auto>`: the gh account the sign-in step pins, or auto, implying gh-cli. */
   ghUser?: string;
 }

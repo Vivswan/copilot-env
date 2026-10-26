@@ -25,11 +25,12 @@ import { ROOT, runCli, runSync } from "../helpers/run.ts";
 import { afterEach, beforeEach, expect, tempDir, test } from "../helpers/testing.ts";
 
 // The POSIX path runs the real CLI under a throwaway $HOME so the real rc files are never touched.
+// On win32 the command takes the Windows code path (writes the PS $PROFILE, not an rc file), so the
+// POSIX-behavior tests only run off Windows (skipWin).
 
 const MARKER = "# copilot-env shell integration";
-// On win32 the command takes the Windows code path (writes the PS $PROFILE, not an
-// rc file), so these POSIX-behavior tests only run off Windows.
 const skipWin = test.skipIf(process.platform === "win32");
+
 let home = "";
 
 /** upsertBlock's content, for the round-trip assertions that don't inspect leftBehind. */
@@ -506,6 +507,7 @@ test.skipIf(process.platform !== "win32")(
 // `shell/` beside a fake agent. The failing mode's 99 is a count no run of evals reaches, so an
 // eval of a failed refresh's output is unmistakable. `fail` is a command that exits with its own
 // status, 13, which no refresh exit shares.
+
 const FAKE_AGENT_SH = `#!/bin/sh
 echo "fake agent stderr: $*" >&2
 if [ "$1" = profile ] && [ "$2" = env ]; then
@@ -523,6 +525,7 @@ else
   echo "fake agent stdout: $*"
 fi
 `;
+
 const FAKE_AGENT_PS1 = `[Console]::Error.WriteLine("fake agent stderr: $($args -join ' ')")
 if ($args.Count -ge 2 -and $args[0] -eq 'profile' -and $args[1] -eq 'env') {
   if ($env:COPILOT_FAKE_REFRESH_FAILS) {
@@ -623,6 +626,7 @@ for (const shell of ["bash", "zsh"]) {
 // The driver is the host that dot-sources agents.ps1 and the host its nested `agent` call
 // re-enters, so a pwsh-only construct in the rc fails under Windows PowerShell 5.1 here, on the
 // Windows runner, instead of in a user's $PROFILE.
+
 const PS_DRIVERS = [
   { driver: "pwsh", onThisHost: onPath(process.platform === "win32" ? "pwsh.exe" : "pwsh") },
   { driver: "powershell", onThisHost: process.platform === "win32" },

@@ -262,16 +262,21 @@ export function assertNotDirectory(path: string): void {
 
 // --- the writes ------------------------------------------------------------------------------------
 
+/** `atomic: false` is for a file another process holds open, or a path that may be a user's own
+ *  symlink: the write then lands through the link instead of replacing it. */
 export interface WriteOptions {
   /** Set on the file whether it is fresh or exists: the write chmods after it lands. */
   mode?: number;
-  /** Staged beside the target and renamed over it (the default); `false` writes in place, through
-   *  a link, for a file another process holds open or a path that may be a user's own symlink. */
+
+  /** Staged and renamed over the target (default); `false` writes in place, through a link. */
   atomic?: boolean;
+
   /** Rides on the stderr write line. */
   detail?: string;
+
   /** Dotted keys of this file whose values a dry run prints as `<redacted>`. */
   secretKeys?: Iterable<string>;
+
   /** The whole file holds secrets (a settings bundle): a dry run prints its verdict alone. */
   secret?: boolean;
 }
@@ -372,9 +377,13 @@ export function chmod(path: string, mode: number): void {
 }
 
 export interface RemoveOptions {
+  /** A directory needs it, as in node (rmDirectoryRefused without it). */
   recursive?: boolean;
+
   /** An absent path is no error, as in node. */
   force?: boolean;
+
+  /** Rides on the stderr `deleted ->` line. */
   detail?: string;
 }
 

@@ -18,13 +18,25 @@ import {
 } from "../helpers/run.ts";
 import { expect, step, tempDir, test } from "../helpers/testing.ts";
 
+/** The cursor-down escape, what a select's arrow key sends. */
 const DOWN = `${String.fromCharCode(27)}[B`;
+
+/** ETX, the byte a tty sends for Ctrl-C. */
 const CTRL_C = String.fromCharCode(3);
+
+/** EOT, a tty's EOF; the cancel policy, or the opted-in default, decides what it answers. */
 const CTRL_D = String.fromCharCode(4);
+
+/** The pty's width; the headless terminal replays at the same size. */
 const COLS = 80;
+
+/** The pty's height; screenOf reads the whole buffer at it, scrollback included. */
 const ROWS = 24;
 
+/** The select's prompt text; the child's first frame is awaited by it. */
 const QUESTION = "Which way should the example go?";
+
+/** The select's choices; the final screen must hold the chosen label once and the others not at all. */
 const OPTIONS = [
   {
     label: "alpha - the first way, with a tail long enough to look like a real label",
@@ -45,12 +57,10 @@ const ASK = {
   secret: "promptSecret(asked.question)",
 };
 
+/** Typed into promptSecret and expected back verbatim, and nowhere else on screen. */
 const SECRET = "s3cret-example-value";
 
-/** Each row: the keys typed once the question is on screen, and the line the program prints (the
- *  value the wrapper resolves, or the error it threw). Enter on the confirm takes its initial yes
- *  (the `[Y/n]` contract the auth prompts carried); Ctrl-D is a tty's EOF and follows the cancel
- *  policy, or the opted-in default. */
+/** Each row: the keys typed once the question is on screen, and the line the program prints. */
 const ANSWERS: { name: string; kind: keyof typeof ASK; keys: string; printed: string }[] = [
   {
     name: "confirm: Enter takes the initial yes",
@@ -91,6 +101,7 @@ const ANSWERS: { name: string; kind: keyof typeof ASK; keys: string; printed: st
   },
 ];
 
+/** Bun.Terminal, a pty, exists on POSIX alone, so every test here skips on Windows. */
 const onPosix = test.skipIf(process.platform === "win32");
 
 /** The bytes replayed through a headless terminal of the pty's size: its buffer is the screen,
@@ -191,6 +202,9 @@ onPosix(
   },
 );
 
+// The printed line is the value the wrapper resolves, or the error it threw. Enter on the confirm
+// takes its initial yes (the `[Y/n]` contract the auth prompts carried); Ctrl-D is a tty's EOF and
+// follows the cancel policy, or the opted-in default.
 for (const row of ANSWERS) {
   onPosix(
     `under a real pty, ${row.name}, and the typed secret never shows on screen outside the program's own result line`,

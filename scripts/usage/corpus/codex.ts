@@ -8,7 +8,9 @@ import { ledger, writeFile } from "./cli.ts";
 import type { MinuteStraddle } from "./fake.ts";
 import { filesFor } from "./transcripts.ts";
 
+/** Written to the fake home's config.toml as `model`; the scrub's enum vocabulary lists it. */
 const CODEX_MODEL = "gpt-5.4";
+
 /** The Codex provider table the fake is wired through; `model_provider` selects it. */
 const CODEX_PROVIDER = "fake";
 

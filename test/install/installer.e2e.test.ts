@@ -45,16 +45,23 @@ import { envSnapshot } from "../helpers/env.ts";
 import { runSync } from "../helpers/run.ts";
 import { afterEach, beforeEach, describe, expect, tempDir, test } from "../helpers/testing.ts";
 
+/** A user's plain `agent install`, wiring on: a release spawns the installed binary, a checkout wires in place. */
 const OPTIONS: InstallOptions = { noShellIntegration: false, allHosts: false, assetsOnly: false };
+
 /** Plans no shell wiring: applying spawns the binary only for a migration over a prior version. */
 const QUIET: InstallOptions = { noShellIntegration: true, allHosts: false, assetsOnly: false };
+
+/** `agent update`'s pre-flip run: the assets and shims into the aimed root, nothing else. */
 const ASSETS_ONLY: InstallOptions = {
   noShellIntegration: false,
   allHosts: false,
   assetsOnly: true,
 };
 
+/** Cases needing a POSIX symlink, an exec bit, or an sh stand-in binary. */
 const skipWin = test.skipIf(process.platform === "win32");
+
+/** Cases on the junction, which needs no symlink privilege. */
 const winOnly = test.skipIf(process.platform !== "win32");
 
 let root = "";

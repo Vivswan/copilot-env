@@ -61,40 +61,48 @@ import {
   type ManagedAgentMode,
 } from "./provider_mode.ts";
 
-/** The bundle format this copilot-env writes and reads; any other version is
- *  rejected outright (external contract). */
+// Both are external contracts: a bundle one copilot-env wrote is read by another.
+
+/** The format this copilot-env writes and reads; any other version is rejected outright. */
 const SETTINGS_BUNDLE_FORMAT_VERSION = 2;
 
-/** Placeholder replacing every token in a credential-less export (the default).
- *  An external contract: import recognizes exactly this value as "not a token". */
+/** Stands in for every token of a default (credential-less) export; import reads it as no token. */
 export const REDACTED_TOKEN = "<redacted>";
 
-/** One exported settings bundle (the `agent settings --export` JSON document). */
+/** One exported settings bundle (the `agent settings --export` JSON document). `config` is the
+ *  global map and every profile's section as stored: unset keys are omitted (defaults never
+ *  travel), and a credential-bearing key reads REDACTED_TOKEN unless exported `withCredentials`;
+ *  `skippedConfig` holds each value this OS cannot apply as the warning the import prints for
+ *  leaving it out. */
 export interface SettingsBundle {
+  /** Only SETTINGS_BUNDLE_FORMAT_VERSION parses; any other version is rejected outright. */
   formatVersion: typeof SETTINGS_BUNDLE_FORMAT_VERSION;
-  /** The preference store as stored: the global map and every profile's section (unset keys are
-   *  omitted; defaults never travel); a credential-bearing key reads REDACTED_TOKEN unless exported
-   *  `withCredentials`. */
+
+  /** The store as stored: unset keys omitted, credential-bearing values redacted by default. */
   config: CopilotEnvConfigData;
+
   /** The default credential slot (token redacted unless `withCredentials`). */
   credential: ProfileCredentialData;
+
   /** Every named profile's store slot (tokens redacted the same way). */
   profiles: Record<string, ProfileSlotData>;
+
   /** Both agents' DEFAULT wiring at export time; import re-derives it. */
   modes: { codex: AgentProviderMode; claude: AgentProviderMode };
-  /** Set by parseSettingsBundle alone, never serialized: the `config` values that cannot apply on
-   *  this OS, each as the warning the import prints for leaving it out. */
+
+  /** parseSettingsBundle's alone, never serialized: the `config` values this OS cannot apply. */
   skippedConfig?: readonly Message[];
 }
 
-/** Preferences whose VALUE may carry a credential (a price-list URL can hold a token in its
- *  query): exported as REDACTED_TOKEN by default and, on import, treated like a redacted token
- *  (the local value stays). Absence still means unset, as for every other preference. */
+/** Preferences whose VALUE may carry a credential, such as a price-list URL's query. */
 const CREDENTIAL_BEARING_PREFS = [
   "cost.pricing-url",
   "cost.github-pricing-url",
 ] as const satisfies readonly GlobalMapKey[];
 
+/** A credential-bearing preference is exported as REDACTED_TOKEN by default and, on import, treated
+ *  like a redacted token (the local value stays). Absence still means unset, as for every other
+ *  preference. */
 function isRedactedPref(config: CopilotEnvConfigData, key: GlobalMapKey): boolean {
   return CREDENTIAL_BEARING_PREFS.some((k) => k === key) && config.global[key] === REDACTED_TOKEN;
 }
@@ -170,15 +178,20 @@ function bundleIsEmpty(bundle: SettingsBundle): boolean {
 // (section paths, expected shapes, validated profile names); no bundle value or unknown KEY is
 // echoed, since either could be a pasted token: every node below names its own wording
 // (valibot's defaults echo the received value) and bundleError prefixes the dotted path.
+// The default profile's section admits the profile-only keys alone (DEFAULT_SECTION_DEFS): its
+// proxy knobs are the global map, what `--set` writes without `--profile`, so an override there
+// could be removed by no command.
 
+/** The wording every object-shaped section rejects a non-object with, the top level included. */
 const JSON_OBJECT = "must be a JSON object";
+
+/** The wording NULLABLE_STRING and the ghUser pin share for a blank or non-string value. */
 const NON_EMPTY_OR_NULL = "must be a non-empty string or null";
 
 /** valibot takes any object, an array included, where a bundle section is a JSON object. */
 const jsonObject = v.custom<Record<string, unknown>>(isRecord, JSON_OBJECT);
 
-/** An absent key reads as null (unambiguously "none"); anything present must be null or a
- *  non-blank string. */
+/** Absent reads as null (unambiguously "none"); present must be null or a non-blank string. */
 const NULLABLE_STRING = v.nullish(
   v.pipe(v.string(NON_EMPTY_OR_NULL), v.trim(), v.minLength(1, NON_EMPTY_OR_NULL)),
   null,
@@ -246,6 +259,7 @@ function namedSections(isName: (name: string) => boolean, message: string) {
   );
 }
 
+/** The named profiles' map; each name is judged before its slot (namedSections says why). */
 const PROFILE_SLOTS = v.pipe(
   jsonObject,
   namedSections(
@@ -255,10 +269,12 @@ const PROFILE_SLOTS = v.pipe(
   v.record(v.string(), PROFILE_SLOT),
 );
 
+/** One wording for both entries and their object: valibot blames a missing entry on the object. */
 const MODE_MESSAGE = `must be one of ${AGENT_PROVIDER_MODES.join("|")}`;
+
+/** The default's one mode for both agents: two managed modes are refused before any write. */
 const MODES = v.pipe(
   jsonObject,
-  // A missing entry is the object's own issue in valibot, so the entries' wording is its message.
   v.strictObject(
     {
       codex: v.picklist(AGENT_PROVIDER_MODES, MODE_MESSAGE),
@@ -266,11 +282,11 @@ const MODES = v.pipe(
     },
     MODE_MESSAGE,
   ),
-  // The default is a profile: one mode for both agents. Two managed modes cannot land, so a bundle
-  // carrying them is refused before any store or file is written (the single-agent writes would
-  // refuse the second anyway, after the first landed).
   v.check(
     ({ codex, claude }) => {
+      // The default is a profile: one mode for both agents. Two managed modes cannot land, so a
+      // bundle carrying them is refused before any store or file is written (the single-agent
+      // writes would refuse the second anyway, after the first landed).
       const managed = [codex, claude].filter((m) => m === "direct" || m === "proxy");
       return managed.length < 2 || managed[0] === managed[1];
     },
@@ -280,10 +296,13 @@ const MODES = v.pipe(
   ),
 );
 
+/** The `global` section's keys: every registry key but the profile-only ones. */
 const GLOBAL_DEFS = CONFIG_REGISTRY.filter((def) => def.scope !== "profile");
+
+/** A named profile's section keys: every registry key but the global-only ones. */
 const PROFILE_DEFS = CONFIG_REGISTRY.filter((def) => def.scope !== "global");
-/** The default profile's proxy knobs are the global map (what `--set` writes without `--profile`),
- *  so its section admits the profile keys alone: an override there could be removed by no command. */
+
+/** The default's section: the profile-only keys; its proxy knobs are the global map (see above). */
 const DEFAULT_SECTION_DEFS = CONFIG_REGISTRY.filter((def) => def.scope === "profile");
 
 /** One map of the preference store, each value judged by its registry domain (env_config owns the
@@ -410,17 +429,20 @@ export interface ImportDeps {
   ghAuthToken?: typeof ghAuthToken;
 }
 
-/** What applyImportPlan did, for the command layer to render. */
+/** What applyImportPlan did, for the command layer to render. `modes` is null when nothing managed
+ *  was in the bundle or every slot was skipped; the command layer prints each failure at its
+ *  stream's width. */
 export interface ImportOutcome {
-  /** Both agents' modes after the default re-derivation, or null when neither
-   *  agent was written (nothing managed in the bundle, or all slots skipped). */
+  /** Both agents' modes after the default re-derivation; null when neither agent was written. */
   modes: { codex: AgentProviderMode; claude: AgentProviderMode } | null;
+
   /** Named profiles fully restored (credential + mode + both agents wired). */
   wiredProfiles: ProfileName[];
+
   /** Human-readable reasons for slots/wiring intentionally left alone. */
   skipped: Message[];
-  /** Wiring failures, default or per-profile (the import continued past them; the command layer
-   *  prints each at its stream's width and exits non-zero on any). */
+
+  /** Wiring failures the import went past, default or per-profile; any makes the exit non-zero. */
   failures: Message[];
 }
 
@@ -523,14 +545,14 @@ interface PlannedProfile {
   landing: SlotPlan;
 }
 
-/** The complete import plan: what lands where, what gets wired, and what gets skipped (and why). */
+/** The complete import plan: what lands where, what gets wired, and what gets skipped (and why).
+ *  `modes` are the per-agent default modes the apply will write (null = leave alone); `skipped` is
+ *  decided here so the summary and the apply agree. */
 export interface ImportPlan {
   bundle: SettingsBundle;
   defaultSlot: SlotPlan;
-  /** Per-agent default modes the apply will write (null = leave alone). */
   modes: { codex: ManagedAgentMode | null; claude: ManagedAgentMode | null };
   profiles: PlannedProfile[];
-  /** Skip messages, decided here so the summary and the apply agree. */
   skipped: Message[];
 }
 
@@ -799,8 +821,7 @@ export function rollbackCommand(backupPath: string): string {
 /** Directory (under the ROOT home) holding the pre-import settings backups. */
 const SETTINGS_BACKUP_DIR_NAME = "settings-backups";
 
-/** How many backups survive a prune. Each backup holds plaintext tokens, so
- *  the pile is bounded instead of accumulating forever. */
+/** How many backups survive a prune: each holds plaintext tokens, so the pile is bounded. */
 export const SETTINGS_BACKUP_KEEP = 5;
 
 export function settingsBackupDir(): string {

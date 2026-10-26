@@ -85,12 +85,12 @@ function bySlug(doc: Record<string, unknown> | null, slug: string): Model {
   return found;
 }
 
-// The worked example from the live catalogs: Codex bundles gpt-5.5 at 272k/95%
-// while Copilot serves a 1.05M window with a 922k prompt cap.
+// The live worked example: Codex bundles gpt-5.5 at 272k/95%; Copilot serves a 1.05M window, 922k prompt cap.
 const GPT55_LIMITS: CopilotModelLimits = {
   maxContextWindowTokens: 1_050_000,
   maxPromptTokens: 922_000,
 };
+
 // Copilot's gpt-6-astra: 1M window, 872k prompt cap (=> 87%).
 const ASTRA_LIMITS: CopilotModelLimits = {
   maxContextWindowTokens: 1_000_000,
@@ -627,9 +627,11 @@ test("every field of every bundled entry survives (tiers emptied, limits overlai
 // The production path end to end: the fake codex on PATH answers the bundled dump, the version,
 // and the acceptance probe; Copilot is a fetch that answers every request with one `/models` body.
 
+// The fake codex's `--bundled` dump: the worked example's Codex side, gpt-5.5 at 272k/95%.
 const BUNDLED = JSON.stringify({
   models: [{ slug: "gpt-5.5", context_window: 272_000, effective_context_window_percent: 95 }],
 });
+
 /** Copilot's `/models` body serving gpt-5.5 alone, at GPT55_LIMITS. */
 const GPT55_BODY = {
   data: [
@@ -644,6 +646,8 @@ const GPT55_BODY = {
     },
   ],
 };
+
+// Every generate's credential; the header test asserts it as the Authorization bearer.
 const TOKEN = "gho_x";
 
 /** Copilot as the direct fetch reaches it: the identity probes, then GET /models, every request

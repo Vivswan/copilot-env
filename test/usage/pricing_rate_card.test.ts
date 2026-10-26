@@ -17,14 +17,29 @@ const CARD_TEXT = readFileSync(
   join(PROJECT_ROOT, "test", "fixtures", "github-rate-card.yml"),
   "utf8",
 );
+
+/** Never fetched for real: textFetch serves CARD_TEXT under it. */
 const CARD_URL = "https://rates.example/models-and-pricing.yml";
+
+/** The loader's cache TTL; a read at NOW + DAY_MS is the first expired one. */
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** The fixed clock every fetch is stamped at. */
 const NOW = 1_700_000_000_000;
 
+/** GPT-5.6 Sol's default row on the card, USD per million tokens. */
 const SOL = { input: 4, output: 20, cacheRead: 0.4, cacheCreation: 5 };
+
+/** GPT-5.6 Sol's long-context row, above 272K prompt tokens. */
 const SOL_LONG = { input: 8, output: 30, cacheRead: 0.8, cacheCreation: 10 };
+
+/** GPT-6 Astra's default row on the card, USD per million tokens. */
 const ASTRA = { input: 10, output: 50, cacheRead: 1, cacheCreation: 12.5 };
+
+/** GPT-6 Astra's long-context row, above 272K prompt tokens. */
 const ASTRA_LONG = { input: 20, output: 75, cacheRead: 2, cacheCreation: 25 };
+
+/** The provenance a card fetched at NOW reports. */
 const FETCHED_NOW: RateCardSource = { source: "fetched", fetchedAtMs: NOW };
 
 /** Serves `text` as the card and counts the calls; `fail` rejects the way the transport does. */

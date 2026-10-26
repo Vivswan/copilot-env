@@ -82,12 +82,18 @@ import { envSnapshot, isolateAgentHomes, resetExitCode } from "../helpers/env.ts
 import { captureChannels } from "../helpers/output.ts";
 import { afterEach, expect, removeDir, step, test } from "../helpers/testing.ts";
 
+/** Taken at load; afterEach restores it, so a case's env edits never leak into the next. */
 const restoreEnv = envSnapshot();
+
+/** The one named profile the cases wire beside the default. */
 const WORK = parseProfileName("work");
+
 /** The command credential shape every wire in this file uses unless it says otherwise. */
 const COMMAND = { kind: "command" } as const;
+
 /** The process's real fetch: a case that stubs the global for model discovery is reset here. */
 const REAL_FETCH = globalThis.fetch;
+
 let dir = "";
 
 afterEach(() => {
@@ -719,9 +725,9 @@ test.skipIf(process.platform === "win32")(
       quiet: false,
       fetchImpl: catalogFetch(CATALOG),
     };
+    // `arrange` lays one library file behind a symlink and answers the target the test removes to dangle it.
     const cases: {
       name: string;
-      /** Breaks one library file; answers the link's path. */
       arrange: (library: string) => Promise<string>;
       also: (library: string, target: string) => void;
     }[] = [

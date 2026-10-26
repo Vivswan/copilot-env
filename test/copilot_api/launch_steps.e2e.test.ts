@@ -71,13 +71,18 @@ import {
 } from "../helpers/run.ts";
 import { afterEach, describe, expect, removeDir, test } from "../helpers/testing.ts";
 
+// A branded fixture name: parseProfileName is the only mint for ProfileName.
 const WORK = parseProfileName("work");
 
 // A pid no real process holds (far above any OS pid ceiling we run on).
 const DEAD_PID = 2_147_483_646;
+
+// The kill command the lock-holder hint names, as this platform spells it.
 const KILL = process.platform === "win32" ? "taskkill /F /PID" : "kill";
 
+// Taken at module load, before any test touches the environment; afterEach restores it.
 const restoreEnv = envSnapshot();
+
 let dir = "";
 
 afterEach(() => {
@@ -190,15 +195,25 @@ test("a daemon launch: the credential, refusal, and probe decision per stored cr
   const acceptingProbe = (): Promise<Response> =>
     Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 }));
   const rows: Array<{
+    /** The row's label in the assertion messages. */
     name: string;
+
+    /** The profile launched: the default (null), or WORK, whose slot may be missing. */
     profile: Profile;
+
     /** The DEFAULT slot's stored credential. */
     stored: { provider: "gh-token" | "copilot"; token: string } | null;
+
+    /** The default profile's `passthrough` setting before the launch; absent leaves it unset. */
     passthrough?: "on" | "off";
+
     /** A spy answering this id, or the real selector over a probe fetch that accepts. */
     identity: { spy: string | null } | "real";
+
     /** The credential handed to the daemon, or the refusal (no daemon is spawned). */
     credential: Launched | { refused: string };
+
+    /** The tokens the spy was asked about, in order; the real selector leaves it empty. */
     probedTokens: string[];
   }> = [
     {
@@ -772,7 +787,10 @@ test("cleanupExistingProxies: a lock THIS process holds is never signalled (self
 // Windows has no trappable SIGTERM (process.kill maps to TerminateProcess), so the escalation
 // tests below are POSIX-only. Their holder scripts are named copilot-api-* and given `start`:
 // the argv signature classifyDaemonPid needs before an untracked holder is signalled.
+
+/** The lock module as the holder scripts import it from their temp dir. */
 const DAEMON_LOCK_SPECIFIER = importSpecifier(join(ROOT, "src", "copilot_api", "daemon_lock.ts"));
+
 /** The holder fixtures trap SIGTERM, which Windows cannot deliver. */
 const posixTest = process.platform === "win32" ? test.skipIf(true) : test;
 
@@ -1193,6 +1211,7 @@ test("applyDefaultConfig: useResponsesApiWebSocket lands true by default and fal
 // Every opt-in key, nested or top-level: after --del the next apply clears its path and nothing
 // else. A key the clearing missed would outlive the operator's unset.
 test("applyDefaultConfig: --del of any opt-in key clears its path on the next apply", () => {
+  // `absentKey`: a top-level key the clear must remove outright, not leave as undefined.
   const rows: Array<{
     key: GlobalMapKey;
     set: GlobalPatch;
@@ -1200,7 +1219,6 @@ test("applyDefaultConfig: --del of any opt-in key clears its path on the next ap
     projected: (doc: Record<string, unknown>) => unknown;
     afterSet: unknown;
     afterDel: unknown;
-    /** A top-level key the clear must remove outright, not leave as undefined. */
     absentKey?: string;
   }> = [
     {
@@ -1271,8 +1289,7 @@ test("applyDefaultConfig: a non-record in a nested path's way is replaced, not c
   expect(config.load().contextManagement).toEqual({ responses: false });
 });
 
-/** The daemon's catalog as the post-launch pass reads it: no gpt-5-mini, a lightweight Responses
- *  model behind a powerful one. */
+/** The daemon's catalog at the post-launch pass: no gpt-5-mini, a lightweight Responses model behind a powerful one. */
 const DAEMON_CATALOG: AvailableModel[] = [
   { id: "gpt-6-sol", category: "powerful", endpoints: [RESPONSES_ENDPOINT] },
   { id: "gpt-6-luna", category: "lightweight", endpoints: [RESPONSES_ENDPOINT] },

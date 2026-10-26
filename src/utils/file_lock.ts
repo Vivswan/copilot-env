@@ -29,16 +29,21 @@ import { sleepSync } from "./time.ts";
 // which a best-effort reader (the usage index) degrades on and withRequiredFileLockSync makes an
 // error. The wait is measured from the last holder change, never from the call: queued behind live
 // writers (each hold releases and a successor writes a new marker) a contender waits them out.
+
+/** An own marker unchanged this long is a leaked hold; another process's is judged by its pid. */
 const LOCK_STALE_MS = 10_000;
+
+/** The bounded wait on one unchanged holder; the budget restarts on every marker change. */
 const LOCK_WAIT_MS = 4_000;
+
+/** The sleep between attempts: the lock is polled, since Bun exposes no OS lock to wait on. */
 const LOCK_RETRY_MS = 15;
 
 interface FileLockOptions {
-  /** One clock for the marker written and the age judgment, so an injected clock stays
-   *  deterministic. */
+  /** One clock for the marker and the age judgment, so an injected clock stays deterministic. */
   nowMs?: number;
-  /** The liveness judgment of another process's pid, replaceable so a test can play a live or a
-   *  dying holder without spawning one. */
+
+  /** The liveness of another process's pid; a test replaces it to play a live or a dying holder. */
   liveness?: (pid: number) => PidLiveness;
 }
 
@@ -93,8 +98,7 @@ class HeldFileLock {
   }
 }
 
-/** The one record of what this process holds: a marker naming our pid that is not here is a
- *  leftover (a release Windows refused, a crash under a recycled pid). */
+/** This process's holds: a marker naming our pid that is not here is a leftover, taken over. */
 const HELD_LOCKS = new Map<string, HeldFileLock>();
 
 /** `unreadable` is a marker we cannot judge: a probe answers unknown, a release deletes nothing. */
@@ -171,7 +175,8 @@ export function removeMarkerWithRetry(
 }
 
 /** Whether the marker at the path is a holder's or a leftover. Our own pid outside HELD_LOCKS is a
- *  leftover: nothing in this process holds a lock the record does not know. */
+ *  leftover (a release Windows refused, a crash under a recycled pid): nothing in this process
+ *  holds a lock the record does not know. */
 function markerHolds(
   lockPath: string,
   raw: string,
@@ -339,25 +344,29 @@ type NotHeldOutcome =
 const HELD_OUTCOME: HeldLock = Object.freeze({ held: true } as HeldLock);
 const NOT_HELD_BUSY: NotHeldOutcome = Object.freeze({ held: false, reason: "busy" });
 
-/** `waitMs` bounds the wait on ONE unchanged holder: the budget restarts whenever the marker read
- *  after a failed attempt differs from the last one (a release, a successor, a refresh), and
- *  Infinity never gives up, so the fn always observes `held`. `onWait` fires ONCE: on the first
- *  failed attempt, or with `noticeAfterMs` on the first failed attempt after more than that much
- *  waiting since the call. */
+/** The acquisition policy of one lock. Another process's marker is judged by its pid's liveness,
+ *  never its age, so `staleMs` governs only this process's own hold: Infinity never
+ *  refresh-acquires it, however old, which suits a lock held a long time (`agent start` across the
+ *  float and the cleanup). The wait budget restarts whenever the marker read after a failed
+ *  attempt differs from the last one (a release, a successor, a refresh). */
 export interface LockPolicy extends FileLockOptions {
-  /** Governs only a second acquire from THIS process (another process's marker is judged by its
-   *  pid's liveness, never its age): Infinity never refresh-acquires this process's own live hold,
-   *  however old, for a lock a process holds a long time (`agent start` across the float and the
-   *  cleanup). */
+  /** THIS process's second acquire only: Infinity never takes over an own hold, however old. */
   readonly staleMs: number;
+
+  /** The wait on ONE unchanged holder; Infinity never gives up, so the fn always sees `held`. */
   readonly waitMs: number;
+
+  /** The sleep between attempts; LOCK_RETRY_MS when unset. */
   readonly retryMs?: number;
+
+  /** Fires ONCE: on the first failed attempt, or the first one past `noticeAfterMs` of waiting. */
   readonly onWait?: () => void;
+
+  /** Measured from the call: `onWait` holds until more than this much waiting has passed. */
   readonly noticeAfterMs?: number;
 }
 
-/** After the bounded wait the outcome is not-held. A caller that may not run without the lock goes
- *  through withRequiredFileLockSync, where that outcome is an error instead. */
+/** After the bounded wait the outcome is not-held; withRequiredFileLockSync makes that an error. */
 export const BOUNDED_LOCK_POLICY: LockPolicy = Object.freeze({
   staleMs: LOCK_STALE_MS,
   waitMs: LOCK_WAIT_MS,
@@ -418,13 +427,13 @@ function acquireStep(
   return { sleepMs: policy.retryMs ?? LOCK_RETRY_MS };
 }
 
-/** Concurrent async scopes in one process can interleave: a second scope may refresh-acquire the
- *  first's aged marker and outlive it, so the physical release belongs to the LAST settling scope.
- *  A lock held by a primitive caller (no entry here) is never released by a scope that only
- *  refreshed it. */
+/** Open async scopes per lock: the physical release belongs to the LAST settling scope. */
 const SCOPE_HOLDS = new Map<string, number>();
 
-/** False = a primitive caller holds the lock; leave it be. */
+/** Concurrent async scopes in one process can interleave: a second scope may refresh-acquire the
+ *  first's aged marker and outlive it, so SCOPE_HOLDS counts them and the last one out releases.
+ *  False = a primitive caller holds the lock (no entry here); a scope that only refreshed it never
+ *  releases it, so leave it be. */
 function enterHeldScope(lockPath: string, owned: boolean): boolean {
   if (owned) {
     SCOPE_HOLDS.set(lockPath, 1);

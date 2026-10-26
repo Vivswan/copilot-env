@@ -13,17 +13,23 @@ import type { Profile } from "../copilot_api/profile.ts";
 import { isRecord, parseJsonRecord } from "../utils/json.ts";
 
 /** The launcher's LaunchPlan shape plus the success postcondition; tests pin the composition
- *  without spawning. */
+ *  without spawning. Exit 0 alone is no success: with the user's real hooks running, a
+ *  UserPromptSubmit hook that stops the prompt exits 0 after zero model turns, so `answered`
+ *  reads the stream instead. */
 export interface LiveLaunch {
+  /** Looked up on PATH by name (runLiveCli); an npm shim or an absent CLI never spawns. */
   cli: CliCommand;
+
+  /** The launcher's argv minus interactivity: a one-shot run with PROBE_PROMPT last. */
   args: string[];
+
   /** Layered over the parent env, which is otherwise inherited whole. */
   env: Record<string, string>;
+
   /** Canonical UPPER-CASE names dropped from the child env. */
   omitEnv: readonly string[];
-  /** Whether the captured stdout shows the model answered. Exit 0 alone is not that: with the
-   *  user's real hooks running, a UserPromptSubmit hook that stops the prompt exits 0 after zero
-   *  model turns. */
+
+  /** Whether the captured stdout shows the model answered; exit 0 alone is not that. */
   answered: (stdout: string) => boolean;
 }
 

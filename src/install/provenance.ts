@@ -22,8 +22,7 @@ import {
   verificationFailedMessage,
 } from "./attestation.ts";
 
-/** Sigstore's public-good TUF mirror, passed explicitly so the trust root's origin is ours to
- *  read here, never the dependency's default. */
+/** Sigstore's public-good TUF mirror, passed so the trust root's origin is ours, not a default. */
 const TUF_MIRROR_URL = "https://tuf-repo-cdn.sigstore.dev";
 
 /** A subsystem cache under copilot-env's own root home (like the proxy float's bun cache), so
@@ -35,8 +34,10 @@ function tufCachePath(rootHome: string = resolveRootHome()): string {
 export interface VerifyProvenanceOptions {
   /** A trust root to verify against instead of refreshing one over TUF (tests). */
   trustedRoot?: TrustedRoot;
+
   /** Who may have signed (default: any GitHub Actions workflow of Vivswan's account). */
   policy?: SignerPolicy;
+
   /** Where the TUF client keeps its metadata cache. */
   cachePath?: string;
 }

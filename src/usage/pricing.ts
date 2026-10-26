@@ -1,5 +1,9 @@
 // The price list is PUBLIC data, which is why loadPricing may keep a day-old copy on disk; nothing
 // else `agent cost` reads is ever cached by this module.
+//
+// A long-context tier exists on OpenAI's card rows only; Anthropic's are flat at any size. The
+// readers bucket usage on LONG_CONTEXT_PROMPT_TOKENS alone, so a card tier cut at or below it
+// covers the bucket, and one cut above it (none today) would over-price it and is not applied.
 
 import { createHash } from "node:crypto";
 import { join } from "node:path";
@@ -48,19 +52,20 @@ export interface ModelCost {
 }
 
 export interface CostEstimate {
+  /** Keyed by the usage model name as logged, not the catalog id it resolved to. */
   perModel: Record<string, ModelCost>;
+
+  /** The exact sum over `perModel`; rounded once, at the render and JSON boundaries. */
   totalUsd: number;
+
+  /** Models with no catalog id, or no tier rate for their usage: tokens count, cost is absent; sorted. */
   unpriced: string[];
-  /** Models priced at GitHub's card rather than the list's own rate: the card's rate for the model
-   *  differs from the list's (or the list lacks it), or the long-context tier applied to part of
-   *  its usage. Sorted. */
+
+  /** Priced at the card over the list: a differing or missing list rate, or a tier; sorted. */
   githubRated: string[];
 }
 
-/** A request whose prompt (input plus cached input) exceeds this is billed at the model's
- *  long-context tier, when its card has one (OpenAI models; Anthropic's are flat at any size). The
- *  readers bucket usage on this one size, so a card tier cut at or below it covers the bucket and
- *  one cut above it (none today) would over-price it and is not applied. */
+/** A prompt (input + cached) past this bills at the long-context tier; the readers bucket on it. */
 export const LONG_CONTEXT_PROMPT_TOKENS = 272_000;
 
 /** The OpenRouter list with GitHub's rate card over it: the card's rate for every model it names, the
@@ -176,13 +181,13 @@ function tierOf(pricing: Record<string, unknown>): PricingTier | null {
   return v.is(TIER_SCHEMA, tier) ? tier : null;
 }
 
+/** `cacheWriteError`: a fetched list could not be persisted, so the next run fetches again. */
 type LoadedPricing =
   | { source: "cache"; pricing: Map<string, PricingTier>; fetchedAtMs: number }
   | {
       source: "fetched";
       pricing: Map<string, PricingTier>;
       fetchedAtMs: number;
-      /** Set when the list could not be persisted: the next run fetches again. */
       cacheWriteError?: string;
     }
   | {
@@ -250,8 +255,10 @@ function sha256Hex(text: string): string {
   return createHash("sha256").update(text).digest("hex");
 }
 
+// A listed rate: finite and non-negative; a bucket OpenRouter omits is absent.
 const RATE_SCHEMA = v.optional(v.pipe(v.number(), v.finite(), v.minValue(0)));
 
+// PricingTier's four buckets, strict: an unknown key fails the read.
 const TIER_SCHEMA = v.strictObject({
   input: RATE_SCHEMA,
   output: RATE_SCHEMA,
@@ -259,8 +266,7 @@ const TIER_SCHEMA = v.strictObject({
   cacheCreation: RATE_SCHEMA,
 });
 
-// Applied to a fetched response before it is persisted; the cache record it becomes is this
-// program's own and is read back as written.
+// Applied to a fetched response before the persist, so the cache record is read back as written.
 const TIERS_SCHEMA = v.pipe(
   v.record(
     v.pipe(
@@ -522,8 +528,7 @@ interface PricingLookup {
   resolve(model: string): string | null;
 }
 
-// One lookup per price list: `agent cost` prices the same list once per source and once per day per
-// model, and never changes a list after loading it.
+// One per list: priced once per source and once per day per model, and never changed after loading.
 const PRICING_LOOKUPS = new WeakMap<Map<string, PricingTier>, PricingLookup>();
 
 function pricingLookupFor(pricing: Map<string, PricingTier>): PricingLookup {
@@ -551,8 +556,7 @@ function normalizeModelName(model: string): string {
     .replace(/-1m$/, "");
 }
 
-/** The OpenRouter provider a bare model id belongs to, so a log's `grok-4.5` reaches the card's
- *  `x-ai/grok-4.5`. */
+/** The OpenRouter provider of a bare id: a log's `grok-4.5` reaches the card's `x-ai/grok-4.5`. */
 const PROVIDER_BY_PREFIX: readonly [prefix: string, provider: string][] = [
   ["claude-", "anthropic"],
   ["gpt-", "openai"],

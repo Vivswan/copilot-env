@@ -26,30 +26,29 @@ import { fetchModelCatalog, type ModelCatalogOutcome } from "./models_fetch.ts";
 
 /** The gating header. Its VALUES below are external contracts: never rename. */
 export const INTEGRATION_ID_HEADER = "Copilot-Integration-Id";
-/** The VS Code Chat extension's identity, copilot-api's own upstream default before the daemon's
- *  preload replaced it; the last candidate, and discovery consults its catalog for unadvertised
- *  models. */
+
+/** VS Code Chat's identity and copilot-api's former default: the last candidate; discovery reads its catalog. */
 export const VSCODE_CHAT_INTEGRATION_ID = "vscode-chat";
+
 /** GitHub Copilot CLI's identity, the one verified to accept fine-grained PATs. */
 export const COPILOT_CLI_INTEGRATION_ID = "copilot-developer-cli";
+
 /** Tried after the CLI one; accepts PATs on some plans. */
 export const COPILOT_SANDBOX_INTEGRATION_ID = "copilot-developer-sandbox";
-/** Owned here, the layer-neutral home, so codexUserAgent (codex layer, appends `/<version>`) and the
- *  /responses web-search client (this layer, version-free) derive from ONE spelling. */
+
+/** ONE spelling for codexUserAgent (codex layer, appends `/<version>`) and the version-free web-search client. */
 export const CODEX_EXEC_USER_AGENT = "codex_exec";
 
-/** The client-headers preload (src/scripts/client_headers_preload.ts) reads this JSON header set
- *  (daemonClientHeaders) and applies it to the daemon's fetch and WebSocket requests to the Copilot
- *  API hosts. Not a secret, so plain env, no argv splice. */
+/** client_headers_preload.ts reads it (daemonClientHeaders); not a secret, so plain env, no argv splice. */
 export const DAEMON_CLIENT_HEADERS_ENV = "COPILOT_ENV_DAEMON_CLIENT_HEADERS";
 
 /** Where the account's designated API base is discovered (best-effort). */
 export const COPILOT_USER_URL = "https://api.github.com/copilot_internal/user";
+
 /** The generic host, what `host auto` lands on unless it is blocked for the credential. */
 export const DEFAULT_COPILOT_API_BASE = "https://api.githubcopilot.com";
 
-/** The copilot-host preload (src/scripts/copilot_host_preload.ts) reads this and rewrites the
- *  `endpoints.api` the daemon learns from GitHub, so the proxy talks to the same host as Direct. */
+/** copilot_host_preload.ts rewrites the daemon's learned `endpoints.api` to it: proxy and Direct share one host. */
 export const DAEMON_COPILOT_HOST_ENV = "COPILOT_ENV_DAEMON_COPILOT_HOST";
 
 /** The base-URL SHAPE of a Direct wiring: an https origin, whatever the host. Detection keys on
@@ -92,6 +91,7 @@ export function setIntegrationProbeFetch(fetchImpl: ProbeFetch | null): void {
 export interface IntegrationIdentity {
   /** The id header's value, or CODEX_IDENTITY_NAME for the set that sends none. */
   name: string;
+
   /** Authorization is added by callers. */
   headers: Record<string, string>;
 }
@@ -125,6 +125,8 @@ export function directClientHeaders(
  *  the codex identity. Derived from directClientHeaders, never spelled apart from it. */
 export type DaemonClientHeaders = Record<string, string | null>;
 
+/** The JSON header set src/scripts/client_headers_preload.ts reads from DAEMON_CLIENT_HEADERS_ENV
+ *  and applies to the daemon's fetch and WebSocket requests to the Copilot API hosts. */
 export function daemonClientHeaders(
   userAgent: string,
   integrationId: string | null,
@@ -136,10 +138,12 @@ export function daemonClientHeaders(
  * THE candidate list, one for every mode, in probe order: the codex identity (no id header) first,
  * since it is the set the widest catalog was verified under, then the CLI and sandbox ids that
  * accept credentials the codex set refuses (a fine-grained PAT), and copilot-api's former default
- * last, for a credential the three others reject. The order is fixed: a later candidate is reached
- * only once every earlier one has answered without a 2xx. `userAgent` rides in as a parameter
- * because this module must not import the codex layer: callers pass either the detected
- * codexUserAgent() or the version-free CODEX_EXEC_USER_AGENT (web_search.ts).
+ * last (its own upstream default before the daemon's client-headers preload replaced it), for a
+ * credential the three others reject; discovery consults that one's catalog for unadvertised
+ * models. The order is fixed: a later candidate is reached only once every earlier one has
+ * answered without a 2xx. `userAgent` rides in as a parameter because this module must not import
+ * the codex layer: callers pass either the detected codexUserAgent() or the version-free
+ * CODEX_EXEC_USER_AGENT (web_search.ts).
  */
 export function identityCandidates(
   userAgent: string,
@@ -162,29 +166,40 @@ function bakedIntegrationId(identity: IntegrationIdentity): string | null {
 }
 
 interface IdentityProbeOutcome {
+  /** The candidate's `IntegrationIdentity.name`: an id, or CODEX_IDENTITY_NAME for the set that sends none. */
   name: string;
+
   /** "ok", an HTTP rejection ("400 <body snippet>"), or a network error message. */
   detail: string;
 }
 
+/** The probe's verdict; an inconclusive run keeps the caller on the default rather than failing
+ *  hard on a flaky network. */
 interface IdentityProbeResult {
+  /** The first candidate accepted (a 2xx); null when every one was refused or the chain was inconclusive. */
   identity: IntegrationIdentity | null;
-  /** false when a network error or an ambiguous status made the run inconclusive, so callers keep the
-   *  default rather than failing hard on a flaky network. */
+
+  /** false when a network error or an ambiguous status left the run inconclusive (callers keep the default). */
   conclusive: boolean;
+
   /** The host probed (`IdentityProbeDeps.apiBase`), echoed so a refusal names it. */
   apiBase: string;
+
   /** In probe order. */
   outcomes: IdentityProbeOutcome[];
 }
 
 interface IdentityProbeDeps {
+  /** Test seam; injected I/O bypasses the verdict memo (memoizable). */
   fetchImpl?: ProbeFetch;
+
+  /** Per request; absent = PROBE_TIMEOUT_MS, and a value given bypasses the memo too (memoizable). */
   timeoutMs?: number;
+
   /** A caller deadline over the WHOLE probe chain, combined with each request's own timeout. */
   signal?: AbortSignal;
-  /** The host the verdict is used on: always the caller's, never discovered here
-   *  (selectDirectIdentityAndHost owns the host question). */
+
+  /** The host the verdict is used on, always the caller's: selectDirectIdentityAndHost owns the host question. */
   apiBase: string;
 }
 
@@ -267,12 +282,7 @@ function genericHostBlockedBy(status: number): boolean {
   return status === 403 || status === 404 || status >= 500;
 }
 
-// One verdict per (token, host, header set) in a process, shared by the survey, the selectors, and
-// the host rule: the table `agent profile identity` prints and a selection in the same process come
-// from the SAME responses, so a status that flips between two request rounds cannot show an
-// accepted cell beside a refusal.
-// Process-lifetime and never invalidated: a CLI invocation ends in seconds, while the MCP server
-// (src/mcp/server.ts, reached through web_search.ts) keeps its verdicts until the transport closes.
+// One verdict per (token, host, header set) for the process's life, so a table and a selection never disagree.
 const verdictMemo = new Map<string, Promise<IdentityVerdict>>();
 
 /** Whether a probe's deps are the production ones, so its answers may be memoized. Injected I/O
@@ -295,7 +305,15 @@ function failureDetail(
 }
 
 /** One GET /models under one identity; never throws. Acceptance is the status alone, as it always
- *  has been: a 2xx whose body is not the catalog counts as accepted with no size. */
+ *  has been: a 2xx whose body is not the catalog counts as accepted with no size.
+ *
+ *  The memo holds one verdict per (token, host, header set) in a process, shared by the survey, the
+ *  selectors, and the host rule: the table `agent profile identity` prints and a selection in the
+ *  same process come from the SAME responses, so a status that flips between two request rounds
+ *  cannot show an accepted cell beside a refusal.
+ *
+ *  Process-lifetime and never invalidated: a CLI invocation ends in seconds, while the MCP server
+ *  (src/mcp/server.ts, reached through web_search.ts) keeps its verdicts until the transport closes. */
 function probeCandidate(
   token: string,
   apiBase: string,
@@ -379,15 +397,18 @@ type SurveyHostRole = "generic" | "designated" | "configured";
 export interface IdentityHostSurvey {
   /** The API base actually probed. */
   apiBase: string;
+
+  /** Why the host is a column: the generic host always is, the others only when they differ from it. */
   role: SurveyHostRole;
+
   /** In candidate order; every candidate is probed, an acceptance stops nothing. */
   verdicts: { name: string; verdict: IdentityVerdict }[];
 }
 
 export interface IdentitySurvey {
-  /** The generic host, then the account's designated host when it differs, then the `host`
-   *  literal when set and different from both. */
+  /** The generic host, then the account's designated host if it differs, then the `host` literal if unlike both. */
   hosts: IdentityHostSurvey[];
+
   /** The designated-host lookup failed transiently, so that column is missing, not "the same". */
   designatedUnknown: boolean;
 }
@@ -473,6 +494,7 @@ export interface HostNarrator {
 interface ResolveHostOptions extends Omit<IdentityProbeDeps, "apiBase"> {
   /** The `host` literal: returned as-is, nothing probed. Null = `auto`. */
   literal?: string | null;
+
   /** Callers whose stdout is a contract pass a stderr logger. */
   narrator?: HostNarrator;
 }
@@ -549,6 +571,7 @@ function identityRejectionHints(): string[] {
 interface ResolveIdentityOptions extends IdentityProbeDeps {
   /** The `identity` config pin, or null to probe. */
   pinned?: string | null;
+
   /** Callers whose stdout is a contract (`agent auth --get`) pass a stderr logger. */
   narrator?: HostNarrator;
 }
@@ -664,12 +687,13 @@ async function resolveIntegrationId(
 export interface IdentityAndHost {
   /** The id header's value; null = the codex identity, which sends none. */
   integrationId: string | null;
+
+  /** The https origin the identity was accepted on: a Direct config's base URL, the daemon's pinned host. */
   apiBase: string;
 }
 
 interface IdentityAndHostOptions extends Omit<ResolveIdentityOptions, "apiBase"> {
-  /** A host every request goes to (a caller's, else the `host` literal): identity selection
-   *  runs there and the host probe is skipped. Null = `auto`. */
+  /** The host every request goes to (a caller's, else the `host` literal), with no host probe; null = `auto`. */
   fixedHost?: string | null;
 }
 

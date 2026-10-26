@@ -13,6 +13,7 @@ import { expect, tempDir, test } from "../helpers/testing.ts";
 
 // Without the cross-process lock in CopilotApiConfig.update(), the racing load-mutate-saves clobber
 // each other and the counter comes up short of workers * increments.
+
 const CONFIG_MODULE = join(ROOT, "src", "copilot_api", "config.ts");
 
 interface WorkerExit {

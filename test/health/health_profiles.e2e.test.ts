@@ -41,14 +41,15 @@ import { writeRunState } from "../helpers/fixtures.ts";
 import { probeOf, runIdentity, runOrphan, runPid, runPort } from "../helpers/health.ts";
 import { describe, expect, removeDir, tempDir, test } from "../helpers/testing.ts";
 
-const restoreEnv = envSnapshot([BASE_URL_ENV]);
-
 // --- fixtures -----------------------------------------------------------------
+
+const restoreEnv = envSnapshot([BASE_URL_ENV]);
 
 const P = parseProfileName("p");
 
 // `skipped` turns the daemon probe into a skipped outcome; otherwise PortState is derived through
-// the real classifier, so a fixture can never carry a torn ownership verdict.
+// the real classifier, so a fixture can never carry a torn ownership verdict. `pidScanUnproven` is
+// the probe fact of that name: the tracked-pid identity scan FAILED.
 interface NamedOverrides {
   slot?: ProfileSlotFacts;
   homeExists?: boolean;
@@ -59,7 +60,6 @@ interface NamedOverrides {
   reachable?: boolean;
   trackedPid?: number | null;
   pidTracked?: boolean;
-  /** The tracked-pid identity scan FAILED (probe fact pidScanUnproven). */
   pidScanUnproven?: true;
   pidAlive?: boolean;
   identityConfirmed?: boolean | null;

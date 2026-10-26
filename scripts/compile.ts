@@ -122,8 +122,10 @@ function build(target: ReleaseTarget, assetFlags: readonly string[]): number {
 }
 
 mkdirSync(join(ROOT, OUT_DIR), { recursive: true });
+
 // One `--asset` per top-level entry of the stage; the stage goes whatever the builds did.
 const stage = mkdtempSync(join(tmpdir(), "copilot-env-assets-"));
+
 let status = 0;
 try {
   stageAssets(stage);
@@ -139,15 +141,19 @@ try {
 }
 if (status !== 0) process.exit(status);
 
-// checksums.txt covers every release binary currently in dist/ (so a filtered
-// build still emits verifiable lines), in `shasum -a 256 -c` compatible form.
+// All targets, not this run's filtered set, so earlier builds' binaries in dist/ are listed too.
 const assetNames = new Set(RELEASE_TARGETS.map(releaseAssetName));
+
+// Every release binary currently in dist/, so a filtered build still emits verifiable lines.
 const binaries = readdirSync(join(ROOT, OUT_DIR), { withFileTypes: true })
   .filter((entry) => entry.isFile() && assetNames.has(entry.name))
   .map((entry) => entry.name)
   .sort();
+
+// `shasum -a 256 -c` compatible form: the digest, two spaces, the name.
 const lines = await Promise.all(
   binaries.map(async (name) => `${await fileSha256(join(ROOT, OUT_DIR, name))}  ${name}\n`),
 );
+
 writeFileSync(join(ROOT, OUT_DIR, "checksums.txt"), lines.join(""));
 console.error(`==> wrote ${OUT_DIR}/checksums.txt`);

@@ -4,8 +4,7 @@
 //   direct -> GitHub Copilot directly           proxy -> the local copilot-api proxy
 //   other  -> a foreign config we do not manage  none  -> unconfigured (the proxy is the default)
 
-/** A runtime list for boundary validation (the settings-bundle schema); the type derives from
- *  it, so the two cannot drift. */
+/** The settings-bundle schema's runtime list; the type derives from it, so the two cannot drift. */
 export const AGENT_PROVIDER_MODES = ["direct", "proxy", "other", "none"] as const;
 
 export type AgentProviderMode = (typeof AGENT_PROVIDER_MODES)[number];

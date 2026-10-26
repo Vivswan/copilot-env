@@ -34,17 +34,22 @@ type DirectCatalogIdentity = { kind: "passthrough" } | { kind: "agents"; userAge
 export interface FetchRawModelsOptions {
   /** Skips re-resolving, which for a gh-cli provider re-runs `gh auth token` (up to 5s). */
   directToken?: string;
-  /** The identity and host a caller already resolved for this profile (directRequestIdentity),
-   *  so one selection serves its every request; absent, this fetch resolves them. */
+
+  /** directRequestIdentity's answer, held so one selection serves every request; absent, resolved here. */
   pair?: IdentityAndHost;
+
   /** Callers that just probed liveness pass that port so the fetch cannot race a restart onto another. */
   port?: number;
+
   /** null/absent = the default profile. A named profile never falls back to the default credential (credential.ts). */
   profile?: Profile;
+
   /** Injection seam for tests (direct source only: the identity probe and the GET). */
   fetchImpl?: ProbeFetch;
+
   /** A deadline over the whole direct fetch, identity probe included (each request keeps its own timeout too). */
   signal?: AbortSignal;
+
   /** Direct source only; absent = passthrough (see DirectCatalogIdentity). */
   identity?: DirectCatalogIdentity;
 }

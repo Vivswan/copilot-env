@@ -78,18 +78,22 @@ function mapSchema<T>(keys: readonly ConfigKeyDef[]): v.GenericSchema<unknown, T
   ) as unknown as v.GenericSchema<unknown, T>;
 }
 
+/** The `global` map's read schema, folded from the registry so a new key needs no schema edit here. */
 const GLOBAL_CONFIG_SCHEMA = mapSchema<GlobalConfigData>(
   CONFIG_REGISTRY.filter((def) => def.scope !== "profile"),
 );
+
+/** A `profiles.<name>` map's read schema, the same fold; the state keys beside it are env_state.ts's. */
 const PROFILE_CONFIG_SCHEMA = mapSchema<ProfileConfigData>(
   CONFIG_REGISTRY.filter((def) => def.scope !== "global"),
 );
 
-/** The settings keys each map of the store may hold (the state keys sharing the maps are
- *  env_state.ts's): what a whole-store replace or a profile deletion touches. */
+/** The settings keys the `global` map may hold: what a whole-store replace or a profile deletion touches. */
 export const GLOBAL_SETTING_KEYS: readonly string[] = CONFIG_REGISTRY.filter(
   (def) => def.scope !== "profile",
 ).map((def) => def.key);
+
+/** The settings keys a `profiles.<name>` map may hold: what a whole-store replace or a profile deletion touches. */
 export const PROFILE_SETTING_KEYS: readonly string[] = CONFIG_REGISTRY.filter(
   (def) => def.scope !== "global",
 ).map((def) => def.key);
@@ -123,12 +127,15 @@ export type SettingSource = "flag" | "profile" | "global" | "default";
 export interface ResolvedSetting<T> {
   /** undefined only when nothing is set and unset IS the default. */
   value: T | undefined;
+
+  /** The layer that answered; `default` even when `value` is undefined. */
   source: SettingSource;
 }
 
 export interface ResolveOptions<T> {
   /** The profile the value is for; null is the default profile. Irrelevant to a global key. */
   profile: Profile;
+
   /** A per-invocation override (a CLI flag, an env var), already parsed; undefined = none given. */
   flag?: T | undefined;
 }

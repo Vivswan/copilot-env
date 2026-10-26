@@ -18,8 +18,10 @@ import { runStop } from "./stop.ts";
 
 export interface ProfileOpsContext {
   rawProfile: string | null;
+
   /** `summary` is the verb's one-line row in the listings; `description` its own help. */
   verb(name: ProfileVerb, summary: string, description: string): Command;
+
   refuseStrayWords(cmd: Command, verb: ProfileVerb): void;
 }
 

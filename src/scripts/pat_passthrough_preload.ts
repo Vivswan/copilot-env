@@ -7,10 +7,13 @@
 // Relies on copilot-api using `globalThis.fetch` (`bindElectronFetch` replaces it only inside the
 // Electron app) and on the exchange URL and `{ token, refresh_in }` response shape.
 
+// copilot-api's own flag; token_argv_preload.ts splices it onto argv from the env before this runs.
 const TOKEN_FLAG = "--github-token";
+
+// Matched as a substring of the URL, whatever the host and query string.
 const EXCHANGE_PATH = "/copilot_internal/v2/token";
-// A PAT never expires the way a minted token does; a six-hour refresh leaves copilot-api's refresh
-// loop re-running rarely, and each re-run only hits this interceptor again.
+
+// Six hours: a PAT never expires like a minted token, and each refresh only hits this interceptor again.
 const REFRESH_IN_SECONDS = 21_600;
 
 function tokenFromArgv(): string | null {
@@ -18,9 +21,9 @@ function tokenFromArgv(): string | null {
   return i >= 0 && i + 1 < process.argv.length ? (process.argv[i + 1] ?? null) : null;
 }
 
-// No token-shape re-check here: it would defeat a forced run for a credential the shape predicate
-// cannot detect (a legacy unprefixed classic PAT).
+// No token-shape re-check: it would defeat a forced run for a legacy unprefixed classic PAT the predicate misses.
 const token = tokenFromArgv();
+
 if (token !== null) {
   const originalFetch = globalThis.fetch;
   const wrapped = (

@@ -30,9 +30,9 @@ import {
 } from "./profile.ts";
 import { rootStateStore } from "./state_store.ts";
 
-// The provider vocabulary lives with the store that persists it: importing it from credential.ts
-// would cycle, since Credential wraps this store.
+// Lives with the store that persists it: an import from credential.ts would cycle (Credential wraps this store).
 export const AUTH_PROVIDERS = ["copilot", "gh-cli", "gh-token", "gh-env"] as const;
+
 export type AuthProvider = (typeof AUTH_PROVIDERS)[number];
 export type TokenProvider = Extract<AuthProvider, "copilot" | "gh-token" | "gh-env">;
 
@@ -133,6 +133,7 @@ function writeCredentialFields(raw: Record<string, unknown>, patch: RawCredentia
 
 /** Mirrors ManagedAgentMode; declared here so the store layer stays dependency-light. */
 export const PROFILE_MODES = ["direct", "proxy"] as const;
+
 export type ProfileMode = (typeof PROFILE_MODES)[number];
 
 /** The two creators refuse a word `agent profile` routes as a verb, so it can never become a
@@ -144,8 +145,12 @@ function refuseReservedWord(name: ProfileName): void {
 }
 
 export interface ProfileCredentialData {
+  /** The slot's own token; a named profile never borrows the default's. */
   githubToken: string | null;
+
+  /** The path that minted the token; resolution keys off it, so a token without one could never resolve. */
   authProvider: AuthProvider | null;
+
   /** gh-cli only; null = follow gh's active account. */
   ghUser: string | null;
 }
@@ -186,24 +191,34 @@ export function partialSlotGap(
 }
 
 /** The READ view, not the disk layout: the default slot's credential is projected to the top level
- *  and `profiles` holds the NAMED slots only. */
+ *  and `profiles` holds the NAMED slots only. The codexCatalog* fields are src/codex/catalog.ts's;
+ *  `claudeModelVerdicts` is src/copilot_api/discovery.ts's and is never exported. */
 interface CopilotEnvStateData {
+  /** The default slot's, projected up from `profiles.default` on read. */
   githubToken: string | null;
+
+  /** The default slot's, projected up on read. */
   authProvider: AuthProvider | null;
+
+  /** The default slot's, projected up on read. */
   ghUser: string | null;
+
+  /** The NAMED slots only; the default's lives under DEFAULT_PROFILE_NAME on disk and is projected up. */
   profiles: Record<string, ProfileSlotData>;
+
   /** Epoch ms of the last catalog generation ATTEMPT, 0 if never (src/codex/catalog.ts). */
   codexCatalogLastAttemptMs: number;
+
+  /** The codex version the last attempt ran against; a different one regenerates at the next refresh. */
   codexCatalogCodexVersion: string | null;
-  /** A copilot-env whose patch logic changed regenerates on the next refresh instead of serving the
-   *  old patch for up to a day (src/codex/catalog.ts). */
+
+  /** A copilot-env whose patch logic changed regenerates at the next refresh, not after a day. */
   codexCatalogPatchVersion: number;
-  /** The catalog (by content hash) the installed codex (by version) last parsed, so the reference
-   *  sync re-asks only when either changes (src/codex/catalog.ts). */
+
+  /** Catalog hash and codex version last parsed together, so the reference sync re-asks only when either changes. */
   codexCatalogAccepted: { sha256: string; codexVersion: string } | null;
-  /** Keyed `<credentialDigest>|<integrationId, or codex for none>|<modelId>` (src/copilot_api/discovery.ts).
-   *  The verification pings are billed requests, so this cache is shared by every consumer. Never
-   *  exported. */
+
+  /** Keyed `<credentialDigest>|<integrationId, or codex for none>|<modelId>`; billed pings, shared by all. */
   claudeModelVerdicts: Record<string, ModelVerdict>;
 }
 
@@ -221,6 +236,7 @@ type EnvStatePatch = {
     | null;
 };
 
+// A slot's credential half; every field falls back rather than throws, so a hand-mangled value reads as unset.
 const PROFILE_SCHEMA = v.object({
   githubToken: v.fallback(v.nullable(v.pipe(v.string(), v.trim(), v.minLength(1))), null),
   authProvider: v.fallback(v.nullable(v.picklist(AUTH_PROVIDERS)), null),
@@ -230,10 +246,7 @@ const PROFILE_SCHEMA = v.object({
   mode: v.fallback(v.nullable(v.picklist(PROFILE_MODES)), null),
 });
 
-// The probed Direct pair, state beside the credential (never a cache): the identity NAME the last
-// landing baked (CODEX_IDENTITY_NAME for the default, which sends no header) and the Copilot host
-// origin it was accepted on. Written by the probing callers only; read by every re-render. A
-// hand-mangled value reads as null = never probed, so the next re-render probes and writes it.
+// The probed Direct pair: state beside the credential, never a cache; a hand-mangled half reads as never probed.
 const DIRECT_PAIR_SCHEMA = v.object({
   integrationIdentity: v.fallback(
     v.nullable(v.pipe(v.string(), v.trim(), v.regex(INTEGRATION_ID_RE))),
@@ -261,7 +274,12 @@ const DIRECT_PAIR_SCHEMA = v.object({
 
 /** What the slot holds of a Direct wiring, half by half: `integrationId` null = the default identity
  *  (no header), a half `undefined` = never probed (the pin or literal was in force at every landing,
- *  so no probe ever answered for it). Overlays render over it and never enter it. */
+ *  so no probe ever answered for it). Overlays render over it and never enter it.
+ *
+ *  On disk the halves are the identity NAME the last landing baked (CODEX_IDENTITY_NAME for the
+ *  default, which sends no header) and the Copilot host origin it was accepted on, written by the
+ *  probing callers only and read by every re-render; a hand-mangled value reads as null = never
+ *  probed, so the next re-render probes and writes it. */
 export interface StoredDirectPair {
   integrationId?: string | null;
   host?: string;
@@ -389,12 +407,13 @@ export function assertProfileSlot(name: ProfileName): ProfileSlot {
   return slot;
 }
 
-/** The state keys of a `profiles.<name>` map and of `global`, as the schemas spell them: what
- *  `agent config` refuses to set by name (src/commands/config.ts). Derived, never restated. */
+/** A `profiles.<name>` map's state keys, derived from the schemas: what `agent config` refuses to set by name. */
 export const PROFILE_STATE_KEYS: readonly string[] = [
   ...Object.keys(PROFILE_SCHEMA.entries),
   ...Object.keys(DIRECT_PAIR_SCHEMA.entries),
 ];
+
+/** The `global` map's state keys, derived the same way; src/commands/config.ts refuses them too. */
 export const GLOBAL_STATE_KEYS: readonly string[] = Object.keys(STATE_SCHEMA.entries).filter(
   (key) => key !== "profiles",
 );

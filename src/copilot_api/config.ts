@@ -11,8 +11,6 @@ import type { Profile } from "./profile.ts";
 
 const logger = taggedLogger("copilot_api.config");
 
-/** The leaves a dry run redacts across every store this class fronts: a slot's GitHub token, the
- *  daemon's API keys, and the two price-source URLs (either may embed a key). */
 const SECRET_STORE_LEAF =
   /(^|\.)(githubToken|adminApiKey|apiKeys|"cost\.pricing-url"|"cost\.github-pricing-url")$/;
 
@@ -22,7 +20,9 @@ function storeText(data: Record<string, unknown>): string {
 }
 
 /** The dotted leaves of `doc` that SECRET_STORE_LEAF names, declared at the write so a dry run
- *  redacts them wherever a slot puts them (`profiles.work.githubToken`). */
+ *  redacts them wherever a slot puts them (`profiles.work.githubToken`). The leaves are the ones a
+ *  dry run redacts across every store this class fronts: a slot's GitHub token, the daemon's API
+ *  keys, and the two price-source URLs (either may embed a key). */
 function secretLeaves(doc: Record<string, unknown>, prefix: readonly string[] = []): string[] {
   const out: string[] = [];
   for (const [key, value] of Object.entries(doc)) {
@@ -51,9 +51,7 @@ function dataOrDegrade(
   return read.data;
 }
 
-/** V8's JSON.parse message quotes the source around the fault, unescaped, and these stores hold
- *  the GitHub token and the daemon keys, so NOTHING of the parser's message is forwarded: even a
- *  position lifted out of it could be a copy of the file's text. */
+/** V8's JSON.parse message quotes the file around the fault, so a parse failure forwards none of it (read()). */
 export const JSON_PARSE_DIAGNOSTIC =
   "SyntaxError; the parser's message is withheld, the file may hold keys";
 
@@ -69,7 +67,9 @@ export const JSON_PARSE_DIAGNOSTIC =
  * in the daemon's config.json are never clobbered.
  */
 export class CopilotApiConfig {
+  /** Absent at construction = the effective home's proxy config.json (CopilotApiPaths). */
   readonly path: string;
+
   /** The ROOT stores pass CopilotApiPaths' `locks/` path so permanent sidecars do not clutter the home. */
   readonly lockPath: string;
 
@@ -94,6 +94,10 @@ export class CopilotApiConfig {
    *   doc          -> the read COMPLETED: parsed, or the file is proven absent/empty
    *   unparseable  -> content WAS seen and is not JSON, a proven fact about the file
    *   unreadable   -> the read FAILED: neither absence nor contents were established
+   *
+   * A parse failure reports JSON_PARSE_DIAGNOSTIC and NOTHING of V8's message: it quotes the source
+   * around the fault, unescaped, and these stores hold the GitHub token and the daemon keys, so even
+   * a position lifted out of it could be a copy of the file's text.
    */
   private read(): StoreRead {
     // Through the facade: a dry run's earlier landing on this store is the state its later readers

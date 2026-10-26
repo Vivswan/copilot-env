@@ -45,8 +45,11 @@ function directDefault(): void {
 /** A scratch Direct wiring with no identity header on the generic host: today's default bytes. */
 const DIRECT_NONE = directWiring(null, DEFAULT_COPILOT_API_BASE);
 
+// fakeCodexOnPath prepends its bin to PATH; this puts PATH and the live-lookup seam back after each test.
 const restoreEnv = envSnapshot(["PATH", CI_NO_LIVE_LOOKUPS_ENV]);
+
 let dir = "";
+
 // The default credential shape: the config names a copilot-env command that prints the credential.
 const COMMAND = { kind: "command" } as const;
 
@@ -937,10 +940,16 @@ test("disabled: our file goes only when every reference is provably not ours; a 
   // line stays and the ordinary cleanup runs. The reference we CANNOT resolve (EACCES) is its own
   // test below: it needs non-root POSIX.
   const cases: {
+    /** Names the case in the assertion messages. */
     name: string;
+
+    /** The case builds a symlink, which needs privileges on Windows; skipped there. */
     posixOnly?: true;
+
     /** Writes what the reference needs and answers the config text. */
     config: (catalogFile: string) => string;
+
+    /** The expectation: whether our catalog file survives the sync. */
     fileKept: boolean;
   }[] = [
     {

@@ -44,8 +44,7 @@ function isolatedProxyEnv(extra: Record<string, string> = {}): {
   return { env: isolatedEnv({ CODEX_HOME: codexHome, ...extra }), codexHome };
 }
 
-// Help screens are read-only and deterministic, and a cold CLI spawn is expensive, so each argv is
-// spawned once and shared.
+// Help screens are read-only and deterministic and a cold spawn is expensive, so each argv is spawned once and shared.
 const HELP_CACHE = new Map<string, { exitCode: number | null; stdout: string; output: string }>();
 
 function helpScreen(...args: string[]): {
@@ -221,10 +220,7 @@ test("cli.ts update folds --verify/--no-verify into the verify flag", () => {
   }
 });
 
-// One help-surface case per command; commands whose help test carries extra rejection runs stay
-// separate. "--verify " keeps its trailing space so it matches the padded option entry only; bare
-// "--verify" would also match a mention of the flag inside another option's description. `absent`
-// pins a flag that belongs to another command (or to no command) off this one's screen.
+// One help-surface case per command; `absent` pins a flag of another command (or of none) off this screen.
 const HELP_SURFACES: { cmd: string; needles: string[]; absent?: string[] }[] = [
   {
     // shell does not configure agents, and credentials belong to `agent auth`, so it carries no
@@ -242,15 +238,17 @@ const HELP_SURFACES: { cmd: string; needles: string[]; absent?: string[] }[] = [
   { cmd: "health", needles: ["--scope", "--json"] },
   { cmd: "start", needles: ["--dry-run", "--port", "--record-event", "--check", "--force"] },
   {
+    // "--verify " keeps its trailing space so it matches the padded option entry only; bare "--verify"
+    // would also match a mention of the flag inside another option's description.
     cmd: "update",
     needles: ["--auto-status", "--check", "--force", "--verify ", "--no-verify"],
   },
   { cmd: "profile models", needles: ["--proxy", "--direct", "--json"] },
 ];
 
-// Preferences that moved into `agent config` have no imperative twin left. "--auto " keeps its
-// trailing space: bare "--auto" is a substring of the surviving --auto-status.
+// Preferences that moved into `agent config` have no imperative twin left.
 const REMOVED_FLAGS: { cmd: string; flags: string[] }[] = [
+  // "--auto " keeps its trailing space: bare "--auto" is a substring of the surviving --auto-status.
   { cmd: "update", flags: ["--auto ", "--no-auto"] },
   { cmd: "shell", flags: ["--launchers"] },
 ];
@@ -264,6 +262,7 @@ test("the flags that became config keys are gone from the help screens", () => {
 });
 
 test("each command's --help exits 0 and surfaces its flags", () => {
+  // Commands whose help test carries extra rejection runs stay separate from this table.
   for (const { cmd, needles, absent = [] } of HELP_SURFACES) {
     const help = helpScreen(...cmd.split(" "), "--help");
     expect(help.exitCode, cmd).toBe(0);
@@ -928,8 +927,7 @@ test("health --scope full runs every group end-to-end and fails on a dead proxy"
   expect(codex?.detail).toContain("config.toml:");
 }, 15_000);
 
-// Each narrowed scope: the ids it must carry (`exactly` makes that list the whole report), the
-// ids it must keep out, and the exit code the scope's checks can reach on the isolated home.
+// Each narrowed scope: the ids it must carry and keep out, and the exit code its checks reach on the isolated home.
 const SCOPE_ROWS: {
   scope: string;
   env?: () => Record<string, string>;
@@ -968,6 +966,7 @@ const SCOPE_ROWS: {
   {
     scope: "codex",
     present: ["setup.codex"],
+    // `exactly` makes the present list the whole report.
     exactly: true,
     exitCode: 0,
     detail: (json) => expect(json.checks[0]?.value?.providerMode).toBe("proxy"),

@@ -42,9 +42,9 @@ import { envSnapshot, isolateProxyHome } from "../helpers/env.ts";
 import { captureChannelsSync } from "../helpers/output.ts";
 import { afterEach, expect, removeDir, test } from "../helpers/testing.ts";
 
-// CopilotEnvConfig reads/writes the SHARED prefs store under COPILOT_API_HOME, so isolate
-// each test in a temp home.
+// CopilotEnvConfig reads/writes the SHARED prefs store under COPILOT_API_HOME, so each test isolates a temp home.
 const restoreEnv = envSnapshot(["COLUMNS"]);
+
 let dir = "";
 
 afterEach(() => {
@@ -520,15 +520,15 @@ test("set refuses a bad value naming the key and the reason (never echoing a cre
   // so the rejection never echoes it, and a hand-mangled STORED value degrades to unset (probe
   // per credential / the built-in URL), never a baked header or a bad fetch. A machine key's
   // stored junk (out of range, non-positive) degrades to its built-in default the same way.
+  //   leak -> the credential-shaped fragment of `bad` the rejection must not echo
+  //   junk -> values the typed store can hold but the read schema refuses
   const cases: {
     key: ConfigKey;
     bad: string;
     reason: string;
-    /** The credential-shaped fragment of `bad` the rejection must not echo. */
     leak?: string;
     valid: string;
     parsed: unknown;
-    /** Values the typed store can hold but the read schema refuses. */
     junk: unknown[];
     store: (c: CopilotEnvConfig, value: unknown) => void;
     stored: (c: CopilotEnvConfig) => unknown;
@@ -665,11 +665,10 @@ test("get <key> prints the value alone on stdout (script-friendly) and where it 
   expect(get("proxy.claude-auto-model", CONFIG).stdout).toBe("\n");
 });
 
-// One valid `set` string per registry key, typed over ConfigKey: a new registry key without
-// an entry here is a compile error, so the round trip below covers every key.
 // Fully qualified on every platform: on Windows this carries the drive the domain requires.
 const ABS_CODEX_HOME = resolve("/srv/codex");
 
+// One valid `set` string per registry key; typed over ConfigKey, so a key without an entry here is a compile error.
 const ROUND_TRIP_RAW: Record<ConfigKey, string> = {
   "claude.desktop": "false",
   "claude.desktop-effort": "medium",

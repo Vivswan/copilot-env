@@ -1,6 +1,8 @@
 // The configuration page's key tables are hand-written, so a new registry key needs its row
 // added by hand, a changed default needs its Default cell moved, and a reworded describe needs
-// its Effect cell retyped; this is where any omission fails.
+// its Effect cell retyped; this is where any omission fails. A key with no built-in default has
+// nothing to render in its Default cell, so the page says what unset means there; a key that gains
+// a default leaves PROSE_DEFAULT_KEYS and gets the value in its cell.
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -13,9 +15,7 @@ import { formatConfigValue } from "../../src/copilot_api/env_config.ts";
 import { PROJECT_ROOT } from "../../src/utils/root.ts";
 import { expect, test } from "../helpers/testing.ts";
 
-/** Keys whose Default cell is prose instead of a value. Allowed ONLY for a key with no built-in
- *  default: the registry has nothing to render there, and the page says what unset means. A key
- *  that gains a default leaves this list and gets the value in its cell. */
+/** Keys whose Default cell is prose instead of a value: allowed ONLY for a key with no built-in default. */
 const PROSE_DEFAULT_KEYS: readonly string[] = [
   "cost.credits-target",
   "daemon.version",

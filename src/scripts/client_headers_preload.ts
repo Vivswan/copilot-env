@@ -18,9 +18,10 @@
 // off the proxy's dependencies: a CommonJS module fed back through a load hook loses its named
 // exports.
 
-// Duplicates DAEMON_CLIENT_HEADERS_ENV (integration_identity.ts) and DAEMON_COPILOT_HOST_ENV: this
-// preload stays import-free so it drags no CLI module into the daemon.
+// Duplicates DAEMON_CLIENT_HEADERS_ENV (integration_identity.ts): an import would drag a CLI module into the daemon.
 const CLIENT_HEADERS_ENV = "COPILOT_ENV_DAEMON_CLIENT_HEADERS";
+
+// Duplicates DAEMON_COPILOT_HOST_ENV (integration_identity.ts), for the same reason.
 const COPILOT_HOST_ENV = "COPILOT_ENV_DAEMON_COPILOT_HOST";
 
 /** The launcher's JSON: header name -> value to set, or null to delete. */
@@ -120,24 +121,27 @@ export function handshakeInit(
   };
 }
 
+/** The module the hook re-points the proxy's "undici" imports at. */
 const IDENTITY_MODULE_URL = new URL("./undici_identity.ts", import.meta.url);
-/** The module's path as the hook sees it, so an entry whose directory holds the shims (one under
- *  the install root) never has the module's own "undici" import re-pointed at itself. */
+
+/** The hook's spelling of the module's path, compared with samePath so the module never re-points its own import. */
 const IDENTITY_MODULE_PATH = Bun.fileURLToPath(IDENTITY_MODULE_URL);
-/** The static and the dynamic import of "undici", whichever quote: the specifier is the one token
- *  the hook replaces, so every import shape (named, aliased, namespace) keeps its bindings. */
+
+/** "undici" after `from` or inside a dynamic `import(...)`, either quote; swapping the specifier keeps the bindings. */
 const UNDICI_SPECIFIER = /(\bfrom\s*|\bimport\s*\(\s*)(["'])undici\2/g;
 
-/** The proxy's chunks sit beside its entry (the daemon's `dist/main.js`, a test's target file):
- *  that directory at any depth, minus a `node_modules` below it, since a dependency's CommonJS
- *  module fed back through the hook loses its named exports (the entry's own directory may sit
- *  under one). Separators match either way and Windows compares case-insensitively, the spelling
- *  src/copilot_api/process.ts uses for the same paths. */
 /** The filter's comparison for one path: case-insensitive on Windows, exact elsewhere. */
 function samePath(a: string, b: string): boolean {
   return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
 }
 
+/** The proxy's chunks sit beside its entry (the daemon's `dist/main.js`, a test's target file):
+ *  that directory at any depth, minus a `node_modules` below it, since a dependency's CommonJS
+ *  module fed back through the hook loses its named exports (the entry's own directory may sit
+ *  under one). Separators match either way and Windows compares case-insensitively, the spelling
+ *  src/copilot_api/process.ts uses for the same paths. An entry whose directory holds the shims
+ *  (one under the install root) is covered too, so the hook hands undici_identity.ts's own text
+ *  back untouched rather than re-pointing its "undici" import at itself. */
 function entryDirectoryFilter(): RegExp {
   const entry = process.argv[1];
   if (entry === undefined) throw new Error("client-headers preload: no entry script to cover");

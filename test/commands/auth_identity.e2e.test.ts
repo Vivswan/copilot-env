@@ -47,14 +47,13 @@ function enableCatalog(): void {
   new CopilotEnvConfig().set({ "codex.model-catalog": true });
 }
 
-/** A PAT the CLI identity accepts on both hosts (a 5-model generic catalog, 37 on the account
- *  host), that the sandbox accepts on the generic host only (2 models), and that the codex identity
- *  (no id header), vscode-chat, and any other id reject. A `host` literal host accepts every
- *  identity (9 models). */
+/** The `host` key's literal host; stubIdentitySurvey accepts every identity there (9 models). */
 const CONFIGURED_HOST = "https://copilot.example";
 
 /** An id no candidate list carries: only a pin or a stored pair puts it in the table. */
 const FOREIGN_ID = "my-custom-id";
+
+/** FOREIGN_ID's survey row: rejected on both hosts, the in-use mark after the first cell. */
 const FOREIGN_MARKED_ROW = new RegExp(
   `^${FOREIGN_ID}\\s+rejected \\(400\\) \\*\\s+rejected \\(400\\)`,
   "m",
@@ -63,6 +62,10 @@ const FOREIGN_MARKED_ROW = new RegExp(
 /** The stub the identities tests install (stubIdentitySurvey), kept so a test can wrap it. */
 let stubbedSurveyFetch: ProbeFetch = () => Promise.reject(new Error("no survey stub installed"));
 
+/** The probe answers for a PAT: the CLI identity is accepted on both hosts (a 5-model generic
+ *  catalog, 37 on the account host), the sandbox on the generic host only (2 models), and the
+ *  codex identity (no id header), vscode-chat, and any other id are rejected. CONFIGURED_HOST
+ *  accepts every identity (9 models); `designated` is the account host the user lookup names. */
 function stubIdentitySurvey(designated = "https://api.enterprise.githubcopilot.com"): void {
   stubbedSurveyFetch = (input, init) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
@@ -259,8 +262,7 @@ test("identity survey: one column per host, ONE mark on the slot's identity unde
   });
 });
 
-/** Every verdict kind on the host in use, an absent cell on the account's host, and the would-be
- *  pick, so every color the palette has lands somewhere. */
+/** Every verdict kind on the host in use, an absent account-host cell, the would-be pick: each palette color lands. */
 const SURVEY_TABLE: IdentityTableInput = {
   survey: {
     hosts: [
@@ -297,6 +299,7 @@ const SURVEY_TABLE: IdentityTableInput = {
   color: false,
 };
 
+/** Opens every SGR sequence; a line painted dim end to end splits on it into exactly three parts. */
 const ESC = "\x1b";
 
 test("identityTableLines: with color on, the palette paints the survey like agent config and strips back to the plain layout", async () => {

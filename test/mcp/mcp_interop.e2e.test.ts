@@ -23,6 +23,7 @@ function serverParams() {
   };
 }
 
+/** Pinned whole, so a drift in the port's declared argument shape shows on both transports. */
 const WEB_SEARCH_INPUT_SCHEMA = {
   type: "object" as const,
   properties: { query: { type: "string", description: "The web search query." } },

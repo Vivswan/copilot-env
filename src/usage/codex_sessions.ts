@@ -1,6 +1,11 @@
 // Rollouts live at `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<local-ts>-<uuid>.jsonl`; archived
 // sessions move to a flat `archived_sessions/`, optionally zstd-compressed. This is the only usage
 // source for Direct-wired Codex, which never reaches the proxy's SQLite tables.
+//
+// A fork copies the parent's items, token_count events included, in one batch at session start,
+// while its own first turn needs a model round-trip: with the parent file unavailable for an exact
+// dedup, a token_count inside FORK_PREFIX_WINDOW_MS of the session_meta timestamp is read as
+// copied.
 
 import { type Dirent, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
@@ -34,10 +39,16 @@ import {
   usageReport,
 } from "./usage.ts";
 
+/** Live rollouts sit in the dated tree under the first; archived ones lie flat under the second. */
 const SESSION_SUBDIRS = ["sessions", "archived_sessions"];
-export const ROLLOUT_FILE = /^rollout-(\d{4})-(\d{2})-(\d{2})T.*\.jsonl(\.zst)?$/;
-const MAX_WALK_DEPTH = 4; // sessions/YYYY/MM/DD/<file>
 
+/** Date groups are the LOCAL start date; a `.zst` tail marks an archived, compressed rollout. */
+export const ROLLOUT_FILE = /^rollout-(\d{4})-(\d{2})-(\d{2})T.*\.jsonl(\.zst)?$/;
+
+/** The dated tree's depth: sessions/YYYY/MM/DD/<file>. */
+const MAX_WALK_DEPTH = 4;
+
+/** The scan's byte filter: the four line types the parser reads, so no other line is decoded. */
 const CODEX_NEEDLES: readonly string[] = [
   '"session_meta"',
   '"turn_context"',
@@ -47,16 +58,14 @@ const CODEX_NEEDLES: readonly string[] = [
 
 /** A meta line without `model_provider` means Codex's built-in provider. */
 const DEFAULT_PROVIDER = "default";
+
+/** The raw model until a turn_context or thread_settings_applied line names one. */
 const UNKNOWN_MODEL = "unknown";
 
-/** A fork copies the parent's items, token_count events included, in one batch at session start,
- *  while its own first turn needs a model round-trip. With the parent file unavailable for exact
- *  dedup, a token_count within this window of the session_meta timestamp is read as copied. */
+/** Parent unavailable: a token_count up to this after the session_meta stamp is a copied prefix. */
 const FORK_PREFIX_WINDOW_MS = 2_000;
 
-/** The date tree and filenames use LOCAL dates while the cutoff and line timestamps are UTC, so
- *  file-level skipping keeps a day and a half of slack and the per-event cutoff does the exact cut.
- */
+/** LOCAL filename dates vs a UTC cutoff: the file skip keeps slack, the per-event cut is exact. */
 const FILENAME_CUTOFF_SLACK_MS = 1.5 * MILLISECONDS_PER_DAY;
 
 /** Farm homes symlink these directories back into the shared ~/.codex, hence the realpath dedup. */
@@ -126,6 +135,7 @@ export function walkCodexSessions(roots: string[], sinceMs: number | undefined):
   return files;
 }
 
+/** Nothing prior; a `.zst` rollout is decompressed whole and reports the compressed size. */
 export const parseCodexWhole: ParseWhole<CodexContribution> = (file) => {
   if (!file.resumable) {
     const compressed = readFileSync(file.path);

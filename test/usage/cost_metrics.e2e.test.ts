@@ -10,6 +10,7 @@ import {
 import { ROOT, runScript } from "../helpers/run.ts";
 import { expect, tempDir, test } from "../helpers/testing.ts";
 
+// What the other two vary: a warm run differs inside `runtime` only, a changed run in a cost.
 const BASE = {
   dbCount: 0,
   claudeSessions: {
@@ -19,6 +20,7 @@ const BASE = {
   },
   runtime: { indexed: false, index: { bytesRead: 9_001 } },
 };
+
 // BASE's values with the keys reversed at every level: only recursive key sorting makes the two comparable texts equal.
 const HEAD_WARM = {
   runtime: { index: { bytesRead: 0 }, indexed: true },
@@ -29,6 +31,8 @@ const HEAD_WARM = {
   },
   dbCount: 0,
 };
+
+// One cost figure moved outside `runtime`: `comparable` must differ and the diff must name it.
 const HEAD_CHANGED = {
   ...BASE,
   claudeSessions: { ...BASE.claudeSessions, totalUsd: 1.6 },

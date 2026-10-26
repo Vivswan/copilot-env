@@ -11,8 +11,7 @@ test("Dockerfile FROM is fully qualified for podman", () => {
   expect(from?.[1]).toMatch(/^docker\.io\//);
 });
 
-// The image must never inherit the host's installed dependency tree or local
-// secrets: the dependency layer is built from the lockfile alone.
+// Never inherited by the image: the host's dependency tree and local secrets; the lockfile alone builds that layer.
 const KEEP_OUT = ["node_modules/", ".git/", ".claude/", ".env"];
 
 // Docker cleans dot segments before matching, so the pattern is cleaned the same way first.

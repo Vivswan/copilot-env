@@ -18,10 +18,9 @@ import {
 import { envSnapshot, isolateProxyHome } from "../helpers/env.ts";
 import { afterEach, expect, removeDir, test } from "../helpers/testing.ts";
 
-// The credential/config stores live under COPILOT_API_HOME, and the env-token
-// fallback reads the GH token env vars -- isolate both per test (isolateProxyHome
-// clears the token trio).
+// isolateProxyHome clears both the stores under COPILOT_API_HOME and the GH token trio the env-token fallback reads.
 const restoreEnv = envSnapshot();
+
 let dir = "";
 
 afterEach(() => {
@@ -153,15 +152,21 @@ function pickerEntry(id: string, category: string, endpoints: string[]): Record<
   };
 }
 
-/** Where webSearch gets the identity/host pair it sends under decides which probes precede the
- *  POST; every request carries that pair's bearer and integration id. */
+/** The pair's source decides which probes precede the POST; every request carries its bearer and integration id. */
 const PAIR_SOURCES: {
+  /** The case, as the assertion messages name it. */
   name: string;
+
   /** Stores what the search reads and returns the call's options. */
   setup: () => { profile?: ProfileName; model?: string };
+
+  /** The stub's answers, one per request in order. */
   responses: () => Response[];
+
   /** Every request in order: url, Copilot-Integration-Id (null when absent), Authorization. */
   requests: [url: string, id: string | null, authorization: string][];
+
+  /** The model the POST body names: the default, or the call's option resolved through the catalog. */
   model: string;
 }[] = [
   {

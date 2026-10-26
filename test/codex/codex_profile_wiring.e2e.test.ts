@@ -21,6 +21,7 @@ import { afterEach, expect, test } from "../helpers/testing.ts";
 
 const restoreEnv = envSnapshot();
 let dir = "";
+
 // The default credential shape: the config names a copilot-env command that prints the credential.
 const COMMAND = { kind: "command" } as const;
 
@@ -548,11 +549,12 @@ test("malformed TOML in either file reads other for the named view, naming the f
 });
 
 // --- the installed Codex -----------------------------------------------------------
+// The live tests skip where no codex is installed. `codex --profile <name> mcp list` loads the
+// config (and the profile file) without a model call or a credential, so it is the cheapest "does
+// Codex accept what the writer produced" probe.
 
-/** Skips where no codex is installed; `codex --profile <name> mcp list` loads the config (and the
- *  profile file) without a model call or a credential, so it is the cheapest "does Codex accept
- *  what the writer produced" probe. */
 const CODEX_PATH = resolveCommand("codex");
+
 const liveCodex = test.skipIf(CODEX_PATH === null);
 
 liveCodex(

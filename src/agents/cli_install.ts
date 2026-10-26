@@ -34,34 +34,49 @@ export const AGENT_CLIS = [
 export type AgentCli = (typeof AGENT_CLIS)[number];
 export type CliCommand = AgentCli["command"];
 
+/** Claude Code's documented POSIX one-liner; `bash -s stable` is the cooldown's channel pin. */
 const CLAUDE_INSTALL_SH = "https://claude.ai/install.sh";
+
+/** The Windows twin; a pin needs the scriptblock form, since `irm | iex` takes no argument. */
 const CLAUDE_INSTALL_PS1 = "https://claude.ai/install.ps1";
+
+/** GitHub's short link to the Copilot CLI installer; `VERSION=<pin>` in its environment pins it. */
 const COPILOT_INSTALL_SH = "https://gh.io/copilot-install";
+
+/** The Copilot CLI's winget package id: on Windows winget is the vendor's only installer. */
 const COPILOT_WINGET_ID = "GitHub.Copilot";
+
+/** Named as the manual download when winget is unavailable (an MSI, or the zip onto PATH). */
 const COPILOT_RELEASES_URL = "https://github.com/github/copilot-cli/releases";
-/** The winget community source's identifier, the second half of a portable's package directory
- *  name. */
+
+/** The winget community source's id: the second half of a portable's package directory name. */
 const WINGET_SOURCE_ID = "Microsoft.Winget.Source_8wekyb3d8bbwe";
+
 /** winget's own package data under %LOCALAPPDATA%: its tracking catalog, settings, and logs. */
 const WINGET_PACKAGE_DATA = ["Packages", "Microsoft.DesktopAppInstaller_8wekyb3d8bbwe"];
+
 /** The source package a due source refresh deploys, its version decided at the time. */
 const WINGET_SOURCE_PACKAGE = "Microsoft.Winget.Source_<version>_neutral__8wekyb3d8bbwe";
-/** The GitHub.Copilot manifest: a zip whose portable is copilot.exe, command `copilot`, and a
- *  Microsoft.PowerShell 7 dependency winget installs first where the host lacks it. */
+
+/** The package directory name and Apps & features key of the GitHub.Copilot portable. */
 const COPILOT_WINGET_PACKAGE = `${COPILOT_WINGET_ID}_${WINGET_SOURCE_ID}`;
+
 /** The Apps & features hive a user-scope portable's uninstall entry goes under. */
 const WINDOWS_UNINSTALL_KEY = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall";
-/** The PowerShell MSIX's package full name (family Microsoft.PowerShell_8wekyb3d8bbwe), its
- *  version and architecture decided at install time. */
+
+/** The PowerShell MSIX's full package name, version and architecture decided at install time. */
 const PWSH_MSIX_PACKAGE = "Microsoft.PowerShell_<version>_<arch>__8wekyb3d8bbwe";
+
+/** The Codex installer: CODEX_NON_INTERACTIVE=1 stops its prompts; `--release <pin>` pins it. */
 const CODEX_INSTALL_SH = "https://chatgpt.com/codex/install.sh";
+
+/** The Windows twin; a pin travels as `-Release <version>` through the scriptblock form. */
 const CODEX_INSTALL_PS1 = "https://chatgpt.com/codex/install.ps1";
 
 /** A `--version` can cold-start a CLI, so seconds; a minute would be a hang. */
 const CLI_VERSION_TIMEOUT_MS = 15_000;
 
-/** winget's APPINSTALLER_CLI_ERROR_UPDATE_NOT_APPLICABLE (0x8A15002B) as the int32 a spawn
- *  reports: the package is installed and no upgrade applies, so a re-run is current, not failed. */
+/** winget's APPINSTALLER_CLI_ERROR_UPDATE_NOT_APPLICABLE (0x8A15002B) as a spawn's int32 status. */
 export const WINGET_UPDATE_NOT_APPLICABLE = -1978335189;
 
 /** The User PATH the Codex Windows installer and winget edit. */
@@ -72,26 +87,37 @@ const WINDOWS_USER_PATH = "HKCU\\Environment\\Path";
 export type CliSetup = { mode: "verify-only" } | CliInstall;
 
 type CliInstall = {
+  /** The discriminant against CliSetup's verify-only arm, which carries no knobs. */
   mode: "install";
+
   /** Days of release aging; null = each vendor's latest. */
   cooldown: number | null;
+
   /** No system package manager: on Windows that is winget, the Copilot CLI's only installer. */
   noSudo: boolean;
 };
 
 /** The host an install is planned for: what the vendors' install scripts read to decide where
- *  they write. */
+ *  they write. The knobs `env` carries, as the installers read them: CODEX_INSTALL_DIR and
+ *  CODEX_HOME (Codex), PREFIX, ZDOTDIR, and XDG_CONFIG_HOME (the Copilot CLI), XDG_DATA_HOME,
+ *  XDG_STATE_HOME, XDG_CACHE_HOME, and CLAUDE_CONFIG_DIR (Claude Code), and SHELL (both profile
+ *  picks). */
 export interface InstallHost {
+  /** Picks the path flavour and each vendor's Windows arm, so any OS's plan is computable here. */
   platform: NodeJS.Platform;
+
+  /** The POSIX installers' default prefix root and profile home (Claude's Windows writes too). */
   home: string;
+
+  /** %LOCALAPPDATA%: winget's portable layout and the Codex Windows install land under it. */
   localAppData: string;
-  /** The vendors' own knobs as their installers read them: CODEX_INSTALL_DIR and CODEX_HOME
-   *  (Codex), PREFIX, ZDOTDIR, and XDG_CONFIG_HOME (the Copilot CLI), XDG_DATA_HOME,
-   *  XDG_STATE_HOME, XDG_CACHE_HOME, and CLAUDE_CONFIG_DIR (Claude Code), and SHELL (both profile
-   *  picks). */
+
+  /** The vendors' own knobs, read as their installers read them (the list is in the doc above). */
   env: Record<string, string | undefined>;
+
   /** Root on POSIX: the Copilot installer's PREFIX then defaults to /usr/local. */
   root: boolean;
+
   /** The Copilot installer picks a bash profile by which of the user's files exist. */
   exists(path: string): boolean;
 }
@@ -104,22 +130,27 @@ export type VendorWrite =
   | { kind: "value"; path: string; detail: string };
 
 /** How one vendor installs its CLI. `pin` is what `--cooldown` resolved: Claude's `stable`
- *  channel, a release version for a GitHub-released CLI, or null for the vendor's latest. */
+ *  channel, a release version for a GitHub-released CLI, or null for the vendor's latest;
+ *  `releases.version` spells a tag the way the installer takes it. */
 interface Vendor {
-  /** The repo whose newest stable release old enough is the pin, spelled the way the installer
-   *  takes it by `version`; null for a vendor that offers channels instead. */
+  /** The repo whose newest old-enough stable release is the pin; null for a channel vendor. */
   releases: { repo: ReleaseRepo; version(tag: string): string } | null;
+
   /** The npm package an older install came from, named when such a copy shadows the new one. */
   npmPackage: string;
+
   /** The vendor's documented one-liner for a POSIX shell. */
   posixLine(pin: string | null): string;
+
   /** The vendor's PowerShell installer, or winget where that is all the vendor offers. */
   windows:
     | { kind: "powershell"; line(pin: string | null): string }
     | { kind: "winget"; id: string; manualDownload: string };
+
   /** The directory the installer puts the binary in, as its script resolves it from `host`
    *  (winget: the package directory of its portable layout). */
   binDir(host: InstallHost): string;
+
   /** What the installer writes outside copilot-env's homes, in the order it lands them, `binary`
    *  (installedBinaryPath) among them. */
   writes(host: InstallHost, binary: string): VendorWrite[];
@@ -158,10 +189,13 @@ export type VersionProof = { kind: "version"; line: string } | { kind: "failed";
 export interface CliInstallDeps {
   /** Runs one installer for the user on inherited stdio. */
   run(command: InstallerCommand): InstallerResult;
+
   /** The GitHub Releases read behind `--cooldown`. */
   fetch: ProbeFetch;
+
   /** The PATH walk over `path`, the PATH an installer may just have changed. */
   look(command: string, path: string): CommandLook;
+
   /** `<path> --version` with `searchPath` as the child's PATH. */
   version(path: string, searchPath: string): VersionProof;
 }
@@ -308,6 +342,8 @@ const VENDORS: Record<CliCommand, Vendor> = {
     npmPackage: "@github/copilot",
     posixLine: (pin) =>
       `curl -fsSL ${COPILOT_INSTALL_SH} | ${pin === null ? "" : `VERSION=${pin} `}bash`,
+    // The GitHub.Copilot manifest: a zip whose portable is copilot.exe, command `copilot`, and a
+    // Microsoft.PowerShell 7 dependency winget installs first where the host lacks it.
     windows: {
       kind: "winget",
       id: COPILOT_WINGET_ID,
@@ -373,7 +409,8 @@ const VENDORS: Record<CliCommand, Vendor> = {
           detail: "its source index, when winget refreshes its source",
         },
         // Under the user scope winget takes the dependency's MSIX arm (its MSI arms are machine
-        // scope): the package lands under WindowsApps, with pwsh.exe as an execution alias.
+        // scope): the package lands under WindowsApps, with pwsh.exe as an execution alias. Its
+        // package family is Microsoft.PowerShell_8wekyb3d8bbwe.
         {
           kind: "file",
           path: `${pwsh}${win32.sep}`,
@@ -576,6 +613,8 @@ function spelled(arg: string): string {
   return /^[\w.:\\/-]+$/.test(arg) ? arg : quotePowerShell(arg);
 }
 
+/** winget's UPDATE_NOT_APPLICABLE means the package is installed and no upgrade applies, so a
+ *  re-run is current, not failed. */
 export function judgeInstallerExit(
   command: InstallerCommand,
   result: InstallerResult,

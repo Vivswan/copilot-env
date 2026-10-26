@@ -58,10 +58,15 @@ export function renderDirectPair(
 }
 
 interface LandDirectPairOptions extends DirectOverlay {
+  /** Injection seam for tests: the probe's requests go through it. */
   fetchImpl?: ProbeFetch;
+
+  /** A deadline over the whole probe; each request keeps its own timeout too. */
   signal?: AbortSignal;
+
   /** Callers whose stdout is a contract pass a stderr logger. */
   narrator?: HostNarrator;
+
   /** Test seam: the selection to run instead of the real probe. */
   selectIdentity?: typeof selectDirectIdentityAndHost;
 }

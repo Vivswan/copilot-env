@@ -43,8 +43,11 @@ export type FakeCodexProbe =
 export interface FakeCodexSpec {
   /** `codex --version` prints `codex-cli <version>`; null exits 1 (no resolvable version). */
   version: string | null;
+
   /** `codex debug models --bundled` stdout; null exits 1. */
   bundled: string | null;
+
+  /** How `codex debug models` answers a candidate; FakeCodexProbe's doc lists each arm. */
   probe: FakeCodexProbe;
 }
 
@@ -58,8 +61,10 @@ interface FakeCodexRun {
 export interface FakeCodex {
   /** Re-script the fake and forget the process memos, so the next spawn answers as scripted. */
   script(spec: Partial<FakeCodexSpec>): void;
+
   /** Every `debug models` spawn so far, in order. */
   runs(): FakeCodexRun[];
+
   /** The last candidate's bytes the probe was asked to parse, or null when none was. */
   seen(): string | null;
 }

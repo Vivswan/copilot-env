@@ -32,17 +32,22 @@ export function getHostLocalCodexHome(
   return path.resolve(codexFarmHostsDir(root ?? undefined), getSanitizedHostname());
 }
 
-/** `active` is recorded in run state AFTER the config write succeeded. */
+/** What probeCodexFarm found at the host home; "not wired" covers the build's empty seed, a foreign
+ *  config, and an unparseable one alike. */
 interface CodexHostFarm {
+  /** The farm's CODEX_HOME (getHostLocalCodexHome), whether it exists yet or not. */
   hostHome: string;
+
   /** The farm directory exists (a half-built farm counts). */
   present: boolean;
-  /** Its config.toml selects OUR managed provider: proof the farm is copilot-env's (the build's
-   *  empty seed, a foreign config, or an unparseable one are all not wired). */
+
+  /** Its config.toml selects OUR managed provider: proof the farm is copilot-env's. */
   wired: boolean;
-  /** A probe (the dir, or its config.toml) failed for a reason other than absence, so `present` and
-   *  `wired` are unproven. */
+
+  /** The dir or config.toml probe failed other than by absence, so `present` and `wired` are unproven. */
   probeError: string | null;
+
+  /** Recorded in run state AFTER the config write succeeded. */
   active: boolean;
 }
 
@@ -93,15 +98,17 @@ function isManagedFarmExport(
 }
 
 /** The home every Codex write, `agent profile check --codex`, `agent profile env`, and the launch pin agree on, plus
- *  the one note the writer, `--check`, and the launcher print (the other readers stay silent). */
+ *  the one note the writer, `--check`, and the launcher print (the other readers stay silent). A
+ *  stale export is an rc file, or a shell whose `agent profile env` was never refreshed; with
+ *  neither key set the export IS the home, so it is never stale. */
 interface CodexHomeResolution {
+  /** What `by` decided; on "default", $CODEX_HOME unless it is our own farm export, else ~/.codex. */
   home: string;
-  /** What decided the home: the `codex.host` farm, the `codex.home` root, or the shell/default
-   *  convention (which is never stale). The note's wording follows it. */
+
+  /** What decided the home; the note's wording follows it, and the default convention is never stale. */
   by: "farm" | "codex-home" | "default";
-  /** The shell's CODEX_HOME when copilot-env decided the home (the farm, or the `codex.home` root)
-   *  and the export names another directory: an rc file, a shell `agent profile env` never refreshed. Null
-   *  when the shell is silent or agrees; with neither key the export IS the home, so never stale. */
+
+  /** The shell's CODEX_HOME when copilot-env decided the home and the export names another directory. */
   staleExport: string | null;
 }
 
@@ -544,18 +551,14 @@ const HOST_LOCAL_DIRS = [
   "tmp", // Host-local transient working files.
 ];
 
-// Seeded once from the shared root (or empty, with `placeholder`), then owned by the host; `role`
-// is what the seed's write line calls the file. config.toml gets no placeholder: the default config
-// write that follows every build rewrites it, silently when the seed already named it (the seam
-// names a path once per process), so a fresh farm's config.toml is named by that write instead.
+// Seeded once from the shared root or empty (`placeholder`), then the host's own; `role` is the seed line's name.
 const HOST_LOCAL_SEED_FILES = [
   { name: ".personality_migration", placeholder: true, role: "host-local seed" },
   { name: "config.toml", placeholder: false, role: "Codex config" },
   { name: "history.jsonl", placeholder: true, role: "host-local seed" },
 ];
 
-// A real directory at the shared root, symlinked from the host home (host-local content is promoted
-// into the shared copy when safe).
+// A real directory at the shared root, symlinked from the host home (host-local content promoted in when safe).
 const SHARED_DIRS = [
   "ambient-suggestions", // Background suggestion state surfaced by Codex.
   "archived_sessions", // Older conversation transcripts kept by the desktop app.
@@ -570,8 +573,7 @@ const SHARED_DIRS = [
   "worktrees", // Shared worktree metadata used across checkouts.
 ];
 
-// Seeded at the shared root, symlinked from the host home. `placeholder: false` marks state Codex
-// itself creates, so no empty shared file is fabricated (the host symlink dangles until it exists).
+// Seeded at the shared root, symlinked from the host home; `placeholder: false` is state Codex itself creates.
 const SHARED_FILES: readonly { name: string; placeholder: boolean }[] = [
   { name: ".codex-global-state.json", placeholder: true }, // Desktop workspace and project state.
   { name: "AGENTS.md", placeholder: true }, // Shared agent instructions exposed inside Codex home.
@@ -603,6 +605,11 @@ function preflightCodexSymlinkFarm(codexHome: string, sharedRoot: string): void 
   }
 }
 
+/** config.toml is seeded with no placeholder: the default config write that follows every build
+ *  rewrites it, silently when the seed already named it (the seam names a path once per process),
+ *  so a fresh farm's config.toml is named by that write instead. A shared file Codex itself creates
+ *  gets no placeholder either, so no empty shared file is fabricated (the host symlink dangles
+ *  until it exists). */
 function buildCodexSymlinkFarm(codexHome: string): void {
   // Both halves from the ONE resolved host path (<shared root>/hosts/<host>): a shared root spelled
   // relative would make every symlink target relative to the link's own directory, pointing back

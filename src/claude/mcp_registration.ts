@@ -111,11 +111,12 @@ export function retargetMcpRegistration(legacySubArgs: readonly string[]): boole
   return writeClaudeJson(loaded, doc);
 }
 
+/** `~/.claude.json` as read; `exists` is false when no file exists (raw is then ""), true for a
+ *  present-but-blank file. */
 interface ClaudeJsonDoc {
   path: string;
   doc: Record<string, unknown>;
   raw: string;
-  /** False when no file exists (raw is then ""); a present-but-blank file is true. */
   exists: boolean;
 }
 
@@ -163,10 +164,10 @@ function writeClaudeJson(loaded: ClaudeJsonDoc, doc: Record<string, unknown>): b
   return true;
 }
 
-/** What `agent profile mcp` (status) reports about the registration. */
+/** What `agent profile mcp` (status) reports about the registration; "unreadable" is a file that
+ *  could not be read or parsed. */
 interface McpRegistrationInspection {
   path: string;
-  /** "unreadable" when the file could not be read or parsed. */
   status: McpRegistrationStatus | "unreadable";
 }
 

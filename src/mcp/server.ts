@@ -22,6 +22,7 @@ const WEB_SEARCH_TOOL = "web_search";
 interface McpServerOptions {
   /** Credential slot the tools resolve; a named profile never falls back. */
   profile: Profile;
+
   /** Per-process web-search model override (beats the stored config key). */
   model?: string;
 }

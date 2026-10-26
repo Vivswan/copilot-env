@@ -22,11 +22,12 @@ export function stubGithubLogins(logins: Record<string, string>): void {
   });
 }
 
+/** The knobs of a stand-in [model_providers.copilot-env] table; `auth` is the inline table the
+ *  managed proxy shape fills with proxyTokenCommand(). */
 export interface CodexConfigTomlOptions {
   baseUrl: string;
   envKey?: string;
   wireApi?: string;
-  /** The `auth` inline table (the managed proxy shape carries proxyTokenCommand()). */
   auth?: { command: string; args: readonly string[] };
 }
 
@@ -55,10 +56,16 @@ export function writeCodexConfigToml(codexHome: string, opts: CodexConfigTomlOpt
 }
 
 export interface ClaudeSettingsOptions {
+  /** The helper command, where the managed shape writes proxyTokenCommand(); any string serves a fixture. */
   apiKeyHelper: string;
+
+  /** Lands as `env.ANTHROPIC_BASE_URL`; omitted, this writer adds no `env` table (`extra` still may). */
   baseUrl?: string;
+
+  /** Top-level keys merged last, so one can override `apiKeyHelper` or `env`. */
   extra?: Record<string, unknown>;
-  /** The shape our writer emits (2-space indent, trailing newline). */
+
+  /** The shape our writer emits (2-space indent, trailing newline); off = one compact line. */
   pretty?: boolean;
 }
 

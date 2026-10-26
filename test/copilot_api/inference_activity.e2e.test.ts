@@ -117,7 +117,6 @@ test("observeServeArgs substitutes the fetch handler and relays everything else"
 });
 
 // A real `--preload` subprocess, as launchDaemon loads it: the patch must land before srvx runs.
-// The target shares the preloaded module instance, so it can read the in-memory mark.
 const TARGET_SCRIPT = `
 import { lastObservedInferenceMs, persistedInferenceMs } from ${importSpecifier(
   join(ROOT, "src", "copilot_api", "inference_activity.ts"),
@@ -138,6 +137,7 @@ console.log(JSON.stringify(out));
 test("the preloaded observer marks inference POSTs through a real Bun.serve, not GETs", () => {
   tmpHome();
   const target = join(dir, "target.ts");
+  // The target shares the preloaded module instance, so it can read the in-memory mark.
   writeFileSync(target, TARGET_SCRIPT);
   const before = Date.now();
   const res = runSync(process.execPath, [...bunRunArgs("--preload", PRELOAD), target], {

@@ -48,13 +48,22 @@ import { formatDuration } from "../utils/time.ts";
 import { runDryRun } from "./dry_run.ts";
 
 export interface StartFlags {
+  /** Print the launch's landings up to the spawn (previewLaunch) and land nothing. */
   dryRun?: boolean;
+
+  /** Use this port and fail if it is busy; always a (re)launch, never the managed no-op. */
   port?: number;
-  /** The agents' proxy resolver calls this on each token fetch, so an open agent keeps the proxy
-   *  alive. */
+
+  /** The agents' proxy resolver sends this on each token fetch, so an open agent keeps the proxy alive. */
   recordEvent?: boolean;
+
+  /** Exit 0 if the proxy is running, else 1; exclusive with --record-event and the launch flags. */
   check?: boolean;
+
+  /** Start a fresh daemon even if one is healthy; never the managed no-op. */
   force?: boolean;
+
+  /** The daemon's profile; unset is the default profile. */
   profile?: string;
 }
 
@@ -106,9 +115,7 @@ interface LaunchContext {
   logFile: string;
 }
 
-/** What the preview does with each action planCleanup plans: the tracking clear lands (the live
- *  cleanup's own store write), a signal is listed, a leave is warned. A new CleanupAction kind
- *  without a row here does not compile. */
+/** Per planCleanup action: a clear lands (the live cleanup's own store write), a stop is listed, a leave is warned. */
 const PREVIEW_ROLE: Record<CleanupAction["kind"], "clear" | "stop" | "leave"> = {
   "stop-tracked": "stop",
   "clear-tracking": "clear",
@@ -123,7 +130,7 @@ const PREVIEW_ROLE: Record<CleanupAction["kind"], "clear" | "stop" | "leave"> = 
  *  credential resolution (the token judged under the daemon's identity, the pair landed in the
  *  slot: a rejected token is the same refusal). Their rows are the plan. planCleanup is the live
  *  cleanup's decision source; the signals it would send and the spawn land no file, so each is
- *  said in one line. */
+ *  said in one line. A new CleanupAction kind without a PREVIEW_ROLE row does not compile. */
 async function previewLaunch(
   action: { force: boolean; port?: number },
   ctx: LaunchContext,

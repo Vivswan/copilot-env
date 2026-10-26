@@ -91,42 +91,40 @@ export function copilotApiArgv(
 //   ENTRY_TOKEN                -> a path segment starting with `copilot-api`
 //   `start`                    -> the very next token
 // Accepted residual: a runtime whose flag VALUE is a copilot-api-segment path followed by a literal `start`.
-
-/** Both scans gate on the process table's executable name (ps `ucomm`, the WMI image Name) derived from
- *  this list, never on argv text, where a spaced executable path is indistinguishable from arguments.
- *  The daemon is `process.execPath` run as a bun CLI: bun itself in a checkout, the installed binary
- *  (INSTALLED_BINARY_POSIX in src/utils/targets.ts, which this layer does not import; the test
- *  pins the two) under a release. A binary copied under another name goes unmatched: an accepted
- *  loss. */
-export const DAEMON_RUNTIMES = ["bun", "copilot-env"] as const;
-const RUNTIME_ALTERNATION = DAEMON_RUNTIMES.join("|");
-
-// Each alternative consumes exactly one whitespace-delimited token and the classes are disjoint (a fragment
-// may not start with a dash, or it would overlap the flag class), so middle parsing never backtracks
-// combinatorially. A bare word breaks the match: every tolerance for bare words re-admits crafted impostor argv.
+//
+// MIDDLE_TOKEN's alternatives each consume exactly one whitespace-delimited token and the classes are
+// disjoint (a fragment may not start with a dash, or it would overlap the flag class), so middle parsing
+// never backtracks combinatorially. A bare word breaks the match: every tolerance for bare words
+// re-admits crafted impostor argv.
 //   `/Users/John Smith/.bun/bin/bun`  -> two slash fragments, still matches
 //   `/x/Bun Runtime Tools/bun`        -> the slash-less `Runtime` breaks it: accepted loss
+// ENTRY_TOKEN is the installed package's directory or a COPILOT_API_ENTRY file; a POSIX entry whose own
+// name contains a space is an accepted loss.
+
+/** The executable names both scans gate on (isDaemonProcess); a binary renamed on copy is an accepted loss. */
+export const DAEMON_RUNTIMES = ["bun", "copilot-env"] as const;
+
+/** The runtimes as one regex alternation, shared by the POSIX and the Windows pattern. */
+const RUNTIME_ALTERNATION = DAEMON_RUNTIMES.join("|");
+
+// Disjoint one-token classes, so the middle never backtracks combinatorially; a bare word breaks the match.
 const MIDDLE_TOKEN = `run|${RUNTIME_ALTERNATION}|-[^\\s"]*|(?:[^\\s"\\\\/-][^\\s"\\\\/]*)?[\\\\/][^\\s"]*`;
-// A path segment STARTING with `copilot-api` (the installed package's directory, a COPILOT_API_ENTRY
-// file), never the bare word. A POSIX entry whose own name contains a space is an accepted loss.
+
+// A path segment STARTING with `copilot-api`, never the bare word (the header above has the accepted losses).
 const ENTRY_TOKEN = '[^\\s"]*[\\\\/]copilot-api[^\\s"]*';
 
-/** No quoted forms: ps output has shell quoting already stripped, so a literal quote character is
- *  prompt text and must not bridge bare words. */
+/** No quoted forms: ps strips shell quoting, so a literal quote is prompt text and must not bridge bare words. */
 const DAEMON_INVOCATION_RE = new RegExp(
   `^\\s*(?:(?:${MIDDLE_TOKEN})\\s+)*${ENTRY_TOKEN}\\s+start(?:\\s|$)`,
 );
 
-/** Windows CommandLine includes argv[0] and quotes paths with spaces (the OS's own convention), so quoted
- *  middle and entry forms are admitted here; the image NAME is gated separately in the PS scripts. The
- *  pattern is interpolated VERBATIM into single-quoted PowerShell `-match` scripts, and .NET reads it the
- *  same way, so DAEMON_CMDLINE_RE pins its semantics from here. */
+/** Windows: quoted middle and entry paths admitted; the PS scripts interpolate it VERBATIM (isDaemonCommandLine). */
 const DAEMON_CMDLINE_PATTERN =
   `^\\s*(?:"[^"]*[\\\\/](?:${RUNTIME_ALTERNATION})(?:\\.exe)?"|(?:[^\\s"]*[\\\\/])?(?:${RUNTIME_ALTERNATION})(?:\\.exe)?)\\s+` +
   `(?:(?:${MIDDLE_TOKEN}|"[^"]*")\\s+)*` +
   `(?:"[^"]*[\\\\/]copilot-api[^"]*"|${ENTRY_TOKEN})\\s+start(?:\\s|$)`;
-/** Case-insensitive like PowerShell's `-match` and the filesystem it describes, so a path spelled
- *  `COPILOT-API` on disk is judged here as it was prefiltered there. */
+
+/** Case-insensitive like PowerShell's `-match` and its filesystem, so the judgment matches the prefilter. */
 const DAEMON_CMDLINE_RE = new RegExp(DAEMON_CMDLINE_PATTERN, "i");
 
 /** What only OUR spawn puts on a daemon's command line, and only for THIS root home: any tool may
@@ -179,7 +177,14 @@ function isOwnedInvocation(command: string, owned: DaemonOwnership): boolean {
   );
 }
 
-/** Exported for the impostor/orphan fixtures in test/copilot_api/daemon_spawn.e2e.test.ts. */
+/** Exported for the impostor/orphan fixtures in test/copilot_api/daemon_spawn.e2e.test.ts.
+ *
+ *  Both scans gate on the process table's executable name (ps `ucomm`, the WMI image Name) from
+ *  DAEMON_RUNTIMES, never on argv text, where a spaced executable path is indistinguishable from
+ *  arguments. The daemon is `process.execPath` run as a bun CLI: bun itself in a checkout, the
+ *  installed binary (INSTALLED_BINARY_POSIX in src/utils/targets.ts, which this layer does not import;
+ *  the test pins the two) under a release. A binary copied under another name goes unmatched: an
+ *  accepted loss. */
 export function isDaemonProcess(
   row: ProcessRow,
   owned: DaemonOwnership = daemonOwnership(),
@@ -190,7 +195,14 @@ export function isDaemonProcess(
 
 /** The Windows judgment: the PS scripts prefilter on the interpolated pattern, and the command lines
  *  they return are judged HERE, ownership included, so both platforms share one rule
- *  (test/copilot_api/daemon_spawn.e2e.test.ts pins the pattern's semantics). */
+ *  (test/copilot_api/daemon_spawn.e2e.test.ts pins the pattern's semantics).
+ *
+ *  Windows CommandLine includes argv[0] and quotes paths with spaces (the OS's own convention), so
+ *  DAEMON_CMDLINE_PATTERN admits quoted middle and entry forms; the image NAME is gated separately in
+ *  the PS scripts. The pattern is interpolated VERBATIM into single-quoted PowerShell `-match` scripts,
+ *  and .NET reads it the same way, so DAEMON_CMDLINE_RE pins its semantics from here: case-insensitive
+ *  like `-match` and the filesystem it describes, so a path spelled `COPILOT-API` on disk is judged
+ *  here as it was prefiltered there. */
 export function isDaemonCommandLine(
   command: string,
   owned: DaemonOwnership = daemonOwnership(),
@@ -198,12 +210,10 @@ export function isDaemonCommandLine(
   return DAEMON_CMDLINE_RE.test(command) && isOwnedInvocation(command, owned);
 }
 
-/** Also bounds the daemon's own drain: daemon_shutdown.ts keeps a separate literal (it loads in the
- *  daemon, which imports no CLI module) and test/copilot_api/daemon_spawn.e2e.test.ts pins the two in order. */
+/** Also the daemon's drain ceiling; daemon_shutdown.ts keeps its own literal (the spawn e2e test pins the two). */
 export const DAEMON_SIGKILL_GRACE_MS = 2_000;
 
-/** The launch pipeline's one-second wait: after the cleanup sweep, after a spawn before the pid is
- *  judged, and per readiness tick, whose budget counts these in seconds. */
+/** Stays one second: the readiness budget counts its ticks in seconds (the cleanup and post-spawn waits reuse it). */
 export const LAUNCH_SETTLE_MS = 1_000;
 
 /** One arm per decision the escalation makes, so callers report what happened instead of guessing
@@ -490,11 +500,7 @@ export function daemonPidsFromRows(rows: ProcessRow[], selfPid: number): number[
   return posixDaemonPids(rows);
 }
 
-/**
- * The token-argv preload (src/scripts/token_argv_preload.ts) reads this and splices the token onto
- * process.argv as `--github-token`, keeping the secret off the world-readable command line. The
- * preload is import-free and re-declares the value as a literal; test/copilot_api/daemon_env_keys.test.ts pins the two.
- */
+/** token_argv_preload.ts splices it onto process.argv as `--github-token`: the secret stays off the command line. */
 export const DAEMON_GH_TOKEN_ENV = "COPILOT_ENV_DAEMON_GH_TOKEN";
 
 /**
@@ -510,23 +516,31 @@ export type DaemonCredential =
 /** The preload set and the credential environment are DERIVED from this, never passed alongside it,
  *  so no caller can hand over a combination the credential does not support. */
 export interface DaemonSpec {
+  /** Passed as `--port`; an unpinned, non-strict launch relaunches on another port after a lost bind race (launch.ts). */
   port: number;
+
+  /** Takes the daemon's stdout and stderr; readiness and the bind-race verdict are read from it. */
   logFile: string;
-  /** Pinned into COPILOT_API_HOME on EVERY spawn: the npm package's own default home is not ours, so
-   *  an unpinned daemon would split its files from the wrapper's. */
+
+  /** Pinned into COPILOT_API_HOME on EVERY spawn, else the package's default home splits the files from ours. */
   home: string;
+
   /** Extra daemon environment the launch pipeline assembles (sqlite path, root home). */
   env: Record<string, string>;
+
+  /** Rides in the environment, never argv (applyCredentialEnv); its kind picks the PAT shim. */
   credential: DaemonCredential;
-  /** The Copilot host the daemon is pinned to (`host`, resolveLaunchCredential in launch.ts); the
-   *  copilot-host preload rewrites the `endpoints.api` GitHub names. */
+
+  /** resolveLaunchCredential's host (launch.ts); the copilot-host preload points `endpoints.api` at it. */
   copilotHost: string;
+
   /** The `daemon.auto-start` config key. */
   idleWatchdog: boolean;
+
   /** The `daemon.logs` config key. */
   muteProxyLogs: boolean;
-  /** Resolved ONCE per launch, so the argv and the environment derive from one answer and the
-   *  bind-race relaunch reuses the identical entry rather than re-resolving mid-flight. */
+
+  /** Resolved ONCE per launch: argv and environment derive from one answer, and a bind-race relaunch reuses it. */
   entry: RunnableEntry;
 }
 
@@ -567,7 +581,9 @@ export function renderDaemonPreload(spec: DaemonSpec): string {
  * The token travels through the ENVIRONMENT (owner-only: /proc/<pid>/environ is 0600, `ps e` shows
  * only your own processes), never argv; the token-argv shim splices it back in-process, so the proxy
  * uses it in memory and never writes its own github_token file. Every daemon carries one: a launch
- * without a credential is refused before the spawn (readLaunchToken).
+ * without a credential is refused before the spawn (readLaunchToken). The token-argv preload
+ * (src/scripts/token_argv_preload.ts) is import-free and re-declares DAEMON_GH_TOKEN_ENV as a
+ * literal; test/copilot_api/daemon_env_keys.test.ts pins the two.
  */
 function applyCredentialEnv(env: NodeJS.ProcessEnv, credential: DaemonCredential): void {
   env[DAEMON_GH_TOKEN_ENV] = credential.token;
@@ -577,8 +593,7 @@ function applyCredentialEnv(env: NodeJS.ProcessEnv, credential: DaemonCredential
   delete env.COPILOT_API_OAUTH_APP;
 }
 
-/** A corporate HTTP_PROXY would otherwise swallow the daemon's own admin traffic and every local
- *  client's calls to it. */
+/** Without these a corporate HTTP_PROXY swallows the daemon's own admin traffic and every local client's calls. */
 const LOOPBACK_NO_PROXY = ["127.0.0.1", "::1", "localhost"] as const;
 
 export function noProxyWithLoopback(current: string | undefined): string {
@@ -592,15 +607,13 @@ export function noProxyWithLoopback(current: string | undefined): string {
   return entries.join(",");
 }
 
-/**
- * The bun-CLI environment a compiled binary needs to run anything but its own entry: without
- * BUN_BE_BUN a spawn of process.execPath re-runs the CLI (a fork bomb). The runtime flags live in
- * copilotApiArgv; test/copilot_api/daemon_spawn.e2e.test.ts pins the pair.
- */
+/** Without BUN_BE_BUN a compiled binary's spawn of process.execPath re-runs the CLI: a fork bomb. */
 export const BUN_CLI_ENV = { BUN_BE_BUN: "1" } as const;
 
 /** `base` is inherited wholesale so TLS and outbound-proxy settings (NODE_EXTRA_CA_CERTS,
- *  HTTP_PROXY/HTTPS_PROXY) reach the daemon exactly as the user set them for us. */
+ *  HTTP_PROXY/HTTPS_PROXY) reach the daemon exactly as the user set them for us. BUN_CLI_ENV is the
+ *  bun-CLI environment a compiled binary needs to run anything but its own entry; the runtime flags
+ *  live in copilotApiArgv, and test/copilot_api/daemon_spawn.e2e.test.ts pins the pair. */
 export function daemonEnvironment(spec: DaemonSpec, base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...base, ...BUN_CLI_ENV, ...spec.env };
   // The preload shims sit beside the binary, where no node_modules is: their imports resolve from

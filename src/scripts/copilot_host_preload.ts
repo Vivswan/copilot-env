@@ -8,9 +8,10 @@
 //
 // Relies on copilot-api using `globalThis.fetch` for both requests and on the `endpoints.api` shape.
 
-// Duplicates DAEMON_COPILOT_HOST_ENV (integration_identity.ts): this preload stays import-free so
-// it drags no CLI module into the daemon.
+// Duplicates DAEMON_COPILOT_HOST_ENV (integration_identity.ts): an import would drag a CLI module into the daemon.
 const COPILOT_HOST_ENV = "COPILOT_ENV_DAEMON_COPILOT_HOST";
+
+// Both GitHub bodies the host comes from live under it: /copilot_internal/user and the v2/token exchange.
 const INTERNAL_PATH = "/copilot_internal/";
 
 /** Mutates `body` in place; true when it carried an `endpoints.api` string. Exported for tests. */

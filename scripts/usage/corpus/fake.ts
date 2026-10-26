@@ -7,7 +7,10 @@ import type { Source } from "./transcripts.ts";
 
 /** The second-of-minute the boundary turns start at; the fake holds their replies past :00. */
 const BOUNDARY_START_SECOND = 55;
+
+/** How often the waits re-read the clock; a hold overshoots the minute change by at most this. */
 const MINUTE_POLL_MS = 200;
+
 /** Inference requests the scripted turns make per CLI: 4 plain turns + a tool turn's 2. */
 const EXPECTED_REQUESTS_PER_CLI = 6;
 

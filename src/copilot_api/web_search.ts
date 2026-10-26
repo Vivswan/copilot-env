@@ -27,19 +27,16 @@ import {
 } from "./models.ts";
 import type { Profile } from "./profile.ts";
 
+/** stderr: over the MCP stdio transport, stdout is the wire. */
 const logger = createStderrLogger();
 
-/**
- * The same model the proxy defaults to on its Messages-API web-search path (the registry's
- * proxy.message-websearch-model default; a test pins the two), so one stored key and one default
- * drive both surfaces. Must stay a RAW catalog id, never an alias: the default is looked up in the
- * catalog as it is, with no alias resolution, and gives way to the catalog's cheapest Responses
- * model when the catalog lacks it (catalogModelPick).
- */
+/** The registry's proxy.message-websearch-model default too (a test pins it); a RAW catalog id, never an alias. */
 export const DEFAULT_WEB_SEARCH_MODEL = "gpt-5-mini";
 
+/** The POST's own budget; a caller's `signal` races it rather than replacing it. */
 const WEB_SEARCH_TIMEOUT_MS = 120_000;
 
+/** Every search call's system instructions: the tool's contract is an answer from the live results. */
 const SEARCH_INSTRUCTIONS =
   "Search the web to answer the user's query. Answer concisely from the search results and cite the source URLs.";
 
@@ -60,25 +57,31 @@ async function raceWithAbort<T>(promise: Promise<T>, signal: AbortSignal | undef
 interface WebSearchOptions {
   /** A named profile NEVER falls back to the default credential. */
   profile?: Profile;
+
   /** Wins over stored config. */
   model?: string;
+
   /** Test seam for both the identity probe and the POST. */
   fetchImpl?: ProbeFetch;
+
+  /** Absent = WEB_SEARCH_TIMEOUT_MS; bounds the POST alone, not the identity probe. */
   timeoutMs?: number;
+
+  /** An MCP cancellation arrives here: it aborts the POST (joined with the timeout) and the wait on memoized work. */
   signal?: AbortSignal;
 }
 
 /** One catalog fetch, read two ways: the alias map a configured value resolves through, and the
  *  model the default lands. */
 interface CatalogView {
+  /** generateAliases over the catalog: what a configured value resolves through, as the proxy does. */
   aliases: Record<string, string>;
+
   /** DEFAULT_WEB_SEARCH_MODEL while the catalog lists it, else the cheapest Responses model it does. */
   defaultModel: string;
 }
 
-// Memoized per host and token so a long-lived MCP server pays the catalog fetch once. An injected
-// fetchImpl bypasses the memo (the memo discipline of integration_identity.ts): test stubs sharing
-// a token must not collide.
+// Per host and token, so a long-lived MCP server pays the catalog fetch once; an injected fetchImpl bypasses it.
 const catalogMemo = new Map<string, Promise<CatalogView>>();
 
 export function resetWebSearchCatalogCache(): void {
@@ -93,6 +96,8 @@ function viewOf(raw: unknown): CatalogView {
   };
 }
 
+/** An injected fetchImpl bypasses the memo (the memo discipline of integration_identity.ts): test
+ *  stubs sharing a token must not collide. */
 function catalogView(
   profile: Profile,
   token: string,
@@ -135,6 +140,11 @@ function catalogView(
  *                               catalog lists it, else its cheapest Responses model), said on
  *                               stderr as the daemon says its own pick at `agent start`
  *   the catalog fetch fails  -> warn and send the raw value
+ *
+ * DEFAULT_WEB_SEARCH_MODEL is the model the proxy defaults to on its Messages-API web-search path,
+ * so one stored key and one default drive both surfaces. It must stay a RAW catalog id: the default
+ * is looked up in the catalog as it is, with no alias resolution, and gives way to the catalog's
+ * cheapest Responses model when the catalog lacks it (catalogModelPick).
  */
 async function resolveWebSearchModel(
   configured: string | null,

@@ -9,9 +9,10 @@ import type { Expression, ObjectExpression } from "oxc-parser";
 import stringWidth from "string-width";
 import { parseModule, visit } from "../helpers/syntax.ts";
 
+/** A headline at this many columns fails, one fewer passes; test/utils/message_shape_lint.test.ts pins the edge. */
 const HEADLINE_COLUMNS = 72;
-/** The widest value a placeholder named like this takes: a profile name, a GitHub login, a port,
- *  a version, a count. */
+
+/** The widest value a placeholder so named takes: a profile name, a GitHub login, a port, a version, a count. */
 const LABEL_MAXIMUM: ReadonlyMap<string, number> = new Map([
   ["profile", 32],
   ["name", 32],
@@ -21,13 +22,14 @@ const LABEL_MAXIMUM: ReadonlyMap<string, number> = new Map([
   ["version", 12],
   ["count", 6],
 ]);
+
 /** Stands in for a placeholder where the sentence rule reads the text. */
 const PLACEHOLDER_MARK = "X";
 
 export type Rule = "budget" | "one-sentence" | "lead-iff-actions";
 
+/** One finding; `start` is the offset of the maker call in the source. */
 export interface ShapeFinding {
-  /** Offset of the maker call in the source. */
   start: number;
   rule: Rule;
   message: string;

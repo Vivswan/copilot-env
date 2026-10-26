@@ -17,8 +17,12 @@ import { runDryRun } from "./dry_run.ts";
 const status = (word: string): string => statusPaint(word, colorEnabled());
 
 interface StopArgs {
+  /** The daemon to stop; unset is the default profile, and --all takes none. */
   profile?: string;
+
+  /** Stop every profile's daemon; refused together with a profile name. */
   all?: boolean;
+
   /** Print the daemon the stop would signal and the tracking rows it would clear; signal nothing. */
   dryRun?: boolean;
 }

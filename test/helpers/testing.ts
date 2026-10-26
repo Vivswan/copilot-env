@@ -4,6 +4,8 @@
 //                        still lands (the per-file temp-dir harnesses absorb it)
 //   runSync in flight -> cannot be interrupted: spawnSync blocks the thread the deadline timer
 //                        runs on (RunOptions.timeoutMs)
+//   TZ_PINNABLE       -> guards one test, test/utils/time.test.ts's "the DEFAULT zone honors the
+//                        process TZ"; every other day computation names its IANA zone instead
 
 import { afterAll, expect as bunExpect, it, type Matchers } from "bun:test";
 import "./node_env.ts";
@@ -26,28 +28,26 @@ export { afterEach, beforeEach, describe } from "bun:test";
  */
 type LooseExpect = (<T>(actual: T, customFailMessage?: string) => Matchers<unknown>) &
   typeof bunExpect;
+
+/** bun's own expect, retyped as LooseExpect so the expected side is unknown. */
 export const expect: LooseExpect = bunExpect as LooseExpect;
 
-// --- the temp root -----------------------------------------------------------------
-//
-// scripts/run_tests.ts runs each test file in its own process, so this module mints one root per
-// process and removes it when the file is done (a failed run too): a fixture a test abandons goes
-// with the root instead of staying in the OS tmpdir. tempDir is the one way to a temp directory;
-// reaching mkdtemp or os.tmpdir elsewhere under test/ is a lint error.
-
-/**
- * A child that loads this module mints its own root INSIDE the root of the process that spawned
- * it (test/helpers/run.ts sets this on every child), so a child killed before its own teardown
- * leaves nothing the parent's removal misses.
- */
+/** A child's root nests INSIDE its parent's (test/helpers/run.ts sets this on every child); tempDir says why. */
 export const TEST_ROOT_ENV = "COPILOT_ENV_TEST_ROOT";
+
 /** This process's root; the spawn helpers hand it to children under TEST_ROOT_ENV. */
 export const ISOLATE_ROOT = mkdtempSync(
   join(process.env[TEST_ROOT_ENV] ?? tmpdir(), "copilot-env-suite-"),
 );
 
-/** The prefix must name a direct child of the root: an empty one, or one climbing out, would
- *  land the directory beside the root, outside everything that removes it. */
+/** The one way to a temp directory: reaching mkdtemp or os.tmpdir elsewhere under test/ is a lint
+ *  error. scripts/run_tests.ts runs each test file in its own process, so this module mints one
+ *  root per process and removes it when the file is done (a failed run too): a fixture a test
+ *  abandons goes with the root instead of staying in the OS tmpdir, and a child that loads this
+ *  module mints its own root inside its parent's, so a child killed before its own teardown leaves
+ *  nothing the parent's removal misses. The prefix must name a direct child of the root: an empty
+ *  one, or one climbing out, would land the directory beside the root, outside everything that
+ *  removes it. */
 export function tempDir(prefix: string): string {
   const target = join(ISOLATE_ROOT, prefix);
   if (dirname(target) !== ISOLATE_ROOT) {
@@ -123,7 +123,10 @@ onTeardown(() => {
 // `~/.claude.json`, copilot-api home, or shell rc files. HOME is not retargeted here: bun resolves
 // os.homedir() once at startup, so the process must START under a scratch HOME, which
 // scripts/run_tests.ts gives every child and test/helpers/home_guard.ts refuses to run without.
+
+/** The root every agent-state env var below is repointed under. */
 const SANDBOX_HOME = join(ISOLATE_ROOT, "sandbox");
+
 mkdirSync(SANDBOX_HOME);
 process.env.COPILOT_API_HOME = join(SANDBOX_HOME, "copilot-api");
 process.env.CLAUDE_CONFIG_DIR = join(SANDBOX_HOME, ".claude");
@@ -144,9 +147,10 @@ process.env[CLAUDE_DESKTOP_DIR_ENV] = join(SANDBOX_HOME, "claude-desktop");
 // "unavailable" under the suite, so no test depends on the developer's network or codex install.
 process.env[CI_NO_LIVE_LOOKUPS_ENV] = "1";
 
+/** Each test's deadline unless its registration names one; the race, not bun's timeout, enforces it. */
 const DEFAULT_TIMEOUT_MS = 15_000;
-/** bun's own per-test timeout sits this far behind the deadline race, so the race always loses
- *  first and the abort signal fires; bun's is the backstop for a body it cannot reach. */
+
+/** bun's own per-test timeout sits this far behind the deadline race, so the race times out first and aborts. */
 const RUNNER_TIMEOUT_MARGIN_MS = 5_000;
 
 type TestBody = () => void | Promise<void>;
@@ -203,7 +207,9 @@ function deadlineMessage(name: string, timeoutMs: number, ctx: TestContext): str
   return `${head} at step "${last.name}" (entered ${enteredMs} ms in; steps: ${timings.join(", ")})`;
 }
 
-/** Purely sync bodies cannot be preempted; the race cuts off async bodies that stall. */
+/** Purely sync bodies cannot be preempted; the race cuts off async bodies that stall. bun's own
+ *  timeout, RUNNER_TIMEOUT_MARGIN_MS behind the race, is the backstop for a body the race cannot
+ *  reach. */
 export function withDeadline(name: string, fn: TestBody, timeoutMs: number): () => Promise<void> {
   return async () => {
     const abort = new AbortController();
@@ -248,7 +254,5 @@ export function outcomeOf<T>(fn: () => T): Outcome<T> {
   }
 }
 
-/** A runtime `process.env.TZ` is honored on unix only; on Windows the zone comes from the OS.
- *  Guards one test, test/utils/time.test.ts's "the DEFAULT zone honors the process TZ"; every other day
- *  computation names its IANA zone instead. */
+/** A runtime `process.env.TZ` is honored on unix only; on Windows the zone comes from the OS. */
 export const TZ_PINNABLE = process.platform !== "win32";

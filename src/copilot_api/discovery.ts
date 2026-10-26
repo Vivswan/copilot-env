@@ -26,17 +26,22 @@ import {
 import { type CatalogModel, ONE_M_SUFFIX, parseCatalogModels } from "./models.ts";
 import { fetchModelCatalog } from "./models_fetch.ts";
 
+/** Narration on stderr: a caller's stdout may be a listing. */
 const logger = createStderrLogger();
 
-/** What this process already asked Copilot, keyed per credential and identity (entitlements differ
- *  per account and host). A run on the fs overlay lands its store write nowhere, so the real run
- *  after it pays none of these again; probes are kept one by one so a definitive small ping
- *  survives an inconclusive 1m probe. */
+/** Raw /models bodies, keyed per credential and identity: entitlements differ per account and host. */
 const catalogs = new Map<string, unknown>();
+
+/** oracleAllowlist's answer per candidate: the allowlist a rejection printed, or "servable" for a 2xx. */
 const oracled = new Map<string, string[] | "servable">();
+
+/** Ping verdicts with their time, so the TTL (isDue) can expire them; an "unknown" is never kept. */
 const probed = new Map<string, { outcome: "yes" | "no"; atMs: number }>();
 
-/** Test hook: the next discovery asks as a fresh process would. */
+/** Test hook: the next discovery asks as a fresh process would. The three memos hold what this
+ *  process already asked Copilot: a run on the fs overlay lands its store write nowhere, so the real
+ *  run after it pays none of these again, and probes are kept one by one so a definitive small
+ *  ping survives an inconclusive 1m probe. */
 export function forgetDiscoveryAnswers(): void {
   catalogs.clear();
   oracled.clear();
@@ -51,6 +56,8 @@ function identityKey(integrationId: string | null): string {
 
 /** Above every 200k window, comfortably below the 1M prompt caps. */
 const ONE_M_PROBE_TOKENS = 230_000;
+
+/** How many gated candidates the oracle is asked before discovery gives up on an allowlist. */
 const ORACLE_ATTEMPTS = 3;
 
 /** null = the default identity (no Copilot-Integration-Id header). */
@@ -64,6 +71,7 @@ const KNOWN_IDENTITY_IDS: readonly (string | null)[] = [
 interface DiscoveryOptions {
   /** Test seam for EVERY request this module makes. */
   fetchImpl?: ProbeFetch;
+
   /** Clock seam for the verdict-cache TTL. */
   nowMs?: () => number;
 }
@@ -71,8 +79,10 @@ interface DiscoveryOptions {
 interface DiscoveredClaudeModels {
   /** The raw /models body under the wiring's own identity (labels, windows). */
   catalogBody: unknown;
+
   /** Advertised catalog models plus the VERIFIED unadvertised extras. */
   models: CatalogModel[];
+
   /** The verified-extra ids (subset of `models`) -- consumers may tag them. */
   unlisted: string[];
 }

@@ -7,8 +7,7 @@ import { installedProxyVersion, PROXY_PACKAGE_NAME } from "../src/copilot_api/ve
 import { floatProxy, readResolvedVersionRecord } from "../src/proxy_float.ts";
 import { PROJECT_ROOT } from "../src/utils/root.ts";
 
-/** The fixture root home. Inside the checkout so it survives from a container build
- *  into the test run; gitignored, because it is build output. */
+/** In the checkout so it survives from the container build into the test run; gitignored, as build output. */
 export const PROXY_CACHE_FIXTURE = join(PROJECT_ROOT, ".proxy-cache");
 
 if (import.meta.main) {

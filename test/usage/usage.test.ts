@@ -1,3 +1,5 @@
+// The fixture timestamps are June dates: a fall-back transition could stretch a local day to 25h
+// and land a full-day-apart pair on one day, and June has none.
 import { Database } from "bun:sqlite";
 import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -16,11 +18,10 @@ import { must } from "../../src/utils/assert.ts";
 import { dayKeyIn, localDayKey } from "../../src/utils/time.ts";
 import { afterEach, expect, removeDir, tempDir, test } from "../helpers/testing.ts";
 
-// Day keys are LOCAL calendar days, so expectations derive from the reader's own helper.
-// Timestamps meant to share a day are written at the SAME instant; distinct days sit a full
-// day apart, which lands on different local days in any runner zone (a fall-back transition
-// could stretch a day to 25h, but these June dates avoid one).
+// Same-day timestamps share one instant; distinct days sit a full day apart in every runner zone.
 const ms = (utc: string): number => Date.parse(utc);
+
+// Day keys are LOCAL calendar days, so expectations derive from the reader's own helper.
 const day = (utc: string): string => localDayKey(ms(utc));
 
 /** The read and the fold composed, the way `agent cost` runs them. */
@@ -498,15 +499,15 @@ for (const { name, dirs = [], files, found } of LAYOUTS) {
   });
 }
 
+// POSIX, non-root only: 0000 blocks the readdir, and root bypasses file modes.
+const skipUnreadableDir = process.platform === "win32" || process.getuid?.() === 0;
+
 // A scan that FAILED must not read as an empty one: discoverUsageDbs backs a "no databases
 // found" line and a summed cost TOTAL, so a silently short answer under-reports money. Only a
 // MISSING directory is the proven "nothing here", the same narrowing as profileHomeNames in
 // copilot_api/paths.ts.
 //   ENOENT / ENOTDIR                 -> nothing here
 //   a directory that cannot be read  -> raises; driven here as a real EACCES
-// POSIX, non-root only: 0000 blocks the readdir, and root bypasses file modes.
-const skipUnreadableDir = process.platform === "win32" || process.getuid?.() === 0;
-
 for (const scanned of [".run", "profiles"]) {
   test.skipIf(skipUnreadableDir)(
     `an UNREADABLE ${scanned} dir raises instead of reporting nothing found`,

@@ -48,9 +48,9 @@ const STDIO: Record<Stream, "inherit" | "pipe" | "ignore"> = {
   null: "ignore",
 };
 
+/** One `cli` run; stdout and stderr are decoded only for a "piped" stream, "" otherwise. */
 export interface CliResult {
   code: number;
-  /** Decoded only for a "piped" stream; "" otherwise. */
   stdout: string;
   stderr: string;
 }

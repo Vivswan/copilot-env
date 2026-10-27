@@ -5,10 +5,6 @@ import { consola, type LogObject } from "consola";
 import { parse, stringify, TomlDate } from "smol-toml";
 import { AUTOUPDATE_FILENAME, autoupdateDir } from "../../src/autoupdate/state.ts";
 import { directHelperCommand, proxyHelperCommand } from "../../src/claude/config.ts";
-import {
-  desktopHelperPath,
-  writeDesktopHelperScript,
-} from "../../src/claude/desktop_helper_scripts.ts";
 import { CLAUDE_DESKTOP_DIR_ENV, META_FILENAME } from "../../src/claude/desktop_library.ts";
 import { mcpServeArgs } from "../../src/claude/desktop_payload.ts";
 import { claudeJsonPath, inspectMcpRegistration } from "../../src/claude/mcp_registration.ts";
@@ -45,11 +41,7 @@ import {
   v400CodexWiring,
   v400ShellFence,
 } from "../../src/migrations/4.0.0.ts";
-import {
-  moveDesktopHelpers,
-  moveRootStores,
-  pinSoleGhAccount,
-} from "../../src/migrations/4.0.2.ts";
+import { moveRootStores, pinSoleGhAccount } from "../../src/migrations/4.0.2.ts";
 import {
   dropCodexIdentityPin,
   dropSlotIdentityCache,
@@ -71,7 +63,10 @@ import {
   retireDenoDaemon,
   stopPreviousDaemons,
 } from "../../src/migrations/5.0.1.ts";
-import { removeRetiredSmallModelKey } from "../../src/migrations/5.0.2.ts";
+import {
+  removeDesktopHelperScripts,
+  removeRetiredSmallModelKey,
+} from "../../src/migrations/5.0.2.ts";
 import { dueMigrations, type Migration, runMigrations } from "../../src/migrations/index.ts";
 import {
   foreignHolderWarning,
@@ -200,10 +195,10 @@ test("the registry holds every step a migration file exports, once each, under t
   ]);
 });
 
-test("the shipped sequence rewrites an owned Desktop entry's MCP argv (4.0.9, a layout step) before the 4.0.2 helper move reconciles the library, so the entry survives an update that leaves both releases behind", async () => {
-  // In the other order the helper move's wiring pass meets the old argv through the current
-  // reader, which knows no profile for it: the entry is swept as an orphan and the default gets
-  // a twin under a fresh id.
+test("the shipped sequence rewrites an owned Desktop entry's MCP argv (4.0.9, a layout step) before the 5.0.2 helper-script removal reconciles the library, so the entry survives an update that leaves both releases behind", async () => {
+  // In the other order the removal's wiring pass meets the old argv through the current reader,
+  // which knows no profile for it: the entry is swept as an orphan and the default gets a twin
+  // under a fresh id.
   const homes = isolateAgentHomes("copilot-mig-sequence-desktop-", { mkdirs: true });
   dir = homes.dir;
   const desktop = join(dir, "desktop");
@@ -212,7 +207,8 @@ test("the shipped sequence rewrites an owned Desktop entry's MCP argv (4.0.9, a 
   process.env[CLAUDE_DESKTOP_DIR_ENV] = desktop;
   const metaPath = join(library, META_FILENAME);
   const entryPath = join(library, "e0.json");
-  const looseHelper = join(homes.proxyHome, "claude-desktop-proxy-token.sh");
+  const helpersDir = join(homes.proxyHome, "helpers");
+  const helper = join(helpersDir, "claude-desktop-proxy-token.sh");
   const installRoot = join(dir, "install");
   const autoupdateHome = autoupdateDir(installRoot);
   mkdirSync(autoupdateHome, { recursive: true });
@@ -224,8 +220,9 @@ test("the shipped sequence rewrites an owned Desktop entry's MCP argv (4.0.9, a 
       },
       ownership: { claudeDesktopPaths: [entryPath] },
     });
-    // The loose helper is what makes the 4.0.2 step run its wiring pass at all.
-    writeFileSync(looseHelper, "#!/bin/sh\n");
+    // The helper script is what makes the 5.0.2 step run its wiring pass at all.
+    mkdirSync(helpersDir, { recursive: true });
+    writeFileSync(helper, "#!/bin/sh\n");
     writeFileSync(join(autoupdateHome, "state.json"), "{}\n");
     writeFileSync(
       metaPath,
@@ -238,14 +235,14 @@ test("the shipped sequence rewrites an owned Desktop entry's MCP argv (4.0.9, a 
       entryPath,
       JSON.stringify({
         inferenceGatewayBaseUrl: "http://127.0.0.1:4199",
-        inferenceCredentialHelper: looseHelper,
+        inferenceCredentialHelper: helper,
         managedMcpServers: [
           { name: "copilot-env", args: agentLauncherCommand(["mcp", "--serve"]).args },
         ],
       }),
     );
     const narrated = (
-      await captureChannels(() => runMigrations("4.0.2", "5.0.1", undefined, installRoot))
+      await captureChannels(() => runMigrations("4.0.2", "5.0.3", undefined, installRoot))
     ).all;
     expect(narrated).not.toContain("did not complete");
     expect(readStore(metaPath).entries).toEqual([
@@ -257,14 +254,16 @@ test("the shipped sequence rewrites an owned Desktop entry's MCP argv (4.0.9, a 
     ]);
     const entry = readStore(entryPath) as {
       inferenceCredentialHelper: string;
+      inferenceCredentialHelperArgs: string[];
       managedMcpServers: { name: string; args: string[] }[];
     };
     expect(entry.managedMcpServers.find((r) => r.name === "copilot-env")?.args).toEqual(
       agentLauncherCommand(mcpServeArgs(null)).args,
     );
-    // The helper move finished too: the entry was rewired under helpers/ and the loose copy went.
-    expect(entry.inferenceCredentialHelper).toBe(desktopHelperPath(homes.proxyHome, "proxy", null));
-    expect(existsSync(looseHelper)).toBe(false);
+    // The helper-script removal finished too: the entry names the launcher and the scripts went.
+    expect(entry.inferenceCredentialHelper).toBe(proxyTokenCommand(null).command);
+    expect(entry.inferenceCredentialHelperArgs).toEqual(proxyTokenCommand(null).args);
+    expect(existsSync(helpersDir)).toBe(false);
     // The one step that writes machine state wrote it under the injected root.
     expect(readdirSync(autoupdateHome)).toEqual([AUTOUPDATE_FILENAME]);
   } finally {
@@ -344,10 +343,8 @@ test("4.0.2 gh pin: sole-account machines pin every pin-less gh-cli slot; anythi
   expect(state.readCredential(null)).toEqual({ kind: "gh-cli", ghUser: null });
 });
 
-/** The pre-4.0.2 root layout: the two old-name stores, lock debris, two loose Desktop helpers, a
- *  neighbour's `.bak`, and lookalikes the generator can never produce (a reserved `default`
- *  suffix, a dotted infix), which the sweep classifies by desktopHelperScriptWiring, so they
- *  survive like any neighbour's file. */
+/** The pre-4.0.2 root layout: the two old-name stores, lock debris, and a neighbour's file the
+ *  step never touches. */
 function writeLegacyRootLayout(dir: string): void {
   writeFileSync(join(dir, ".copilot-env-state.json"), `${JSON.stringify({ profiles: {} })}\n`);
   writeFileSync(join(dir, ".copilot-env-config.json"), `${JSON.stringify({ port: 4199 })}\n`);
@@ -355,15 +352,11 @@ function writeLegacyRootLayout(dir: string): void {
   writeFileSync(join(dir, ".copilot-env-ownership.json.ops.lock.oslock"), "");
   writeFileSync(join(dir, ".profile-ports.lock.oslock"), "");
   writeFileSync(join(dir, "github_token.login.lock.oslock"), "");
-  writeFileSync(join(dir, "claude-desktop-token.sh"), "#!/bin/sh\n");
-  writeFileSync(join(dir, "claude-desktop-proxy-token-work.cmd"), "@echo off\n");
-  writeFileSync(join(dir, "claude-desktop-token.sh.bak"), "not ours\n");
-  writeFileSync(join(dir, "claude-desktop-token-default.sh"), "not ours\n");
-  writeFileSync(join(dir, "claude-desktop-token-work.bak.sh"), "not ours\n");
+  writeFileSync(join(dir, "notes.txt"), "not ours\n");
 }
 
-/** The stores under their new names with their content, every piece of lock debris and both
- *  loose helpers gone, and the `.bak` and the lookalikes still there. */
+/** The stores under their new names with their content, every piece of lock debris gone, and
+ *  the neighbour's file still there. */
 function expectLegacyRootLayoutMoved(dir: string): void {
   expect(readFileSync(join(dir, "credentials.json"), "utf8")).toBe(
     `${JSON.stringify({ profiles: {} })}\n`,
@@ -378,99 +371,22 @@ function expectLegacyRootLayoutMoved(dir: string): void {
     ".copilot-env-ownership.json.ops.lock.oslock",
     ".profile-ports.lock.oslock",
     "github_token.login.lock.oslock",
-    "claude-desktop-token.sh",
-    "claude-desktop-proxy-token-work.cmd",
   ])
     expect(existsSync(join(dir, gone))).toBe(false);
-  expect(existsSync(join(dir, "claude-desktop-token.sh.bak"))).toBe(true);
-  expect(existsSync(join(dir, "claude-desktop-token-default.sh"))).toBe(true);
-  expect(existsSync(join(dir, "claude-desktop-token-work.bak.sh"))).toBe(true);
+  expect(existsSync(join(dir, "notes.txt"))).toBe(true);
 }
 
-/** The REAL reference scanner (no `referenced` stub): the ownership ledger names the entry
- *  document, whose inferenceCredentialHelper is the reference; once the entry points under
- *  helpers/, the loose helper is unreferenced and goes. */
-async function expectLedgerReferenceHoldsHelper(dir: string, helper: string): Promise<void> {
-  const entryPath = join(dir, "desktop-entry.json");
-  new OwnershipLedger().record("claudeDesktop", entryPath);
-  writeFileSync(helper, "#!/bin/sh\n");
-  writeFileSync(entryPath, `${JSON.stringify({ inferenceCredentialHelper: helper })}\n`);
-  await moveDesktopHelpers(
-    dir,
-    () => Promise.resolve(),
-    () => false,
-  );
-  expect(existsSync(helper)).toBe(true);
-  writeFileSync(
-    entryPath,
-    `${JSON.stringify({
-      inferenceCredentialHelper: join(dir, "helpers", "claude-desktop-token.sh"),
-    })}\n`,
-  );
-  await moveDesktopHelpers(
-    dir,
-    () => Promise.resolve(),
-    () => false,
-  );
-  expect(existsSync(helper)).toBe(false);
-}
-
-test("4.0.2 root layout: stores rename, lock debris clears, loose helpers regenerate via the wiring", async () => {
+test("4.0.2 root layout: stores rename, lock debris clears", () => {
   dir = isolateProxyHome("copilot-migrate-layout-");
   writeLegacyRootLayout(dir);
-  let reconciled = 0;
-  const pass = () => {
-    reconciled++;
-    return Promise.resolve();
-  };
-  const none = () => new Set<string>();
   moveRootStores(dir);
-  // A WIRED Desktop whose pass rewired every entry to helpers/: nothing
-  // references the loose helpers anymore, so they go after ONE pass.
-  await moveDesktopHelpers(dir, pass, () => true, none);
   expectLegacyRootLayoutMoved(dir);
-  expect(reconciled).toBe(1);
 
-  // Idempotent: the wiring pass is not re-run.
+  // Idempotent.
   moveRootStores(dir);
-  await moveDesktopHelpers(dir, pass, () => true, none);
-  expect(reconciled).toBe(1);
   expect(readFileSync(join(dir, "preferences.json"), "utf8")).toBe(
     `${JSON.stringify({ port: 4199 })}\n`,
   );
-
-  // A helper a Desktop entry STILL references (the pass could not rewire it: blocked metadata, a
-  // failed entry save) is kept so the entry keeps working; a later run finishes the move.
-  const helper = join(dir, "claude-desktop-token.sh");
-  writeFileSync(helper, "#!/bin/sh\n");
-  await moveDesktopHelpers(
-    dir,
-    () => Promise.resolve(),
-    () => true,
-    () => new Set([helper]),
-  );
-  expect(existsSync(helper)).toBe(true);
-  await moveDesktopHelpers(dir, pass, () => true, none);
-  expect(existsSync(helper)).toBe(false);
-
-  // The wiring key OFF preserves the default entry (the removeUnmanaged
-  // contract): its still-referenced helper survives WITHOUT any wiring pass,
-  // while an unreferenced one goes.
-  writeFileSync(helper, "#!/bin/sh\n");
-  writeFileSync(join(dir, "claude-desktop-proxy-token-work.cmd"), "@echo off\n");
-  await moveDesktopHelpers(
-    dir,
-    () => {
-      throw new Error("wiring off - no pass");
-    },
-    () => false,
-    () => new Set([helper]),
-  );
-  expect(existsSync(helper)).toBe(true);
-  expect(existsSync(join(dir, "claude-desktop-proxy-token-work.cmd"))).toBe(false);
-  rmSync(helper);
-
-  await expectLedgerReferenceHoldsHelper(dir, helper);
 
   // A NEW-name store never gets clobbered by a lingering old one (mixed-version
   // window): the old file survives for the user to inspect, the new one wins.
@@ -480,6 +396,85 @@ test("4.0.2 root layout: stores rename, lock debris clears, loose helpers regene
     `${JSON.stringify({ port: 4199 })}\n`,
   );
   expect(existsSync(join(dir, ".copilot-env-config.json"))).toBe(true);
+});
+
+test("5.0.2 helper scripts: one wiring pass runs with the scripts still there, then helpers/ goes; an absent dir runs no pass", async () => {
+  dir = isolateProxyHome("copilot-migrate-helpers-");
+  const helpers = join(dir, "helpers");
+  mkdirSync(helpers, { recursive: true });
+  writeFileSync(join(helpers, "claude-desktop-token.sh"), "#!/bin/sh\n");
+  const passes: boolean[] = [];
+  const pass = () => {
+    passes.push(existsSync(helpers));
+    return Promise.resolve();
+  };
+  const said = await captureChannels(() => removeDesktopHelperScripts(dir, pass));
+  expect(existsSync(helpers)).toBe(false);
+  // The pass ran once, before the removal: an entry it re-rendered never named a gone script.
+  expect(passes).toEqual([true]);
+  expect(said.all).toContain(
+    `removed ${helpers} (a Claude Desktop entry names the agent launcher and its arguments now)`,
+  );
+
+  // Idempotent: nothing to remove, no wiring pass.
+  await removeDesktopHelperScripts(dir, pass);
+  expect(passes).toEqual([true]);
+});
+
+test("5.0.2 helper scripts, key off: the default's entry keeps naming the removed script, so the step says so and names the repair", async () => {
+  // The key-off pass leaves the default's entry as the user's (the removeUnmanaged contract) and
+  // the key-off status judges no entry, so nothing else would ever tell the user why the app's
+  // helper call fails.
+  const homes = isolateAgentHomes("copilot-mig-helpers-off-", { mkdirs: true });
+  dir = homes.dir;
+  const desktop = join(dir, "desktop");
+  const library = join(desktop, "configLibrary");
+  mkdirSync(library, { recursive: true });
+  process.env[CLAUDE_DESKTOP_DIR_ENV] = desktop;
+  try {
+    const helpers = join(homes.proxyHome, "helpers");
+    const helper = join(helpers, "claude-desktop-token.sh");
+    mkdirSync(helpers, { recursive: true });
+    writeFileSync(helper, "#!/bin/sh\n");
+    const entryPath = join(library, "e0.json");
+    writeFileSync(
+      join(library, META_FILENAME),
+      JSON.stringify({ appliedId: "e0", entries: [{ id: "e0", name: "copilot-env" }] }),
+    );
+    writeFileSync(
+      entryPath,
+      JSON.stringify({
+        inferenceCredentialHelper: helper,
+        managedMcpServers: [
+          { name: "copilot-env", args: agentLauncherCommand(mcpServeArgs(null)).args },
+        ],
+      }),
+    );
+    new OwnershipLedger().record("claudeDesktop", entryPath);
+    new CopilotEnvConfig().set({ "claude.desktop": false });
+    const said = await captureChannels(() => removeDesktopHelperScripts(homes.proxyHome));
+    expect(existsSync(helpers)).toBe(false);
+    expect(said.all).toContain("The default's Claude Desktop entry still names a removed script.");
+    expect(said.all).toContain(`${entryPath} was left as it is (claude.desktop false)`);
+    expect(said.all).toContain("agent config set claude.desktop true");
+    expect(said.all).toContain("agent profile sync --claude");
+    // Control: a key-off pass over a default entry already on the launcher has nothing to warn.
+    mkdirSync(helpers, { recursive: true });
+    writeFileSync(
+      entryPath,
+      JSON.stringify({
+        inferenceCredentialHelper: agentLauncherCommand(agentAuthGetArgs(null)).command,
+        managedMcpServers: [
+          { name: "copilot-env", args: agentLauncherCommand(mcpServeArgs(null)).args },
+        ],
+      }),
+    );
+    const quiet = await captureChannels(() => removeDesktopHelperScripts(homes.proxyHome));
+    expect(quiet.all).not.toContain("still names a removed script");
+    expect(existsSync(helpers)).toBe(false);
+  } finally {
+    delete process.env[CLAUDE_DESKTOP_DIR_ENV];
+  }
 });
 
 // --- the 4.0.0 wiring rewrites (pure cores; no real home touched) -----------------
@@ -1444,9 +1439,8 @@ function legacyHelperLine(profile: string): string {
 }
 
 test("4.0.9 profile verb tree: a malformed Desktop index refuses a rename before its first delete, and the step reports it", async () => {
-  // Without the check the rename would move the store and home, write the new helper, delete
-  // the old one, then find the index unreadable and leave the owned entry pointing at the deleted
-  // helper with the old argv, while the step reported success.
+  // Without the check the rename would move the store and home, then find the index unreadable
+  // and leave the owned entry with the old argv, while the step reported success.
   const homes = isolateAgentHomes("copilot-mig-verb-tree-meta-", { mkdirs: true });
   dir = homes.dir;
   const desktop = join(dir, "desktop");
@@ -1461,7 +1455,6 @@ test("4.0.9 profile verb tree: a malformed Desktop index refuses a rename before
       },
     });
     mkdirSync(join(homes.proxyHome, "profiles", "sync"), { recursive: true });
-    const helper = writeDesktopHelperScript("proxy", SYNC);
     writeFileSync(join(library, META_FILENAME), "{ not json");
     const before = fingerprintTree(dir);
     const run = await captureChannels(() =>
@@ -1469,9 +1462,8 @@ test("4.0.9 profile verb tree: a malformed Desktop index refuses a rename before
     );
     expect(run.all).toContain("could not move profile 'sync'");
     expect(run.all).toContain("has an unexpected shape");
-    // Nothing moved, nothing deleted: the store slot, the daemon home, and the helper stand.
+    // Nothing moved, nothing deleted: the store slot and the daemon home stand.
     expect(fingerprintTree(dir)).toEqual(before);
-    expect(existsSync(helper)).toBe(true);
     expect(new CopilotEnvState().profileNames()).toEqual([SYNC]);
   } finally {
     delete process.env[CLAUDE_DESKTOP_DIR_ENV];

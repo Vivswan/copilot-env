@@ -117,10 +117,10 @@ agent profile set static-key all     # both agents and Claude Desktop
 
 | `static-key`     | Claude Code `settings.json`                   | Codex `config.toml`, managed provider                  | Claude Desktop entry                                                              |
 | ---------------- | --------------------------------------------- | ------------------------------------------------------ | --------------------------------------------------------------------------------- |
-| `none` (default) | `apiKeyHelper` command                        | `auth.command`                                         | helper script                                                                     |
-| `claude`         | `env.ANTHROPIC_AUTH_TOKEN`; no `apiKeyHelper` | `auth.command`                                         | `inferenceCredentialKind = "static"` + `inferenceGatewayApiKey`; no helper script |
-| `codex`          | `apiKeyHelper` command                        | `http_headers.Authorization = "Bearer ..."`; no `auth` | helper script                                                                     |
-| `all`            | `env.ANTHROPIC_AUTH_TOKEN`; no `apiKeyHelper` | `http_headers.Authorization = "Bearer ..."`; no `auth` | `inferenceCredentialKind = "static"` + `inferenceGatewayApiKey`; no helper script |
+| `none` (default) | `apiKeyHelper` command                        | `auth.command`                                         | `inferenceCredentialHelper` + `inferenceCredentialHelperArgs`                     |
+| `claude`         | `env.ANTHROPIC_AUTH_TOKEN`; no `apiKeyHelper` | `auth.command`                                         | `inferenceCredentialKind = "static"` + `inferenceGatewayApiKey`; no helper        |
+| `codex`          | `apiKeyHelper` command                        | `http_headers.Authorization = "Bearer ..."`; no `auth` | `inferenceCredentialHelper` + `inferenceCredentialHelperArgs`                     |
+| `all`            | `env.ANTHROPIC_AUTH_TOKEN`; no `apiKeyHelper` | `http_headers.Authorization = "Bearer ..."`; no `auth` | `inferenceCredentialKind = "static"` + `inferenceGatewayApiKey`; no helper        |
 
 - Claude Desktop follows Claude's scope (`claude` or `all`).
 - Direct bakes the GitHub credential (`gh-cli` is resolved once, at write time); proxy bakes the daemon's own API key.

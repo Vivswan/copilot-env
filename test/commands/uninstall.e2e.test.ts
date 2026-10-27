@@ -15,7 +15,6 @@ import {
 import { dirname, join, sep } from "node:path";
 import { parse } from "smol-toml";
 import { configureClaudeConfig, WEBSEARCH_DENY_RULE } from "../../src/claude/config.ts";
-import { desktopHelperPath } from "../../src/claude/desktop_helper_scripts.ts";
 import {
   CLAUDE_DESKTOP_DIR_ENV,
   desktopLibraryDirUnder,
@@ -479,9 +478,6 @@ test("uninstall --dry-run prints every file and store slot it would take as the 
     })}\n`,
   );
   new OwnershipLedger().record("claudeDesktop", join(library, "ours.json"));
-  const helper = desktopHelperPath(resolveRootHome(), "direct", null);
-  mkdirSync(dirname(helper), { recursive: true });
-  writeFileSync(helper, "#!/bin/sh\n");
 
   const root = sandboxRoot();
   // The farm record is POSIX only (Windows builds no farm).
@@ -497,8 +493,7 @@ test("uninstall --dry-run prints every file and store slot it would take as the 
   // A dry run moves nothing of the process either: the live delete step leaves the doomed tree.
   expect(process.cwd()).toBe(cwd);
   // The plan is the tree diff on stdout: every removal outside our homes by path, the wiring
-  // rewrites by attribute, the home (the Desktop helper inside it included) and the install root
-  // as whole trees.
+  // rewrites by attribute, the home and the install root as whole trees.
   expect(stdout).toContain("DRY RUN: nothing was written. The command would:");
   for (const line of [
     `delete ${join(library, "ours.json")}`,
@@ -525,7 +520,6 @@ test("uninstall --dry-run prints every file and store slot it would take as the 
   expect(new Credential().resolve()).toBe("ghp_default");
   expect(existsSync(proxyHome)).toBe(true);
   expect(existsSync(join(library, "ours.json"))).toBe(true);
-  expect(existsSync(helper)).toBe(true);
   if (posix) expect(existsSync(farm)).toBe(true);
 });
 
@@ -560,20 +554,18 @@ test("uninstall removes owned Claude Desktop entries from the library the env se
 
 type UninstallCtx = ReturnType<typeof resolveUninstallContext>;
 
-/** What the plan must name outside the data home: the Desktop library with its owned entry, a
- *  stale claim's row, and both helper scripts; the float's bun cache; a wired rc file. */
+/** What the plan must name outside the data home: the Desktop library with its owned entry and a
+ *  stale claim's row; the float's bun cache; a wired rc file. */
 interface PlanFixture {
   library: string;
-  defaultHelper: string;
-  workHelper: string;
   metaRows: { id: string; name: string }[];
   ledger: OwnershipLedger;
   bunCache: string;
   rc: string;
 }
 
-function desktopEntryFor(helper: string): string {
-  return `${JSON.stringify({ inferenceGatewayBaseUrl: "x", inferenceCredentialHelper: helper })}\n`;
+function desktopEntry(): string {
+  return `${JSON.stringify({ inferenceGatewayBaseUrl: "x", inferenceCredentialHelper: "/x/agent" })}\n`;
 }
 
 /** The default wired with our MCP entry in .claude.json, a named profile with a daemon home (so
@@ -601,13 +593,7 @@ function plantPlanFixture(proxyHome: string, claudeHome: string, codexHome: stri
   });
   mkdirSync(profileHome(WORK), { recursive: true });
   const library = desktopLibrary();
-  const rootHome = resolveRootHome();
-  mkdirSync(rootHome, { recursive: true });
-  const defaultHelper = desktopHelperPath(rootHome, "direct", null);
-  const workHelper = desktopHelperPath(rootHome, "direct", WORK);
-  mkdirSync(dirname(defaultHelper), { recursive: true });
-  writeFileSync(defaultHelper, "#!/bin/sh\n");
-  writeFileSync(workHelper, "#!/bin/sh\n");
+  mkdirSync(resolveRootHome(), { recursive: true });
   const metaRows = [
     { id: "ours", name: "copilot-env" },
     {
@@ -615,7 +601,7 @@ function plantPlanFixture(proxyHome: string, claudeHome: string, codexHome: stri
       name: "copilot-env (work)",
     },
   ];
-  writeFileSync(join(library, "ours.json"), desktopEntryFor(defaultHelper));
+  writeFileSync(join(library, "ours.json"), desktopEntry());
   writeFileSync(join(library, "_meta.json"), `${JSON.stringify({ entries: metaRows })}\n`);
   const ledger = new OwnershipLedger();
   ledger.record("claudeDesktop", join(library, "ours.json"));
@@ -635,14 +621,13 @@ function plantPlanFixture(proxyHome: string, claudeHome: string, codexHome: stri
     process.platform === "win32" ? (shellTargetFiles()[0] as string) : join(rcDir, ".bashrc");
   mkdirSync(dirname(rc), { recursive: true });
   writeFileSync(rc, `echo mine\n${SHELL_MARKER}\nsource ours\n${MARKER_END}\n`);
-  return { library, defaultHelper, workHelper, metaRows, ledger, bunCache, rc };
+  return { library, metaRows, ledger, bunCache, rc };
 }
 
-/** The resolved plan names every fixture path: both helpers, the stale claim, the rc file, the
- *  MCP registration file (it follows CLAUDE_CONFIG_DIR, the isolated home, and holds our entry,
- *  so the plan names the rewrite), the meta rewrite, and the work profile's Claude artifact. */
+/** The resolved plan names every fixture path: the stale claim, the rc file, the MCP registration
+ *  file (it follows CLAUDE_CONFIG_DIR, the isolated home, and holds our entry, so the plan names
+ *  the rewrite), the meta rewrite, and the work profile's Claude artifact. */
 function expectPlanNamesFixture(ctx: UninstallCtx, fx: PlanFixture, claudeHome: string): void {
-  expect(ctx.targets.desktop.helpers.sort()).toEqual([fx.defaultHelper, fx.workHelper].sort());
   expect(ctx.targets.desktop.staleClaims).toEqual([join(fx.library, "gone.json")]);
   expect(ctx.targets.shellFiles).toEqual([fx.rc]);
   expect(claudeJsonPath()).toBe(join(claudeHome, ".claude.json"));
@@ -717,7 +702,6 @@ function expectPlanParity(ctx: UninstallCtx, run: PlanAndRun, codexHome: string)
   expect(named.has(workCodexFile)).toBe(true);
   const planned = [
     ...ctx.targets.desktop.entries,
-    ...ctx.targets.desktop.helpers,
     ...ctx.targets.floatArtifacts,
     ...ctx.targets.profiles.flatMap((p) => [...p.claudeArtifacts, profileHome(p.name)]),
     ctx.rootHome,
@@ -755,7 +739,7 @@ test("uninstall's dry run and live run land ONE resolved plan", async () => {
   // Planted AFTER planning: a LISTED owned Desktop entry attributed to the profile the
   // profile step deletes. Neither that step nor the Desktop sweep may take a path the
   // dry run never named.
-  writeFileSync(join(fx.library, "late.json"), desktopEntryFor(fx.workHelper));
+  writeFileSync(join(fx.library, "late.json"), desktopEntry());
   fx.metaRows.push({ id: "late", name: "copilot-env (work, late)" });
   writeFileSync(join(fx.library, "_meta.json"), `${JSON.stringify({ entries: fx.metaRows })}\n`);
   fx.ledger.record("claudeDesktop", join(fx.library, "late.json"));

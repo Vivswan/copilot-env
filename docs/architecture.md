@@ -116,7 +116,7 @@ flowchart LR
   claude["src/claude/config.ts<br>claudeAdapter() configureClaudeConfig()"]
   codex["src/codex/config.ts<br>codexAdapter() configureCodexConfig()"]
   claudefile[("~/.claude/settings-{name}.json<br>settings.json for the default")]
-  desktop[("Claude Desktop's files: {Claude-3p data dir}/configLibrary/{uuid}.json and _meta.json, claude_desktop_config.json, developer_settings.json<br>plus the helper under ~/.local/share/copilot-env/helpers and the claim in state.json (the ownership map)")]
+  desktop[("Claude Desktop's files: {Claude-3p data dir}/configLibrary/{uuid}.json and _meta.json, claude_desktop_config.json, developer_settings.json<br>plus the claim in state.json (the ownership map)")]
   codexfile[("~/.codex/{name}.config.toml and ~/.codex/config.toml<br>config.toml alone for the default")]
   credfile -->|"reads profiles.{name}: credential + mode"| slot
   prefs -->|"reads claude-desktop"| claude

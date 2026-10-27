@@ -10,7 +10,6 @@ import {
   configureClaudeConfig,
   inspectClaudeWiring,
 } from "../../src/claude/config.ts";
-import { desktopHelperPath } from "../../src/claude/desktop_helper_scripts.ts";
 import {
   CLAUDE_DESKTOP_DIR_ENV,
   desktopLibraryDirUnder,
@@ -40,12 +39,7 @@ import {
   resetIntegrationIdentityCache,
   setIntegrationProbeFetch,
 } from "../../src/copilot_api/integration_identity.ts";
-import {
-  CopilotApiPaths,
-  profileHome,
-  profileHomeNames,
-  resolveRootHome,
-} from "../../src/copilot_api/paths.ts";
+import { CopilotApiPaths, profileHome, profileHomeNames } from "../../src/copilot_api/paths.ts";
 import {
   copilotApiFallbackPort,
   copilotApiResolvePort,
@@ -1055,15 +1049,12 @@ test("claude-desktop false: profile add wires no Desktop entry and --sync remove
   // Key on (the default): the add wires the entry.
   await addWork("proxy", "ghp_worktoken");
   expect(entryNames()).toEqual(["copilot-env: work"]);
-  const helper = desktopHelperPath(resolveRootHome(), "proxy", WORK);
-  expect(existsSync(helper)).toBe(true);
 
   // Key off: the launcher-style re-render (the Claude adapter's profile write, the
   // same path `cl --profile` takes) sweeps the entry -- no sync or re-add needed.
   new CopilotEnvConfig().set({ "claude.desktop": false });
   await captureAllWrites(() => launcherHook());
   expect(entryNames()).toEqual([]);
-  expect(existsSync(helper)).toBe(false);
   // --sync (both agents) is a reconcile point too: idempotent on the swept library.
   await syncNamedProfiles();
   expect(entryNames()).toEqual([]);
@@ -1073,7 +1064,6 @@ test("claude-desktop false: profile add wires no Desktop entry and --sync remove
   new CopilotEnvConfig().del("claude.desktop");
   await syncNamedProfiles();
   expect(entryNames()).toEqual(["copilot-env: work"]);
-  expect(existsSync(helper)).toBe(true);
   // The add asked Copilot's generic host for its catalog once; the quiet --sync re-wire
   // discovers nothing. Nothing else left the stub.
   expect(seen.filter((url) => url.startsWith("https://"))).toEqual([

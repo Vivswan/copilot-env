@@ -302,7 +302,7 @@ const VERDICT_LABEL: Record<FileVerdict, string> = {
 /** Past this many changed lines a text diff says how many changed instead of listing them. */
 const TEXT_DIFF_MAX_LINES = 40;
 
-/** The changed lines of a whole-text file (an rc block, a helper script) as `- old` and `+ new`
+/** The changed lines of a whole-text file (an rc block, a launcher script) as `- old` and `+ new`
  *  rows; an unchanged line never prints, wherever it sits. */
 export function textDiffLines(before: string | null, after: string): string[] {
   // The "" a trailing newline splits into is the terminator, not a line of the file.

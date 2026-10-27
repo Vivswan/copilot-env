@@ -1461,7 +1461,7 @@ test("evaluateAll: each scope yields its own check ids", () => {
       directAuth: { kind: "absent", command: null },
       directUsesToken: false,
     },
-    claudeDesktop: { kind: "no-library", enabled: true, installed: false, helperPaths: [] },
+    claudeDesktop: { kind: "no-library", enabled: true, installed: false },
     autoupdate: { enabled: false, cooldownDays: 7, lastCheckMs: 0, lastResult: "" },
   };
   const rows: {

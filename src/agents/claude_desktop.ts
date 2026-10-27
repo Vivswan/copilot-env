@@ -81,7 +81,6 @@ function unjudged(enabled: boolean, reason: string): ClaudeDesktopStatus {
     kind: "unjudged",
     enabled,
     installed: claudeDesktopInstalled(),
-    helperPaths: [],
     reason,
   };
 }

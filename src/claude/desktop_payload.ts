@@ -5,6 +5,7 @@
 import type { ManagedMode } from "../agents/configure.ts";
 import { codexUserAgent } from "../codex/user_agent.ts";
 import type { DesktopEffortLevel } from "../copilot_api/config_registry.ts";
+import type { ProfileMode } from "../copilot_api/env_state.ts";
 import { directClientHeaders } from "../copilot_api/integration_identity.ts";
 import type { ClaudeCatalogRow } from "../copilot_api/models.ts";
 import {
@@ -15,7 +16,7 @@ import {
 } from "../copilot_api/profile.ts";
 import { MCP_SERVER_NAME } from "../mcp/server.ts";
 import { isRecord, sameStrings } from "../utils/json.ts";
-import { agentLauncherCommand } from "../utils/root.ts";
+import { agentAuthGetArgs, agentLauncherCommand, proxyTokenArgs } from "../utils/root.ts";
 import { type Doc, readFileOrNull } from "./desktop_library.ts";
 
 /** A leaf in the way is replaced, as the writers always did. */
@@ -79,11 +80,26 @@ function managedMcpServers(profile: Profile, existing: unknown): Record<string, 
 /** Both payload branches strip these, so a stale one outlives no mode switch or rotation. */
 const MANAGED_HEADER_NAMES: readonly string[] = Object.keys(directClientHeaders("x", "x"));
 
-/** How the entry obtains its credential. Desktop's helper is a FILE path (unlike Claude Code's
- *  inline command), so the command shape carries the script the writer produced. */
-export type DesktopCredential =
-  | { kind: "command"; helperPath: string }
-  | { kind: "static"; token: string };
+/** The `agent` launcher Desktop runs for the entry's credential: its path, and the resolver argv
+ *  as the helper's arguments. */
+export interface DesktopHelperCommand {
+  kind: "command";
+  command: string;
+  args: string[];
+}
+
+/** How the entry obtains its credential: the launcher, or the token to bake. */
+export type DesktopCredential = DesktopHelperCommand | { kind: "static"; token: string };
+
+/** The resolver the entry runs, `agent profile [<name>] auth --get` or `... proxy-token --yes`, as
+ *  the launcher spawns it: one builder for the writer and the status inspector, so "wired" always
+ *  means this command. */
+export function desktopHelperCredential(mode: ProfileMode, profile: Profile): DesktopHelperCommand {
+  const { command, args } = agentLauncherCommand(
+    mode === "direct" ? agentAuthGetArgs(profile) : proxyTokenArgs(profile),
+  );
+  return { kind: "command", command, args };
+}
 
 type DesktopPayloadOptions = ManagedMode & {
   /** Null is the default profile; managedMcpServers' row serves this profile's credential. */
@@ -92,7 +108,7 @@ type DesktopPayloadOptions = ManagedMode & {
   /** The gateway Desktop discovers models at (`<baseUrl>/v1/models`); Copilot Direct 404s that. */
   baseUrl: string;
 
-  /** A helper FILE path (unlike Claude Code's inline command), or the token to bake. */
+  /** The launcher and its arguments, or the token to bake. */
   credential: DesktopCredential;
 
   /** The `claude.desktop-effort` preference, resolved once by the caller. */
@@ -117,7 +133,8 @@ function writeCredentialKeys(
 ): void {
   if (credential.kind === "command") {
     doc.inferenceCredentialKind = "helper-script";
-    doc.inferenceCredentialHelper = credential.helperPath;
+    doc.inferenceCredentialHelper = credential.command;
+    doc.inferenceCredentialHelperArgs = credential.args;
     // The proxy helper may float and launch the daemon on first call, so it gets headroom.
     doc.inferenceCredentialHelperTimeoutSec = mode === "direct" ? 30 : 120;
     delete doc.inferenceGatewayApiKey;
@@ -125,6 +142,7 @@ function writeCredentialKeys(
     return;
   }
   delete doc.inferenceCredentialHelper;
+  delete doc.inferenceCredentialHelperArgs;
   delete doc.inferenceCredentialHelperTimeoutSec;
   doc.inferenceCredentialKind = "static";
   doc.inferenceGatewayApiKey = credential.token;
@@ -320,7 +338,7 @@ export function retargetEntryProfile(
 
 /** Undefined when the document carries no wiring of ours (absent or damaged: no target can claim
  *  it, so it is an orphan). Attribution reads the managed MCP server's argv, the one key both
- *  credential shapes write (a static entry names no helper script). An UNREADABLE document throws:
+ *  credential shapes write (a static entry names no helper). An UNREADABLE document throws:
  *  a failed look is never "not ours". */
 export function entryProfileAt(path: string): Profile | undefined {
   const raw = readFileOrNull(path);

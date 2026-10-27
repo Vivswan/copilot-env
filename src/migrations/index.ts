@@ -11,7 +11,7 @@ import { caught } from "../utils/message.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
 import { type SemverString, stripV, toSemverString, versionLessThan } from "../utils/semver.ts";
 import { v400AutoupdateFlag, v400ClaudeWiring, v400CodexWiring, v400ShellFence } from "./4.0.0.ts";
-import { v402DesktopHelpers, v402GhAccountPin, v402RootLayout } from "./4.0.2.ts";
+import { v402GhAccountPin, v402RootLayout } from "./4.0.2.ts";
 import {
   v409CodexProfileFiles,
   v409DesktopMcpArgv,
@@ -24,7 +24,7 @@ import {
   v409StaticKeyScope,
 } from "./4.0.9.ts";
 import { v501DenoLeftovers, v501OsLockSidecars } from "./5.0.1.ts";
-import { v502SmallModelKey } from "./5.0.2.ts";
+import { v502DesktopHelperScripts, v502SmallModelKey } from "./5.0.2.ts";
 
 /**
  * One step, named for the release it migrates AWAY FROM (authored against the current release, with
@@ -59,7 +59,6 @@ const MIGRATIONS: Migration[] = [
   v400AutoupdateFlag,
   v402GhAccountPin,
   v402RootLayout,
-  v402DesktopHelpers,
   v409StateFold,
   v409RootDaemonHome,
   v409DesktopMcpArgv,
@@ -72,6 +71,7 @@ const MIGRATIONS: Migration[] = [
   v501OsLockSidecars,
   v501DenoLeftovers,
   v502SmallModelKey,
+  v502DesktopHelperScripts,
 ];
 
 // versionLessThan tolerates unparseable input by answering "not less-than", so a

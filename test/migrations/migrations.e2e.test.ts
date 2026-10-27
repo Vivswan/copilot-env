@@ -421,11 +421,11 @@ test("5.0.2 helper scripts: one wiring pass runs with the scripts still there, t
   expect(passes).toEqual([true]);
 });
 
-test("5.0.2 helper scripts, key off: the default's entry keeps naming the removed script, so the step says so and names the repair", async () => {
-  // The key-off pass leaves the default's entry as the user's (the removeUnmanaged contract) and
-  // the key-off status judges no entry, so nothing else would ever tell the user why the app's
-  // helper call fails.
-  const homes = isolateAgentHomes("copilot-mig-helpers-off-", { mkdirs: true });
+test("5.0.2 helper scripts: an owned entry the wiring pass left on its script is named with the repair, key off (turn the key on) and key on (the status check) alike; one on the launcher is not", async () => {
+  // The key-off pass leaves the default's entry as the user's (the removeUnmanaged contract), a
+  // blocked or refused write leaves any entry; the key-off status judges no entry, so nothing else
+  // would tell the user why the app's helper call fails.
+  const homes = isolateAgentHomes("copilot-mig-helpers-left-", { mkdirs: true });
   dir = homes.dir;
   const desktop = join(dir, "desktop");
   const library = join(desktop, "configLibrary");
@@ -434,42 +434,42 @@ test("5.0.2 helper scripts, key off: the default's entry keeps naming the remove
   try {
     const helpers = join(homes.proxyHome, "helpers");
     const helper = join(helpers, "claude-desktop-token.sh");
-    mkdirSync(helpers, { recursive: true });
-    writeFileSync(helper, "#!/bin/sh\n");
     const entryPath = join(library, "e0.json");
-    writeFileSync(
-      join(library, META_FILENAME),
-      JSON.stringify({ appliedId: "e0", entries: [{ id: "e0", name: "copilot-env" }] }),
-    );
-    writeFileSync(
-      entryPath,
-      JSON.stringify({
-        inferenceCredentialHelper: helper,
-        managedMcpServers: [
-          { name: "copilot-env", args: agentLauncherCommand(mcpServeArgs(null)).args },
-        ],
-      }),
-    );
+    const entryNaming = (credentialHelper: string) => {
+      mkdirSync(helpers, { recursive: true });
+      writeFileSync(helper, "#!/bin/sh\n");
+      writeFileSync(
+        entryPath,
+        JSON.stringify({
+          inferenceCredentialHelper: credentialHelper,
+          managedMcpServers: [
+            { name: "copilot-env", args: agentLauncherCommand(mcpServeArgs(null)).args },
+          ],
+        }),
+      );
+    };
+    // The library index is junk on purpose: the look reads the ledger's claims, not the index.
+    writeFileSync(join(library, META_FILENAME), "{ not json");
     new OwnershipLedger().record("claudeDesktop", entryPath);
-    new CopilotEnvConfig().set({ "claude.desktop": false });
-    const said = await captureChannels(() => removeDesktopHelperScripts(homes.proxyHome));
-    expect(existsSync(helpers)).toBe(false);
-    expect(said.all).toContain("The default's Claude Desktop entry still names a removed script.");
-    expect(said.all).toContain(`${entryPath} was left as it is (claude.desktop false)`);
-    expect(said.all).toContain("agent config set claude.desktop true");
-    expect(said.all).toContain("agent profile sync --claude");
-    // Control: a key-off pass over a default entry already on the launcher has nothing to warn.
-    mkdirSync(helpers, { recursive: true });
-    writeFileSync(
-      entryPath,
-      JSON.stringify({
-        inferenceCredentialHelper: agentLauncherCommand(agentAuthGetArgs(null)).command,
-        managedMcpServers: [
-          { name: "copilot-env", args: agentLauncherCommand(mcpServeArgs(null)).args },
-        ],
-      }),
-    );
-    const quiet = await captureChannels(() => removeDesktopHelperScripts(homes.proxyHome));
+    const noPass = () => Promise.resolve();
+    const rows: { key: boolean; repair: string }[] = [
+      { key: false, repair: "agent config set claude.desktop true" },
+      { key: true, repair: "agent profile check --claude" },
+    ];
+    for (const { key, repair } of rows) {
+      entryNaming(helper);
+      new CopilotEnvConfig().set({ "claude.desktop": key });
+      const said = await captureChannels(() => removeDesktopHelperScripts(homes.proxyHome, noPass));
+      expect(existsSync(helpers), String(key)).toBe(false);
+      expect(said.all, String(key)).toContain(
+        "1 Claude Desktop entry still names a removed script.",
+      );
+      expect(said.all, String(key)).toContain(entryPath);
+      expect(said.all, String(key)).toContain(repair);
+    }
+    // Control: an entry already on the launcher warns nothing.
+    entryNaming(agentLauncherCommand(agentAuthGetArgs(null)).command);
+    const quiet = await captureChannels(() => removeDesktopHelperScripts(homes.proxyHome, noPass));
     expect(quiet.all).not.toContain("still names a removed script");
     expect(existsSync(helpers)).toBe(false);
   } finally {

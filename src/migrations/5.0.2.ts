@@ -8,16 +8,18 @@
 // A Claude Desktop entry named a generated wrapper script under `<rootHome>/helpers/` as its
 // credential helper, because the app took a bare path and no arguments. The app takes the
 // arguments now (`inferenceCredentialHelperArgs`), so an entry names the `agent` launcher itself
-// and the scripts are debris: the entries are re-rendered first, then the directory goes. With
-// the key off the pass leaves the default's entry as the user's, so the step names the one it
-// leaves pointing at a removed script, with the repair.
+// and the scripts are debris: the entries are re-rendered first, then the directory goes. A pass
+// can leave an entry on its script (the key off keeps the default's entry as the user's; a
+// malformed library or a Direct slot without its pair blocks the write), so the step names every
+// owned entry it leaves pointing at a removed script, with the repair.
 
 import { isAbsolute, join, relative } from "node:path";
 import { consola } from "consola";
-import { claudeDesktopStatus, reconcileClaudeDesktopWiring } from "../agents/claude_desktop.ts";
+import { reconcileClaudeDesktopWiring } from "../agents/claude_desktop.ts";
 import { readFileOrNull } from "../claude/desktop_library.ts";
 import { CopilotApiConfig } from "../copilot_api/config.ts";
-import { configSetCommand } from "../copilot_api/env_config.ts";
+import { CopilotEnvConfig, configSetCommand } from "../copilot_api/env_config.ts";
+import { OwnershipLedger } from "../copilot_api/ownership.ts";
 import { allDaemonHomes, PROXY_CONFIG_FILENAME, resolveRootHome } from "../copilot_api/paths.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { parseJsonRecord } from "../utils/json.ts";
@@ -65,19 +67,29 @@ function isUnder(dir: string, path: string): boolean {
   return rel !== "" && !isAbsolute(rel) && !rel.startsWith("..");
 }
 
-/** The default's owned entry a key-off pass left naming a script under `dir`, or null. Only the
- *  key-off look can find one: the key-on pass re-rendered every wired entry. */
-function defaultEntryNamingScriptUnder(dir: string): string | null {
-  const status = claudeDesktopStatus();
-  if (status.enabled || status.kind !== "inspected") return null;
-
-  for (const entry of status.owned) {
-    if (entry.profile !== null) continue;
-    const doc = parseJsonRecord(readFileOrNull(entry.path) ?? "");
+/** Every owned Desktop entry whose credential helper sits under `dir`: read from the ledger's
+ *  claims, not the library index, so a malformed `_meta.json` hides none. An unreadable ledger or
+ *  entry throws (the runner warns and the step is re-run), never reads as "none". */
+function entriesNamingScriptsUnder(dir: string): string[] {
+  const naming: string[] = [];
+  for (const path of new OwnershipLedger().ownedPaths("claudeDesktop")) {
+    const doc = parseJsonRecord(readFileOrNull(path) ?? "");
     const helper = doc?.inferenceCredentialHelper;
-    if (typeof helper === "string" && isUnder(dir, helper)) return entry.path;
+    if (typeof helper === "string" && isUnder(dir, helper)) naming.push(path);
   }
-  return null;
+  return naming;
+}
+
+/** The repair for an entry the pass left on its script: with the key off, nothing manages the
+ *  entry until it is turned on; with the key on, the status check names each entry's own. */
+function repairActions(): [string, string][] {
+  if (!new CopilotEnvConfig().claudeDesktopEnabled()) {
+    return [
+      [configSetCommand("claude.desktop", "true"), "manages the entries again"],
+      ["agent profile sync --claude", "re-renders the default's entry to the launcher"],
+    ];
+  }
+  return [["agent profile check --claude", "names each entry's repair"]];
 }
 
 /** Exported for the migration test; `rootHome` and `reconcile` isolate. The wiring pass comes
@@ -90,22 +102,19 @@ export async function removeDesktopHelperScripts(
   if (fs.entryAbsent(dir)) return;
 
   await reconcile();
-  const unmanaged = defaultEntryNamingScriptUnder(dir);
+  const left = entriesNamingScriptsUnder(dir);
   fs.rm(dir, { recursive: true, force: true, detail: "the retired Claude Desktop helper scripts" });
   consola.info(
     `  removed ${dir} (a Claude Desktop entry names the agent launcher and its arguments now)`,
   );
-  if (unmanaged === null) return;
+  if (left.length === 0) return;
 
   consola.warn(
     scannable({
-      headline: "The default's Claude Desktop entry still names a removed script.",
-      evidence: [`${unmanaged} was left as it is (claude.desktop false)`],
+      headline: `${left.length} Claude Desktop ${left.length === 1 ? "entry still names" : "entries still name"} a removed script.`,
+      evidence: left,
       lead: "Fix:",
-      actions: [
-        [configSetCommand("claude.desktop", "true"), "manages the entry again"],
-        ["agent profile sync --claude", "re-renders it to the launcher and its arguments"],
-      ],
+      actions: repairActions(),
     }),
   );
 }

@@ -162,9 +162,6 @@ export const STATE_STORE_FILENAME = "state.json";
 /** The root stores' lock markers park here instead of cluttering the home listing (CopilotApiPaths.locksDir). */
 export const LOCKS_DIR_NAME = "locks";
 
-/** Scripts FOREIGN programs run (the Claude Desktop credential helpers); undotted, like codex-model-catalog.json. */
-export const HELPERS_DIR_NAME = "helpers";
-
 /**
  * Every path of one daemon home and of the ROOT home. `.activity.json` is separate from `.state.json`
  * on purpose: the CLI and the daemon write state concurrently, and a single-writer file sidesteps the
@@ -173,7 +170,7 @@ export const HELPERS_DIR_NAME = "helpers";
  * holds the claims on files we wrote.
  *
  * Undotted files (codex-model-catalog.json, which the managed Codex config.toml references by
- * absolute path, and the helpers) are the ones something other than copilot-env reads.
+ * absolute path) are the ones something other than copilot-env reads.
  */
 export class CopilotApiPaths {
   /** The daemon home: `profiles/<name>`, or the default's (defaultDaemonHome); never the root. */

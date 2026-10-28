@@ -1,8 +1,8 @@
 // The Claude Desktop reconcile: one entry per wired profile in the app's config library, derived on
 // every pass from the `claude.desktop` key and the ownership ledger; a sweep never removes an entry
 // it does not own. The files themselves are desktop_library.ts, the entry document
-// desktop_payload.ts, the helper scripts desktop_helper_scripts.ts.
-import { basename, isAbsolute, join, relative, sep } from "node:path";
+// desktop_payload.ts.
+import { isAbsolute, join, relative, sep } from "node:path";
 import { type ManagedMode, type ManagedWrite, reservePlannedPort } from "../agents/configure.ts";
 import { codexUserAgent } from "../codex/user_agent.ts";
 import { fetchRawModels } from "../copilot_api/catalog.ts";
@@ -18,22 +18,13 @@ import {
   parseModelList,
 } from "../copilot_api/models.ts";
 import { OwnershipLedger } from "../copilot_api/ownership.ts";
-import { CopilotApiPaths, resolveRootHome } from "../copilot_api/paths.ts";
+import { CopilotApiPaths } from "../copilot_api/paths.ts";
 import { copilotApiResolvePort, proxyLoopbackOrigin } from "../copilot_api/port.ts";
 import { type Profile, profileKey, profileLabel } from "../copilot_api/profile.ts";
 import * as fs from "../utils/fs_facade.ts";
 import { isRecord, parseJsonRecord } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import { caught, scannable } from "../utils/message.ts";
-import {
-  desktopHelperPath,
-  desktopHelperScriptWiring,
-  landDesktopHelperScript,
-  planRemoveFiles,
-  planRemoveHelperScripts,
-  presentDesktopHelperScripts,
-  readDesktopHelperScript,
-} from "./desktop_helper_scripts.ts";
 import {
   claudeDesktopInstalled,
   type DesktopMeta,
@@ -54,6 +45,7 @@ import {
   type DesktopCredential,
   type DesktopModelSpec,
   desktopConfigPayload,
+  desktopHelperCredential,
   desktopModelsFromPicks,
   entryProfileAt,
   recordedModelRows,
@@ -78,7 +70,7 @@ function mintedEntryId(dir: string, profile: Profile, free: (id: string) => bool
 }
 
 export type DesktopWireOptions = ManagedWrite & {
-  /** Null is the default profile; it names the entry and picks the helper script. */
+  /** Null is the default profile; it names the entry and the resolver the entry runs. */
   profile: Profile;
 
   /** Direct only: credential for the catalog fetch (never re-resolved when given). */
@@ -319,11 +311,8 @@ async function entryModels(
   return recordedModelRows(existing) ?? undefined;
 }
 
-/** What one wire writes: the entry document, the line announcing the wiring, and, for the command
- *  shape, the helper script that lands first (null for the static shape, which names none). */
+/** What one wire writes: the entry document and the line announcing the wiring. */
 interface DesktopEntryWrite {
-  credential: DesktopCredential;
-  helper: ReturnType<typeof readDesktopHelperScript> | null;
   wiring: string;
   payload: Record<string, unknown>;
 }
@@ -335,17 +324,10 @@ function plannedEntryWrite(
   models: readonly DesktopModelSpec[] | undefined,
   existing: Record<string, unknown>,
 ): DesktopEntryWrite {
-  // The helper script exists only for the command shape; a static entry names none. Read now, so
-  // an unreadable helper refuses the wire before anything is reserved or written.
   const credential: DesktopCredential =
     opts.credential.kind === "static"
       ? opts.credential
-      : {
-          kind: "command",
-          helperPath: desktopHelperPath(resolveRootHome(), opts.mode, opts.profile),
-        };
-  const helper =
-    credential.kind === "command" ? readDesktopHelperScript(opts.mode, opts.profile) : null;
+      : desktopHelperCredential(opts.mode, opts.profile);
   // Re-extracted so the payload receives the Direct facts only alongside a direct mode.
   const write: ManagedMode =
     opts.mode === "direct" ? { mode: "direct", direct: opts.direct } : { mode: "proxy" };
@@ -362,7 +344,7 @@ function plannedEntryWrite(
     models,
     existing,
   });
-  return { credential, helper, wiring, payload };
+  return { wiring, payload };
 }
 
 /** An applied slot that is empty, or names a row the library no longer lists, is ours to fill; a
@@ -407,21 +389,14 @@ export async function wireClaudeDesktopEntry(opts: DesktopWireOptions): Promise<
   const write = plannedEntryWrite(opts, entry, baseUrl, models, existing);
   fillAppliedSlot(meta, entry);
 
-  // The post-save steps take their looks before the first wiring write.
-  const retire =
-    write.credential.kind === "command"
-      ? planRemoveHelperScripts(opts.profile, opts.mode)
-      : planRemoveHelperScripts(opts.profile);
+  // The post-save step takes its look before the first wiring write.
   const appFiles = prepareClaudeDesktopAppFiles();
   // Reserved now that everything is computed: a refusal above leaves no reservation behind.
   if (plannedPort !== null) reservePlannedPort(opts.profile, plannedPort);
-  // The order is the safety: helper, config, then meta; the ownership claim, the helper
-  // retirement, and the app files follow, in that order.
+  // The order is the safety: config, then meta; the ownership claim and the app files follow.
   //   config without its meta row  -> invisible junk
   //   meta row without its config  -> a broken picker row
   //   claim before the save        -> a claim on an entry that was never written
-  //   retirement before the claim  -> a saved entry left unclaimed when the retirement fails
-  if (write.helper !== null) landDesktopHelperScript(write.helper);
   const configWritten = writeJson(
     configPath,
     existingRaw,
@@ -435,11 +410,9 @@ export async function wireClaudeDesktopEntry(opts: DesktopWireOptions): Promise<
   }
   writeDesktopMeta(dir, metaRaw, meta);
   // Only a NEW claim is recorded, so the ledger write is a real change, never a byte-identical
-  // one. What follows lands on its own, after the claim: the other mode's helper (the
-  // still-current entry never names a deleted one) and the app files, independent of the entry,
-  // so a failure in either leaves a complete, OWNED entry.
+  // one. The app files land on their own, after the claim, so a failure there leaves a complete,
+  // OWNED entry.
   if (!owned) ledger.record("claudeDesktop", configPath);
-  retire();
   appFiles();
 }
 
@@ -503,36 +476,21 @@ async function syncClaudeDesktopWiringOrThrow(opts: DesktopWireOptions): Promise
 
 /** A foreign entry, even one carrying our name, is never touched. Best-effort. */
 export function removeClaudeDesktopEntry(profile: Profile): void {
-  removeOwned(
-    `the Claude Desktop entry for ${profileLabel(profile)}`,
-    (e) => entryProfileAt(e.path) === profile,
-    profile,
-  );
+  const selects = (e: OwnedDesktopEntry): boolean => entryProfileAt(e.path) === profile;
+  removeOwned(`the Claude Desktop entry for ${profileLabel(profile)}`, selects);
 }
 
 /** Best-effort. */
 export function removeClaudeDesktopOrphan(orphan: DesktopOwnedEntry): void {
-  removeOwned(
-    `the orphaned Claude Desktop entry at ${orphan.path}`,
-    (e) => e.path === orphan.path,
-    orphan.profile,
-  );
+  removeOwned(`the orphaned Claude Desktop entry at ${orphan.path}`, (e) => e.path === orphan.path);
 }
 
 /** A failed removal is warned about, and its ownership stays with the entry it did not remove
- *  (the claims go last). A blocked sweep (malformed _meta.json) may leave a live entry pointing at
- *  the helper scripts, so they go only when the library was actually processed. */
-function removeOwned(
-  what: string,
-  selects: (owned: OwnedDesktopEntry) => boolean,
-  helpersOf: Profile | undefined,
-): void {
+ *  (the claims go last). */
+function removeOwned(what: string, selects: (owned: OwnedDesktopEntry) => boolean): void {
   try {
-    // The helpers' looks come before the library is touched.
-    const helpers = helpersOf === undefined ? () => {} : planRemoveHelperScripts(helpersOf);
     const entries = sweepOwnedEntries(selects);
     if (entries.kind === "blocked") return;
-    helpers();
     releaseClaims(entries.removed);
   } catch (e) {
     logger.warn(caught(e, (message) => `  Could not remove ${what}: ${message}`));
@@ -559,7 +517,7 @@ export function removeAllClaudeDesktopWiring(
           headline: "Would leave Claude Desktop's config library alone.",
           evidence: [
             "_meta.json unreadable or unparsable",
-            "its copilot-env entries left pointing at credential-helper scripts removed with the copilot-api home",
+            "its copilot-env entries left pointing at the agent launcher the uninstall removes",
           ],
         }),
       );
@@ -571,14 +529,10 @@ export function removeAllClaudeDesktopWiring(
   if (entries.kind === "blocked") return;
   releaseClaims(entries.removed);
   removeUnlistedClaudeDesktopClaims((path) => planned.has(path));
-  // Uninstall deletes the root home wholesale right after this step; the helpers still go here so
-  // the step is complete on its own.
-  for (const path of artifacts.helpers) removeFile(path);
 }
 
 /** The `claude.desktop false` sweep. Fail closed: only a claim POSITIVELY attributed to a named
- *  profile goes, since anything else may be the default's. Helper scripts go by FILENAME, so a
- *  named profile's script goes even when its entry was left. */
+ *  profile goes, since anything else may be the default's. */
 export function removeUnmanagedClaudeDesktopWiring(opts: { quiet?: boolean } = {}): void {
   const sweepable = (path: string): boolean => {
     let profile: Profile | undefined;
@@ -595,20 +549,14 @@ export function removeUnmanagedClaudeDesktopWiring(opts: { quiet?: boolean } = {
     }
     return profile !== undefined && profile !== null;
   };
-  // Every look before the first write: the helper listing and the unlisted claims are judged over
-  // the library as it stands, and a listing that fails leaves it untouched.
-  const helpers = planRemoveFiles(
-    presentDesktopHelperScripts(resolveRootHome()).filter(
-      (path) => desktopHelperScriptWiring(basename(path))?.profile !== null,
-    ),
-  );
+  // Every look before the first write: the unlisted claims are judged over the library as it
+  // stands, and a listing that fails leaves it untouched.
   const unlisted = unlistedClaims(sweepable);
   const entries = sweepOwnedEntries((e) => sweepable(e.path));
   if (entries.kind === "blocked") return;
   if (unlisted.kind === "listed") {
     for (const path of unlisted.paths) removeFile(path, ENTRY);
   }
-  helpers();
   if (!opts.quiet) announceUnmanagedDefault();
   releaseClaims(entries.removed);
   if (unlisted.kind === "listed") releaseClaims(unlisted.paths);
@@ -638,7 +586,6 @@ function announceUnmanagedDefault(): void {
 /** What removeAllClaudeDesktopWiring removes and the uninstall dry run names. Read-only.
  *    entries      -> owned config files present (listed and unlisted claims alike)
  *    staleClaims  -> owned paths whose file is gone (their _meta.json row and claim still go)
- *    helpers      -> the generated helper scripts
  *    metaRewrite  -> the `_meta.json` path when removing the listed owned rows will rewrite it
  *                    (null: nothing listed is ours); outside our homes, so the dry run names the
  *                    rewrite like the live sweep
@@ -646,15 +593,13 @@ function announceUnmanagedDefault(): void {
 export interface ClaudeDesktopOwnedArtifacts {
   entries: string[];
   staleClaims: string[];
-  helpers: string[];
   metaRewrite: string | null;
   blocked: boolean;
 }
 
 export function listClaudeDesktopOwnedArtifacts(): ClaudeDesktopOwnedArtifacts {
-  const helpers = presentDesktopHelperScripts(resolveRootHome());
   const dir = resolveDesktopLibraryDir();
-  const none = { entries: [], staleClaims: [], helpers, metaRewrite: null };
+  const none = { entries: [], staleClaims: [], metaRewrite: null };
   if (dir === null) return { ...none, blocked: false };
   const library = readOwnedLibrary(dir);
   if (library === null) return { ...none, blocked: true };
@@ -668,7 +613,6 @@ export function listClaudeDesktopOwnedArtifacts(): ClaudeDesktopOwnedArtifacts {
   return {
     entries,
     staleClaims,
-    helpers,
     metaRewrite: library.owned.length > 0 ? join(dir, META_FILENAME) : null,
     blocked: false,
   };
@@ -770,8 +714,7 @@ function nextAppliedId(
 /** A foreign row is never a candidate. Meta FIRST, config files second; the caller releases the
  *  ownership of `removed` LAST, once everything that must go with them went: a failure mid-way can
  *  leave an orphaned (invisible) config file, never a picker row whose config is gone, and never a
- *  released claim on a file still there. "blocked" when _meta.json cannot be judged (a live entry
- *  may reference the helper scripts: keep them). */
+ *  released claim on a file still there. "blocked" when _meta.json cannot be judged. */
 function sweepOwnedEntries(
   selects: (owned: OwnedDesktopEntry) => boolean,
 ): { kind: "blocked" } | { kind: "swept"; removed: string[] } {

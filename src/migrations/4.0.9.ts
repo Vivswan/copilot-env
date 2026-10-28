@@ -21,7 +21,6 @@ import {
   proxyHelperCommand,
   SETTINGS_SECRETS,
 } from "../claude/config.ts";
-import { desktopHelperPath, writeDesktopHelperScript } from "../claude/desktop_helper_scripts.ts";
 import {
   desktopEntryName,
   META_FILENAME,
@@ -57,7 +56,6 @@ import {
 import {
   CopilotEnvState,
   GLOBAL_STATE_KEYS,
-  PROFILE_MODES,
   PROFILE_STATE_KEYS,
 } from "../copilot_api/env_state.ts";
 import { OwnershipLedger } from "../copilot_api/ownership.ts";
@@ -1108,9 +1106,9 @@ function legacyEntryProfileAt(doc: Record<string, unknown>): Profile | undefined
 }
 
 /** Every owned Desktop entry's MCP row in the old shape gets the verb spelling under the same
- *  name. Runs at the front of the update (a layout step): the 4.0.2 helper move reconciles the
- *  library through the NEW reader (entryProfileAt), which would read an old-shape row as no
- *  profile's and sweep the entry as an orphan. Exported for the migration test. */
+ *  name. Runs at the front of the update (a layout step): the 5.0.2 helper-script removal
+ *  reconciles the library through the NEW reader (entryProfileAt), which would read an old-shape
+ *  row as no profile's and sweep the entry as an orphan. Exported for the migration test. */
 export function rewriteDesktopMcpArgv(): void {
   const dir = resolveDesktopLibraryDir();
   if (dir === null) return;
@@ -1140,8 +1138,8 @@ export const v409DesktopMcpArgv: Migration = {
   run: rewriteDesktopMcpArgv,
 };
 
-/** The owned entry at `path` whose profile is `from`, retargeted to `to` in its profile word and
- *  its helper-script pointer; false for an entry not ours, another profile's, or unreadable. */
+/** The owned entry at `path` whose profile is `from`, retargeted to `to` in its profile word;
+ *  false for an entry not ours, another profile's, or unreadable. */
 function retargetOwnedEntry(
   path: string,
   ledger: OwnershipLedger,
@@ -1152,11 +1150,6 @@ function retargetOwnedEntry(
   const doc = parseJsonRecord(readFileOrNull(path) ?? "");
   if (doc === null) return false;
   retargetEntryProfile(doc, from, to);
-  for (const mode of PROFILE_MODES) {
-    if (doc.inferenceCredentialHelper === desktopHelperPath(resolveRootHome(), mode, from)) {
-      doc.inferenceCredentialHelper = desktopHelperPath(resolveRootHome(), mode, to);
-    }
-  }
   saveJsonIfChanged(path, doc, `Claude Desktop entry "${desktopEntryName(to)}"`);
   return true;
 }
@@ -1291,20 +1284,6 @@ async function renameProfile(
   return slotMoved || homeMoved;
 }
 
-/** Every mode's helper script of `from` rewritten under `to` (the same name when nothing renames):
- *  the Desktop entry points at the script by path, and its body carries the resolver spelling and
- *  the profile's name, so the pointer stays valid and the body current whether or not the
- *  re-render runs. */
-function rewriteDesktopHelperScripts({ from, to }: ProfileMove): void {
-  for (const mode of PROFILE_MODES) {
-    const oldHelper = desktopHelperPath(resolveRootHome(), mode, from);
-    if (!fs.exists(oldHelper)) continue;
-    writeDesktopHelperScript(mode, to);
-    if (from === to) continue;
-    fs.rm(oldHelper, { force: true, detail: `Claude Desktop helper of profile '${from}'` });
-  }
-}
-
 async function moveProfile(
   move: ProfileMove,
   claudeHome: string,
@@ -1316,7 +1295,6 @@ async function moveProfile(
   if (rename !== null) changed = await renameProfile(rename, claudeHome, codexHomes);
   // The machine-global registration spawns the default's server; its old argv is ours to rewrite.
   if (from === null && retargetMcpRegistration(legacyMcpServeArgs(null))) changed = true;
-  rewriteDesktopHelperScripts(move);
   changed = retargetClaude(claudeHome, move) || changed;
   for (const home of codexHomes) changed = retargetCodex(home, move) || changed;
   if (rename !== null) retargetDesktopEntry(rename.from, rename.to);

@@ -172,7 +172,7 @@ interface AgentProfileWriteOptions {
 export type ManagedAgentId = "codex" | "claude";
 
 export interface RemoveProfileOptions {
-  /** Leaves the Desktop entry and helper scripts to a caller removing them itself (uninstall). */
+  /** Leaves the Desktop entry to a caller removing it itself (uninstall). */
   keepDesktopEntry?: boolean;
 
   /** The caller's planned Claude files to remove (claudeProfileArtifacts); absent = resolve now. */
@@ -224,7 +224,7 @@ export interface AgentAdapter {
 
   /** The profile's removal: the files it takes (the settings file, the provider table's keys, the
    *  Desktop entry) go now, each named on stderr. `keepDesktopEntry` leaves the Claude Desktop
-   *  entry and helper scripts to a caller that removes them itself (uninstall). */
+   *  entry to a caller that removes it itself (uninstall). */
   removeProfile(name: ProfileName, options?: RemoveProfileOptions): void;
 }
 

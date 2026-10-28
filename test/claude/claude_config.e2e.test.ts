@@ -26,7 +26,6 @@ import {
   syncDefaultWebSearch,
   WEBSEARCH_DENY_RULE,
 } from "../../src/claude/config.ts";
-import { cmdHelperBody } from "../../src/claude/helper_body.ts";
 import { claudeJsonPath } from "../../src/claude/mcp_registration.ts";
 import { resolveClaudeHome, settingsPathFor } from "../../src/claude/paths.ts";
 import { runMcp } from "../../src/commands/mcp.ts";
@@ -264,24 +263,6 @@ test("a static write bakes ANTHROPIC_AUTH_TOKEN under the mode's base URL and dr
       credential: "command",
     });
   }
-});
-
-test("cmdHelperBody: @echo off + CRLF, quotes paths with spaces, escapes % as %%", () => {
-  // Windows paths may carry spaces and `%`; cmdHelperBody doubles every `%` so batch variable-expansion
-  // cannot mangle the path. Pure, so it runs on POSIX CI.
-  const body = cmdHelperBody("powershell", [
-    "-NoProfile",
-    "-File",
-    "C:\\Users\\a b\\50%done\\agent.ps1",
-    "auth",
-    "--get",
-  ]);
-  expect(body.startsWith("@echo off\r\n")).toBe(true);
-  expect(body.endsWith("\r\n")).toBe(true);
-  expect(body).toContain('"C:\\Users\\a b\\50%%done\\agent.ps1"');
-  expect(body).toContain("powershell -NoProfile -File ");
-  expect(body).toContain(" auth --get");
-  expect(/[^%]%[^%]/.test(body)).toBe(false);
 });
 
 /** The writer emits and the inspector recognizes only the current platform's shape, so a sibling

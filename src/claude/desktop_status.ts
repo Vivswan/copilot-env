@@ -1,27 +1,19 @@
 // The read-only side of the Claude Desktop wiring; desktop.ts is what writes it. `agent profile
 // check --claude` and the health engine share these lines and repair commands so the two cannot
 // disagree.
-import { basename, join } from "node:path";
+import { join } from "node:path";
 import type { CredentialWiring, ManagedMode } from "../agents/configure.ts";
 import { renderDirectWiring } from "../agents/profile_wiring.ts";
 import type { DesktopEffortLevel } from "../copilot_api/config_registry.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import type { ProfileMode } from "../copilot_api/env_state.ts";
-import { resolveRootHome } from "../copilot_api/paths.ts";
 import { copilotApiResolvePort, proxyLoopbackOrigin } from "../copilot_api/port.ts";
 import type { Profile } from "../copilot_api/profile.ts";
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import * as fs from "../utils/fs_facade.ts";
-import { isRecord } from "../utils/json.ts";
+import { isRecord, sameStrings } from "../utils/json.ts";
 import { type OwnedDesktopEntry, readOwnedLibrary } from "./desktop.ts";
-import {
-  desktopHelperBody,
-  desktopHelperPath,
-  desktopHelperScriptWiring,
-  helperExecutable,
-  presentDesktopHelperScripts,
-} from "./desktop_helper_scripts.ts";
 import {
   claudeDesktopInstalled,
   type DesktopAppState,
@@ -35,6 +27,7 @@ import {
 import {
   type DesktopCredential,
   desktopConfigPayload,
+  desktopHelperCredential,
   entryProfileAt,
   recordedModelRows,
 } from "./desktop_payload.ts";
@@ -76,9 +69,6 @@ interface DesktopStatusBase {
 
   /** claudeDesktopInstalled's verdict; with the app absent no target gets a verdict. */
   installed: boolean;
-
-  /** Every generated helper script present under the root home (key off: leftovers). */
-  helperPaths: string[];
 }
 
 /** Each failed look is its own kind, so it can never render as a clean one. */
@@ -155,7 +145,6 @@ export function inspectClaudeDesktopWiring(
   if (resolution.kind === "unresolvable") {
     return { ...base, kind: "unjudged", reason: resolution.reason };
   }
-  const rootHome = resolveRootHome();
   // Desktop follows Claude's scope, resolved per target's profile: a rewire of that target would
   // bake this shape.
   const config = new CopilotEnvConfig();
@@ -165,7 +154,6 @@ export function inspectClaudeDesktopWiring(
     verdict: entryVerdict(
       judged,
       t,
-      rootHome,
       config.staticKeyFor("claude", t.profile) ? "static" : "command",
       effort,
     ),
@@ -179,7 +167,6 @@ function desktopStatusBase(): DesktopStatusBase {
   return {
     enabled: new CopilotEnvConfig().claudeDesktopEnabled(),
     installed: claudeDesktopInstalled(),
-    helperPaths: presentDesktopHelperScripts(resolveRootHome()),
   };
 }
 
@@ -205,7 +192,6 @@ function readEntryDocument(
 function entryVerdict(
   owned: JudgedDesktopEntry[],
   target: DesktopTarget,
-  rootHome: string,
   credential: CredentialWiring["kind"],
   effort: DesktopEffortLevel,
 ): DesktopEntryVerdict {
@@ -243,7 +229,7 @@ function entryVerdict(
   if (!sameBaseUrl(gateway, expectedBase)) {
     return stale(`gateway ${String(gateway)}, expected ${expectedBase}`);
   }
-  const recordedCredential = expectedCredential(doc, target, rootHome, credential);
+  const recordedCredential = expectedCredential(doc, target, credential);
   if ("stale" in recordedCredential) return stale(recordedCredential.stale);
   // Wired means the QUIET rewire (recorded rows, the pair above, no probe) would be a
   // byte-identical no-op: the same bytes the entry writer compares before it writes.
@@ -269,13 +255,11 @@ function entryVerdict(
 }
 
 /** The credential a rewire would bake, judged against what the document records, without resolving
- *  anything: the command shape needs the helper script this wiring writes, runnable and current;
- *  the static shape needs the recorded key (its VALUE is never compared) and no helper leftovers. A
- *  failed look is stale, never wired. */
+ *  anything: the command shape needs the launcher and the resolver argv this wiring writes; the
+ *  static shape needs the recorded key (its VALUE is never compared). */
 function expectedCredential(
   doc: Record<string, unknown>,
   target: DesktopTarget,
-  rootHome: string,
   credential: CredentialWiring["kind"],
 ): DesktopCredential | { stale: string } {
   if (credential === "static") {
@@ -286,30 +270,21 @@ function expectedCredential(
     if (doc.inferenceCredentialKind !== "static" || typeof key !== "string" || key === "") {
       return { stale: "no static key recorded, but static-key covers Claude" };
     }
-    const leftover = presentDesktopHelperScripts(rootHome).find(
-      (p) => desktopHelperScriptWiring(basename(p))?.profile === target.profile,
-    );
-    if (leftover !== undefined) {
-      return { stale: `credential helper ${leftover} left behind (a rewire removes it)` };
-    }
     return { kind: "static", token: key };
   }
-  const helper = desktopHelperPath(rootHome, target.mode, target.profile);
+
+  const expected = desktopHelperCredential(target.mode, target.profile);
   const recorded = doc.inferenceCredentialHelper;
-  if (recorded !== helper) {
-    return { stale: `credential helper ${String(recorded)}, expected ${helper}` };
+  const recordedArgs = doc.inferenceCredentialHelperArgs;
+  if (recorded !== expected.command) {
+    return { stale: `credential helper ${String(recorded)}, expected ${expected.command}` };
   }
-  try {
-    if (readFileOrNull(helper) !== desktopHelperBody(target.mode, target.profile)) {
-      return { stale: `credential helper ${helper} is missing or has a stale body` };
-    }
-    if (!helperExecutable(helper)) {
-      return { stale: `credential helper ${helper} is not executable` };
-    }
-  } catch (e) {
-    return { stale: `credential helper ${helper} could not be checked: ${errMessage(e)}` };
+  if (!Array.isArray(recordedArgs) || !sameStrings(recordedArgs, expected.args)) {
+    return {
+      stale: `credential helper arguments ${JSON.stringify(recordedArgs)}, expected ${JSON.stringify(expected.args)}`,
+    };
   }
-  return { kind: "command", helperPath: helper };
+  return expected;
 }
 
 /** A named profile repairs through its atomic re-add (mode sticky from the store); a flag-less
@@ -326,8 +301,8 @@ interface StatusReport {
   fixes: Set<string>;
 }
 
-/** The key-off render. The default's entry and helper stay by design; leftovers are the profile
- *  entries (listed or not) and helper scripts an interrupted sweep can leave. */
+/** The key-off render. The default's entry stays by design; leftovers are the profile entries
+ *  (listed or not) an interrupted sweep can leave. */
 function renderDisabledStatus(
   status: Extract<ClaudeDesktopStatus, { kind: "no-library" | "inspected" }>,
 ): { lines: string[]; fix: string | null } {
@@ -349,10 +324,9 @@ function renderDisabledStatus(
   // it.
   const claims = [...owned, ...unlisted];
   const unknown = claims.filter((c) => c.profile === undefined).map((c) => c.path);
-  const left = [
-    ...claims.filter((c) => c.profile !== null && c.profile !== undefined).map((c) => c.path),
-    ...status.helperPaths.filter((p) => desktopHelperScriptWiring(basename(p))?.profile !== null),
-  ];
+  const left = claims
+    .filter((c) => c.profile !== null && c.profile !== undefined)
+    .map((c) => c.path);
   if (left.length === 0 && unknown.length === 0) {
     return {
       lines: [...unmanaged, "disabled (claude.desktop false); no copilot-env leftovers present"],

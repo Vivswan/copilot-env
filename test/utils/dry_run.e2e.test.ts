@@ -7,7 +7,6 @@
 import { afterEach, beforeEach } from "bun:test";
 import { randomBytes } from "node:crypto";
 import {
-  chmodSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -18,11 +17,9 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, join, sep } from "node:path";
-import { claudeDesktopStatus } from "../../src/agents/claude_desktop.ts";
 import { runCodex } from "../../src/agents/configure_defaults.ts";
 import { type ProbeDescriptor, probeDirectWorks } from "../../src/agents/live_probe.ts";
 import { SETTINGS_BACKUP_KEEP, settingsBackupDir } from "../../src/agents/transfer.ts";
-import { desktopHelperPath } from "../../src/claude/desktop_helper_scripts.ts";
 import { CLAUDE_DESKTOP_DIR_ENV } from "../../src/claude/desktop_library.ts";
 import { claudeJsonPath } from "../../src/claude/mcp_registration.ts";
 import { settingsPathFor } from "../../src/claude/paths.ts";
@@ -43,7 +40,7 @@ import {
   resetIntegrationIdentityCache,
   setIntegrationProbeFetch,
 } from "../../src/copilot_api/integration_identity.ts";
-import { CopilotApiPaths, profileHome, resolveRootHome } from "../../src/copilot_api/paths.ts";
+import { CopilotApiPaths, profileHome } from "../../src/copilot_api/paths.ts";
 import { parseProfileName } from "../../src/copilot_api/profile.ts";
 import { appRunning, type ScanExec } from "../../src/utils/app_scan.ts";
 import { DRY_RUN_ENV, spawnedByDryRun } from "../../src/utils/dry_run.ts";
@@ -831,7 +828,7 @@ function mkdirFailure(path: string): string {
 
 // A directory where a writer would remove a file is the real run's decision in the dry run too: the
 // warning, no delete row, the directory kept, and the rest of the command still planned and landed.
-test("a directory where a writer would remove a file takes the real decision in the dry run: the codex catalog file, a profile's Desktop helper, the retired Desktop helper", async () => {
+test("a directory where a writer would remove a file takes the real decision in the dry run: the codex catalog file", async () => {
   const rows: {
     /** The row's label in a failed expectation. */
     name: string;
@@ -862,40 +859,6 @@ test("a directory where a writer would remove a file takes the real decision in 
       real: () => Promise.resolve(syncCodexCatalogReference()),
       stillPlans: "DRY RUN: nothing was written.",
       landed: () => {},
-    },
-    {
-      name: "profile del over the profile's Desktop helper",
-      setup: async () => {
-        await addWork("proxy", WORK_TOKEN);
-        return desktopHelperPath(resolveRootHome(), "proxy", WORK);
-      },
-      warning: (path) => `${path} is a directory; only a file can be removed here`,
-      dry: () => delProfile(WORK, true),
-      real: () => delProfile(WORK, false),
-      stillPlans: `rewrite ${new CopilotApiPaths().stateStoreFile}`,
-      landed: () => expect(new CopilotEnvState().profileNames()).toEqual([]),
-    },
-    {
-      name: "init --proxy over the retired Direct helper",
-      setup: async () => {
-        isolateWithDesktop();
-        await addProfile(null, { mode: "proxy" });
-        // The proxy wire retires the Direct helper; a directory sits where that script would be.
-        return desktopHelperPath(resolveRootHome(), "direct", null);
-      },
-      warning: (path) => `${path} is a directory; only a file can be removed here; left alone.`,
-      dry: () => addProfile(null, { mode: "proxy", dryRun: true }),
-      real: () => addProfile(null, { mode: "proxy" }),
-      stillPlans: "DRY RUN: nothing was written.",
-      // The entry landed regardless: the status inspector judges it wired (a fact consola's repeat
-      // throttle cannot hide, unlike a success line printed twice in a row).
-      landed: () => {
-        const status = claudeDesktopStatus();
-        expect(status.kind).toBe("inspected");
-        if (status.kind === "inspected") {
-          expect(status.entries.map((e) => [e.profile, e.verdict.kind])).toEqual([[null, "wired"]]);
-        }
-      },
     },
   ];
   for (const row of rows) {
@@ -997,43 +960,18 @@ function isolateWithDesktop(): { discoveries: { n: number } } {
 }
 
 // The status read that follows the wire sees the Desktop state the plan left, as the real run's
-// does, so a pre-state the wire corrects costs the dry run no extra discovery.
-test("`init --proxy --dry-run` runs Claude Desktop's model discovery once, as the real run does, over a helper chmod'd 0644 and over a helper the static-key shape retires", async () => {
+// does, so a credential shape the wire changes costs the dry run no extra discovery.
+test("`init --proxy --dry-run` runs Claude Desktop's model discovery once, as the real run does, over a helper the static-key shape replaces", async () => {
   const { discoveries } = isolateWithDesktop();
   await captureChannels(() => addProfile(null, { mode: "proxy" }));
-  const helper = desktopHelperPath(resolveRootHome(), "proxy", null);
-  expect(existsSync(helper)).toBe(true);
   const probes = async (body: () => Promise<void>): Promise<number> => {
     discoveries.n = 0;
     await captureChannels(body);
     return discoveries.n;
   };
-  const rows: { name: string; prestate: () => void; helperAfterReal: boolean }[] = [
-    // The plan heals the mode (the real run's chmod); the later status read sees it healed too.
-    {
-      name: "helper chmod'd 0644",
-      prestate: () => chmodSync(helper, 0o644),
-      helperAfterReal: true,
-    },
-    // The static shape names no helper: the wire plans the script's deletion, and the status read
-    // that follows must not find it on disk and call the entry stale (a second discovery).
-    {
-      name: "static-key claude over the proxy wiring",
-      prestate: () => new CopilotEnvConfig().setProfile(null, { "static-key": "claude" }),
-      helperAfterReal: false,
-    },
-  ];
-  for (const { name, prestate, helperAfterReal } of rows) {
-    prestate();
-    const dry = await probes(() => addProfile(null, { mode: "proxy", dryRun: true }));
-    expect(existsSync(helper), name).toBe(true);
-    prestate();
-    const real = await probes(() => addProfile(null, { mode: "proxy" }));
-    expect({ name, dry, real, helper: existsSync(helper) }).toEqual({
-      name,
-      dry: 1,
-      real: 1,
-      helper: helperAfterReal,
-    });
-  }
+  // The static shape names no helper: the status read that follows the plan must see the planned
+  // entry, not the disk's command shape, or it calls the entry stale (a second discovery).
+  new CopilotEnvConfig().setProfile(null, { "static-key": "claude" });
+  expect(await probes(() => addProfile(null, { mode: "proxy", dryRun: true }))).toBe(1);
+  expect(await probes(() => addProfile(null, { mode: "proxy" }))).toBe(1);
 });

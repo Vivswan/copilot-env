@@ -170,7 +170,7 @@ One exception: a configuration you applied in the app yourself stays applied, si
 
 | Setting                                             | Why                                                                                                                                                                                                                |
 | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| the gateway entry, one per wired default or profile | provider `gateway`, credential from a helper script or the [static key](authentication.md#static-key), the model list (first row = default model, newest of the most capable family), the `copilot-env` MCP server |
+| the gateway entry, one per wired default or profile | provider `gateway`, credential from the `agent` launcher run as the helper script with its arguments (`agent profile [<name>] auth --get` or `proxy-token --yes`) or the [static key](authentication.md#static-key), the model list (first row = default model, newest of the most capable family), the `copilot-env` MCP server |
 | `"defaultModelEffort": "high"`                      | the default model starts at high effort in Chat, Cowork, and Code; `agent config set claude.desktop-effort <level>` (`low`, `medium`, `high`, `xhigh`, `max`) changes it at the next wiring pass                   |
 | `"builtinBrowserEnabled": true` and the other switches the app ships off | as many capabilities as possible: the built-in browser in Cowork and Code, desktop extensions, file analysis, Auto mode in Cowork, cost display, the 1M window, import/export; all telemetry off |
 | `"deploymentMode": "3p"`                            | the app boots third-party instead of asking "Continue with Gateway" or "sign in with Claude.ai"; other keys in the file are kept                                                                                   |
@@ -181,7 +181,7 @@ A wiring pass writes only the keys whose app default differs from what copilot-e
 The files these land in, what writes and removes them, and where they sit on each platform are in the [wiring write list](getting-started.md#what-a-wiring-pass-writes).
 
 - **On:** a wiring pass ends with `Claude Desktop is ready to use.` once the default entry is wired, applied, and the app boots third-party; which passes write what is in the [write list](getting-started.md#what-a-wiring-pass-writes).
-- **Off:** the default entry stays in place as yours, named once and never rewritten; only `agent uninstall` removes it. Profile entries go, each with its credential-helper scripts under `~/.local/share/copilot-env/helpers/`; what the same writes remove is in the [write list](getting-started.md#what-a-wiring-pass-writes).
+- **Off:** the default entry stays in place as yours, named once and never rewritten; only `agent uninstall` removes it. Profile entries go; what the same writes remove is in the [write list](getting-started.md#what-a-wiring-pass-writes).
 - **Drift:** `agent profile check --claude` and `agent health` report an entry missing or stale with the key on, profile entries left behind after turning it off, which entry the app applies, and whether it will show the sign-in chooser or lacks the Developer menu.
 
 ## probe

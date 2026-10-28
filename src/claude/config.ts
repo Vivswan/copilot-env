@@ -71,7 +71,6 @@ import {
 } from "../utils/root.ts";
 import { type ManagedEnvValue, quotePosix } from "../utils/shell_quote.ts";
 import { removeClaudeDesktopEntry, syncClaudeDesktopWiring } from "./desktop.ts";
-import { winQuote } from "./helper_body.ts";
 import {
   claudeJsonPath,
   prepareClaudeMcpRemoval,
@@ -96,6 +95,11 @@ export const AUTH_TOKEN_ENV = "ANTHROPIC_AUTH_TOKEN";
 
 function shToken(s: string): string {
   return /^[A-Za-z0-9_.:/=-]+$/.test(s) ? s : quotePosix(s);
+}
+
+/** cmd.exe runs a quoted path fine, and our args never contain a `"`. */
+function winQuote(s: string): string {
+  return /^[-A-Za-z0-9_.]+$/.test(s) ? s : `"${s}"`;
 }
 
 // A quoted path, or shToken's bare charset alone, so `evil;/bin/agent` never reads as managed.

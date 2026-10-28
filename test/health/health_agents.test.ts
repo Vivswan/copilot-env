@@ -991,7 +991,6 @@ const DESKTOP_INSPECTED = {
   kind: "inspected" as const,
   enabled: true,
   installed: true,
-  helperPaths: [] as string[],
   libraryDir: "/lib",
   unlisted: [] as Extract<ClaudeDesktopStatus, { kind: "inspected" }>["unlisted"],
   owned: [{ name: "copilot-env", path: "/lib/a.json", profile: null }],
@@ -1031,18 +1030,11 @@ test("checkClaudeDesktop: a rendered fix is a warn, none is ok; the detail is th
   );
   expect(missing.fix).toBe("agent profile work add");
 
-  // A profile's helper script left behind with the key off and no library at all: still a
-  // leftover (the default's helper stays with its entry, so it is not one).
-  const helperLeft = checkClaudeDesktop({
-    kind: "no-library",
-    enabled: false,
-    installed: false,
-    helperPaths: ["/root/claude-desktop-token.sh", "/root/claude-desktop-token-work.sh"],
-  });
-  expect(helperLeft.status).toBe("warn");
-  expect(helperLeft.detail).toContain("/root/claude-desktop-token-work.sh");
-  expect(helperLeft.detail).toContain("1 copilot-env leftover remains");
-  expect(helperLeft.fix).toBe("agent profile sync --claude");
+  // Key off and no library at all: nothing is left over, so the check is informational.
+  const off = checkClaudeDesktop({ kind: "no-library", enabled: false, installed: false });
+  expect(off.status).toBe("ok");
+  expect(off.detail).toBe("disabled (claude.desktop false); no copilot-env leftovers present");
+  expect(off.fix).toBeUndefined();
 });
 
 test("checkClaudeDesktop --json: each arm's own fields ride along whole", () => {
@@ -1056,7 +1048,6 @@ test("checkClaudeDesktop --json: each arm's own fields ride along whole", () => 
     kind: "inspected",
     enabled: true,
     installed: true,
-    helperPaths: [],
     libraryDir: "/lib",
     owned: [{ name: "copilot-env", path: "/lib/a.json", profile: null }],
     unlisted: [{ path: "/lib/gone.json", profile: old }],
@@ -1069,28 +1060,24 @@ test("checkClaudeDesktop --json: each arm's own fields ride along whole", () => 
     kind: "unreadable",
     enabled: true,
     installed: true,
-    helperPaths: [],
     metaPath: "/lib/_meta.json",
   });
   expect(unreadable.value).toEqual({
     kind: "unreadable",
     enabled: true,
     installed: true,
-    helperPaths: [],
     metaPath: "/lib/_meta.json",
   });
   const unjudged = checkClaudeDesktop({
     kind: "unjudged",
     enabled: true,
     installed: true,
-    helperPaths: [],
     reason: "settings.json malformed",
   });
   expect(unjudged.value).toEqual({
     kind: "unjudged",
     enabled: true,
     installed: true,
-    helperPaths: [],
     reason: "settings.json malformed",
   });
 });

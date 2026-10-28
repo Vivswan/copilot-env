@@ -610,7 +610,6 @@ export function checkClaudeDesktop(f: ClaudeDesktopStatus): CheckResult {
       kind: f.kind,
       enabled: f.enabled,
       installed: f.installed,
-      helperPaths: f.helperPaths,
       ...(f.kind === "unreadable" ? { metaPath: f.metaPath } : {}),
       ...(f.kind === "unjudged" ? { reason: f.reason } : {}),
       ...(f.kind === "inspected"

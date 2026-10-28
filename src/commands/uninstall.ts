@@ -87,7 +87,7 @@ async function stopAllDaemons(profiles: ProfileName[]): Promise<void> {
 /** Resolved once before any step runs: the dry run plans exactly these and the live run removes
  *  exactly these, so neither can name (or take) a path the other did not. */
 interface UninstallTargets {
-  /** The Claude Desktop entries and helper scripts the ownership ledger says are ours. */
+  /** The Claude Desktop entries the ownership ledger says are ours. */
   desktop: ClaudeDesktopOwnedArtifacts;
 
   /** Named on its own because the float's cache may sit OUTSIDE the root home. */
@@ -256,7 +256,7 @@ function uninstallSteps(ctx: UninstallContext): UninstallStep[] {
     // foreign-edited config, ownership being the proof. The MCP registration is the deny's
     // web-search replacement, so it goes only once no owned deny remains.
     () => removeClaudeWiring(ctx),
-    // 4b. Claude Desktop's config library: owned entries and helper scripts only.
+    // 4b. Claude Desktop's config library: owned entries only.
     () => {
       try {
         removeAllClaudeDesktopWiring(ctx.targets.desktop);

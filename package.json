@@ -31,7 +31,7 @@
     "@copilotkit/aimock": "1.43.0",
     "@jeffreycao/copilot-api": "^2.6.19",
     "@modelcontextprotocol/client": "^2.1.0",
-    "@modelcontextprotocol/sdk": "^1.30.1",
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "@modelcontextprotocol/server": "^2.1.0",
     "@octokit/auth-oauth-device": "^8.0.5",
     "@octokit/request": "^10.0.16",

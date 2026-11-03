@@ -18,7 +18,6 @@ This page is about the credential and the profiles that carry one each. The wiri
 | `gh-cli`     | the machine's existing `gh` login, pinned to one account at auth time (below) |
 | `gh-token`   | paste a GitHub token; `--set <token>` stores one non-interactively            |
 | `gh-env`     | copy a token from `$COPILOT_GITHUB_TOKEN` / `$GH_TOKEN` / `$GITHUB_TOKEN`     |
-
 - `copilot` runs GitHub's device flow in copilot-env itself (VS Code Copilot's OAuth app, `read:user`), printing the URL and code on stderr; the token goes straight into the credential store, and no proxy-side token file is written.
 - `gh-cli` pins an account when you run `agent profile auth`, or records `auto` when you ask for it by name. How each is chosen, resolves, and follows gh is in the table below.
 - `gh-env` in a terminal always shows the var and its GitHub account first: one set asks yes/no, several set get a menu. Headless takes the most specific (servers).
@@ -115,13 +114,12 @@ agent profile set static-key codex   # bake Codex's config only; Claude keeps it
 agent profile set static-key all     # both agents and Claude Desktop
 ```
 
-| `static-key`     | Claude Code `settings.json`                   | Codex `config.toml`, managed provider                  | Claude Desktop entry                                                              |
-| ---------------- | --------------------------------------------- | ------------------------------------------------------ | --------------------------------------------------------------------------------- |
-| `none` (default) | `apiKeyHelper` command                        | `auth.command`                                         | `inferenceCredentialHelper` + `inferenceCredentialHelperArgs`                     |
-| `claude`         | `env.ANTHROPIC_AUTH_TOKEN`; no `apiKeyHelper` | `auth.command`                                         | `inferenceCredentialKind = "static"` + `inferenceGatewayApiKey`; no helper        |
-| `codex`          | `apiKeyHelper` command                        | `http_headers.Authorization = "Bearer ..."`; no `auth` | `inferenceCredentialHelper` + `inferenceCredentialHelperArgs`                     |
-| `all`            | `env.ANTHROPIC_AUTH_TOKEN`; no `apiKeyHelper` | `http_headers.Authorization = "Bearer ..."`; no `auth` | `inferenceCredentialKind = "static"` + `inferenceGatewayApiKey`; no helper        |
-
+| `static-key`     | Claude Code `settings.json`                   | Codex `config.toml`, managed provider                  | Claude Desktop entry                                                       |
+| ---------------- | --------------------------------------------- | ------------------------------------------------------ | -------------------------------------------------------------------------- |
+| `none` (default) | `apiKeyHelper` command                        | `auth.command`                                         | `inferenceCredentialHelper` + `inferenceCredentialHelperArgs`              |
+| `claude`         | `env.ANTHROPIC_AUTH_TOKEN`; no `apiKeyHelper` | `auth.command`                                         | `inferenceCredentialKind = "static"` + `inferenceGatewayApiKey`; no helper |
+| `codex`          | `apiKeyHelper` command                        | `http_headers.Authorization = "Bearer ..."`; no `auth` | `inferenceCredentialHelper` + `inferenceCredentialHelperArgs`              |
+| `all`            | `env.ANTHROPIC_AUTH_TOKEN`; no `apiKeyHelper` | `http_headers.Authorization = "Bearer ..."`; no `auth` | `inferenceCredentialKind = "static"` + `inferenceGatewayApiKey`; no helper |
 - Claude Desktop follows Claude's scope (`claude` or `all`).
 - Direct bakes the GitHub credential (`gh-cli` is resolved once, at write time); proxy bakes the daemon's own API key.
 - The value does not follow a credential change. A named profile's `agent profile <name> auth` rewires both agents itself, so its baked value is fresh at once. The default's `agent auth` only stores the credential: re-run `agent init` after it, which notes that the agents in scope keep their baked value until that rewire.

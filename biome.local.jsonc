@@ -2,7 +2,7 @@
 // reasons. The managed biome.json extends this file and applies last, so the floor cannot be lowered here; the one
 // relaxation is a per-path `overrides` entry below with its reason beside it (docs/modules/typescript.md).
 {
-  "$schema": "https://biomejs.dev/schemas/2.5.15/schema.json",
+  "$schema": "https://biomejs.dev/schemas/2.6.3/schema.json",
   "vcs": {
     "enabled": true,
     "clientKind": "git",

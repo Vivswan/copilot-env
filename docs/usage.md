@@ -167,7 +167,6 @@ With `daemon.auto-start` off, the launchers prompt before starting a downed prox
 | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Claude | `claude --print --permission-mode plan --verbose --output-format stream-json "<prompt>"`; a named profile adds `--settings ~/.claude/settings-<name>.json` and drops a shell `ANTHROPIC_BASE_URL`, as `cl --profile` does |
 | Codex  | `codex exec --json --skip-git-repo-check --sandbox read-only "<prompt>"`; a named profile adds `--profile <name>`                                                                                                         |
-
 - Exit 0 alone is not a pass: a `UserPromptSubmit` hook that stops the prompt exits 0 after zero model turns. The check passes only when the stream carries the model's answer (an `assistant` event from Claude, an `item.completed` `agent_message` from Codex); otherwise it reports `exit 0 without a model answer` with the stream.
 - `CLAUDE_CONFIG_DIR` is never added to the child's env (a value your shell already exports is inherited like the rest): Claude namespaces its keychain entry by that variable, and adding even the default dir hid a keychain-held key a real session reads.
 - The `agent profile add` Direct probe is the other intent: an isolated throwaway config (`--bare`), and it is unchanged.
@@ -221,11 +220,11 @@ The server is client-agnostic. Register it in Cursor or any other MCP client by 
 
 Each source is read on its own, and the footer says what priced the run. Where both price, the card's rate wins for every model it names. A card that does not parse whole counts as a failed fetch.
 
-| Today's fetch of a source | Prices from that source                                                   |
-| ------------------------- | ------------------------------------------------------------------------- |
-| ok, or a copy under 24h   | that read                                                                 |
-| fails, a copy cached      | the cached copy; one stderr line and the footer name the copy's day       |
-| fails, nothing cached     | none; with both sources out the report is tokens only under one line     |
+| Today's fetch of a source | Prices from that source                                              |
+| ------------------------- | -------------------------------------------------------------------- |
+| ok, or a copy under 24h   | that read                                                            |
+| fails, a copy cached      | the cached copy; one stderr line and the footer name the copy's day  |
+| fails, nothing cached     | none; with both sources out the report is tokens only under one line |
 
 Re-parsing every log on each run is slow, so the readers keep a usage index.
 

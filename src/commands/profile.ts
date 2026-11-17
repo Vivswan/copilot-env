@@ -55,7 +55,7 @@ import {
   type ProfileName,
   profileLabel,
 } from "../copilot_api/profile.ts";
-import { bold, colorEnabled, gray, paintFor, statusPaint } from "../utils/ansi.ts";
+import { bold, colorEnabled, dim, paintFor, statusPaint } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
 import { isEnoentOrNotdir } from "../utils/fs.ts";
 import * as fs from "../utils/fs_facade.ts";
@@ -758,7 +758,7 @@ export async function listProfiles(): Promise<void> {
       }),
     );
     // One message, so consola stamps one prefix instead of one per row.
-    const hint = gray("   Launch one:  cl --profile <name>  /  cx --profile <name>");
+    const hint = dim("   Launch one:  cl --profile <name>  /  cx --profile <name>");
     consola.info(
       `${rows.length} profile${rows.length === 1 ? "" : "s"}:\n\n${renderProfileTable(
         rows,

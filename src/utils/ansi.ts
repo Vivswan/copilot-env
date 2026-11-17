@@ -27,7 +27,6 @@ const SGR = {
   dim: [2, 22],
   blue: [34, 39],
   cyan: [36, 39],
-  gray: [90, 39],
   green: [32, 39],
   yellow: [33, 39],
   red: [31, 39],
@@ -58,7 +57,6 @@ export const palette: Record<Tone, Paint> = {
   dim: sgr("dim"),
   blue: sgr("blue"),
   cyan: sgr("cyan"),
-  gray: sgr("gray"),
   green: sgr("green"),
   yellow: sgr("yellow"),
   red: sgr("red"),
@@ -82,9 +80,9 @@ function gated(paint: Paint): Paint {
 }
 
 export const bold = gated(palette.bold);
+export const dim = gated(palette.dim);
 export const blue = gated(palette.blue);
 export const cyan = gated(palette.cyan);
-export const gray = gated(palette.gray);
 export const green = gated(palette.green);
 export const red = gated(palette.red);
 

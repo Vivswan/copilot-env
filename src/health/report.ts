@@ -63,10 +63,10 @@ function printResult(r: CheckResult, paint: Paint): void {
     printWrapped(`  ${glyph(r.status, paint)} ${r.label}: ${lines[0] ?? ""}`);
   } else {
     printWrapped(`  ${glyph(r.status, paint)} ${r.label}`);
-    for (const line of lines) printWrapped(`      ${paint.gray("•")} ${line}`);
+    for (const line of lines) printWrapped(`      ${paint.dim("•")} ${line}`);
   }
   // CheckOutcome (src/health/types.ts): every warn/fail carries a fix, ok never does.
-  if (r.status !== "ok") printWrapped(`      ${paint.gray(`→ fix: ${r.fix}`)}`);
+  if (r.status !== "ok") printWrapped(`      ${paint.dim(`→ fix: ${r.fix}`)}`);
 }
 
 function printSummary(results: CheckResult[], paint: Paint, color: boolean): void {

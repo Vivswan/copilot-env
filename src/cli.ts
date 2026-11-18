@@ -20,7 +20,7 @@ import {
   registerSyncCommand,
   splitProfileInvocation,
 } from "./commands/profile_verbs.ts";
-import { bold, cyan, gray } from "./utils/ansi.ts";
+import { bold, cyan, dim } from "./utils/ansi.ts";
 import { spawnedByDryRun, withDryRun } from "./utils/dry_run.ts";
 import { configureConsolaOutput } from "./utils/logger.ts";
 import { caught } from "./utils/message.ts";
@@ -86,7 +86,7 @@ const HELP_STYLES = {
   styleCommandText: cyan,
   styleOptionTerm: cyan,
   styleSubcommandTerm: cyan,
-  styleDescriptionText: gray,
+  styleDescriptionText: dim,
 };
 
 // The ansi.ts helpers no-op under NO_COLOR / TERM=dumb / CI / test runs, so these hooks degrade to

@@ -43,8 +43,8 @@ test("the wrapping reporter leaves room for the icon on the first line and hangs
     ].join("\n"),
   ]);
   // A painted line keeps its indent: the ANSI code sits in front of the spaces.
-  const gray = (text: string): string => `\x1b[90m${text}\x1b[39m`;
-  log.info(gray("   Launch one:  cl --profile <name>  /  cx --profile <name>  /  co"));
+  const dim = (text: string): string => `\x1b[2m${text}\x1b[22m`;
+  log.info(dim("   Launch one:  cl --profile <name>  /  cx --profile <name>  /  co"));
   expect(
     String(seen[1]?.args[0])
       .split("\n")

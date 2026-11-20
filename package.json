@@ -24,7 +24,7 @@
     "usage:fixtures": "bun scripts/usage/fixtures.ts",
     "usage:goldens": "bun scripts/usage/goldens.ts",
     "usage:corpus": "bun scripts/usage/corpus.ts",
-    "knip": "knip"
+    "knip": "knip-bun --treat-config-hints-as-errors"
   },
   "dependencies": {
     "@clack/prompts": "^1.8.1",

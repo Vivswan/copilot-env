@@ -3,7 +3,7 @@
 // child blocked writing to an unread pipe.
 export interface ChildOutput {
   exitCode: number;
-  signalCode: NodeJS.Signals | null;
+  signalCode: Bun.Subprocess["signalCode"];
   stdout: string;
   stderr: string;
 }

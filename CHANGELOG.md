@@ -1,5 +1,12 @@
 # Changelog
 
+## [5.0.4](https://github.com/Vivswan/copilot-env/compare/v5.0.3...v5.0.4) (2026-11-21)
+
+
+### Bug Fixes
+
+* **cli:** paint help and hint text in a grey a dark terminal can show ([#562](https://github.com/Vivswan/copilot-env/issues/562)) ([6f01cd5](https://github.com/Vivswan/copilot-env/commit/6f01cd5115a2461a35940fad9cc07520613c7a30))
+
 ## [5.0.3](https://github.com/Vivswan/copilot-env/compare/v5.0.2...v5.0.3) (2026-10-28)
 
 

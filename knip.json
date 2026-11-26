@@ -15,6 +15,6 @@
     "bench/**/*.ts",
     "test/**/*.ts"
   ],
-  "ignoreDependencies": ["@copilotkit/aimock", "@jeffreycao/copilot-api"],
-  "ignoreBinaries": ["pgrep", "pwsh"]
+  "ignoreDependencies": ["@copilotkit/aimock", "@jeffreycao/copilot-api", "undici"],
+  "ignoreBinaries": ["pwsh"]
 }

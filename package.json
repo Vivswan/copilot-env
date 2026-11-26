@@ -29,7 +29,7 @@
   "dependencies": {
     "@clack/prompts": "^1.9.0",
     "@copilotkit/aimock": "1.48.0",
-    "@jeffreycao/copilot-api": "^2.9.6",
+    "@jeffreycao/copilot-api": "^2.9.15",
     "@modelcontextprotocol/client": "^2.4.0",
     "@modelcontextprotocol/sdk": "^1.32.2",
     "@modelcontextprotocol/server": "^2.4.0",
@@ -53,13 +53,13 @@
     "wrap-ansi": "^10.0.2"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.6.7",
+    "@biomejs/biome": "2.6.8",
     "@types/bun": "1.4.4",
     "@xterm/headless": "^6.0.0",
     "get-port": "7.2.0",
-    "knip": "6.43.0",
+    "knip": "6.46.1",
     "mitata": "1.0.34",
-    "oxc-parser": "0.158.0",
+    "oxc-parser": "0.159.0",
     "tree-kill": "1.2.2",
     "typescript": "7.0.2"
   }
